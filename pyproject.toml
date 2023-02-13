@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "bayesianbandits"
+version = "0.1.0"
+description = ""
+authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9, <3.12"
+scipy = "^1.10.0"
+scikit-learn = "^1.2.1"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.2.1"
+black = "^23.1.0"
+flake8 = "^6.0.0"
+ipython = "^8.10.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
