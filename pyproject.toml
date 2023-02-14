@@ -17,6 +17,9 @@ black = "^23.1.0"
 flake8 = "^6.0.0"
 ipython = "^8.10.0"
 
+[tool.pytest.ini_options]
+addopts = "--doctest-modules -v"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
