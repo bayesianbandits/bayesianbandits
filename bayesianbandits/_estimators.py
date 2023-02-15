@@ -4,7 +4,12 @@ from typing import Dict, Union
 import numpy as np
 from scipy.stats import dirichlet
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.utils.validation import check_array, check_is_fitted, check_X_y, NotFittedError
+from sklearn.utils.validation import (
+    check_array,
+    check_is_fitted,
+    check_X_y,
+    NotFittedError,
+)
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):
@@ -33,7 +38,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         The prior alphas for each class.
     known_alphas_ : Dict[Union[int, str], np.ndarray]
         The posterior alphas for each class seen during fit.
-    
+
     Examples
     --------
 
@@ -76,6 +81,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
            [0.08269207, 0.13128832, 0.78601961],
            [0.41846435, 0.02196364, 0.55957201]])
     """
+
     def __init__(
         self,
         alphas: Dict[Union[int, str], float],
@@ -129,9 +135,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         self._fit_helper(X, y)
         return self
 
-
     def _fit_helper(self, X, y):
-
         sort_keys = X[:, 0].argsort()
         X, y = X[sort_keys], y[sort_keys]
 
