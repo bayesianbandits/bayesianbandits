@@ -99,33 +99,37 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         """
         X, y = check_X_y(X, y, copy=True, ensure_2d=True)
 
-        if isinstance(self.random_state, int):
-            self.random_state_ = np.random.default_rng(self.random_state)
-        else:
-            self.random_state_ = self.random_state
-
-        self.classes_ = np.array(list(self.alphas.keys()))
+        self._initialize_prior()
 
         y = (y[:, np.newaxis] == self.classes_).astype(int)
 
-        self.n_classes_ = len(self.classes_)
         self.n_features_ = X.shape[1]
-        self.prior_ = np.array(list(self.alphas.values()))
+
         if self.n_features_ > 1:
             raise NotImplementedError("Only one feature supported")
-
-        self.known_alphas_ = defaultdict(lambda: self.prior_)
 
         self._fit_helper(X, y)
 
         return self
+
+    def _initialize_prior(self):
+        if not hasattr(self, "prior_"):
+            if isinstance(self.random_state, int):
+                self.random_state_ = np.random.default_rng(self.random_state)
+            else:
+                self.random_state_ = self.random_state
+
+            self.classes_ = np.array(list(self.alphas.keys()))
+            self.n_classes_ = len(self.classes_)
+            self.prior_ = np.array(list(self.alphas.values()))
+            self.known_alphas_ = defaultdict(lambda: self.prior_)
 
     def partial_fit(self, X, y):
         """
         Update the model using X as training data and y as target values.
         """
         try:
-            check_is_fitted(self)
+            check_is_fitted(self, "n_features_")
         except NotFittedError:
             return self.fit(X, y)
 
@@ -154,7 +158,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         """
         Predict class probabilities for X.
         """
-        check_is_fitted(self)
+        try:
+            check_is_fitted(self, "n_features_")
+        except NotFittedError:
+            self._initialize_prior()
+
         X = check_array(X, copy=True, ensure_2d=True)
 
         alphas = np.row_stack(list(self.known_alphas_[x.item()] for x in X))
@@ -170,6 +178,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         """
         Sample from the posterior for X.
         """
+        try:
+            check_is_fitted(self, "n_features_")
+        except NotFittedError:
+            self._initialize_prior()
+
         alphas = list(self.known_alphas_[x.item()] for x in X)
         return np.squeeze(
             np.stack(
