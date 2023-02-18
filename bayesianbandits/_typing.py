@@ -43,7 +43,7 @@ class ArmProtocol(Protocol):
 
     learner: Optional[Learner]
 
-    def pull(self) -> None:
+    def pull(self, X: Optional[ArrayLike] = None) -> None:
         ...
 
     def sample(self, X: Optional[ArrayLike] = None, size: int = 1) -> ArrayLike:
@@ -88,6 +88,3 @@ class BanditProtocol(ArmProtocol, Protocol):
     choice_algorithm: Callable[..., ArmProtocol]
     last_arm_pulled: Optional[ArmProtocol]
     rng: Union[np.random.Generator, int, None]
-
-    def choose_and_pull(self) -> None:
-        ...
