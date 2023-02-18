@@ -122,12 +122,12 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
             self.n_classes_ = len(self.classes_)
             self.prior_ = np.array(list(self.alphas.values()))
 
-            def _return_prior() -> NDArray[np.float_]:
-                return self.prior_
-
             self.known_alphas_: Dict[Any, NDArray[np.float_]] = defaultdict(
-                _return_prior
+                self._return_prior
             )
+
+    def _return_prior(self) -> NDArray[np.float_]:
+        return self.prior_
 
     def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
         """

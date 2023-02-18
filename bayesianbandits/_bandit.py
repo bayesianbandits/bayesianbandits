@@ -1,3 +1,4 @@
+from functools import partial
 from typing import Any, Callable, Iterable, Optional, Union, cast
 
 import numpy as np
@@ -174,73 +175,64 @@ def bandit(
 
     if not contextual:
 
-        @classmethod
-        def _bandit_choose_and_pull(cls: BanditProtocol) -> None:
+        def _bandit_choose_and_pull(self: BanditProtocol) -> None:
             """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
             arm that was pulled.
 
             This method is added to the bandit class by the `bandit` decorator.
             """
-            arm = cls.choice_algorithm(cls.arms.values(), X=None, rng=cls.rng)
-            cls.last_arm_pulled = arm
+            arm = self.choice_algorithm(self.arms.values(), X=None, rng=self.rng)
+            self.last_arm_pulled = arm
             arm.pull()
 
-        @classmethod
-        def _bandit_update(cls: BanditProtocol, y: ArrayLike) -> None:
+        def _bandit_update(self: BanditProtocol, y: ArrayLike) -> None:
             """Update the learner for the last arm pulled.
 
             This method is added to the bandit class by the `bandit` decorator.
             """
-            if cls.last_arm_pulled is None:
+            if self.last_arm_pulled is None:
                 raise ValueError("No arm has been pulled yet.")
-            cls.last_arm_pulled.update(np.atleast_1d(y))
+            self.last_arm_pulled.update(np.atleast_1d(y))
 
-        @classmethod
-        def _bandit_sample(cls: BanditProtocol, size: int = 1) -> ArrayLike:
+        def _bandit_sample(self: BanditProtocol, size: int = 1) -> ArrayLike:
             """Sample from the learner using the choice algorithm.
 
             This method is added to the bandit class by the `bandit` decorator."""
-            arm = cls.choice_algorithm()
+            arm = self.choice_algorithm()
             return arm.sample(X=None, size=size)
 
-    def wrapper(cls: object) -> BanditProtocol:
-        for _, attr in cls.__dict__.items():
+    def _bandit_init(self: BanditProtocol) -> None:
+        """Moves all class attributes that are instances of `Arm` to instance
+        attributes.
+
+        This ensures that the bandit can be pickled."""
+
+        for name, attr in self.__class__.__dict__.items():
             if isinstance(attr, Arm):
+                setattr(self, name, attr)
                 if attr.learner is None:
                     learner_clone = cast(Learner, clone(learner))
                     attr.learner = learner_clone
                     attr.learner.set_params(random_state=rng)
 
-        if not hasattr(cls, "arms"):
-            setattr(
-                cls,
-                "arms",
-                {
-                    name: attr
-                    for name, attr in cls.__dict__.items()
-                    if isinstance(attr, ArmProtocol)
-                },
-            )
+        self.arms = {
+            name: attr
+            for name, attr in self.__dict__.items()
+            if isinstance(attr, ArmProtocol)
+        }
 
-        if not hasattr(cls, "rng"):
-            setattr(cls, "rng", rng)
+        self.rng = rng
 
-        if not hasattr(cls, "choice_algorithm"):
-            setattr(cls, "choice_algorithm", staticmethod(choice))
+        self.last_arm_pulled = None
 
-        if not hasattr(cls, "pull"):
-            setattr(cls, "pull", _bandit_choose_and_pull)
-
-        if not hasattr(cls, "last_arm_pulled"):
-            setattr(cls, "last_arm_pulled", None)
-
-        if not hasattr(cls, "update"):
-            setattr(cls, "update", _bandit_update)
-
-        if not hasattr(cls, "sample"):
-            setattr(cls, "sample", _bandit_sample)
-
+    def wrapper(cls: object) -> BanditProtocol:
+        """Adds methods to the bandit class."""
         cls = cast(BanditProtocol, cls)
+        setattr(cls, "__init__", _bandit_init)
+        setattr(cls, "pull", _bandit_choose_and_pull)
+        setattr(cls, "update", _bandit_update)
+        setattr(cls, "sample", _bandit_sample)
+        cls.choice_algorithm = staticmethod(choice)
 
         return cls
 
@@ -255,8 +247,15 @@ if __name__ == "__main__":
     def reward_func(x: ArrayLike) -> ArrayLike:
         return np.take(x, 0, axis=-1)  # type: ignore
 
+    def action_func(x: int) -> None:
+        print(f"action{x}")
+
+    arm1 = partial(action_func, 1)
+    arm2 = partial(action_func, 2)
+    arm3 = partial(action_func, 3)
+
     @bandit(learner=clf, choice=epsilon_greedy(epsilon=0.9), rng=0)
     class Experiment:
-        arm1 = Arm(lambda: print("arm1"), reward_func)
-        arm2 = Arm(lambda: print("arm2"), reward_func)
-        arm3 = Arm(lambda: print("arm3"), reward_func)
+        arm1 = Arm(arm1, reward_func)
+        arm2 = Arm(arm2, reward_func)
+        arm3 = Arm(arm3, reward_func)
