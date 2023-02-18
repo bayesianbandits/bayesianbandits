@@ -1,5 +1,7 @@
-from functools import partial
-from typing import Any, Callable, Iterable, Optional, Union, cast
+from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import cached_property, partial
+from typing import Any, Callable, Dict, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -119,36 +121,43 @@ class Arm:
     def __repr__(self) -> str:
         return (
             f"Arm(action_function={self.action_function},"
-            f" reward_function={self.reward_function}),"
-            f" learner={self.learner}"
+            f" reward_function={self.reward_function}"
         )
 
 
 def epsilon_greedy(
     epsilon: float = 0.1,
-) -> Callable[[Iterable[ArmProtocol], Optional[ArrayLike]], ArmProtocol]:
-    """Returns a closure that chooses an arm using epsilon-greedy."""
+) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+    """Creates an epsilon-greedy choice algorithm. To be used with the
+    `bandit` decorator.
+
+    Parameters
+    ----------
+    epsilon : float, default=0.1
+        Probability of choosing a random arm.
+
+    Returns
+    -------
+    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+        Closure that chooses an arm using epsilon-greedy.
+    """
 
     def _choose_arm(
-        arms: Iterable[ArmProtocol],
+        self: BanditProtocol,
         X: Optional[ArrayLike] = None,
-        rng: Union[np.random.Generator, int, None] = None,
     ) -> ArmProtocol:
         """Choose an arm using epsilon-greedy."""
-        if not isinstance(rng, np.random.Generator):
-            rng = np.random.default_rng(rng)
-
-        if np.random.rand() < epsilon:
-            return rng.choice(list(arms))  # type: ignore
+        if self.rng.random() < epsilon:  # type: ignore
+            return self.rng.choice(list(self.arms.values()))  # type: ignore
         else:
-            return max(arms, key=lambda arm: arm.mean(X))
+            return max(self.arms.values(), key=lambda arm: arm.mean(X))
 
     return _choose_arm
 
 
 def bandit(
     learner: Learner,
-    choice: Callable[[Iterable[ArmProtocol], Optional[ArrayLike]], ArmProtocol],
+    choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
     **options: Any,
 ) -> Callable[[object], BanditProtocol]:
     """Decorator to create a context-free multi-armed bandit from a class definition
@@ -168,10 +177,6 @@ def bandit(
     """
 
     contextual: bool = options.get("contextual", False)
-    rng: Union[np.random.Generator, int, None] = options.get("rng", None)
-
-    if not isinstance(rng, np.random.Generator):
-        rng = np.random.default_rng(rng)
 
     if not contextual:
 
@@ -181,7 +186,7 @@ def bandit(
 
             This method is added to the bandit class by the `bandit` decorator.
             """
-            arm = self.choice_algorithm(self.arms.values(), X=None, rng=self.rng)
+            arm = self.choice_algorithm(X=None)
             self.last_arm_pulled = arm
             arm.pull()
 
@@ -189,52 +194,101 @@ def bandit(
             """Update the learner for the last arm pulled.
 
             This method is added to the bandit class by the `bandit` decorator.
+
+            Parameters
+            ----------
+            y : ArrayLike
+                Outcome for the last arm pulled.
+
+            Raises
+            ------
+            ValueError
+                If no arm has been pulled yet.
             """
             if self.last_arm_pulled is None:
                 raise ValueError("No arm has been pulled yet.")
             self.last_arm_pulled.update(np.atleast_1d(y))
 
         def _bandit_sample(self: BanditProtocol, size: int = 1) -> ArrayLike:
-            """Sample from the learner using the choice algorithm.
+            """Sample from the bandit by choosing an arm according to the choice
+            algorithm and sampling from the arm's learner.
 
-            This method is added to the bandit class by the `bandit` decorator."""
-            arm = self.choice_algorithm()
-            return arm.sample(X=None, size=size)
+            This method is added to the bandit class by the `bandit` decorator.
 
-    def _bandit_init(self: BanditProtocol) -> None:
+            Parameters
+            ----------
+            size : int, default=1
+                Number of samples to draw.
+            """
+            # choose an arm, draw a sample, and repeat `size` times
+            # TODO: this is not the most efficient way to do this
+            # could be vectorized or parallelized
+            return np.array(
+                [self.choice_algorithm(X=None).sample() for _ in range(size)]
+            )
+
+    def _bandit_post_init(self: BanditProtocol) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
         attributes.
 
         This ensures that the bandit can be pickled."""
 
-        for name, attr in self.__class__.__dict__.items():
-            if isinstance(attr, Arm):
-                setattr(self, name, attr)
-                if attr.learner is None:
-                    learner_clone = cast(Learner, clone(learner))
-                    attr.learner = learner_clone
-                    attr.learner.set_params(random_state=rng)
+        # initialize the rng. this has to be done this way because the
+        # bandit dataclass is frozen
+        setattr(self, "rng", np.random.default_rng(self.rng))
 
-        self.arms = {
-            name: attr
-            for name, attr in self.__dict__.items()
-            if isinstance(attr, ArmProtocol)
-        }
-
-        self.rng = rng
-
-        self.last_arm_pulled = None
+        # initialize the arms with copies of the learner and
+        # point the learner rng to the bandit rng
+        for arm in self.arms.values():
+            arm.learner = cast(Learner, clone(learner))
+            arm.learner.set_params(random_state=self.rng)
 
     def wrapper(cls: object) -> BanditProtocol:
         """Adds methods to the bandit class."""
+
+        # annotate the arm variables as Arms so that dataclasses
+        # know they're not class variables.
+        if not hasattr(cls, "__annotations__"):
+            setattr(cls, "__annotations__", {})
+
+        for name, attr in cls.__dict__.items():
+            if isinstance(attr, Arm):
+                cls.__annotations__[name] = Arm
+                # set the arm to be a field with a defaultfactory of deepcopying
+                # the arm
+
+                setattr(cls, name, field(default_factory=partial(deepcopy, attr)))
+
+        # annotate rng as a random generator, int, or None, and give it a default
+        # value of None
+        cls.__annotations__["rng"] = Union[np.random.Generator, int, None]
+        setattr(cls, "rng", None)
+
+        # annotate last_arm_pulled as an ArmProtocol or None, and make sure
+        # it is not initialized
+        cls.__annotations__["last_arm_pulled"] = Union[ArmProtocol, None]
+        setattr(cls, "last_arm_pulled", field(default=None, init=False))
+
+        # set arms as a cached_property so that it's only computed once
+        # per instance
+        def _arms(self: BanditProtocol) -> Dict[str, ArmProtocol]:
+            return {
+                name: attr
+                for name, attr in self.__dict__.items()
+                if isinstance(attr, ArmProtocol)
+            }
+
+        setattr(cls, "arms", cached_property(_arms))
+        cls.arms.__set_name__(cls, "arms")  # type: ignore
+
         cls = cast(BanditProtocol, cls)
-        setattr(cls, "__init__", _bandit_init)
+        setattr(cls, "__post_init__", _bandit_post_init)
         setattr(cls, "pull", _bandit_choose_and_pull)
         setattr(cls, "update", _bandit_update)
         setattr(cls, "sample", _bandit_sample)
-        cls.choice_algorithm = staticmethod(choice)
+        setattr(cls, "choice_algorithm", choice)
 
-        return cls
+        return dataclass(cls)  # type: ignore
 
     return wrapper
 
@@ -254,7 +308,7 @@ if __name__ == "__main__":
     arm2 = partial(action_func, 2)
     arm3 = partial(action_func, 3)
 
-    @bandit(learner=clf, choice=epsilon_greedy(epsilon=0.9), rng=0)
+    @bandit(learner=clf, choice=epsilon_greedy(epsilon=0.1))
     class Experiment:
         arm1 = Arm(arm1, reward_func)
         arm2 = Arm(arm2, reward_func)
