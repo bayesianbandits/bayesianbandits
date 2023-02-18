@@ -1,6 +1,6 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
-from functools import cached_property, partial
+from functools import cached_property, partial, partialmethod
 from typing import Any, Callable, Dict, Optional, Union, cast
 
 import numpy as np
@@ -89,9 +89,8 @@ class Arm:
         if self.learner is None:
             raise ValueError("Learner is not set.")
         if y is None:
-            y_fit, X_fit = np.atleast_1d(X), np.array([[1]]).repeat(
-                len(np.array(X)), axis=0
-            )
+            y_fit = np.atleast_1d(X)
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
         else:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
@@ -126,6 +125,10 @@ def bandit(
     choice : Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
         Constructor for making a choice algorithm to use for
         choosing which arm to pull.
+    contextual : bool, default=False
+        Whether the bandit is contextual. If True, the `pull`, `sample`,
+        and `update` methods will take a first argument `X`. The `X` argument
+        is the context vector used during learning and choice.
 
     Returns
     -------
@@ -143,54 +146,57 @@ def bandit(
 
     contextual: bool = options.get("contextual", False)
 
-    if not contextual:
+    def _bandit_pull(self: BanditProtocol, X: Optional[ArrayLike]) -> None:
+        """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
+        arm that was pulled.
 
-        def _bandit_choose_and_pull(self: BanditProtocol) -> None:
-            """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
-            arm that was pulled.
+        This method is added to the bandit class by the `bandit` decorator.
+        """
+        arm = self.choice_algorithm(X=X)
+        self.last_arm_pulled = arm
+        arm.pull()
 
-            This method is added to the bandit class by the `bandit` decorator.
-            """
-            arm = self.choice_algorithm(X=None)
-            self.last_arm_pulled = arm
-            arm.pull()
+    def _bandit_update(
+        self: BanditProtocol, X: ArrayLike, y: Optional[ArrayLike]
+    ) -> None:
+        """Update the learner for the last arm pulled.
 
-        def _bandit_update(self: BanditProtocol, y: ArrayLike) -> None:
-            """Update the learner for the last arm pulled.
+        This method is added to the bandit class by the `bandit` decorator.
 
-            This method is added to the bandit class by the `bandit` decorator.
+        Parameters
+        ----------
+        y : ArrayLike
+            Outcome for the last arm pulled.
 
-            Parameters
-            ----------
-            y : ArrayLike
-                Outcome for the last arm pulled.
+        Raises
+        ------
+        ValueError
+            If no arm has been pulled yet.
+        """
+        if self.last_arm_pulled is None:
+            raise ValueError("No arm has been pulled yet.")
+        self.last_arm_pulled.update(X, y)
 
-            Raises
-            ------
-            ValueError
-                If no arm has been pulled yet.
-            """
-            if self.last_arm_pulled is None:
-                raise ValueError("No arm has been pulled yet.")
-            self.last_arm_pulled.update(np.atleast_1d(y))
+    def _bandit_sample(
+        self: BanditProtocol,
+        X: Optional[NDArray[Any]],
+        *,
+        size: int = 1,
+    ) -> ArrayLike:
+        """Sample from the bandit by choosing an arm according to the choice
+        algorithm and sampling from the arm's learner.
 
-        def _bandit_sample(self: BanditProtocol, size: int = 1) -> ArrayLike:
-            """Sample from the bandit by choosing an arm according to the choice
-            algorithm and sampling from the arm's learner.
+        This method is added to the bandit class by the `bandit` decorator.
 
-            This method is added to the bandit class by the `bandit` decorator.
-
-            Parameters
-            ----------
-            size : int, default=1
-                Number of samples to draw.
-            """
-            # choose an arm, draw a sample, and repeat `size` times
-            # TODO: this is not the most efficient way to do this
-            # could be vectorized or parallelized
-            return np.array(
-                [self.choice_algorithm(X=None).sample() for _ in range(size)]
-            )
+        Parameters
+        ----------
+        size : int, default=1
+            Number of samples to draw.
+        """
+        # choose an arm, draw a sample, and repeat `size` times
+        # TODO: this is not the most efficient way to do this
+        # but I can't imagine a situation where this would be a bottleneck.
+        return np.array([self.choice_algorithm(X=X).sample(X=X) for _ in range(size)])
 
     def _bandit_post_init(self: BanditProtocol) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
@@ -207,6 +213,13 @@ def bandit(
         for arm in self.arms.values():
             arm.learner = cast(Learner, clone(learner))
             arm.learner.set_params(random_state=self.rng)
+
+    if contextual is False:
+        _bandit_pull = partialmethod(_bandit_pull, X=None)  # type: ignore
+        _bandit_sample = partialmethod(_bandit_sample, X=None)  # type: ignore
+        # this looks weird, but `update` assumes that if given X and no y,
+        # y is X and X is a column of ones.
+        _bandit_update = partialmethod(_bandit_update, y=None)  # type: ignore
 
     def wrapper(cls: type) -> BanditConstructor:
         """Adds methods to the bandit class."""
@@ -249,7 +262,7 @@ def bandit(
         cls.arms.__set_name__(cls, "arms")  # type: ignore
 
         setattr(cls, "__post_init__", _bandit_post_init)
-        setattr(cls, "pull", _bandit_choose_and_pull)
+        setattr(cls, "pull", _bandit_pull)
         setattr(cls, "update", _bandit_update)
         setattr(cls, "sample", _bandit_sample)
         setattr(cls, "choice_algorithm", choice)
