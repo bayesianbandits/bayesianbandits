@@ -14,6 +14,7 @@ from bayesianbandits import (
     bandit,
     epsilon_greedy,
     thompson_sampling,
+    upper_confidence_bound,
 )
 from bayesianbandits._typing import ArmProtocol, BanditProtocol
 
@@ -156,7 +157,9 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
     return Experiment
 
 
-@pytest.mark.parametrize("choice", [epsilon_greedy(0.5), thompson_sampling()])
+@pytest.mark.parametrize(
+    "choice", [epsilon_greedy(0.5), thompson_sampling(), upper_confidence_bound(0.68)]
+)
 @pytest.mark.parametrize("learner", [DirichletClassifier({"a": 1.0, "b": 1.0})])
 class TestBanditDecorator:
     def test_init(
