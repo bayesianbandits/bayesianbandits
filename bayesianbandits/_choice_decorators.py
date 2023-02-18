@@ -53,3 +53,35 @@ def epsilon_greedy(
             return max(self.arms.values(), key=key_func)  # type: ignore
 
     return _choose_arm
+
+
+def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+    """Creates a Thompson sampling choice algorithm. To be used with the
+    `bandit` decorator.
+
+    Returns
+    -------
+    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+        Closure that chooses an arm using Thompson sampling.
+    """
+
+    def _draw_one_sample(
+        arm: ArmProtocol,
+        X: Optional[ArrayLike] = None,
+    ) -> np.float_:
+        """Draw one sample from the posterior distribution for the arm."""
+        if arm.learner is None:
+            raise ValueError("Learner is not set.")
+
+        return arm.sample(X, size=1).item()  # type: ignore
+
+    def _choose_arm(
+        self: BanditProtocol,
+        X: Optional[ArrayLike] = None,
+    ) -> ArmProtocol:
+        """Choose an arm using Thompson sampling."""
+
+        key_func = partial(_draw_one_sample, X=X)
+        return max(self.arms.values(), key=key_func)  # type: ignore
+
+    return _choose_arm
