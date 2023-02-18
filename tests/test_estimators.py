@@ -1,7 +1,8 @@
 import numpy as np
-from numpy.typing import NDArray
-from numpy.testing import assert_almost_equal
 import pytest
+from numpy.testing import assert_almost_equal
+from numpy.typing import NDArray
+
 from bayesianbandits import DirichletClassifier
 
 
