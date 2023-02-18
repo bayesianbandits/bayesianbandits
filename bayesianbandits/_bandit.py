@@ -62,16 +62,6 @@ class Arm:
         self.reward_function = reward_function
         self.learner = learner
 
-    def __set_name__(self, owner: Optional[BanditProtocol], name: str) -> None:
-        self.name = name
-
-    def __get__(
-        self, obj: Optional[BanditProtocol], objtype: Optional[BanditProtocol] = None
-    ) -> "Arm":
-        if obj is None:
-            return self
-        return obj.__dict__[self.name]
-
     def pull(self) -> None:
         """Pull the arm."""
         if self.learner is None:
@@ -82,13 +72,13 @@ class Arm:
         self,
         X: Optional[NDArray[Any]] = None,
         size: int = 1,
-    ) -> ArrayLike:
+    ) -> NDArray[np.float_]:
         """Sample from learner and compute the reward."""
         if self.learner is None:
             raise ValueError("Learner is not set.")
         X_new = X or np.array([[1]])
 
-        return self.reward_function(self.learner.sample(X_new, size))
+        return self.reward_function(self.learner.sample(X_new, size))  # type: ignore
 
     def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         """Update the learner.
@@ -107,7 +97,7 @@ class Arm:
 
         self.learner.partial_fit(X_fit, y_fit)
 
-    def mean(self, X: NDArray[Any], size: int = 1000) -> ArrayLike:
+    def mean(self, X: Optional[NDArray[Any]], size: int = 1000) -> ArrayLike:
         """
         Mean of the posterior for X.
         """
