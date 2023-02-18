@@ -230,13 +230,13 @@ def bandit(
             setattr(cls, "__annotations__", {})
 
         for name, attr in cls.__dict__.items():
-            if isinstance(attr, Arm):
-                cls.__annotations__[name] = Arm
+            if isinstance(attr, ArmProtocol):
+                cls.__annotations__[name] = ArmProtocol
                 # set the arm to be a field with a defaultfactory of deepcopying
                 # the arm
                 setattr(cls, name, field(default_factory=partial(deepcopy, attr)))
 
-        if Arm not in cls.__annotations__.values():
+        if ArmProtocol not in cls.__annotations__.values():
             raise ValueError(f"No arms defined in the {cls.__name__} definition.")
 
         # annotate rng as a random generator, int, or None, and give it a default
@@ -251,11 +251,11 @@ def bandit(
 
         # set arms as a cached_property so that it's only computed once
         # per instance
-        def _arms(self: BanditProtocol) -> Dict[str, Arm]:
+        def _arms(self: BanditProtocol) -> Dict[str, ArmProtocol]:
             return {
                 name: attr
                 for name, attr in self.__dict__.items()
-                if isinstance(attr, Arm)
+                if isinstance(attr, ArmProtocol)
             }
 
         setattr(cls, "arms", cached_property(_arms))

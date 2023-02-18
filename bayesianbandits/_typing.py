@@ -52,9 +52,6 @@ class ArmProtocol(Protocol):
     def update(self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None) -> None:
         ...
 
-    def mean(self, X: Optional[ArrayLike] = None) -> float:
-        ...
-
 
 class BanditConstructor(Protocol):
     """Protocol for Bandit constructors.
