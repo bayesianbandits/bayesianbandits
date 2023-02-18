@@ -95,29 +95,6 @@ class TestArm:
 
         assert arm.learner.partial_fit.call_count == 1  # type: ignore
 
-    def test_mean(
-        self,
-        X: Optional[NDArray[np.float_]],
-        action_function: MagicMock,
-        reward_function: MagicMock,
-        learner: MagicMock,
-    ) -> None:
-        def side_effect_func(*args: ArrayLike, **kwargs: int) -> ArrayLike:
-            return np.array([[1.0, 1.0, 1.0]]).repeat(args[1], axis=0)  # type: ignore
-
-        def reward_side_effect_func(*args: ArrayLike, **kwargs: int) -> ArrayLike:
-            return np.take(args[0], 0, axis=-1)  # type: ignore
-
-        arm = Arm(action_function=action_function, reward_function=reward_function)
-
-        learner.sample = MagicMock(side_effect=side_effect_func)
-        reward_function.side_effect = reward_side_effect_func
-        arm.learner = learner
-
-        mean = arm.mean(X=X)
-
-        assert mean == 1.0
-
     def test_exception(
         self,
         X: Optional[NDArray[np.float_]],
@@ -137,9 +114,6 @@ class TestArm:
                 arm.update([1])
             else:
                 arm.update(X, [1])
-
-        with pytest.raises(ValueError):
-            arm.mean(X=X)
 
 
 @pytest.fixture(params=["no types", "with types", "with extra types"])
