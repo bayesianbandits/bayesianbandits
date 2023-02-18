@@ -7,7 +7,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn import clone  # type: ignore
 
-from ._typing import ArmProtocol, BanditProtocol, Learner
+from ._typing import ArmProtocol, BanditProtocol, Learner, BanditConstructor
 
 
 class Arm:
@@ -149,7 +149,7 @@ def bandit(
     learner: Learner,
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
     **options: Any,
-) -> Callable[[object], BanditProtocol]:
+) -> Callable[[type], BanditConstructor]:
     """Decorator to create a context-free multi-armed bandit from a class definition
     with arms defined as attributes.
 
@@ -157,13 +157,20 @@ def bandit(
     ----------
     learner : Learner
         Learner to use for each arm in the bandit.
-    choice : Callable[..., ArmProtocol]
-        Choice algorithm to use for choosing which arm to pull.
+    choice : Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+        Constructor for making a choice algorithm to use for
+        choosing which arm to pull.
 
     Returns
     -------
-    ArmBanditProtocol
-        Bandit class instance with arms defined as attributes.
+    Callable[[object], BanditProtocol]
+        Class decorator that creates a bandit class from a class definition with
+        arms defined as attributes.
+
+    Raises
+    ------
+    ValueError
+
     """
 
     contextual: bool = options.get("contextual", False)
@@ -233,7 +240,7 @@ def bandit(
             arm.learner = cast(Learner, clone(learner))
             arm.learner.set_params(random_state=self.rng)
 
-    def wrapper(cls: object) -> BanditProtocol:
+    def wrapper(cls: type) -> BanditConstructor:
         """Adds methods to the bandit class."""
 
         # annotate the arm variables as Arms so that dataclasses
@@ -246,8 +253,10 @@ def bandit(
                 cls.__annotations__[name] = Arm
                 # set the arm to be a field with a defaultfactory of deepcopying
                 # the arm
-
                 setattr(cls, name, field(default_factory=partial(deepcopy, attr)))
+
+        if Arm not in cls.__annotations__.values():
+            raise ValueError(f"No arms defined in the {cls.__name__} definition.")
 
         # annotate rng as a random generator, int, or None, and give it a default
         # value of None
@@ -271,35 +280,12 @@ def bandit(
         setattr(cls, "arms", cached_property(_arms))
         cls.arms.__set_name__(cls, "arms")  # type: ignore
 
-        cls = cast(BanditProtocol, cls)
         setattr(cls, "__post_init__", _bandit_post_init)
         setattr(cls, "pull", _bandit_choose_and_pull)
         setattr(cls, "update", _bandit_update)
         setattr(cls, "sample", _bandit_sample)
         setattr(cls, "choice_algorithm", choice)
 
-        return dataclass(cls)  # type: ignore
+        return dataclass(cls)
 
     return wrapper
-
-
-if __name__ == "__main__":
-    from ._estimators import DirichletClassifier
-
-    clf = DirichletClassifier({1: 1, 2: 1, 3: 1})
-
-    def reward_func(x: ArrayLike) -> ArrayLike:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
-    def action_func(x: int) -> None:
-        print(f"action{x}")
-
-    arm1 = partial(action_func, 1)
-    arm2 = partial(action_func, 2)
-    arm3 = partial(action_func, 3)
-
-    @bandit(learner=clf, choice=epsilon_greedy(epsilon=0.1))
-    class Experiment:
-        arm1 = Arm(arm1, reward_func)
-        arm2 = Arm(arm2, reward_func)
-        arm3 = Arm(arm3, reward_func)

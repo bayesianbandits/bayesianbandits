@@ -56,21 +56,19 @@ class ArmProtocol(Protocol):
         ...
 
 
-class ChoiceAlgorithm(Protocol):
-    """Choice algorithm protocol for choosing which arm to pull.
+class BanditConstructor(Protocol):
+    """Protocol for Bandit constructors.
 
-    Each ChoiceAlgorithm must implement the following methods:
-    - `__get__`
-    - `choose`
+    Each Bandit constructor must implement the following methods:
+    - `__call__`
 
     """
 
-    def __get__(
-        self, instance: Optional["BanditProtocol"], owner: type
-    ) -> "ChoiceAlgorithm":
-        ...
-
-    def choose(self, X: Optional[ArrayLike]) -> ArmProtocol:
+    def __call__(
+        self,
+        arms: Dict[str, ArmProtocol] = ...,
+        rng: Union[np.random.Generator, int, None] = None,
+    ) -> "BanditProtocol":
         ...
 
 
