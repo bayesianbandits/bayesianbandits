@@ -55,6 +55,60 @@ def epsilon_greedy(
     return _choose_arm
 
 
+def upper_confidence_bound(
+    alpha: float = 0.68,
+    *,
+    samples: int = 1000,
+) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+    """Creates a UCB choice algorithm. To be used with the
+    `bandit` decorator.
+
+    Actually uses the upper bound of the one-sided credible interval,
+    which will deviate from the upper bound of the one-sided confidence
+    interval depending on the strength of the prior.
+
+    Parameters
+    ----------
+    alpha : float, default=0.68
+        Upper bound of the one-sided prediction interval.
+    samples : int, default=1000
+        Number of samples to use to compute the upper bound of the
+        credible interval. The larger `alpha` is, the larger `samples`
+        should be.
+
+    Returns
+    -------
+    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+        Closure that chooses an arm using UCB.
+    """
+
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must be in (0, 1).")
+
+    def _compute_arm_upper_bound(
+        arm: ArmProtocol,
+        X: Optional[ArrayLike] = None,
+    ) -> np.float_:
+        """Compute the mean of the posterior distribution for the arm."""
+        if arm.learner is None:
+            raise ValueError("Learner is not set.")
+        posterior_samples = arm.sample(X, size=samples)
+        posterior_samples = cast(NDArray[np.float64], posterior_samples)
+
+        return np.quantile(posterior_samples, q=alpha)  # type: ignore
+
+    def _choose_arm(
+        self: BanditProtocol,
+        X: Optional[ArrayLike] = None,
+    ) -> ArmProtocol:
+        """Choose an arm using UCB1."""
+
+        key_func = partial(_compute_arm_upper_bound, X=X)
+        return max(self.arms.values(), key=key_func)  # type: ignore
+
+    return _choose_arm
+
+
 def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates a Thompson sampling choice algorithm. To be used with the
     `bandit` decorator.
