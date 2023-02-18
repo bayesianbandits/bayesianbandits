@@ -17,6 +17,7 @@ pytest = "^7.2.1"
 black = "^23.1.0"
 flake8 = "^6.0.0"
 ipython = "^8.10.0"
+coverage = "^7.1.0"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
