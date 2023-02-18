@@ -107,7 +107,7 @@ class Arm:
 def epsilon_greedy(
     epsilon: float = 0.1,
     *,
-    size: int = 1000,
+    samples: int = 1000,
 ) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates an epsilon-greedy choice algorithm. To be used with the
     `bandit` decorator.
@@ -116,6 +116,8 @@ def epsilon_greedy(
     ----------
     epsilon : float, default=0.1
         Probability of choosing a random arm.
+    samples : int, default=1000
+        Number of samples to use to compute the mean of the posterior.
 
     Returns
     -------
@@ -130,7 +132,7 @@ def epsilon_greedy(
         """Compute the mean of the posterior distribution for the arm."""
         if arm.learner is None:
             raise ValueError("Learner is not set.")
-        posterior_samples = arm.sample(X, size=size)
+        posterior_samples = arm.sample(X, size=samples)
         posterior_samples = cast(NDArray[np.float64], posterior_samples)
 
         return np.mean(posterior_samples)
