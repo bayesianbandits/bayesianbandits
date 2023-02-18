@@ -157,6 +157,7 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
     return Experiment
 
 
+@pytest.mark.parametrize("X", [None, np.array([[2.0]])])
 @pytest.mark.parametrize(
     "choice", [epsilon_greedy(0.5), thompson_sampling(), upper_confidence_bound(0.68)]
 )
@@ -166,9 +167,15 @@ class TestBanditDecorator:
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        if X is None:
+            contextual = False
+        else:
+            contextual = True
+
+        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
 
         klass = bandit_decorator(bandit_class)
 
@@ -204,6 +211,7 @@ class TestBanditDecorator:
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
     ) -> None:
         bandit_decorator = bandit(choice=choice, learner=learner)
 
@@ -217,15 +225,24 @@ class TestBanditDecorator:
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        if X is None:
+            contextual = False
+        else:
+            contextual = True
+
+        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
 
         klass = bandit_decorator(bandit_class)
 
         instance = klass()
 
-        instance.pull()
+        if X is None:
+            instance.pull()
+        else:
+            instance.pull(X)
 
         # check that the last arm pulled is not None and is one of the arms
         assert instance.last_arm_pulled is not None
@@ -236,17 +253,26 @@ class TestBanditDecorator:
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
         bandit_class: type,
         size: int,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        if X is None:
+            contextual = False
+        else:
+            contextual = True
+
+        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
 
         klass = bandit_decorator(bandit_class)
 
         instance = klass()
 
-        # check that the sample method returns the correct number of samples
-        sample = instance.sample(size=size)
+        if X is None:
+            # check that the sample method returns the correct number of samples
+            sample = instance.sample(size=size)
+        else:
+            sample = instance.sample(X, size=size)
 
         assert len(np.array(sample)) == size
 
@@ -254,16 +280,26 @@ class TestBanditDecorator:
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        if X is None:
+            contextual = False
+        else:
+            contextual = True
+
+        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
 
         klass = bandit_decorator(bandit_class)
 
         instance = klass()
 
-        instance.pull()
-        instance.update(["a"])
+        if X is None:
+            instance.pull()
+            instance.update("a")
+        else:
+            instance.pull(X)
+            instance.update(X, "a")
 
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
