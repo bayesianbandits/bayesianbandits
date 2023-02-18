@@ -1,15 +1,21 @@
 from functools import partial
-from typing import Callable, cast, Optional
-from typing_extensions import Literal
+from typing import Callable, Optional, cast
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 from numpy.typing import ArrayLike, NDArray
 from sklearn.utils.validation import check_is_fitted
-import pytest
+from typing_extensions import Literal
 
-from bayesianbandits import Arm, epsilon_greedy, bandit, DirichletClassifier
-from bayesianbandits._typing import BanditProtocol, ArmProtocol
+from bayesianbandits import (
+    Arm,
+    DirichletClassifier,
+    bandit,
+    epsilon_greedy,
+    thompson_sampling,
+)
+from bayesianbandits._typing import ArmProtocol, BanditProtocol
 
 
 @pytest.fixture
@@ -150,7 +156,7 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
     return Experiment
 
 
-@pytest.mark.parametrize("choice", [epsilon_greedy(0.5)])
+@pytest.mark.parametrize("choice", [epsilon_greedy(0.5), thompson_sampling()])
 @pytest.mark.parametrize("learner", [DirichletClassifier({"a": 1.0, "b": 1.0})])
 class TestBanditDecorator:
     def test_init(
