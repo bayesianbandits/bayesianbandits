@@ -97,17 +97,6 @@ class Arm:
 
         self.learner.partial_fit(X_fit, y_fit)
 
-    def mean(self, X: Optional[NDArray[Any]], size: int = 1000) -> ArrayLike:
-        """
-        Mean of the posterior for X.
-        """
-        if self.learner is None:
-            raise ValueError("Learner is not set.")
-        posterior_samples = self.sample(X, size=size)
-        posterior_samples = cast(NDArray[np.float64], posterior_samples)
-
-        return np.mean(posterior_samples)
-
     def __repr__(self) -> str:
         return (
             f"Arm(action_function={self.action_function},"
@@ -117,6 +106,8 @@ class Arm:
 
 def epsilon_greedy(
     epsilon: float = 0.1,
+    *,
+    size: int = 1000,
 ) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates an epsilon-greedy choice algorithm. To be used with the
     `bandit` decorator.
@@ -132,15 +123,29 @@ def epsilon_greedy(
         Closure that chooses an arm using epsilon-greedy.
     """
 
+    def _compute_arm_mean(
+        arm: ArmProtocol,
+        X: Optional[ArrayLike] = None,
+    ) -> np.float_:
+        """Compute the mean of the posterior distribution for the arm."""
+        if arm.learner is None:
+            raise ValueError("Learner is not set.")
+        posterior_samples = arm.sample(X, size=size)
+        posterior_samples = cast(NDArray[np.float64], posterior_samples)
+
+        return np.mean(posterior_samples)
+
     def _choose_arm(
         self: BanditProtocol,
         X: Optional[ArrayLike] = None,
     ) -> ArmProtocol:
         """Choose an arm using epsilon-greedy."""
+
         if self.rng.random() < epsilon:  # type: ignore
             return self.rng.choice(list(self.arms.values()))  # type: ignore
         else:
-            return max(self.arms.values(), key=lambda arm: arm.mean(X))
+            key_func = partial(_compute_arm_mean, X=X)
+            return max(self.arms.values(), key=key_func)  # type: ignore
 
     return _choose_arm
 
@@ -150,8 +155,15 @@ def bandit(
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
     **options: Any,
 ) -> Callable[[type], BanditConstructor]:
-    """Decorator to create a context-free multi-armed bandit from a class definition
-    with arms defined as attributes.
+    """Decorator to create a multi-armed bandit from a class definition.
+
+    The class definition should define the arms as attributes. The
+    attributes should be instances of `Arm`. Instances of the decorated
+    class will have the arms as attributes and will implement the following
+    methods:
+    - `pull`: Pull the arm according to the `choice` algorithm.
+    - `sample`: Sample from the posterior distribution of the bandit.
+    - `update`: Update one of the arms with new data.
 
     Parameters
     ----------
@@ -163,13 +175,15 @@ def bandit(
 
     Returns
     -------
-    Callable[[object], BanditProtocol]
+    Callable[[object], BanditConstructor]
         Class decorator that creates a bandit class from a class definition with
         arms defined as attributes.
 
     Raises
     ------
     ValueError
+        If the class definition does not have any arms defined as attributes.
+
 
     """
 
@@ -270,11 +284,11 @@ def bandit(
 
         # set arms as a cached_property so that it's only computed once
         # per instance
-        def _arms(self: BanditProtocol) -> Dict[str, ArmProtocol]:
+        def _arms(self: BanditProtocol) -> Dict[str, Arm]:
             return {
                 name: attr
                 for name, attr in self.__dict__.items()
-                if isinstance(attr, ArmProtocol)
+                if isinstance(attr, Arm)
             }
 
         setattr(cls, "arms", cached_property(_arms))
