@@ -1,13 +1,13 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import cached_property, partial, partialmethod
-from typing import Any, Callable, Dict, Optional, Union, cast
+from typing import Any, Callable, Dict, Optional, Type, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn import clone  # type: ignore
 
-from ._typing import ArmProtocol, BanditConstructor, BanditProtocol, Learner
+from ._typing import ArmProtocol, BanditProtocol, Learner
 
 
 class Arm:
@@ -90,7 +90,7 @@ class Arm:
             raise ValueError("Learner is not set.")
         if y is None:
             y_fit = np.atleast_1d(X)
-            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis] 
         else:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
@@ -106,7 +106,7 @@ class Arm:
 def bandit(
     learner: Learner,
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
-) -> Callable[[type], BanditConstructor]:
+) -> Callable[[type], Type[BanditProtocol]]:
     """Decorator to create a contextual multi-armed bandit from a class definition.
 
     The class definition should define the arms as attributes. The
@@ -207,7 +207,7 @@ def bandit(
             arm.learner = cast(Learner, clone(learner))
             arm.learner.set_params(random_state=self.rng)
 
-    def wrapper(cls: type) -> BanditConstructor:
+    def wrapper(cls: type) -> Type[BanditProtocol]:
         """Adds methods to the bandit class."""
 
         # annotate the arm variables as Arms so that dataclasses
@@ -259,8 +259,8 @@ def bandit(
 
 
 def contextfree(
-    cls: BanditConstructor,
-) -> BanditConstructor:
+    cls: Type[BanditProtocol],
+) -> Type[BanditProtocol]:
     """Decorator for making a bandit context-free.
 
     This decorator adds methods to the bandit class that allow it to be used

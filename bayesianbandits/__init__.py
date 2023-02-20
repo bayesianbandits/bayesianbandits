@@ -5,4 +5,4 @@ from ._policy_decorators import (
     upper_confidence_bound,
 )
 from ._estimators import DirichletClassifier
-from ._typing import ArmProtocol, BanditConstructor, BanditProtocol, Learner
+from ._typing import ArmProtocol, BanditProtocol, Learner

@@ -53,22 +53,6 @@ class ArmProtocol(Protocol):
         ...
 
 
-class BanditConstructor(Protocol):
-    """Protocol for Bandit constructors.
-
-    Each Bandit constructor must implement the following methods:
-    - `__call__`
-
-    """
-
-    def __call__(
-        self,
-        arms: Dict[str, ArmProtocol] = ...,
-        rng: Union[np.random.Generator, int, None] = None,
-    ) -> "BanditProtocol":
-        ...
-
-
 @runtime_checkable
 class BanditProtocol(ArmProtocol, Protocol):
     """Protocol for Bandits.
