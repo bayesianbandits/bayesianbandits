@@ -171,7 +171,7 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        bandit_decorator = bandit(policy=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
 
@@ -212,7 +212,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        bandit_decorator = bandit(policy=choice, learner=learner)
 
         with pytest.raises(ValueError):
 
@@ -227,7 +227,7 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        bandit_decorator = bandit(policy=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
 
@@ -254,7 +254,7 @@ class TestBanditDecorator:
         bandit_class: type,
         size: int,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        bandit_decorator = bandit(policy=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
 
@@ -278,7 +278,7 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        bandit_decorator = bandit(choice=choice, learner=learner)
+        bandit_decorator = bandit(policy=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
 

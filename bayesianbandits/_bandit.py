@@ -90,7 +90,7 @@ class Arm:
             raise ValueError("Learner is not set.")
         if y is None:
             y_fit = np.atleast_1d(X)
-            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis] 
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
         else:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
@@ -105,7 +105,7 @@ class Arm:
 
 def bandit(
     learner: Learner,
-    choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
+    policy: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
 ) -> Callable[[type], Type[BanditProtocol]]:
     """Decorator to create a contextual multi-armed bandit from a class definition.
 
@@ -145,7 +145,7 @@ def bandit(
 
         This method is added to the bandit class by the `bandit` decorator.
         """
-        arm = self.choice_algorithm(X=X)
+        arm = self.policy(X=X)
         self.last_arm_pulled = arm
         arm.pull()
 
@@ -189,7 +189,7 @@ def bandit(
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
-        return np.array([self.choice_algorithm(X=X).sample(X=X) for _ in range(size)])
+        return np.array([self.policy(X=X).sample(X=X) for _ in range(size)])
 
     def _bandit_post_init(self: BanditProtocol) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
@@ -251,7 +251,7 @@ def bandit(
         setattr(cls, "pull", _bandit_pull)
         setattr(cls, "update", _bandit_update)
         setattr(cls, "sample", _bandit_sample)
-        setattr(cls, "choice_algorithm", choice)
+        setattr(cls, "policy", policy)
 
         return dataclass(cls)
 

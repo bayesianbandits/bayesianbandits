@@ -66,6 +66,9 @@ class BanditProtocol(ArmProtocol, Protocol):
     """
 
     arms: Dict[str, ArmProtocol]
-    choice_algorithm: Callable[..., ArmProtocol]
+    policy: Callable[..., ArmProtocol]
     last_arm_pulled: Optional[ArmProtocol]
     rng: Union[np.random.Generator, int, None]
+
+    def __init__(*args: Any, **kwargs: Any) -> None:
+        ...
