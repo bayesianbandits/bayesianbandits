@@ -87,3 +87,7 @@ class BanditProtocol(Protocol):
         self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None, **kwargs: Any
     ) -> None:
         ...
+
+    @property
+    def arm_to_update(self) -> ArmProtocol:
+        ...

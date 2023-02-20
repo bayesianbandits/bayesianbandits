@@ -17,6 +17,9 @@ from sklearn import clone  # type: ignore
 
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
+from ._estimators import DirichletClassifier
+from ._policy_decorators import epsilon_greedy
+
 
 class Arm:
     """Arm of a bandit.
@@ -183,9 +186,7 @@ def bandit(
         """
         if X is None:  # type: ignore
             raise ValueError("X cannot be None.")
-        if self.last_arm_pulled is None:
-            raise ValueError("No arm has been pulled yet.")
-        self.last_arm_pulled.update(X, y)
+        self.arm_to_update.update(X, y)
 
     def _bandit_sample(
         self: BanditProtocol,
@@ -216,6 +217,12 @@ def bandit(
                 for _ in range(size)
             ]
         )
+
+    def arm_to_update(self: BanditProtocol) -> ArmProtocol:
+        """Returns the arm that was last pulled."""
+        if self.last_arm_pulled is None:
+            raise ValueError("No arm has been pulled yet.")
+        return self.last_arm_pulled
 
     def _bandit_post_init(self: BanditProtocol) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
@@ -260,6 +267,12 @@ def bandit(
         # it is not initialized
         cls.__annotations__["last_arm_pulled"] = Union[ArmProtocol, None]
         setattr(cls, "last_arm_pulled", field(default=None, init=False))
+
+        setattr(
+            cls,
+            "arm_to_update",
+            property(arm_to_update, doc="Returns the arm that was last pulled."),
+        )
 
         # set arms as a cached_property so that it's only computed once
         # per instance
@@ -338,9 +351,7 @@ def contextfree(
         ValueError
             If no arm has been pulled yet.
         """
-        if self.last_arm_pulled is None:
-            raise ValueError("No arm has been pulled yet.")
-        self.last_arm_pulled.update(X=y, y=None)
+        self.arm_to_update.update(y)
 
     def _contextfree_sample(
         self: BanditProtocol,
@@ -365,3 +376,20 @@ def contextfree(
     setattr(cls, "update", _contextfree_update)
 
     return cls
+
+
+if __name__ == "__main__":
+
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    def action_func(x: int) -> None:
+        print(f"action{x}")
+
+    clf = DirichletClassifier({"a": 1.0, "b": 1.0})
+    policy = epsilon_greedy(0.5)
+
+    @bandit(clf, policy)
+    class Experiment:  # type: ignore
+        arm1 = Arm(partial(action_func, 1), reward_func)
+        arm2 = Arm(partial(action_func, 2), reward_func)
