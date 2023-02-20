@@ -152,6 +152,11 @@ def bandit(
         arm that was pulled.
 
         This method is added to the bandit class by the `bandit` decorator.
+
+        Parameters
+        ----------
+        X : ArrayLike
+            Context for the bandit.
         """
         if X is None:  # type: ignore
             raise ValueError("X cannot be None.")
@@ -159,15 +164,15 @@ def bandit(
         self.last_arm_pulled = arm
         arm.pull()
 
-    def _bandit_update(
-        self: BanditProtocol, X: ArrayLike, y: Optional[ArrayLike]
-    ) -> None:
+    def _bandit_update(self: BanditProtocol, X: ArrayLike, y: ArrayLike) -> None:
         """Update the learner for the last arm pulled.
 
         This method is added to the bandit class by the `bandit` decorator.
 
         Parameters
         ----------
+        X: ArrayLike
+            Context for the last arm pulled.s
         y : ArrayLike
             Outcome for the last arm pulled.
 
@@ -184,17 +189,19 @@ def bandit(
 
     def _bandit_sample(
         self: BanditProtocol,
-        X: Optional[NDArray[Any]],
+        X: ArrayLike,
         *,
         size: int = 1,
     ) -> ArrayLike:
-        """Sample from the bandit by choosing an arm according to the choice
-        algorithm and sampling from the arm's learner.
-
-        This method is added to the bandit class by the `bandit` decorator.
+        """Sample from the bandit by choosing an arm according to the
+        context vector `X`. For each sample, the arm is chosen according
+        to the `policy` algorithm and then a sample is drawn from the
+        learner.
 
         Parameters
         ----------
+        X : ArrayLike
+            Context for the bandit.
         size : int, default=1
             Number of samples to draw.
         """
@@ -309,20 +316,17 @@ def contextfree(
     ):
         raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
 
-    def _bandit_pull(self: BanditProtocol) -> None:
+    def _contextfree_pull(self: BanditProtocol) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
-        This method is added to the bandit class by the `bandit` decorator.
         """
         arm = self.policy(X=None)
         self.last_arm_pulled = arm
         arm.pull()
 
-    def _bandit_update(self: BanditProtocol, y: ArrayLike) -> None:
+    def _contextfree_update(self: BanditProtocol, y: ArrayLike) -> None:
         """Update the learner for the last arm pulled.
-
-        This method is added to the bandit class by the `bandit` decorator.
 
         Parameters
         ----------
@@ -338,15 +342,13 @@ def contextfree(
             raise ValueError("No arm has been pulled yet.")
         self.last_arm_pulled.update(X=y, y=None)
 
-    def _bandit_sample(
+    def _contextfree_sample(
         self: BanditProtocol,
         *,
         size: int = 1,
     ) -> ArrayLike:
         """Sample from the bandit by choosing an arm according to the choice
         algorithm and sampling from the arm's learner.
-
-        This method is added to the bandit class by the `bandit` decorator.
 
         Parameters
         ----------
@@ -358,8 +360,8 @@ def contextfree(
         # but I can't imagine a situation where this would be a bottleneck.
         return np.array([self.policy(X=None).sample(X=None) for _ in range(size)])
 
-    setattr(cls, "pull", _bandit_pull)
-    setattr(cls, "sample", _bandit_sample)
-    setattr(cls, "update", _bandit_update)
+    setattr(cls, "pull", _contextfree_pull)
+    setattr(cls, "sample", _contextfree_sample)
+    setattr(cls, "update", _contextfree_update)
 
     return cls
