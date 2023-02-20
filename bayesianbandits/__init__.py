@@ -1,5 +1,5 @@
 from ._bandit import Arm, bandit
-from ._choice_decorators import (
+from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
