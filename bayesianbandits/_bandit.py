@@ -1,7 +1,15 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
-from functools import cached_property, partial, partialmethod
-from typing import Any, Callable, Dict, Optional, Type, Union, cast
+from functools import cached_property, partial
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Optional,
+    Type,
+    Union,
+    cast,
+)
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -139,13 +147,15 @@ def bandit(
 
     """
 
-    def _bandit_pull(self: BanditProtocol, X: Optional[ArrayLike]) -> None:
+    def _bandit_pull(self: BanditProtocol, X: ArrayLike) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
         This method is added to the bandit class by the `bandit` decorator.
         """
-        arm = self.policy(X=X)
+        if X is None:  # type: ignore
+            raise ValueError("X cannot be None.")
+        arm = self.policy(X=np.atleast_2d(X))
         self.last_arm_pulled = arm
         arm.pull()
 
@@ -166,6 +176,8 @@ def bandit(
         ValueError
             If no arm has been pulled yet.
         """
+        if X is None:  # type: ignore
+            raise ValueError("X cannot be None.")
         if self.last_arm_pulled is None:
             raise ValueError("No arm has been pulled yet.")
         self.last_arm_pulled.update(X, y)
@@ -186,10 +198,17 @@ def bandit(
         size : int, default=1
             Number of samples to draw.
         """
+        if X is None:  # type: ignore
+            raise ValueError("X cannot be None.")
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
-        return np.array([self.policy(X=X).sample(X=X) for _ in range(size)])
+        return np.array(
+            [
+                self.policy(X=np.atleast_2d(X)).sample(X=np.atleast_2d(X))
+                for _ in range(size)
+            ]
+        )
 
     def _bandit_post_init(self: BanditProtocol) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
@@ -228,7 +247,7 @@ def bandit(
         # annotate rng as a random generator, int, or None, and give it a default
         # value of None
         cls.__annotations__["rng"] = Union[np.random.Generator, int, None]
-        setattr(cls, "rng", None)
+        setattr(cls, "rng", field(default=None))
 
         # annotate last_arm_pulled as an ArmProtocol or None, and make sure
         # it is not initialized
@@ -290,14 +309,57 @@ def contextfree(
     ):
         raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
 
-    _no_context_pull = partialmethod(cls.pull, X=None)  # type: ignore
-    _no_context_sample = partialmethod(cls.sample, X=None)  # type: ignore
-    # this looks weird, but `update` assumes that if given X and no y,
-    # y is X and X is a column of ones.
-    _no_context_update = partialmethod(cls.update, y=None)  # type: ignore
+    def _bandit_pull(self: BanditProtocol) -> None:
+        """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
+        arm that was pulled.
 
-    setattr(cls, "pull", _no_context_pull)
-    setattr(cls, "sample", _no_context_sample)
-    setattr(cls, "update", _no_context_update)
+        This method is added to the bandit class by the `bandit` decorator.
+        """
+        arm = self.policy(X=None)
+        self.last_arm_pulled = arm
+        arm.pull()
+
+    def _bandit_update(self: BanditProtocol, y: ArrayLike) -> None:
+        """Update the learner for the last arm pulled.
+
+        This method is added to the bandit class by the `bandit` decorator.
+
+        Parameters
+        ----------
+        y : ArrayLike
+            Outcome for the last arm pulled.
+
+        Raises
+        ------
+        ValueError
+            If no arm has been pulled yet.
+        """
+        if self.last_arm_pulled is None:
+            raise ValueError("No arm has been pulled yet.")
+        self.last_arm_pulled.update(X=y, y=None)
+
+    def _bandit_sample(
+        self: BanditProtocol,
+        *,
+        size: int = 1,
+    ) -> ArrayLike:
+        """Sample from the bandit by choosing an arm according to the choice
+        algorithm and sampling from the arm's learner.
+
+        This method is added to the bandit class by the `bandit` decorator.
+
+        Parameters
+        ----------
+        size : int, default=1
+            Number of samples to draw.
+        """
+        # choose an arm, draw a sample, and repeat `size` times
+        # TODO: this is not the most efficient way to do this
+        # but I can't imagine a situation where this would be a bottleneck.
+        return np.array([self.policy(X=None).sample(X=None) for _ in range(size)])
+
+    setattr(cls, "pull", _bandit_pull)
+    setattr(cls, "sample", _bandit_sample)
+    setattr(cls, "update", _bandit_update)
 
     return cls
