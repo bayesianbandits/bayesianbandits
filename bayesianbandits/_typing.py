@@ -54,7 +54,7 @@ class ArmProtocol(Protocol):
 
 
 @runtime_checkable
-class BanditProtocol(ArmProtocol, Protocol):
+class BanditProtocol(Protocol):
     """Protocol for Bandits.
 
     Each Bandit must implement the following methods:
@@ -70,5 +70,20 @@ class BanditProtocol(ArmProtocol, Protocol):
     last_arm_pulled: Optional[ArmProtocol]
     rng: Union[np.random.Generator, int, None]
 
-    def __init__(*args: Any, **kwargs: Any) -> None:
+    def __init__(
+        *args: Any, rng: Union[np.random.Generator, int, None] = None, **kwargs: Any
+    ) -> None:
+        ...
+
+    def pull(self, X: Optional[ArrayLike] = None, **kwargs: Any) -> None:
+        ...
+
+    def sample(
+        self, X: Optional[ArrayLike] = None, size: int = 1, **kwargs: Any
+    ) -> ArrayLike:
+        ...
+
+    def update(
+        self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None, **kwargs: Any
+    ) -> None:
         ...
