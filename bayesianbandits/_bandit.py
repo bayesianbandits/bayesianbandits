@@ -17,9 +17,6 @@ from sklearn import clone  # type: ignore
 
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
-from ._estimators import DirichletClassifier
-from ._policy_decorators import epsilon_greedy
-
 
 class Arm:
     """Arm of a bandit.
@@ -161,8 +158,6 @@ def bandit(
         X : ArrayLike
             Context for the bandit.
         """
-        if X is None:  # type: ignore
-            raise ValueError("X cannot be None.")
         arm = self.policy(X=np.atleast_2d(X))
         self.last_arm_pulled = arm
         arm.pull()
@@ -184,8 +179,6 @@ def bandit(
         ValueError
             If no arm has been pulled yet.
         """
-        if X is None:  # type: ignore
-            raise ValueError("X cannot be None.")
         self.arm_to_update.update(X, y)
 
     def _bandit_sample(
@@ -206,8 +199,6 @@ def bandit(
         size : int, default=1
             Number of samples to draw.
         """
-        if X is None:  # type: ignore
-            raise ValueError("X cannot be None.")
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
@@ -329,14 +320,16 @@ def contextfree(
     ):
         raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
 
+    orig_pull = cls.pull
+    orig_sample = cls.sample
+    orig_update = cls.update
+
     def _contextfree_pull(self: BanditProtocol) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
         """
-        arm = self.policy(X=None)
-        self.last_arm_pulled = arm
-        arm.pull()
+        return orig_pull(self, X=None)
 
     def _contextfree_update(self: BanditProtocol, y: ArrayLike) -> None:
         """Update the learner for the last arm pulled.
@@ -351,7 +344,7 @@ def contextfree(
         ValueError
             If no arm has been pulled yet.
         """
-        self.arm_to_update.update(y)
+        return orig_update(self, X=y, y=None)
 
     def _contextfree_sample(
         self: BanditProtocol,
@@ -366,30 +359,10 @@ def contextfree(
         size : int, default=1
             Number of samples to draw.
         """
-        # choose an arm, draw a sample, and repeat `size` times
-        # TODO: this is not the most efficient way to do this
-        # but I can't imagine a situation where this would be a bottleneck.
-        return np.array([self.policy(X=None).sample(X=None) for _ in range(size)])
+        return orig_sample(self, X=None, size=size)
 
     setattr(cls, "pull", _contextfree_pull)
     setattr(cls, "sample", _contextfree_sample)
     setattr(cls, "update", _contextfree_update)
 
     return cls
-
-
-if __name__ == "__main__":
-
-    def reward_func(x: ArrayLike) -> ArrayLike:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
-    def action_func(x: int) -> None:
-        print(f"action{x}")
-
-    clf = DirichletClassifier({"a": 1.0, "b": 1.0})
-    policy = epsilon_greedy(0.5)
-
-    @bandit(clf, policy)
-    class Experiment:  # type: ignore
-        arm1 = Arm(partial(action_func, 1), reward_func)
-        arm2 = Arm(partial(action_func, 2), reward_func)
