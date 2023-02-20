@@ -106,9 +106,8 @@ class Arm:
 def bandit(
     learner: Learner,
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
-    **options: Any,
 ) -> Callable[[type], BanditConstructor]:
-    """Decorator to create a multi-armed bandit from a class definition.
+    """Decorator to create a contextual multi-armed bandit from a class definition.
 
     The class definition should define the arms as attributes. The
     attributes should be instances of `Arm`. Instances of the decorated
@@ -125,10 +124,6 @@ def bandit(
     choice : Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
         Constructor for making a choice algorithm to use for
         choosing which arm to pull.
-    contextual : bool, default=False
-        Whether the bandit is contextual. If True, the `pull`, `sample`,
-        and `update` methods will take a first argument `X`. The `X` argument
-        is the context vector used during learning and choice.
 
     Returns
     -------
@@ -143,8 +138,6 @@ def bandit(
 
 
     """
-
-    contextual: bool = options.get("contextual", False)
 
     def _bandit_pull(self: BanditProtocol, X: Optional[ArrayLike]) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
@@ -214,13 +207,6 @@ def bandit(
             arm.learner = cast(Learner, clone(learner))
             arm.learner.set_params(random_state=self.rng)
 
-    if contextual is False:
-        _bandit_pull = partialmethod(_bandit_pull, X=None)  # type: ignore
-        _bandit_sample = partialmethod(_bandit_sample, X=None)  # type: ignore
-        # this looks weird, but `update` assumes that if given X and no y,
-        # y is X and X is a column of ones.
-        _bandit_update = partialmethod(_bandit_update, y=None)  # type: ignore
-
     def wrapper(cls: type) -> BanditConstructor:
         """Adds methods to the bandit class."""
 
@@ -270,3 +256,48 @@ def bandit(
         return dataclass(cls)
 
     return wrapper
+
+
+def contextfree(
+    cls: BanditConstructor,
+) -> BanditConstructor:
+    """Decorator for making a bandit context-free.
+
+    This decorator adds methods to the bandit class that allow it to be used
+    in a context-free setting. The `pull` and `sample` methods will take no
+    arguments, and the `update` method will take a single argument `y`.
+
+    Parameters
+    ----------
+    cls : BanditConstructor
+        Bandit class to make contextual.
+
+    Returns
+    -------
+    BanditConstructor
+        Contextual bandit class.
+
+    Raises
+    ------
+    ValueError
+        If the bandit is already contextual.
+    """
+
+    if (
+        not hasattr(cls, "pull")
+        or not hasattr(cls, "sample")
+        or not hasattr(cls, "update")
+    ):
+        raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
+
+    _no_context_pull = partialmethod(cls.pull, X=None)  # type: ignore
+    _no_context_sample = partialmethod(cls.sample, X=None)  # type: ignore
+    # this looks weird, but `update` assumes that if given X and no y,
+    # y is X and X is a column of ones.
+    _no_context_update = partialmethod(cls.update, y=None)  # type: ignore
+
+    setattr(cls, "pull", _no_context_pull)
+    setattr(cls, "sample", _no_context_sample)
+    setattr(cls, "update", _no_context_update)
+
+    return cls

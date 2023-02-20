@@ -12,6 +12,7 @@ from bayesianbandits import (
     Arm,
     DirichletClassifier,
     bandit,
+    contextfree,
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
@@ -170,14 +171,12 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        if X is None:
-            contextual = False
-        else:
-            contextual = True
-
-        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
+        bandit_decorator = bandit(choice=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
+
+        if X is None:
+            bandit_decorator = contextfree(klass)
 
         instance = klass()
 
@@ -228,14 +227,12 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        if X is None:
-            contextual = False
-        else:
-            contextual = True
-
-        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
+        bandit_decorator = bandit(choice=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
+
+        if X is None:
+            klass = contextfree(klass)
 
         instance = klass()
 
@@ -257,14 +254,12 @@ class TestBanditDecorator:
         bandit_class: type,
         size: int,
     ) -> None:
-        if X is None:
-            contextual = False
-        else:
-            contextual = True
-
-        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
+        bandit_decorator = bandit(choice=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
+
+        if X is None:
+            klass = contextfree(klass)
 
         instance = klass()
 
@@ -283,14 +278,12 @@ class TestBanditDecorator:
         X: Optional[NDArray[np.float_]],
         bandit_class: type,
     ) -> None:
-        if X is None:
-            contextual = False
-        else:
-            contextual = True
-
-        bandit_decorator = bandit(choice=choice, learner=learner, contextual=contextual)
+        bandit_decorator = bandit(choice=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
+
+        if X is None:
+            klass = contextfree(klass)
 
         instance = klass()
 

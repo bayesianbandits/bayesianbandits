@@ -1,4 +1,4 @@
-from ._bandit import Arm, bandit
+from ._bandit import Arm, bandit, contextfree
 from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,
