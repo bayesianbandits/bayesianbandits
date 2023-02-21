@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Callable, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, cast
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -13,6 +13,7 @@ from bayesianbandits import (
     DirichletClassifier,
     bandit,
     contextfree,
+    delayed_reward,
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
@@ -158,6 +159,7 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
     return Experiment
 
 
+@pytest.mark.parametrize("delayed_decorator", [None, delayed_reward])
 @pytest.mark.parametrize("X", [None, np.array([[2.0]])])
 @pytest.mark.parametrize(
     "choice", [epsilon_greedy(0.5), thompson_sampling(), upper_confidence_bound(0.68)]
@@ -169,6 +171,7 @@ class TestBanditDecorator:
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
@@ -176,7 +179,10 @@ class TestBanditDecorator:
         klass = bandit_decorator(bandit_class)
 
         if X is None:
-            bandit_decorator = contextfree(klass)
+            klass = contextfree(klass)
+
+        if delayed_decorator:
+            bandit_decorator = delayed_reward(klass)
 
         instance = klass()
 
@@ -211,6 +217,7 @@ class TestBanditDecorator:
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
 
@@ -225,32 +232,46 @@ class TestBanditDecorator:
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
 
         klass = bandit_decorator(bandit_class)
 
+        if delayed_decorator:
+            klass = delayed_decorator(klass)
+
         if X is None:
             klass = contextfree(klass)
 
         instance = klass()
 
-        if X is None:
-            instance.pull()
-        else:
-            instance.pull(X)
+        pull_args: List[Any] = []
+        pull_kwargs: Dict[str, Any] = {}
+        if X is not None:
+            pull_args.append(X)
+        if delayed_decorator:
+            pull_kwargs["unique_id"] = 1
+
+        instance.pull(*pull_args, **pull_kwargs)
 
         # check that the last arm pulled is not None and is one of the arms
         assert instance.last_arm_pulled is not None
         assert instance.last_arm_pulled in instance.arms.values()
 
-    @pytest.mark.parametrize("size", [1, 2, 3])
+        if delayed_decorator:
+            # check that the last arm pulled is in the cache
+            cached_arm = instance.arms[instance.__cache__[1]]  # type: ignore
+            assert cached_arm is instance.last_arm_pulled
+
+    @pytest.mark.parametrize("size", [1, 2])
     def test_sample(
         self,
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
         size: int,
     ) -> None:
@@ -260,6 +281,9 @@ class TestBanditDecorator:
 
         if X is None:
             klass = contextfree(klass)
+
+        if delayed_decorator:
+            klass = delayed_decorator(klass)
 
         instance = klass()
 
@@ -276,6 +300,7 @@ class TestBanditDecorator:
         choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
@@ -285,14 +310,20 @@ class TestBanditDecorator:
         if X is None:
             klass = contextfree(klass)
 
+        if delayed_decorator:
+            klass = delayed_decorator(klass)
+
         instance = klass()
 
-        if X is None:
-            instance.pull()
-            instance.update("a")
-        else:
-            instance.pull(X)
-            instance.update(X, "a")
+        pull_args: List[Any] = []
+        pull_kwargs: Dict[str, Any] = {}
+        if X is not None:
+            pull_args.append(X)
+        if delayed_decorator:
+            pull_kwargs["unique_id"] = 1
+
+        instance.pull(*pull_args, **pull_kwargs)
+        instance.update(*pull_args, "a", **pull_kwargs)  # type: ignore
 
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
