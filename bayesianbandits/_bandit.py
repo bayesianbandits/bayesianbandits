@@ -1,10 +1,11 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
-from functools import cached_property, partial
+from functools import cached_property, partial, wraps
 from typing import (
     Any,
     Callable,
     Dict,
+    MutableMapping,
     Optional,
     Type,
     Union,
@@ -324,14 +325,16 @@ def contextfree(
     orig_sample = cls.sample
     orig_update = cls.update
 
-    def _contextfree_pull(self: BanditProtocol) -> None:
+    @wraps(orig_pull)
+    def _contextfree_pull(self: BanditProtocol, **kwargs: Any) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
         """
-        return orig_pull(self, X=None)
+        return orig_pull(self, X=None, **kwargs)
 
-    def _contextfree_update(self: BanditProtocol, y: ArrayLike) -> None:
+    @wraps(orig_update)
+    def _contextfree_update(self: BanditProtocol, y: ArrayLike, **kwargs: Any) -> None:
         """Update the learner for the last arm pulled.
 
         Parameters
@@ -344,12 +347,11 @@ def contextfree(
         ValueError
             If no arm has been pulled yet.
         """
-        return orig_update(self, X=y, y=None)
+        return orig_update(self, X=y, y=None, **kwargs)
 
+    @wraps(orig_sample)
     def _contextfree_sample(
-        self: BanditProtocol,
-        *,
-        size: int = 1,
+        self: BanditProtocol, *, size: int = 1, **kwargs: Any
     ) -> ArrayLike:
         """Sample from the bandit by choosing an arm according to the choice
         algorithm and sampling from the arm's learner.
@@ -359,10 +361,129 @@ def contextfree(
         size : int, default=1
             Number of samples to draw.
         """
-        return orig_sample(self, X=None, size=size)
+        return orig_sample(self, X=None, size=size, **kwargs)
 
     setattr(cls, "pull", _contextfree_pull)
     setattr(cls, "sample", _contextfree_sample)
     setattr(cls, "update", _contextfree_update)
 
     return cls
+
+
+def delayed_reward(
+    cls: Optional[Type[BanditProtocol]] = None,
+    *,
+    cache: Optional[MutableMapping[Any, str]] = None,
+) -> Type[BanditProtocol]:
+    """Decorator for handling delayed rewards.
+
+    This decorator adds a `unique_id` argument to the `pull` and `update`
+    methods. Upon pulling, the `unique_id` and the name of the arm that was
+    pulled are stored in the cache. Upon updating, the `unique_id` is used to
+    look up the arm that was pulled and the reward is passed to the arm's
+    learner.
+
+    Parameters
+    ----------
+    cls : BanditConstructor, optional
+        Bandit class to modify. If not provided, the decorator can be used
+        as a function.
+    cache : MutableMapping, optional
+        Cache to use for storing the unique ids. If not provided, an
+        in-memory dictionary is used. As long as the cache exposes a `dict`-like
+        interface, it can be used.
+
+    """
+
+    if cache is None:
+        cache = {}
+
+    def _delayed_reward_impl(cls: Type[BanditProtocol]) -> Type[BanditProtocol]:
+        if (
+            not hasattr(cls, "pull")
+            or not hasattr(cls, "sample")
+            or not hasattr(cls, "update")
+        ):
+            raise ValueError(
+                "Decorated class must be a bandit. Are you missing @bandit?"
+            )
+
+        # change the `arm_to_update` property to have a setter that looks up
+        # the arm in the cache
+        def arm_to_update_getter(self: BanditProtocol) -> ArmProtocol:
+            if self.last_arm_pulled is None:
+                raise ValueError("No arm has been pulled yet.")
+            return self.last_arm_pulled
+
+        def arm_to_update_setter(self: BanditProtocol, unique_id: Any) -> None:
+            try:
+                self.last_arm_pulled = self.arms[cache[unique_id]]
+            except KeyError:
+                raise ValueError(f"No event with unique_id {unique_id}.")
+
+        setattr(
+            cls,
+            "arm_to_update",
+            property(fget=arm_to_update_getter, fset=arm_to_update_setter),
+        )
+
+        orig_pull = cls.pull
+        orig_update = cls.update
+        orig_post_init = cls.__post_init__  # type: ignore
+
+        @wraps(orig_pull)
+        def _delayed_reward_pull(
+            self: BanditProtocol,
+            *args: ArrayLike,
+            unique_id: Any,
+            **kwargs: ArrayLike,
+        ) -> None:
+            """
+            Choose an arm and pull it. Save the unique id and the name of the
+            arm that was pulled in the cache.
+
+            Parameters
+            ----------
+            unique_id : Any
+                Unique id for the event.
+            """
+            orig_pull(self, *args, **kwargs)
+            (cache[unique_id],) = [
+                k for k, v in self.arms.items() if v is self.last_arm_pulled
+            ]
+
+        @wraps(orig_update)
+        def _delayed_reward_update(
+            self: BanditProtocol,
+            *args: ArrayLike,
+            unique_id: Any,
+            **kwargs: ArrayLike,
+        ) -> None:
+            """
+            Update the learner for the arm corresponding to the unique id.
+
+            Parameters
+            ----------
+            unique_id : Any
+                Unique id for the event.
+
+            """
+            self.arm_to_update = unique_id  # type: ignore
+            orig_update(self, *args, **kwargs)
+            del cache[unique_id]
+
+        @wraps(orig_post_init)  # type: ignore
+        def _delayed_reward_post_init(self: BanditProtocol) -> None:
+            orig_post_init(self)
+            self.__cache__ = cache  # type: ignore
+
+        setattr(cls, "pull", _delayed_reward_pull)
+        setattr(cls, "update", _delayed_reward_update)
+        setattr(cls, "__post_init__", _delayed_reward_post_init)
+
+        return cast(Type[BanditProtocol], cls)
+
+    if cls is not None:
+        return _delayed_reward_impl(cls)
+
+    return cast(Type[BanditProtocol], _delayed_reward_impl)
