@@ -1,4 +1,4 @@
-from ._bandit import Arm, bandit, contextfree, delayed_reward
+from ._bandit import Arm, bandit, contextfree, delayed_reward, restless
 from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,

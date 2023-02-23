@@ -197,3 +197,12 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
                 ),
             )
         )
+
+    def decay(self, X: NDArray[Any]) -> None:
+        """
+        Decay the prior by a factor of `learning_rate`.
+        """
+        if not hasattr(self, "known_alphas_"):
+            self._initialize_prior()
+        for x in X:
+            self.known_alphas_[x.item()] *= self.learning_rate
