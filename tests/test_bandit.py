@@ -14,6 +14,7 @@ from bayesianbandits import (
     bandit,
     contextfree,
     delayed_reward,
+    restless,
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
@@ -159,6 +160,7 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
     return Experiment
 
 
+@pytest.mark.parametrize("restless_decorator", [None, restless])
 @pytest.mark.parametrize("delayed_decorator", [None, delayed_reward])
 @pytest.mark.parametrize("X", [None, np.array([[2.0]])])
 @pytest.mark.parametrize(
@@ -172,6 +174,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
         delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
@@ -218,6 +221,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
         delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
 
@@ -233,6 +237,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
         delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
@@ -241,6 +246,9 @@ class TestBanditDecorator:
 
         if delayed_decorator:
             klass = delayed_decorator(klass)
+
+        if restless_decorator:
+            klass = restless_decorator(klass)
 
         if X is None:
             klass = contextfree(klass)
@@ -272,6 +280,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
         delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
         size: int,
     ) -> None:
@@ -281,7 +290,8 @@ class TestBanditDecorator:
 
         if X is None:
             klass = contextfree(klass)
-
+        if restless_decorator:
+            klass = restless_decorator(klass)
         if delayed_decorator:
             klass = delayed_decorator(klass)
 
@@ -301,6 +311,7 @@ class TestBanditDecorator:
         learner: DirichletClassifier,
         X: Optional[NDArray[np.float_]],
         delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
         bandit_class: type,
     ) -> None:
         bandit_decorator = bandit(policy=choice, learner=learner)
@@ -309,7 +320,8 @@ class TestBanditDecorator:
 
         if X is None:
             klass = contextfree(klass)
-
+        if restless_decorator:
+            klass = restless_decorator(klass)
         if delayed_decorator:
             klass = delayed_decorator(klass)
 
