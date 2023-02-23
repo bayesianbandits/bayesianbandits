@@ -16,7 +16,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn import clone  # type: ignore
 
-from ._typing import ArmProtocol, BanditProtocol, Learner
+from ._typing import ArmProtocol, BanditProtocol, Learner, DecayingLearner
 
 
 class Arm:
@@ -104,6 +104,21 @@ class Arm:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
         self.learner.partial_fit(X_fit, y_fit)
+
+    def decay(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
+        """Decay the learner.
+
+        Takes a `y` argument for consistency with `update` but does not use it."""
+        if self.learner is None:
+            raise ValueError("Learner is not set.")
+        if y is None:
+            y_fit = np.atleast_1d(X)
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
+        else:
+            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
+        if not hasattr(self.learner, "decay"):
+            raise ValueError("Learner does not have a decay method.")
+        cast(DecayingLearner, self.learner).decay(X_fit)
 
     def __repr__(self) -> str:
         return (
@@ -487,3 +502,53 @@ def delayed_reward(
         return _delayed_reward_impl(cls)
 
     return cast(Type[BanditProtocol], _delayed_reward_impl)
+
+
+def restless(
+    cls: Type[BanditProtocol],
+) -> Type[BanditProtocol]:
+    """Decorator for restless bandits.
+
+    This decorator ensures that the `decay` method of each unselected
+    arm is called at each update. The specific behavior of the `decay`
+    method is left to the learner.
+
+    """
+
+    if not hasattr(cls, "update"):
+        raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
+
+    orig_update = cls.update
+
+    @wraps(orig_update)
+    def _restless_update(
+        self: BanditProtocol,
+        *args: ArrayLike,
+        **kwargs: ArrayLike,
+    ) -> None:
+        """Update the learner for the last arm pulled.
+
+        If `y` is not provided, the `X` argument is assumed to be
+        the outcome and the context is a vector of ones.
+
+        Parameters
+        ----------
+        X : ArrayLike
+            Context for the last arm pulled.
+        y : Optional[ArrayLike], optional
+            Outcome for the last arm pulled.
+
+        Raises
+        ------
+        ValueError
+            If no arm has been pulled yet.
+
+        """
+        orig_update(self, *args, **kwargs)
+        for arm in self.arms.values():
+            if arm is not self.last_arm_pulled:
+                arm.decay(*args, **kwargs)
+
+    setattr(cls, "update", _restless_update)
+
+    return cast(Type[BanditProtocol], cls)

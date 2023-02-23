@@ -29,6 +29,13 @@ class Learner(Protocol):
         ...
 
 
+class DecayingLearner(Learner, Protocol):
+    learning_rate: float
+
+    def decay(self, X: NDArray[Any]) -> None:
+        ...
+
+
 @runtime_checkable
 class ArmProtocol(Protocol):
     """Protocol for Arms and Bandits. Bandits themselves can be used as arms
@@ -50,6 +57,9 @@ class ArmProtocol(Protocol):
         ...
 
     def update(self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None) -> None:
+        ...
+
+    def decay(self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None) -> None:
         ...
 
 
