@@ -50,16 +50,18 @@ class ArmProtocol(Protocol):
 
     learner: Optional[Learner]
 
-    def pull(self, X: Optional[ArrayLike] = None) -> None:
+    def pull(self) -> None:
         ...
 
-    def sample(self, X: Optional[ArrayLike] = None, size: int = 1) -> ArrayLike:
+    def sample(
+        self, X: Optional[ArrayLike] = None, size: int = 1
+    ) -> NDArray[np.float_]:
         ...
 
-    def update(self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None) -> None:
+    def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         ...
 
-    def decay(self, X: Optional[ArrayLike], y: Optional[ArrayLike] = None) -> None:
+    def decay(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         ...
 
 

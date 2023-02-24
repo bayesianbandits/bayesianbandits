@@ -28,18 +28,6 @@ def epsilon_greedy(
         Closure that chooses an arm using epsilon-greedy.
     """
 
-    def _compute_arm_mean(
-        arm: ArmProtocol,
-        X: Optional[ArrayLike] = None,
-    ) -> np.float_:
-        """Compute the mean of the posterior distribution for the arm."""
-        if arm.learner is None:
-            raise ValueError("Learner is not set.")
-        posterior_samples = arm.sample(X, size=samples)
-        posterior_samples = cast(NDArray[np.float64], posterior_samples)
-
-        return np.mean(posterior_samples)
-
     def _choose_arm(
         self: BanditProtocol,
         X: Optional[ArrayLike] = None,
@@ -49,7 +37,7 @@ def epsilon_greedy(
         if self.rng.random() < epsilon:  # type: ignore
             return self.rng.choice(list(self.arms.values()))  # type: ignore
         else:
-            key_func = partial(_compute_arm_mean, X=X)
+            key_func = partial(_compute_arm_mean, X=X, samples=samples)
             return max(self.arms.values(), key=key_func)  # type: ignore
 
     return _choose_arm
@@ -85,25 +73,13 @@ def upper_confidence_bound(
     if not 0 < alpha < 1:
         raise ValueError("alpha must be in (0, 1).")
 
-    def _compute_arm_upper_bound(
-        arm: ArmProtocol,
-        X: Optional[ArrayLike] = None,
-    ) -> np.float_:
-        """Compute the mean of the posterior distribution for the arm."""
-        if arm.learner is None:
-            raise ValueError("Learner is not set.")
-        posterior_samples = arm.sample(X, size=samples)
-        posterior_samples = cast(NDArray[np.float64], posterior_samples)
-
-        return np.quantile(posterior_samples, q=alpha)  # type: ignore
-
     def _choose_arm(
         self: BanditProtocol,
         X: Optional[ArrayLike] = None,
     ) -> ArmProtocol:
         """Choose an arm using UCB1."""
 
-        key_func = partial(_compute_arm_upper_bound, X=X)
+        key_func = partial(_compute_arm_upper_bound, X=X, alpha=alpha, samples=samples)
         return max(self.arms.values(), key=key_func)  # type: ignore
 
     return _choose_arm
@@ -119,16 +95,6 @@ def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmPr
         Closure that chooses an arm using Thompson sampling.
     """
 
-    def _draw_one_sample(
-        arm: ArmProtocol,
-        X: Optional[ArrayLike] = None,
-    ) -> np.float_:
-        """Draw one sample from the posterior distribution for the arm."""
-        if arm.learner is None:
-            raise ValueError("Learner is not set.")
-
-        return arm.sample(X, size=1).item()  # type: ignore
-
     def _choose_arm(
         self: BanditProtocol,
         X: Optional[ArrayLike] = None,
@@ -139,3 +105,38 @@ def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmPr
         return max(self.arms.values(), key=key_func)  # type: ignore
 
     return _choose_arm
+
+
+def _draw_one_sample(
+    arm: ArmProtocol,
+    X: Optional[ArrayLike] = None,
+) -> np.float_:
+    """Draw one sample from the posterior distribution for the arm."""
+    return arm.sample(X, size=1).item()  # type: ignore
+
+
+def _compute_arm_upper_bound(
+    arm: ArmProtocol,
+    X: Optional[ArrayLike] = None,
+    *,
+    alpha: float = 0.68,
+    samples=1000,
+) -> np.float_:
+    """Compute the mean of the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+    posterior_samples = cast(NDArray[np.float64], posterior_samples)
+
+    return np.quantile(posterior_samples, q=alpha)  # type: ignore
+
+
+def _compute_arm_mean(
+    arm: ArmProtocol,
+    X: Optional[ArrayLike] = None,
+    *,
+    samples=1000,
+) -> np.float_:
+    """Compute the mean of the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+    posterior_samples = cast(NDArray[np.float64], posterior_samples)
+
+    return np.mean(posterior_samples)

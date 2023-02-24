@@ -77,7 +77,7 @@ class Arm:
 
     def sample(
         self,
-        X: Optional[NDArray[Any]] = None,
+        X: Optional[ArrayLike] = None,
         size: int = 1,
     ) -> NDArray[np.float_]:
         """Sample from learner and compute the reward."""
@@ -109,13 +109,14 @@ class Arm:
         Takes a `y` argument for consistency with `update` but does not use it."""
         if self.learner is None:
             raise ValueError("Learner is not set.")
+        if not hasattr(self.learner, "decay"):
+            raise ValueError("Learner does not have a decay method.")
         if y is None:
             y_fit = np.atleast_1d(X)
             X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
         else:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
-        if not hasattr(self.learner, "decay"):
-            raise ValueError("Learner does not have a decay method.")
+
         cast(DecayingLearner, self.learner).decay(X_fit)
 
     def __repr__(self) -> str:
@@ -157,7 +158,6 @@ def bandit(
     ------
     ValueError
         If the class definition does not have any arms defined as attributes.
-
 
     """
 
@@ -216,6 +216,7 @@ def bandit(
                 "The second argument must be None for a non-contextual bandit."
                 " The first argument to `update` must be the outcome."
             )
+
         self.arm_to_update.update(X, y)
 
     def _bandit_sample(
@@ -344,12 +345,7 @@ def contextual(
         Contextual bandit class.
     """
 
-    if (
-        not hasattr(cls, "pull")
-        or not hasattr(cls, "sample")
-        or not hasattr(cls, "update")
-    ):
-        raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
+    check_is_bandit(cls)
 
     orig_post_init = cls.__post_init__  # type: ignore
 
@@ -396,14 +392,7 @@ def delayed_reward(
         cache = {}
 
     def _delayed_reward_impl(cls: Type[BanditProtocol]) -> Type[BanditProtocol]:
-        if (
-            not hasattr(cls, "pull")
-            or not hasattr(cls, "sample")
-            or not hasattr(cls, "update")
-        ):
-            raise ValueError(
-                "Decorated class must be a bandit. Are you missing @bandit?"
-            )
+        check_is_bandit(cls)
 
         # change the `arm_to_update` property to have a setter that looks up
         # the arm in the cache
@@ -503,8 +492,7 @@ def restless(
 
     """
 
-    if not hasattr(cls, "update"):
-        raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
+    check_is_bandit(cls)
 
     orig_update = cls.update
 
@@ -543,24 +531,10 @@ def restless(
     return cast(Type[BanditProtocol], cls)
 
 
-if __name__ == "__main__":
-    from ._estimators import DirichletClassifier
-    from ._policy_decorators import epsilon_greedy
-
-    def reward_func(x: ArrayLike) -> ArrayLike:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
-    def action_func(x: int) -> None:
-        print(f"action{x}")
-
-    clf = DirichletClassifier({"a": 1.0, "b": 1.0})
-    policy = epsilon_greedy(0.1)
-
-    @bandit(clf, policy)
-    class Experiment:  # type: ignore
-        arm1 = Arm(partial(action_func, 1), reward_func)
-        arm2 = Arm(partial(action_func, 2), reward_func)
-
-    exp = Experiment()
-
-    exp.pull(unique_id=1)
+def check_is_bandit(cls):
+    if (
+        not hasattr(cls, "pull")
+        or not hasattr(cls, "sample")
+        or not hasattr(cls, "update")
+    ):
+        raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")

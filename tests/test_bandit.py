@@ -125,6 +125,12 @@ class TestArm:
             else:
                 arm.update(X, [1])
 
+        with pytest.raises(ValueError):
+            if X is None:
+                arm.decay([1])
+            else:
+                arm.decay(X, [1])
+
 
 @pytest.fixture(params=["no types", "with types", "with extra types"])
 def bandit_class(request: pytest.FixtureRequest) -> type:
@@ -340,3 +346,53 @@ class TestBanditDecorator:
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
         assert check_is_fitted(instance.last_arm_pulled.learner, "n_features_") is None
+
+    def test_context_exceptions(
+        self,
+        choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
+        learner: DirichletClassifier,
+        X: Optional[NDArray[np.float_]],
+        delayed_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[type], type]],
+        bandit_class: type,
+    ) -> None:
+        bandit_decorator = bandit(policy=choice, learner=learner)
+
+        klass = bandit_decorator(bandit_class)
+
+        if X is not None:
+            klass = contextual(klass)
+        if restless_decorator:
+            klass = restless_decorator(klass)
+        if delayed_decorator:
+            klass = delayed_decorator(klass)
+
+        instance = klass()
+
+        pull_kwargs: Dict[str, Any] = {}
+
+        if delayed_decorator:
+            pull_kwargs["unique_id"] = 1
+
+        if X is None:
+            # check that a ValueError is raised if the context is provided
+            with pytest.raises(ValueError):
+                instance.pull(np.array([[1]]), **pull_kwargs)
+
+            with pytest.raises(ValueError):
+                instance.sample(np.array([[1]]), **pull_kwargs)
+
+            instance.pull(**pull_kwargs)
+            with pytest.raises(ValueError):
+                instance.update(np.array([[1]]), "a", **pull_kwargs)
+        else:
+            # check that a ValueError is raised if the context is not provided
+            with pytest.raises(ValueError):
+                instance.pull(**pull_kwargs)
+
+            with pytest.raises(ValueError):
+                instance.sample(**pull_kwargs)
+
+            instance.pull(X, **pull_kwargs)
+            with pytest.raises(ValueError):
+                instance.update("a", **pull_kwargs)
