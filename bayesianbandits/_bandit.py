@@ -163,7 +163,11 @@ def bandit(
 
     """
 
-    def _bandit_pull(self: BanditProtocol, X: ArrayLike) -> None:
+    def _bandit_pull(
+        self: BanditProtocol,
+        X: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> None:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
@@ -174,11 +178,21 @@ def bandit(
         X : ArrayLike
             Context for the bandit.
         """
-        arm = self.policy(X=np.atleast_2d(X))
+        if X is None and self._contextual:
+            raise ValueError("X must be an array-like for a contextual bandit.")
+        elif X is not None and not self._contextual:
+            raise ValueError("X must be None for a non-contextual bandit.")
+
+        arm = self.policy(X=X)
         self.last_arm_pulled = arm
         arm.pull()
 
-    def _bandit_update(self: BanditProtocol, X: ArrayLike, y: ArrayLike) -> None:
+    def _bandit_update(
+        self: BanditProtocol,
+        X: ArrayLike,
+        y: Optional[ArrayLike] = None,
+        **kwargs: Any,
+    ) -> None:
         """Update the learner for the last arm pulled.
 
         This method is added to the bandit class by the `bandit` decorator.
@@ -195,13 +209,23 @@ def bandit(
         ValueError
             If no arm has been pulled yet.
         """
+        if y is None and self._contextual:
+            raise ValueError(
+                "X and y must both be array-likes for a contextual bandit."
+            )
+        elif y is not None and not self._contextual:
+            raise ValueError(
+                "The second argument must be None for a non-contextual bandit."
+                " The first argument to `update` must be the outcome."
+            )
         self.arm_to_update.update(X, y)
 
     def _bandit_sample(
         self: BanditProtocol,
-        X: ArrayLike,
+        X: Optional[ArrayLike] = None,
         *,
         size: int = 1,
+        **kwargs: Any,
     ) -> ArrayLike:
         """Sample from the bandit by choosing an arm according to the
         context vector `X`. For each sample, the arm is chosen according
@@ -215,15 +239,14 @@ def bandit(
         size : int, default=1
             Number of samples to draw.
         """
+        if X is None and self._contextual:
+            raise ValueError("X must be an array-like for a contextual bandit.")
+        elif X is not None and not self._contextual:
+            raise ValueError("X must be None for a non-contextual bandit.")
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
-        return np.array(
-            [
-                self.policy(X=np.atleast_2d(X)).sample(X=np.atleast_2d(X))
-                for _ in range(size)
-            ]
-        )
+        return np.array([self.policy(X=X).sample(X=X) for _ in range(size)])
 
     def arm_to_update(self: BanditProtocol) -> ArmProtocol:
         """Returns the arm that was last pulled."""
@@ -237,9 +260,8 @@ def bandit(
 
         This ensures that the bandit can be pickled."""
 
-        # initialize the rng. this has to be done this way because the
-        # bandit dataclass is frozen
-        setattr(self, "rng", np.random.default_rng(self.rng))
+        self.rng = np.random.default_rng(self.rng)
+        self._contextual = False
 
         # initialize the arms with copies of the learner and
         # point the learner rng to the bandit rng
@@ -304,14 +326,14 @@ def bandit(
     return wrapper
 
 
-def contextfree(
+def contextual(
     cls: Type[BanditProtocol],
 ) -> Type[BanditProtocol]:
-    """Decorator for making a bandit context-free.
+    """Decorator for making a bandit contextual.
 
     This decorator adds methods to the bandit class that allow it to be used
-    in a context-free setting. The `pull` and `sample` methods will take no
-    arguments, and the `update` method will take a single argument `y`.
+    in a contextual setting. The `pull` and `sample` methods will take `X`
+    arguments, and the `update` method will take `X` and `y`.
 
     Parameters
     ----------
@@ -322,11 +344,6 @@ def contextfree(
     -------
     BanditConstructor
         Contextual bandit class.
-
-    Raises
-    ------
-    ValueError
-        If the bandit is already contextual.
     """
 
     if (
@@ -336,51 +353,18 @@ def contextfree(
     ):
         raise ValueError("Decorated class must be a bandit. Are you missing @bandit?")
 
-    orig_pull = cls.pull
-    orig_sample = cls.sample
-    orig_update = cls.update
+    orig_post_init = cls.__post_init__  # type: ignore
 
-    @wraps(orig_pull)
-    def _contextfree_pull(self: BanditProtocol, **kwargs: Any) -> None:
-        """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
-        arm that was pulled.
+    def _contextual_post_init(self: BanditProtocol) -> None:
+        """Moves all class attributes that are instances of `Arm` to instance
+        attributes.
 
-        """
-        return orig_pull(self, X=None, **kwargs)
+        This ensures that the bandit can be pickled."""
 
-    @wraps(orig_update)
-    def _contextfree_update(self: BanditProtocol, y: ArrayLike, **kwargs: Any) -> None:
-        """Update the learner for the last arm pulled.
+        orig_post_init(self)
+        self._contextual = True
 
-        Parameters
-        ----------
-        y : ArrayLike
-            Outcome for the last arm pulled.
-
-        Raises
-        ------
-        ValueError
-            If no arm has been pulled yet.
-        """
-        return orig_update(self, X=y, y=None, **kwargs)
-
-    @wraps(orig_sample)
-    def _contextfree_sample(
-        self: BanditProtocol, *, size: int = 1, **kwargs: Any
-    ) -> ArrayLike:
-        """Sample from the bandit by choosing an arm according to the choice
-        algorithm and sampling from the arm's learner.
-
-        Parameters
-        ----------
-        size : int, default=1
-            Number of samples to draw.
-        """
-        return orig_sample(self, X=None, size=size, **kwargs)
-
-    setattr(cls, "pull", _contextfree_pull)
-    setattr(cls, "sample", _contextfree_sample)
-    setattr(cls, "update", _contextfree_update)
+    setattr(cls, "__post_init__", _contextual_post_init)
 
     return cls
 
@@ -449,9 +433,8 @@ def delayed_reward(
         @wraps(orig_pull)
         def _delayed_reward_pull(
             self: BanditProtocol,
-            *args: ArrayLike,
-            unique_id: Any,
-            **kwargs: ArrayLike,
+            X: Optional[ArrayLike] = None,
+            **kwargs: Any,
         ) -> None:
             """
             Choose an arm and pull it. Save the unique id and the name of the
@@ -462,7 +445,10 @@ def delayed_reward(
             unique_id : Any
                 Unique id for the event.
             """
-            orig_pull(self, *args, **kwargs)
+            unique_id = kwargs.pop("unique_id", None)
+            if unique_id is None:
+                raise ValueError("unique_id must be provided.")
+            orig_pull(self, X)
             (cache[unique_id],) = [
                 k for k, v in self.arms.items() if v is self.last_arm_pulled
             ]
@@ -470,9 +456,9 @@ def delayed_reward(
         @wraps(orig_update)
         def _delayed_reward_update(
             self: BanditProtocol,
-            *args: ArrayLike,
-            unique_id: Any,
-            **kwargs: ArrayLike,
+            X: ArrayLike,
+            y: Optional[ArrayLike] = None,
+            **kwargs: Any,
         ) -> None:
             """
             Update the learner for the arm corresponding to the unique id.
@@ -483,8 +469,12 @@ def delayed_reward(
                 Unique id for the event.
 
             """
+            unique_id = kwargs.pop("unique_id", None)
+            if unique_id is None:
+                raise ValueError("unique_id must be provided.")
+
             self.arm_to_update = unique_id  # type: ignore
-            orig_update(self, *args, **kwargs)
+            orig_update(self, X, y)
             del cache[unique_id]
 
         @wraps(orig_post_init)  # type: ignore
@@ -523,7 +513,8 @@ def restless(
     @wraps(orig_update)
     def _restless_update(
         self: BanditProtocol,
-        *args: ArrayLike,
+        X: ArrayLike,
+        y: Optional[ArrayLike] = None,
         **kwargs: ArrayLike,
     ) -> None:
         """Update the learner for the last arm pulled.
@@ -544,11 +535,34 @@ def restless(
             If no arm has been pulled yet.
 
         """
-        orig_update(self, *args, **kwargs)
+        orig_update(self, X, y)
         for arm in self.arms.values():
             if arm is not self.last_arm_pulled:
-                arm.decay(*args, **kwargs)
+                arm.decay(X, y)
 
     setattr(cls, "update", _restless_update)
 
     return cast(Type[BanditProtocol], cls)
+
+
+if __name__ == "__main__":
+    from ._estimators import DirichletClassifier
+    from ._policy_decorators import epsilon_greedy
+
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    def action_func(x: int) -> None:
+        print(f"action{x}")
+
+    clf = DirichletClassifier({"a": 1.0, "b": 1.0})
+    policy = epsilon_greedy(0.1)
+
+    @bandit(clf, policy)
+    class Experiment:  # type: ignore
+        arm1 = Arm(partial(action_func, 1), reward_func)
+        arm2 = Arm(partial(action_func, 2), reward_func)
+
+    exp = Experiment()
+
+    exp.pull(unique_id=1)

@@ -79,6 +79,7 @@ class BanditProtocol(Protocol):
     policy: Callable[..., ArmProtocol]
     last_arm_pulled: Optional[ArmProtocol]
     rng: Union[np.random.Generator, int, None]
+    _contextual: bool
 
     def __init__(
         *args: Any, rng: Union[np.random.Generator, int, None] = None, **kwargs: Any

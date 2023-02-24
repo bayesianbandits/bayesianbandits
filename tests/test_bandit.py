@@ -12,7 +12,7 @@ from bayesianbandits import (
     Arm,
     DirichletClassifier,
     bandit,
-    contextfree,
+    contextual,
     delayed_reward,
     restless,
     epsilon_greedy,
@@ -181,8 +181,8 @@ class TestBanditDecorator:
 
         klass = bandit_decorator(bandit_class)
 
-        if X is None:
-            klass = contextfree(klass)
+        if X is not None:
+            klass = contextual(klass)
 
         if delayed_decorator:
             bandit_decorator = delayed_reward(klass)
@@ -250,8 +250,8 @@ class TestBanditDecorator:
         if restless_decorator:
             klass = restless_decorator(klass)
 
-        if X is None:
-            klass = contextfree(klass)
+        if X is not None:
+            klass = contextual(klass)
 
         instance = klass()
 
@@ -288,8 +288,8 @@ class TestBanditDecorator:
 
         klass = bandit_decorator(bandit_class)
 
-        if X is None:
-            klass = contextfree(klass)
+        if X is not None:
+            klass = contextual(klass)
         if restless_decorator:
             klass = restless_decorator(klass)
         if delayed_decorator:
@@ -318,8 +318,8 @@ class TestBanditDecorator:
 
         klass = bandit_decorator(bandit_class)
 
-        if X is None:
-            klass = contextfree(klass)
+        if X is not None:
+            klass = contextual(klass)
         if restless_decorator:
             klass = restless_decorator(klass)
         if delayed_decorator:
