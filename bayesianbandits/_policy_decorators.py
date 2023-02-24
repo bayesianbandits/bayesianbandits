@@ -122,7 +122,8 @@ def _compute_arm_upper_bound(
     alpha: float = 0.68,
     samples=1000,
 ) -> np.float_:
-    """Compute the mean of the posterior distribution for the arm."""
+    """Compute the upper bound of a one-sided credible interval with size
+    `alpha` from the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
     posterior_samples = cast(NDArray[np.float64], posterior_samples)
 
