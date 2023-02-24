@@ -20,7 +20,6 @@ def action2_func():
     # do action 2
     ...
 
-@contextfree
 @bandit(learner=DirichletClassifier({"yes": 1.0, "no": 1.0}), policy=epsilon_greedy(0.1))
 class Agent:
     arm1 = Arm(action1_func, reward_func)
@@ -40,3 +39,7 @@ Install this package from PyPI.
 ```
 pip install -U bayesianbandits
 ```
+
+## Usage
+
+Check out the [documentation](https://bayesianbandits.readthedocs.io/en/latest/) for examples and an API reference. 
