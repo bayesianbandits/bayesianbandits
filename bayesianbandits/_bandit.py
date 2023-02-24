@@ -39,13 +39,13 @@ class Arm:
 
     Examples
     --------
-    >>> from bayesianbandits import Learner, Arm
+    >>> from bayesianbandits import Arm
     >>> import numpy as np
     >>> def action_function():
     ...     print("Action taken.")
     >>> def reward_function(sample):
     ...     return sample
-    >>> class MyLearner(Learner):
+    >>> class MyLearner:
     ...     def sample(self, X, size=1):
     ...         np.random.seed(0)
     ...         return np.random.normal(size=size)
@@ -55,9 +55,7 @@ class Arm:
     >>> arm = Arm(action_function, reward_function, learner)
     >>> arm.pull()
     Action taken.
-    >>> arm.sample()
-    array([1.76405235])
-    >>> arm.update(np.array([1.76405235]))
+    >>> arm.update(1)
 
     """
 
