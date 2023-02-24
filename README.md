@@ -32,3 +32,11 @@ agent.pull() # receive some reward
 agent.update("yes") # update with observed reward
 
 ```
+
+## Getting Started
+
+Install this package from PyPI.
+
+```
+pip install -U bayesianbandits
+```

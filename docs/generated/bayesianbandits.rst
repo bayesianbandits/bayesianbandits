@@ -1,0 +1,23 @@
+﻿bayesianbandits
+===============
+
+.. automodule:: bayesianbandits
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

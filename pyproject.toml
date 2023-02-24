@@ -20,6 +20,10 @@ ipython = "^8.10.0"
 coverage = "^7.1.0"
 ipykernel = "^6.21.2"
 matplotlib = "^3.7.0"
+sphinx = "^6.1.3"
+sphinx-rtd-theme = "^1.2.0"
+numpydoc = "^1.5.0"
+nbsphinx = "^0.8.12"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
