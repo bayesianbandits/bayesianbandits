@@ -303,7 +303,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             else:
                 self.random_state_ = self.random_state
 
-            self.prior_ = np.array([self.alpha, self.beta])
+            self.prior_ = np.array([self.alpha, self.beta], dtype=np.float_)
 
             self.coef_: Dict[Any, NDArray[np.float_]] = defaultdict(self._return_prior)
 
@@ -372,7 +372,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         Sample from the posterior for X.
         """
         try:
-            check_is_fitted(self, "n_features_")
+            check_is_fitted(self, "coef_")
         except NotFittedError:
             self._initialize_prior()
 
@@ -390,7 +390,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         """
         Decay the prior by a factor of `learning_rate`.
         """
-        if not hasattr(self, "known_alphas_"):
+        if not hasattr(self, "coef_"):
             self._initialize_prior()
         for x in X:
             self.coef_[x.item()] *= self.learning_rate
