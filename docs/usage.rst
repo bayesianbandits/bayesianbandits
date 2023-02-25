@@ -13,3 +13,4 @@ library.
     :caption: Notebooks:
 
     notebooks/demo
+    notebooks/counts
