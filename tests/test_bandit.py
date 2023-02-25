@@ -11,6 +11,7 @@ from typing_extensions import Literal
 from bayesianbandits import (
     Arm,
     DirichletClassifier,
+    GammaRegressor,
     bandit,
     contextual,
     delayed_reward,
@@ -172,7 +173,9 @@ def bandit_class(request: pytest.FixtureRequest) -> type:
 @pytest.mark.parametrize(
     "choice", [epsilon_greedy(0.5), thompson_sampling(), upper_confidence_bound(0.68)]
 )
-@pytest.mark.parametrize("learner", [DirichletClassifier({"a": 1.0, "b": 1.0})])
+@pytest.mark.parametrize(
+    "learner", [DirichletClassifier({1: 1.0, 2: 1.0}), GammaRegressor(alpha=1, beta=1)]
+)
 class TestBanditDecorator:
     def test_init(
         self,
@@ -341,11 +344,11 @@ class TestBanditDecorator:
             pull_kwargs["unique_id"] = 1
 
         instance.pull(*pull_args, **pull_kwargs)
-        instance.update(*pull_args, "a", **pull_kwargs)  # type: ignore
+        instance.update(*pull_args, 1, **pull_kwargs)  # type: ignore
 
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
-        assert check_is_fitted(instance.last_arm_pulled.learner, "n_features_") is None
+        assert check_is_fitted(instance.last_arm_pulled.learner) is None
 
     def test_context_exceptions(
         self,
@@ -384,7 +387,7 @@ class TestBanditDecorator:
 
             instance.pull(**pull_kwargs)
             with pytest.raises(ValueError):
-                instance.update(np.array([[1]]), "a", **pull_kwargs)
+                instance.update(np.array([[1]]), 1, **pull_kwargs)
         else:
             # check that a ValueError is raised if the context is not provided
             with pytest.raises(ValueError):
