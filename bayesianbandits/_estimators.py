@@ -122,7 +122,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
 
             self.classes_ = np.array(list(self.alphas.keys()))
             self.n_classes_ = len(self.classes_)
-            self.prior_ = np.array(list(self.alphas.values()))
+            self.prior_ = np.array(list(self.alphas.values()), dtype=np.float_)
 
             self.known_alphas_: Dict[Any, NDArray[np.float_]] = defaultdict(
                 self._return_prior
