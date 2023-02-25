@@ -3,7 +3,7 @@ import pytest
 from numpy.testing import assert_almost_equal
 from numpy.typing import NDArray
 
-from bayesianbandits import DirichletClassifier
+from bayesianbandits import DirichletClassifier, GammaRegressor
 
 
 @pytest.fixture
@@ -192,3 +192,158 @@ def test_dirichletclassifier_sample_no_fit(
             ]
         ),
     )
+
+
+def test_dirichletclassifier_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor decay only increases variance."""
+
+    clf = DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_gamma_regressor_init() -> None:
+    """Test GammaRegressor init."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    assert clf is not None
+
+
+def test_gamma_regressor_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor fit."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+    assert_almost_equal(clf.coef_[1], np.array([5, 4]))
+    assert_almost_equal(clf.coef_[2], np.array([8, 4]))
+    assert_almost_equal(clf.coef_[3], np.array([10, 4]))
+
+
+def test_gamma_regressor_partial_fit_never_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor partial_fit."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.partial_fit(X, y)
+    assert_almost_equal(clf.coef_[1], np.array([5, 4]))
+    assert_almost_equal(clf.coef_[2], np.array([8, 4]))
+    assert_almost_equal(clf.coef_[3], np.array([10, 4]))
+
+
+def test_gamma_regressor_partial_fit_already_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor partial_fit."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+    clf.partial_fit(X, y)
+    assert_almost_equal(clf.coef_[1], np.array([9, 7]))
+    assert_almost_equal(clf.coef_[2], np.array([15, 7]))
+    assert_almost_equal(clf.coef_[3], np.array([19, 7]))
+
+
+def test_gamma_regressor_predict(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor predict."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+    assert_almost_equal(
+        clf.predict(X), np.array([1.25, 1.25, 1.25, 2.0, 2.0, 2.0, 2.5, 2.5, 2.5])
+    )
+
+
+def test_gamma_regressor_predict_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor predict."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    assert_almost_equal(clf.predict(X), np.array([1, 1, 1, 1, 1, 1, 1, 1, 1]))
+
+
+def test_gamma_regressor_sample(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor sample."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                1.2358946,
+                1.5478387,
+                0.9006251,
+                2.9684361,
+                1.4696328,
+                1.5167874,
+                1.0225134,
+                1.5718412,
+                2.0178289,
+            ]
+        ),
+    )
+
+
+def test_gamma_regressor_sample_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor sample."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                6.7993190e-01,
+                1.0195971e00,
+                1.9806663e-02,
+                2.2693267e-03,
+                5.5034287e-01,
+                1.6299404e00,
+                6.7358295e-01,
+                7.5530136e-01,
+                2.8167860e00,
+            ]
+        ),
+    )
+
+
+def test_gamma_regressor_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor decay only increases variance."""
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
