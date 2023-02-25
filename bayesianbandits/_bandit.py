@@ -83,7 +83,10 @@ class Arm:
         """Sample from learner and compute the reward."""
         if self.learner is None:
             raise ValueError("Learner is not set.")
-        X_new = X or np.array([[1]])
+        if X is None:
+            X_new = np.array([[1]])
+        else:
+            X_new = np.atleast_2d(X)
 
         return self.reward_function(self.learner.sample(X_new, size))  # type: ignore
 
