@@ -71,7 +71,7 @@ should be passed to the `learner` argument of the `bandit` decorator.
     :toctree: _autosummary
 
     DirichletClassifier
-
+    GammaRegressor
 
 """
 
@@ -82,4 +82,4 @@ from ._policy_decorators import (
     thompson_sampling,
     upper_confidence_bound,
 )
-from ._estimators import DirichletClassifier
+from ._estimators import DirichletClassifier, GammaRegressor

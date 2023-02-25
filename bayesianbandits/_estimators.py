@@ -1,10 +1,11 @@
 from collections import defaultdict
+from functools import partial
 from typing import Any, Dict, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import dirichlet  # type: ignore
-from sklearn.base import BaseEstimator, ClassifierMixin  # type: ignore
+from scipy.stats import dirichlet, gamma  # type: ignore
+from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
 from sklearn.utils.validation import check_array  # type: ignore
 from sklearn.utils.validation import check_X_y  # type: ignore
 from sklearn.utils.validation import NotFittedError, check_is_fitted
@@ -12,7 +13,8 @@ from typing_extensions import Self
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
-    """Dirichlet Classifier
+    """
+    Intercept-only Dirichlet Classifier
 
     Parameters
     ----------
@@ -206,3 +208,189 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
             self._initialize_prior()
         for x in X:
             self.known_alphas_[x.item()] *= self.learning_rate
+
+
+class GammaRegressor(BaseEstimator, RegressorMixin):
+    """
+    Intercept-only Gamma regression model.
+
+    Parameters
+    ----------
+    alpha : float
+        Shape parameter of the gamma distribution.
+    beta : float
+        Inverse scale parameter of the gamma distribution.
+    learning_rate : float, default=1.0
+        Learning rate for the model.
+    random_state : int, np.random.Generator, default=None
+        Random state for the model.
+
+    Attributes
+    ----------
+    coef_ : float
+        Dictionary of coefficients for the model.
+
+    Examples
+    --------
+
+    This regressor is intended to be used with a single feature. It is
+    useful for modeling count data, where the target is the number of
+    occurrences of an event.
+
+    >>> import numpy as np
+    >>> X = np.array([[1], [2], [3], [4], [5]])
+    >>> y = np.array([1, 2, 3, 4, 5])
+    >>> model = GammaRegressor(alpha=1, beta=1, random_state=0)
+    >>> model.fit(X, y)
+    GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    >>> model.predict(X)
+    array([1. , 1.5, 2. , 2.5, 3. ])
+
+    This model implements a partial fit method, which can be used to
+    update the model with new data.
+
+    >>> model.partial_fit(X, y)
+    GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    >>> model.predict(X)
+    array([1.        , 1.66666667, 2.33333333, 3.        , 3.66666667])
+
+    The `sample` method can be used to sample from the posterior.
+
+    >>> model.sample(X)
+    array([0.95909923, 2.06378492, 1.7923389 , 4.36674677, 2.84313527])
+
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        *,
+        learning_rate: float = 1.0,
+        random_state: Union[int, np.random.Generator, None] = None
+    ) -> None:
+        self.alpha = alpha
+        self.beta = beta
+        self.learning_rate = learning_rate
+        self.random_state = random_state
+
+    def fit(self, X: NDArray[Any], y: NDArray[Any]) -> Self:
+        """
+        Fit the model using X as training data and y as target values. y must be
+        count data.
+        """
+        X, y = check_X_y(X, y, copy=True, ensure_2d=True)  # type: ignore
+
+        self._initialize_prior()
+
+        y_encoded: NDArray[np.int_] = y.astype(int)
+
+        self.n_features_ = X.shape[1]
+
+        if self.n_features_ > 1:
+            raise NotImplementedError("Only one feature supported")
+
+        self._fit_helper(X, y_encoded)
+
+        return self
+
+    def _initialize_prior(self) -> None:
+        if not hasattr(self, "prior_"):
+            if isinstance(self.random_state, int):
+                self.random_state_ = np.random.default_rng(self.random_state)
+            else:
+                self.random_state_ = self.random_state
+
+            self.prior_ = np.array([self.alpha, self.beta])
+
+            self.coef_: Dict[Any, NDArray[np.float_]] = defaultdict(self._return_prior)
+
+    def _return_prior(self) -> NDArray[np.float_]:
+        return self.prior_
+
+    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
+        # Performs the gamma-poisson update
+
+        # Sort the data by the first column
+        sort_keys = X[:, 0].argsort()  # type: ignore
+        X, y = X[sort_keys], y[sort_keys]  # type: ignore
+
+        # Get the unique groups and their start indexes
+        groups, start_indexes = np.unique(X[:, 0], return_index=True)
+
+        for group, arr in zip(groups, np.split(y, start_indexes)[1:]):
+            key = group.item()
+
+            # the update is computed by stacking the prior with the data,
+            # where alpha and the counts are stacked together and beta is
+            # stacked with ones
+
+            data = np.column_stack((arr, np.ones_like(arr)))
+
+            vals = np.row_stack((self.coef_[key], data))
+
+            # Calculate the decay index for nonstationary models
+            decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
+            # Calculate the posterior
+            posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
+            # Calculate the coefficient
+            self.coef_[key] = posterior.sum(axis=0)  # type: ignore
+
+    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
+        """
+        Update the model using X as training data and y as target values.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            return self.fit(X, y)
+
+        X_fit, y = check_X_y(X, y, copy=True, ensure_2d=True)
+        y_encoded: NDArray[np.int_] = y.astype(int)
+
+        self._fit_helper(X_fit, y_encoded)
+        return self
+
+    def predict(self, X: NDArray[Any]) -> NDArray[Any]:
+        """
+        Predict class for X.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior()
+
+        X_pred = check_array(X, copy=True, ensure_2d=True)
+
+        shape_params = np.row_stack(list(self.coef_[x.item()] for x in X_pred))
+        return shape_params[:, 0] / shape_params[:, 1]
+
+    def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
+        """
+        Sample from the posterior for X.
+        """
+        try:
+            check_is_fitted(self, "n_features_")
+        except NotFittedError:
+            self._initialize_prior()
+
+        shape_params = list(self.coef_[x.item()] for x in X)
+
+        rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
+
+        return np.squeeze(
+            np.stack(
+                list(rv_gen(alpha, scale=1 / beta) for alpha, beta in shape_params),
+            )
+        )
+
+    def decay(self, X: NDArray[Any]) -> None:
+        """
+        Decay the prior by a factor of `learning_rate`.
+        """
+        if not hasattr(self, "known_alphas_"):
+            self._initialize_prior()
+        for x in X:
+            self.coef_[x.item()] *= self.learning_rate
