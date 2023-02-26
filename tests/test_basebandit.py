@@ -193,7 +193,7 @@ class TestBanditDecorator:
 
         if bandit_class._delayed_reward:
             # check that the last arm pulled is in the cache
-            cached_arm = instance.cache[1]  # type: ignore
+            cached_arm = instance.arms[instance.cache[1]]  # type: ignore
             assert cached_arm is instance.last_arm_pulled
 
     @pytest.mark.parametrize("size", [1, 2])

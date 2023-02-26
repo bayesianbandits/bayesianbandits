@@ -197,7 +197,9 @@ class Bandit(metaclass=MetaBandit):
         arm.pull()
 
         if self.__class__._delayed_reward is True:
-            self.cache[unique_id] = arm  # type: ignore
+            (self.cache[unique_id],) = [  # type: ignore
+                k for k, v in self.arms.items() if v is self.last_arm_pulled
+            ]
 
     @overload
     def update(self, y: ArrayLike, /, **kwargs: Any) -> None:
@@ -254,7 +256,7 @@ class Bandit(metaclass=MetaBandit):
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
-            arm_to_update = self.cache.pop(unique_id)  # type: ignore
+            arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
 
         else:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
