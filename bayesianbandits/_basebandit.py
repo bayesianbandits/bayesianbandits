@@ -2,7 +2,6 @@ from copy import deepcopy
 from dataclasses import Field, dataclass, field
 from functools import cached_property, partial
 from typing import (
-    TYPE_CHECKING,
     Any,
     Callable,
     ClassVar,
@@ -27,53 +26,8 @@ _B = TypeVar("_B", bound="Bandit")
 
 
 @dataclass_transform(field_specifiers=(Field, field))
-class MetaBandit(type):
-    def __new__(cls, name, bases, class_dict, **kwargs):
-        self = super().__new__(cls, name, bases, class_dict, **kwargs)
-
-        annotations: dict[str, Any] = getattr(self, "__annotations__", {})
-
-        annotations["last_arm_pulled"] = Optional[ArmProtocol]
-        setattr(self, "last_arm_pulled", field(default=None, init=False, repr=False))
-
-        annotations["rng"] = Union[np.random.Generator, None, int]
-        setattr(self, "rng", field(default=None, repr=False))
-
-        annotations["cache"] = Optional[MutableMapping[Any, ArmProtocol]]
-        if self._delayed_reward is True:  # type: ignore
-            setattr(self, "cache", field(default_factory=dict, repr=False))
-        else:
-            setattr(self, "cache", field(default=None, init=False, repr=False))
-
-        arm_annotations = {}
-
-        for name, attr in self.__dict__.items():
-            if isinstance(attr, ArmProtocol):
-                arm_annotations[name] = ArmProtocol
-                setattr(
-                    self,
-                    name,
-                    field(default_factory=partial(deepcopy, attr), init=False),
-                )
-
-        if "learner" in self.__dict__:
-            annotations["learner"] = Learner
-            learner_field = field(
-                default_factory=partial(clone, self.learner), init=False  # type: ignore
-            )
-            setattr(self, "learner", learner_field)
-
-        arm_annotations.update(
-            {k: v for k, v in annotations.items() if k not in arm_annotations}
-        )
-
-        setattr(self, "__annotations__", arm_annotations)
-
-        return dataclass(self)  # type: ignore
-
-
 @dataclass
-class Bandit(metaclass=MetaBandit):
+class Bandit:
     """
     Base class for bandits. This class is not meant to be instantiated directly.
     Instead, it should be subclassed and the `learner` and `policy` arguments to
@@ -166,19 +120,15 @@ class Bandit(metaclass=MetaBandit):
 
     """
 
-    if TYPE_CHECKING:
-        rng: Union[np.random.Generator, None, int] = field(default=None, repr=False)
-        last_arm_pulled: Optional[ArmProtocol] = field(
-            default=None, init=False, repr=False
-        )
-        cache: Optional[MutableMapping[Any, ArmProtocol]] = field(
-            default=None, repr=False
-        )
+    # if TYPE_CHECKING:
+    rng: Union[np.random.Generator, None, int] = field(default=None, repr=False)
+    last_arm_pulled: Optional[ArmProtocol] = field(default=None, init=False, repr=False)
+    cache: Optional[MutableMapping[Any, ArmProtocol]] = field(default=None, repr=False)
 
-    else:
-        rng: Union[np.random.Generator, None, int]
-        cache: Optional[MutableMapping[Any, ArmProtocol]]
-        last_arm_pulled: Optional[ArmProtocol]
+    # else:
+    #     rng: Union[np.random.Generator, None, int]
+    #     cache: Optional[MutableMapping[Any, ArmProtocol]]
+    #     last_arm_pulled: Optional[ArmProtocol]
 
     learner: ClassVar[Learner]
     policy: ClassVar[Callable[..., ArmProtocol]]
@@ -202,10 +152,45 @@ class Bandit(metaclass=MetaBandit):
             Policy to use for choosing arms.
         """
         super().__init_subclass__(**kwargs)
+
+        # set learner and policy as class variables
         cls.learner = learner
         cls.policy = policy
+
+        # if delayed reward, set cache as an initializable instance variable,
+        # otherwise leave it uninitializable
         if delayed_reward is True:
             cls._delayed_reward = True
+            setattr(cls, "cache", field(default_factory=dict, repr=False))
+        else:
+            setattr(cls, "cache", field(default=None, init=False, repr=False))
+
+        # make sure cache is annotated for dataclass magic
+        annotations: dict[str, Any] = getattr(cls, "__annotations__", {})
+        annotations["cache"] = Optional[MutableMapping[Any, ArmProtocol]]
+
+        # collect and annotate all ArmProtocol instances
+        arm_annotations = {}
+
+        for name, attr in cls.__dict__.items():
+            if isinstance(attr, ArmProtocol):
+                arm_annotations[name] = ArmProtocol
+                setattr(
+                    cls,
+                    name,
+                    field(default_factory=partial(deepcopy, attr), init=False),
+                )
+
+        # make sure all ArmProtocol instances are first in the annotations
+        # for dataclass magic - this is unnecessary in Python 3.10
+        arm_annotations.update(
+            {k: v for k, v in annotations.items() if k not in arm_annotations}
+        )
+
+        setattr(cls, "__annotations__", arm_annotations)
+
+        # modifies cls in-place
+        dataclass(cls)
 
     @overload
     def pull(self, X: ArrayLike, /) -> None:
@@ -502,26 +487,3 @@ def restless(
 def check_is_bandit(cls):
     if not issubclass(cls, Bandit):
         raise ValueError("This decorator can only be used on a Bandit subclass.")
-
-
-if __name__ == "__main__":
-    from bayesianbandits import Arm, GammaRegressor, epsilon_greedy
-
-    clf = GammaRegressor(alpha=1, beta=1)
-    policy = epsilon_greedy(0.1)
-
-    def action_func():
-        print("Action!")
-
-    def reward_func(x):
-        return x
-
-    @contextual
-    class MyBandit(Bandit, learner=clf, policy=policy):
-        arm1 = Arm(action_func, reward_func)
-        arm2 = Arm(action_func, reward_func)
-
-    bandit = MyBandit()
-    bandit.pull(1)
-
-    bandit.update(1, 1)
