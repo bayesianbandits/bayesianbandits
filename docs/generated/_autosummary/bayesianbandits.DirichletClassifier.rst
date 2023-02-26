@@ -1,4 +1,4 @@
-﻿bayesianbandits.DirichletClassifier
+bayesianbandits.DirichletClassifier
 ===================================
 
 .. currentmodule:: bayesianbandits

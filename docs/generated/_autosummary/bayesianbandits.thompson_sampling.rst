@@ -1,4 +1,4 @@
-﻿bayesianbandits.thompson\_sampling
+bayesianbandits.thompson\_sampling
 ==================================
 
 .. currentmodule:: bayesianbandits

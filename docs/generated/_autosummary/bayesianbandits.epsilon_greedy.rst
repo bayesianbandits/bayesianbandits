@@ -1,4 +1,4 @@
-﻿bayesianbandits.epsilon\_greedy
+bayesianbandits.epsilon\_greedy
 ===============================
 
 .. currentmodule:: bayesianbandits

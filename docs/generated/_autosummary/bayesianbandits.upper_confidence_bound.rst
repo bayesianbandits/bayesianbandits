@@ -1,4 +1,4 @@
-﻿bayesianbandits.upper\_confidence\_bound
+bayesianbandits.upper\_confidence\_bound
 ========================================
 
 .. currentmodule:: bayesianbandits

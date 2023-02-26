@@ -1,4 +1,4 @@
-﻿bayesianbandits.restless
+bayesianbandits.restless
 ========================
 
 .. currentmodule:: bayesianbandits

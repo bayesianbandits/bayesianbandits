@@ -1,4 +1,4 @@
-﻿bayesianbandits.contextual
+bayesianbandits.contextual
 ==========================
 
 .. currentmodule:: bayesianbandits
