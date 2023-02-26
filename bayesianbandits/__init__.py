@@ -34,18 +34,17 @@ the reward from the outcome of the action.
     Arm
 
 
-Bandit Decorators
-=================
+Bandit Class and Decorators
+===========================
 
-These class decorators can be used to create bandit algorithms from classes
+These class utilities can be used to create bandit algorithms from classes
 that define variables that implement the `Arm` protocol.
 
 .. autosummary::
     :toctree: _autosummary
 
-    bandit
+    Bandit
     contextual
-    delayed_reward
     restless
 
 Policies
@@ -76,7 +75,8 @@ should be passed to the `learner` argument of the `bandit` decorator.
 """
 
 
-from ._bandit import Arm, bandit, contextual, delayed_reward, restless
+from ._basebandit import Bandit, contextual, restless
+from ._arm import Arm
 from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,
