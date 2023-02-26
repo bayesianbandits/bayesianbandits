@@ -20,8 +20,10 @@ def action2_func():
     # do action 2
     ...
 
-@bandit(learner=DirichletClassifier({"yes": 1.0, "no": 1.0}), policy=epsilon_greedy(0.1))
-class Agent:
+clf = DirichletClassifier({"yes": 1.0, "no": 1.0})
+policy = epsilon_greedy(0.1)
+
+class Agent(Bandit, learner=clf, policy=policy):
     arm1 = Arm(action1_func, reward_func)
     arm2 = Arm(action2_func, reward_func)
 
