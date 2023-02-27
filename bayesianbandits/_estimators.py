@@ -4,7 +4,7 @@ from typing import Any, Dict, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import dirichlet, gamma  # type: ignore
+from scipy.stats import dirichlet, gamma, multivariate_normal  # type: ignore
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
 from sklearn.utils.validation import check_array  # type: ignore
 from sklearn.utils.validation import check_X_y  # type: ignore
@@ -394,3 +394,203 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             self._initialize_prior()
         for x in X:
             self.coef_[x.item()] *= self.learning_rate
+
+
+class LinearRegressor(BaseEstimator, RegressorMixin):
+    """
+    A Bayesian linear regression model that assumes a Gaussian noise distribution.
+
+    Parameters
+    ----------
+    alpha : float
+        The prior for the precision of the weights. Weights are assumed to be
+        Gaussian distributed with mean 0 and precision `alpha`.
+    beta : float
+        The prior for the precision of the noise.
+    learning_rate : float, default=1.0
+        The learning rate for the model. If `learning_rate` is less than 1.0, the
+        model is nonstationary and the prior is decayed by a factor of
+        `learning_rate` at each iteration.
+    random_state : int, np.random.Generator, default=None
+        The random state for the model. If an int is passed, it is used to
+        seed the numpy random number generator.
+
+    Attributes
+    ----------
+    coef_ : NDArray[np.float_]
+        The coefficients of the model.
+    cov_inv_ : NDArray[np.float_]
+        The inverse of the covariance matrix of the model.
+
+    Examples
+    --------
+
+    This regressor can be used in the same way as any other scikit-learn linear
+    regressor.
+
+    >>> import numpy as np
+    >>> X = np.array([[1], [2], [3], [4], [5]])
+    >>> y = np.array([1, 2, 3, 4, 5])
+    >>> model = LinearRegressor(alpha=0.1, beta=1, random_state=0)
+    >>> model.fit(X, y)
+    LinearRegressor(alpha=0.1, beta=1, random_state=0)
+
+    >>> model.predict(X)
+    array([0.84615385, 1.69230769, 2.53846154, 3.38461538, 4.23076923])
+
+    Unlike the intercept-only conjugate prior models in this package, this model
+    learns a coefficient for each feature. The coefficients are stored in the
+    `coef_` attribute.
+
+    >>> model.coef_
+    array([0.84615385])
+
+    For compatibility with the `Bandit` class, this model also has a `partial_fit`
+    method that updates the model using a single data point or a batch of data.
+
+    >>> model.partial_fit(X, y)
+    LinearRegressor(alpha=0.1, beta=1, random_state=0)
+    >>> model.predict(X)
+    array([0.91666667, 1.83333333, 2.75      , 3.66666667, 4.58333333])
+
+    Futhermore, this model also has a `sample` method that samples from the
+    posterior distribution of the coefficients.
+
+    >>> model.sample(X)
+    array([[0.92814421, 1.85628843, 2.78443264, 3.71257685, 4.64072107]])
+
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        *,
+        learning_rate: float = 1.0,
+        random_state: Union[int, np.random.Generator, None] = None
+    ) -> None:
+        self.alpha = alpha
+        self.beta = beta
+        self.learning_rate = learning_rate
+        self.random_state = random_state
+
+    def fit(self, X: NDArray[Any], y: NDArray[Any]) -> Self:
+        """
+        Fit the model using X as training data and y as target values. y must be
+        count data.
+        """
+        X, y = check_X_y(
+            X,
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float_,
+        )
+
+        self._initialize_prior(X)
+
+        self._fit_helper(X, y)
+
+        return self
+
+    def _initialize_prior(self, X: NDArray[Any]) -> None:
+        if not hasattr(self, "coef_"):
+            if isinstance(self.random_state, int):
+                self.random_state_ = np.random.default_rng(self.random_state)
+            else:
+                self.random_state_ = self.random_state
+
+            self.n_features_ = X.shape[1]
+            self.coef_ = np.zeros(self.n_features_)
+            self.cov_inv_ = np.eye(self.n_features_) / self.alpha
+
+    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
+        # Apply the learning rate to the new data, if there are multiple observations
+        # in the batch. This is done to ensure that one-at-a-time updates are
+        # equivalent to batch updates.
+        if len(X) > 1:
+            obs_decays = np.flip(
+                np.power(np.sqrt(self.learning_rate), np.arange(len(X)))
+            )
+            X = X * obs_decays[:, np.newaxis]
+            y = y * obs_decays
+
+        prior_decay = self.learning_rate ** len(X)
+
+        # Calculate the posterior covariance
+        cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
+        # Calculate the posterior mean
+        cov = np.linalg.inv(cov_inv)
+        coef = cov @ (prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y)
+
+        self.cov_inv_ = cov_inv
+        self.coef_ = coef
+
+    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
+        """
+        Update the model using X as training data and y as target values.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            return self.fit(X, y)
+
+        X_fit, y = check_X_y(
+            X,
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float_,
+        )
+
+        self._fit_helper(X_fit, y)
+        return self
+
+    def predict(self, X: NDArray[Any]) -> NDArray[Any]:
+        """
+        Predict class for X.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        X_pred = check_array(X, copy=True, ensure_2d=True)
+
+        return X_pred @ self.coef_
+
+    def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
+        """
+        Sample from the model posterior at X.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        cov = np.linalg.inv(self.cov_inv_)
+        rv_gen = partial(
+            multivariate_normal.rvs, size=size, random_state=self.random_state_
+        )
+
+        samples = np.atleast_2d(rv_gen(self.coef_, cov))  # type: ignore
+
+        return np.einsum("ij,...j", X, samples)  # type: ignore
+
+    def decay(self, X: NDArray[Any]) -> None:
+        """
+        Decay the prior by a factor of `learning_rate`.
+        """
+        if not hasattr(self, "coef_"):
+            self._initialize_prior(X)
+
+        prior_decay = self.learning_rate ** len(X)
+
+        # Decay the prior without making an update
+        cov_inv = prior_decay * self.cov_inv_
+        # Calculate the posterior mean
+        cov = np.linalg.inv(cov_inv)
+        coef = cov @ (prior_decay * self.cov_inv_ @ self.coef_)
+
+        self.cov_inv_ = cov_inv
+        self.coef_ = coef
