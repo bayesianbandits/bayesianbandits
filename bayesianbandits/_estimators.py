@@ -4,7 +4,7 @@ from typing import Any, Dict, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import dirichlet, gamma, multivariate_normal  # type: ignore
+from scipy.stats import dirichlet, gamma, multivariate_normal, multivariate_t
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
 from sklearn.utils.validation import check_array  # type: ignore
 from sklearn.utils.validation import check_X_y  # type: ignore
@@ -396,7 +396,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             self.coef_[x.item()] *= self.learning_rate
 
 
-class LinearRegressor(BaseEstimator, RegressorMixin):
+class LinearRegressorKnownVariance(BaseEstimator, RegressorMixin):
     """
     A Bayesian linear regression model that assumes a Gaussian noise distribution.
 
@@ -422,6 +422,15 @@ class LinearRegressor(BaseEstimator, RegressorMixin):
     cov_inv_ : NDArray[np.float_]
         The inverse of the covariance matrix of the model.
 
+    Notes
+    -----
+    This model implements the "known variance" version of the Bayesian linear
+    formulation described in Chapter 7 of ref [1].
+
+    References
+    ----------
+    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+
     Examples
     --------
 
@@ -431,9 +440,9 @@ class LinearRegressor(BaseEstimator, RegressorMixin):
     >>> import numpy as np
     >>> X = np.array([[1], [2], [3], [4], [5]])
     >>> y = np.array([1, 2, 3, 4, 5])
-    >>> model = LinearRegressor(alpha=0.1, beta=1, random_state=0)
+    >>> model = LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
     >>> model.fit(X, y)
-    LinearRegressor(alpha=0.1, beta=1, random_state=0)
+    LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
 
     >>> model.predict(X)
     array([0.84615385, 1.69230769, 2.53846154, 3.38461538, 4.23076923])
@@ -449,7 +458,7 @@ class LinearRegressor(BaseEstimator, RegressorMixin):
     method that updates the model using a single data point or a batch of data.
 
     >>> model.partial_fit(X, y)
-    LinearRegressor(alpha=0.1, beta=1, random_state=0)
+    LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
     >>> model.predict(X)
     array([0.91666667, 1.83333333, 2.75      , 3.66666667, 4.58333333])
 
@@ -458,6 +467,7 @@ class LinearRegressor(BaseEstimator, RegressorMixin):
 
     >>> model.sample(X)
     array([[0.92814421, 1.85628843, 2.78443264, 3.71257685, 4.64072107]])
+
 
     """
 
@@ -594,3 +604,171 @@ class LinearRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
+
+
+class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
+    """
+    Bayesian linear regression with unknown variance.
+
+    Default prior values correspond to ridge regression with alpha = 1.
+
+    Parameters
+    ----------
+    mu : Optional[NDArray[Any]], default=None
+        Prior mean of the weights. If None, the prior is assumed to be zero
+        for all weights. If given, must have one entry for each column of X.
+    lam : Optional[NDArray[Any]], default=None
+        Prior covariance of the weights. If None, the prior is assumed to be
+        diagonal with a single value for each weight. If given, must be a
+        square matrix with one entry for each column of X.
+    a : float, default=1
+        Prior shape parameter of the variance.
+    b : float, default=1
+        Prior rate parameter of the variance.
+    random_state : int, np.random.Generator, or None, default=None
+        Random state for the model.
+
+    Attributes
+    ----------
+    coef_ : NDArray[Any]
+        Posterior mean of the weights.
+    cov_inv_ : NDArray[Any]
+        Posterior inverse covariance of the weights.
+    n_features_ : int
+        Number of features in the model.
+    a_ : float
+        Posterior shape parameter of the variance.
+    b_ : float
+        Posterior rate parameter of the variance.
+
+    Notes
+    -----
+    This model implements the "unknown variance" version of the Bayesian linear
+    formulation described in Chapter 7 of ref [1].
+
+    References
+    ----------
+    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+
+    Examples
+    --------
+
+    This model can be used in the same way as the `LinearRegressorKnownVariance`
+    model.
+
+    >>> from sklearn.datasets import make_regression
+    >>> X, y, coef = make_regression(n_samples=30, n_features=2,
+    ...                              coef=True, random_state=1)
+    >>> coef
+    array([34.8898342, 75.0942434])
+
+    >>> est = LinearRegressorUnknownVariance()
+    >>> est.fit(X, y)
+    LinearRegressorUnknownVariance()
+    >>> est.coef_
+    array([32.89089478, 71.16073032])
+
+    For compatibility with this library, this model also implements a `partial_fit`
+    method for online learning.
+
+    >>> est = LinearRegressorUnknownVariance(random_state=1)
+    >>> for x_, y_ in zip(X, y):
+    ...     est = est.partial_fit(x_.reshape(1, -1), np.array([y_]))
+    >>> est.coef_
+    array([32.89089478, 71.16073032])
+
+    Furthermore, this model implements a `sample` method for sampling from the
+    posterior distribution. Because the variance is unknown, the samples are
+    drawn from the marginal posterior distribution of the weights, which is a
+    multivariate t distribution.
+
+    >>> est.sample(X[[0]], size=5)
+    array([[14.02432731],
+           [14.27002665],
+           [13.76856141],
+           [14.81894146],
+           [14.33232679]])
+
+    """
+
+    def __init__(
+        self, *, mu=None, lam=None, a=0.1, b=0.1, learning_rate=1.0, random_state=None
+    ):
+        self.mu = mu
+        self.lam = lam
+        self.a = a
+        self.b = b
+        self.learning_rate = learning_rate
+        self.random_state = random_state
+
+    def _initialize_prior(self, X: NDArray[Any]) -> None:
+        if not hasattr(self, "coef_"):
+            if isinstance(self.random_state, int):
+                self.random_state_ = np.random.default_rng(self.random_state)
+            else:
+                self.random_state_ = self.random_state
+
+            self.n_features_ = X.shape[1]
+            if self.mu is None:
+                self.coef_ = np.zeros(self.n_features_)
+            else:
+                self.coef_ = self.mu
+            if self.lam is None:
+                self.cov_inv_ = np.eye(self.n_features_)
+            else:
+                self.cov_inv_ = self.lam
+            self.a_ = self.a
+            self.b_ = self.b
+
+    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
+        # Apply the learning rate to the new data, if there are multiple observations
+        # in the batch. This is done to ensure that one-at-a-time updates are
+        # equivalent to batch updates.
+        if len(X) > 1:
+            obs_decays = np.flip(
+                np.power(np.sqrt(self.learning_rate), np.arange(len(X)))
+            )
+            X = X * obs_decays[:, np.newaxis]
+            y = y * obs_decays
+
+        else:
+            obs_decays = np.array([1.0])
+
+        prior_decay = self.learning_rate ** len(X)
+
+        V_n = prior_decay * self.cov_inv_ + X.T @ X
+
+        V_n_inv = np.linalg.inv(V_n)
+        m_n = V_n_inv @ (prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y)
+
+        a_n = prior_decay * self.a_ + 0.5 * (obs_decays**2).sum()
+
+        b_n = prior_decay * self.b_ + 0.5 * (
+            y.T @ y
+            + prior_decay * self.coef_.T @ self.cov_inv_ @ self.coef_
+            - m_n.T @ V_n @ m_n
+        )
+
+        self.cov_inv_ = V_n
+        self.coef_ = m_n
+        self.a_ = a_n
+        self.b_ = b_n
+
+    def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
+        """
+        Sample from the coefficient marginal posterior at X. This is equivalent to
+        sampling from a multivariate t distribution with the posterior mean and
+        covariance, and degrees of freedom equal to 2 * a.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        shape = (self.b_ / self.a_) * np.linalg.inv(self.cov_inv_)
+        df = 2 * self.a_
+        rv_gen = partial(multivariate_t.rvs, size=size, random_state=self.random_state_)
+
+        samples = np.atleast_2d(rv_gen(self.coef_, shape, df))  # type: ignore
+
+        return np.einsum("ij,...j", X, samples)  # type: ignore
