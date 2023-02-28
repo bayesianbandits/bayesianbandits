@@ -40,6 +40,15 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     known_alphas_ : Dict[Union[int, str], np.ndarray]
         The posterior alphas for each class seen during fit.
 
+    Notes
+    -----
+    This model implements the Dirichlet-Multinomial model described in Chapter 3
+    of ref [1].
+
+    References
+    ----------
+    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+
     Examples
     --------
 
@@ -230,6 +239,15 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     coef_ : float
         Dictionary of coefficients for the model.
 
+    Notes
+    -----
+    While this model is not described in ref [1], it is a simple extension
+    of the logic described in the section on conjugate prior models.
+
+    References
+    ----------
+    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+
     Examples
     --------
 
@@ -396,7 +414,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             self.coef_[x.item()] *= self.learning_rate
 
 
-class LinearRegressorKnownVariance(BaseEstimator, RegressorMixin):
+class NormalRegressor(BaseEstimator, RegressorMixin):
     """
     A Bayesian linear regression model that assumes a Gaussian noise distribution.
 
@@ -440,9 +458,9 @@ class LinearRegressorKnownVariance(BaseEstimator, RegressorMixin):
     >>> import numpy as np
     >>> X = np.array([[1], [2], [3], [4], [5]])
     >>> y = np.array([1, 2, 3, 4, 5])
-    >>> model = LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
+    >>> model = NormalRegressor(alpha=0.1, beta=1, random_state=0)
     >>> model.fit(X, y)
-    LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
+    NormalRegressor(alpha=0.1, beta=1, random_state=0)
 
     >>> model.predict(X)
     array([0.84615385, 1.69230769, 2.53846154, 3.38461538, 4.23076923])
@@ -458,7 +476,7 @@ class LinearRegressorKnownVariance(BaseEstimator, RegressorMixin):
     method that updates the model using a single data point or a batch of data.
 
     >>> model.partial_fit(X, y)
-    LinearRegressorKnownVariance(alpha=0.1, beta=1, random_state=0)
+    NormalRegressor(alpha=0.1, beta=1, random_state=0)
     >>> model.predict(X)
     array([0.91666667, 1.83333333, 2.75      , 3.66666667, 4.58333333])
 
@@ -606,7 +624,7 @@ class LinearRegressorKnownVariance(BaseEstimator, RegressorMixin):
         self.coef_ = coef
 
 
-class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
+class NormalInverseGammaRegressor(NormalRegressor):
     """
     Bayesian linear regression with unknown variance.
 
@@ -621,9 +639,9 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
         Prior covariance of the weights. If None, the prior is assumed to be
         diagonal with a single value for each weight. If given, must be a
         square matrix with one entry for each column of X.
-    a : float, default=1
+    a : float, default=0.1
         Prior shape parameter of the variance.
-    b : float, default=1
+    b : float, default=0.1
         Prior rate parameter of the variance.
     random_state : int, np.random.Generator, or None, default=None
         Random state for the model.
@@ -653,7 +671,7 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
     Examples
     --------
 
-    This model can be used in the same way as the `LinearRegressorKnownVariance`
+    This model can be used in the same way as the `NormalRegressor`
     model.
 
     >>> from sklearn.datasets import make_regression
@@ -662,16 +680,16 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
     >>> coef
     array([34.8898342, 75.0942434])
 
-    >>> est = LinearRegressorUnknownVariance()
+    >>> est = NormalInverseGammaRegressor()
     >>> est.fit(X, y)
-    LinearRegressorUnknownVariance()
+    NormalInverseGammaRegressor()
     >>> est.coef_
     array([32.89089478, 71.16073032])
 
     For compatibility with this library, this model also implements a `partial_fit`
     method for online learning.
 
-    >>> est = LinearRegressorUnknownVariance(random_state=1)
+    >>> est = NormalInverseGammaRegressor(random_state=1)
     >>> for x_, y_ in zip(X, y):
     ...     est = est.partial_fit(x_.reshape(1, -1), np.array([y_]))
     >>> est.coef_
@@ -736,11 +754,15 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
 
         prior_decay = self.learning_rate ** len(X)
 
+        # Update the inverse covariance matrix
         V_n = prior_decay * self.cov_inv_ + X.T @ X
 
+        # Update the mean vector. Keeping track of the inverse covariance matrix
+        # ensures we only need to invert it once.
         V_n_inv = np.linalg.inv(V_n)
         m_n = V_n_inv @ (prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y)
 
+        # Update the shape and rate parameters of the variance
         a_n = prior_decay * self.a_ + 0.5 * (obs_decays**2).sum()
 
         b_n = prior_decay * self.b_ + 0.5 * (
@@ -749,6 +771,7 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
             - m_n.T @ V_n @ m_n
         )
 
+        # Posteriors become priors for the next batch
         self.cov_inv_ = V_n
         self.coef_ = m_n
         self.a_ = a_n
@@ -772,3 +795,30 @@ class LinearRegressorUnknownVariance(LinearRegressorKnownVariance):
         samples = np.atleast_2d(rv_gen(self.coef_, shape, df))  # type: ignore
 
         return np.einsum("ij,...j", X, samples)  # type: ignore
+
+    def decay(self, X: NDArray[Any]):
+        """
+        Decay the prior by a factor of `learning_rate`. This is equivalent to
+        applying the learning rate to the prior, and then ignoring the data.
+        It does not change the mean of the coefficient marginal posterior, but
+        it does increase the variance.
+        """
+
+        if not hasattr(self, "coef_"):
+            self._initialize_prior(X)
+
+        prior_decay = self.learning_rate ** len(X)
+
+        V_n = prior_decay * self.cov_inv_
+
+        V_n_inv = np.linalg.inv(V_n)
+        m_n = V_n_inv @ (prior_decay * self.cov_inv_ @ self.coef_)
+
+        a_n = prior_decay * self.a_
+
+        b_n = prior_decay * self.b_
+
+        self.cov_inv_ = V_n
+        self.coef_ = m_n
+        self.a_ = a_n
+        self.b_ = b_n
