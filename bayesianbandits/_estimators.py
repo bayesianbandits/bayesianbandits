@@ -52,7 +52,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     >>> clf.fit(X, y)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
     >>> clf.predict_proba(X)
-    array([[0.6       , 0.33333333, 0.16666667],
+    array([[0.5       , 0.33333333, 0.16666667],
            [0.5       , 0.33333333, 0.16666667],
            [0.5       , 0.33333333, 0.16666667],
            [0.16666667, 0.5       , 0.33333333],
