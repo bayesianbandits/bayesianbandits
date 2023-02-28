@@ -710,7 +710,14 @@ class NormalInverseGammaRegressor(NormalRegressor):
     """
 
     def __init__(
-        self, *, mu=None, lam=None, a=0.1, b=0.1, learning_rate=1.0, random_state=None
+        self,
+        *,
+        mu=None,
+        lam=None,
+        a=0.1,
+        b=0.1,
+        learning_rate=1.0,
+        random_state: Union[int, np.random.Generator, None] = None
     ):
         self.mu = mu
         self.lam = lam

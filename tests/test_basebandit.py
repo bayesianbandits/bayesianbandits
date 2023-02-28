@@ -4,7 +4,13 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from functools import partial
 from sklearn.base import check_is_fitted
-from bayesianbandits import Arm, DirichletClassifier, GammaRegressor
+from bayesianbandits import (
+    Arm,
+    DirichletClassifier,
+    GammaRegressor,
+    NormalRegressor,
+    NormalInverseGammaRegressor,
+)
 from bayesianbandits._policy_decorators import (
     epsilon_greedy,
     upper_confidence_bound,
@@ -14,17 +20,16 @@ from bayesianbandits._basebandit import Bandit, restless, contextual
 from bayesianbandits._typing import Learner, BanditProtocol, ArmProtocol
 
 
-@pytest.fixture(
-    params=[
-        "dirichlet",
-        "gamma",
-    ]
-)
+@pytest.fixture(params=["dirichlet", "gamma", "normal", "normal-inverse-gamma"])
 def learner_class(request: pytest.FixtureRequest) -> Learner:
     if request.param == "dirichlet":
         return DirichletClassifier({1: 1.0, 2: 1.0})
     elif request.param == "gamma":
         return GammaRegressor(alpha=1, beta=1)
+    elif request.param == "normal":
+        return NormalRegressor(alpha=1, beta=1)
+    elif request.param == "normal-inverse-gamma":
+        return NormalInverseGammaRegressor()
     else:
         raise ValueError("invalid param")
 
