@@ -3,7 +3,12 @@ import pytest
 from numpy.testing import assert_almost_equal
 from numpy.typing import NDArray
 
-from bayesianbandits import DirichletClassifier, GammaRegressor
+from bayesianbandits import (
+    DirichletClassifier,
+    GammaRegressor,
+    NormalRegressor,
+    NormalInverseGammaRegressor,
+)
 
 
 @pytest.fixture
@@ -200,7 +205,9 @@ def test_dirichletclassifier_decay(
 ) -> None:
     """Test GammaRegressor decay only increases variance."""
 
-    clf = DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
+    clf = DirichletClassifier(
+        alphas={1: 1, 2: 1, 3: 1}, learning_rate=0.9, random_state=0
+    )
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
@@ -339,7 +346,355 @@ def test_gamma_regressor_decay(
 ) -> None:
     """Test GammaRegressor decay only increases variance."""
 
-    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf = GammaRegressor(alpha=1, beta=1, learning_rate=0.9, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_normal_regressor_init() -> None:
+    """Test NormalRegressor init."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    assert clf is not None
+
+
+def test_normal_regressor_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor fit."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.04651163]))
+    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+
+
+def test_normal_regressor_partial_fit_never_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor partial_fit."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.partial_fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.04651163]))
+    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+
+
+def test_normal_regressor_partial_fit_already_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor partial_fit."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+    clf.partial_fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.0588235]))
+    assert_almost_equal(clf.cov_inv_, np.array([[85.0]]))
+
+
+def test_normal_regressor_predict(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor predict."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+    assert_almost_equal(
+        clf.predict(X),
+        np.array(
+            [
+                1.0465116,
+                1.0465116,
+                1.0465116,
+                2.0930233,
+                2.0930233,
+                2.0930233,
+                3.1395349,
+                3.1395349,
+                3.1395349,
+            ]
+        ),
+    )
+
+
+def test_normal_regressor_predict_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor predict."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    assert_almost_equal(
+        clf.predict(X),
+        np.array(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        ),
+    )
+
+
+def test_normal_regressor_sample(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor sample."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                [
+                    1.0656853,
+                    1.0656853,
+                    1.0656853,
+                    2.1313706,
+                    2.1313706,
+                    2.1313706,
+                    3.1970559,
+                    3.1970559,
+                    3.1970559,
+                ]
+            ]
+        ),
+    )
+
+
+def test_normal_regressor_sample_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor sample."""
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                [
+                    0.1257302,
+                    0.1257302,
+                    0.1257302,
+                    0.2514604,
+                    0.2514604,
+                    0.2514604,
+                    0.3771907,
+                    0.3771907,
+                    0.3771907,
+                ]
+            ]
+        ),
+    )
+
+
+def test_normal_regressor_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor decay only increases variance."""
+
+    clf = NormalRegressor(alpha=1, beta=1, learning_rate=0.9, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_normal_inverse_gamma_regressor_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor fit."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    clf.fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.04651163]))
+    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+    assert_almost_equal(clf.a_, 4.6)
+    assert_almost_equal(clf.b_, 1.5534883720930197)
+
+
+def test_normal_inverse_gamma_regressor_partial_fit_never_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor partial_fit."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    clf.partial_fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.04651163]))
+    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+    assert_almost_equal(clf.a_, 4.6)
+    assert_almost_equal(clf.b_, 1.5534883720930197)
+
+
+def test_normal_inverse_gamma_regressor_partial_fit_already_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor partial_fit."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    clf.fit(X, y)
+    clf.partial_fit(X, y)
+
+    # worked these out by hand and by ref implementations
+    # worked these out by hand and by ref implementations
+    assert_almost_equal(clf.coef_, np.array([1.05882353]))
+    assert_almost_equal(clf.cov_inv_, np.array([[85.0]]))
+    assert_almost_equal(clf.a_, 9.1)
+    assert_almost_equal(clf.b_, 2.452941176470587)
+
+
+def test_normal_inverse_gamma_regressor_predict(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor predict."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    clf.fit(X, y)
+    assert_almost_equal(
+        clf.predict(X),
+        np.array(
+            [
+                1.0465116,
+                1.0465116,
+                1.0465116,
+                2.0930233,
+                2.0930233,
+                2.0930233,
+                3.1395349,
+                3.1395349,
+                3.1395349,
+            ]
+        ),
+    )
+
+
+def test_normal_inverse_gamma_regressor_predict_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor predict."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    assert_almost_equal(
+        clf.predict(X),
+        np.array(
+            [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            ]
+        ),
+    )
+
+
+def test_normal_inverse_gamma_regressor_sample(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor sample."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+    clf.fit(X, y)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                [
+                    1.1036933,
+                    1.1036933,
+                    1.1036933,
+                    2.2073866,
+                    2.2073866,
+                    2.2073866,
+                    3.3110799,
+                    3.3110799,
+                    3.3110799,
+                ]
+            ]
+        ),
+    )
+
+
+def test_normal_inverse_gamma_regressor_sample_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor sample."""
+
+    clf = NormalInverseGammaRegressor(random_state=0)
+
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
+                [
+                    1.9315241,
+                    1.9315241,
+                    1.9315241,
+                    3.8630482,
+                    3.8630482,
+                    3.8630482,
+                    5.7945723,
+                    5.7945723,
+                    5.7945723,
+                ]
+            ]
+        ),
+    )
+
+
+def test_normal_inverse_gamma_regressor_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor decay only increases variance."""
+
+    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=0.9)
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)

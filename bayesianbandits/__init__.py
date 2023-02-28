@@ -71,6 +71,8 @@ should be passed to the `learner` argument of the `bandit` decorator.
 
     DirichletClassifier
     GammaRegressor
+    NormalRegressor
+    NormalInverseGammaRegressor
 
 """
 
@@ -82,4 +84,9 @@ from ._policy_decorators import (
     thompson_sampling,
     upper_confidence_bound,
 )
-from ._estimators import DirichletClassifier, GammaRegressor
+from ._estimators import (
+    DirichletClassifier,
+    GammaRegressor,
+    NormalRegressor,
+    NormalInverseGammaRegressor,
+)
