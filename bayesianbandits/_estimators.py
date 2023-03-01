@@ -4,6 +4,7 @@ from typing import Any, Dict, Union
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import solve
 from scipy.stats import dirichlet, gamma, multivariate_normal, multivariate_t
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
 from sklearn.utils.validation import check_array  # type: ignore
@@ -548,8 +549,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         # Calculate the posterior covariance
         cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
         # Calculate the posterior mean
-        cov = np.linalg.inv(cov_inv)
-        coef = cov @ (prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y)
+        coef = solve(
+            cov_inv,
+            prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+            check_finite=False,
+            assume_a="pos",
+        )
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -764,10 +769,14 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Update the inverse covariance matrix
         V_n = prior_decay * self.cov_inv_ + X.T @ X
 
-        # Update the mean vector. Keeping track of the inverse covariance matrix
-        # ensures we only need to invert it once.
-        V_n_inv = np.linalg.inv(V_n)
-        m_n = V_n_inv @ (prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y)
+        # Update the mean vector. Keeping track of the precision matrix
+        # ensures we only need to do one LAPACK call.
+        m_n = solve(
+            V_n,
+            prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+            check_finite=False,
+            assume_a="pos",
+        )
 
         # Update the shape and rate parameters of the variance
         a_n = prior_decay * self.a_ + 0.5 * (obs_decays**2).sum()
