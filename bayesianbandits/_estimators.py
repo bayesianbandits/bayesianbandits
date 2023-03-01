@@ -1,9 +1,9 @@
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, cast
 
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import NDArray, ArrayLike
 from scipy.linalg import solve
 from scipy.stats import dirichlet, gamma, multivariate_normal, multivariate_t
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
@@ -124,19 +124,18 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         return self
 
     def _initialize_prior(self) -> None:
-        if not hasattr(self, "prior_"):
-            if isinstance(self.random_state, int):
-                self.random_state_ = np.random.default_rng(self.random_state)
-            else:
-                self.random_state_ = self.random_state
+        if isinstance(self.random_state, int):
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
 
-            self.classes_ = np.array(list(self.alphas.keys()))
-            self.n_classes_ = len(self.classes_)
-            self.prior_ = np.array(list(self.alphas.values()), dtype=np.float_)
+        self.classes_ = np.array(list(self.alphas.keys()))
+        self.n_classes_ = len(self.classes_)
+        self.prior_ = np.array(list(self.alphas.values()), dtype=np.float_)
 
-            self.known_alphas_: Dict[Any, NDArray[np.float_]] = defaultdict(
-                self._return_prior
-            )
+        self.known_alphas_: Dict[Any, NDArray[np.float_]] = defaultdict(
+            self._return_prior
+        )
 
     def _return_prior(self) -> NDArray[np.float_]:
         return self.prior_
@@ -316,15 +315,14 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         return self
 
     def _initialize_prior(self) -> None:
-        if not hasattr(self, "prior_"):
-            if isinstance(self.random_state, int):
-                self.random_state_ = np.random.default_rng(self.random_state)
-            else:
-                self.random_state_ = self.random_state
+        if isinstance(self.random_state, int):
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
 
-            self.prior_ = np.array([self.alpha, self.beta], dtype=np.float_)
+        self.prior_ = np.array([self.alpha, self.beta], dtype=np.float_)
 
-            self.coef_: Dict[Any, NDArray[np.float_]] = defaultdict(self._return_prior)
+        self.coef_: Dict[Any, NDArray[np.float_]] = defaultdict(self._return_prior)
 
     def _return_prior(self) -> NDArray[np.float_]:
         return self.prior_
@@ -523,15 +521,14 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         return self
 
     def _initialize_prior(self, X: NDArray[Any]) -> None:
-        if not hasattr(self, "coef_"):
-            if isinstance(self.random_state, int):
-                self.random_state_ = np.random.default_rng(self.random_state)
-            else:
-                self.random_state_ = self.random_state
+        if isinstance(self.random_state, int):
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
 
-            self.n_features_ = X.shape[1]
-            self.coef_ = np.zeros(self.n_features_)
-            self.cov_inv_ = np.eye(self.n_features_) / self.alpha
+        self.n_features_ = X.shape[1]
+        self.coef_ = np.zeros(self.n_features_)
+        self.cov_inv_ = np.eye(self.n_features_) / self.alpha
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
         # Apply the learning rate to the new data, if there are multiple observations
@@ -637,13 +634,16 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     Parameters
     ----------
-    mu : Optional[NDArray[Any]], default=None
-        Prior mean of the weights. If None, the prior is assumed to be zero
-        for all weights. If given, must have one entry for each column of X.
-    lam : Optional[NDArray[Any]], default=None
-        Prior covariance of the weights. If None, the prior is assumed to be
-        diagonal with a single value for each weight. If given, must be a
-        square matrix with one entry for each column of X.
+    mu : ArrayLike, default=0
+        Prior mean of the weights. If a scalar, the prior is assumed to be a
+        vector with the given value in each entry. If a vector, the prior is
+        assumed to be a vector with one entry for each column of X.
+    lam : ArrayLike, default=1
+        Prior covariance of the weights. If a scalar, the prior is assumed to
+        be a diagonal matrix with the given value on the diagonal. If a vector,
+        the prior is assumed to be a diagonal matrix with one entry for each
+        column of X. If a matrix, the prior is assumed to be a
+        full covariance matrix.
     a : float, default=0.1
         Prior shape parameter of the variance.
     b : float, default=0.1
@@ -717,8 +717,8 @@ class NormalInverseGammaRegressor(NormalRegressor):
     def __init__(
         self,
         *,
-        mu=None,
-        lam=None,
+        mu: ArrayLike = 0.0,
+        lam: ArrayLike = 1.0,
         a=0.1,
         b=0.1,
         learning_rate=1.0,
@@ -732,23 +732,32 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.random_state = random_state
 
     def _initialize_prior(self, X: NDArray[Any]) -> None:
-        if not hasattr(self, "coef_"):
-            if isinstance(self.random_state, int):
-                self.random_state_ = np.random.default_rng(self.random_state)
-            else:
-                self.random_state_ = self.random_state
+        if isinstance(self.random_state, int):
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
 
-            self.n_features_ = X.shape[1]
-            if self.mu is None:
-                self.coef_ = np.zeros(self.n_features_)
-            else:
-                self.coef_ = self.mu
-            if self.lam is None:
-                self.cov_inv_ = np.eye(self.n_features_)
-            else:
-                self.cov_inv_ = self.lam
-            self.a_ = self.a
-            self.b_ = self.b
+        self.n_features_ = X.shape[1]
+        if np.isscalar(self.mu):
+            self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float_)
+        elif cast(NDArray, self.mu).ndim == 1:
+            self.coef_ = cast(NDArray[np.float_], self.mu)
+        else:
+            raise ValueError("The prior mean must be a scalar or vector.")
+
+        if np.isscalar(self.lam):
+            self.cov_inv_ = cast(np.float_, self.lam) * np.eye(self.n_features_)
+        elif cast(NDArray[np.float_], self.lam).ndim == 1:
+            self.cov_inv_ = np.diag(self.lam)
+        elif cast(NDArray[np.float_], self.lam).ndim == 2:
+            self.cov_inv_ = cast(NDArray[np.float_], self.lam)
+        else:
+            raise ValueError(
+                "The prior covariance must be a scalar, vector, or matrix."
+            )
+
+        self.a_ = self.a
+        self.b_ = self.b
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
         # Apply the learning rate to the new data, if there are multiple observations
