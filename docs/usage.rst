@@ -14,3 +14,4 @@ library.
 
     notebooks/demo
     notebooks/counts
+    notebooks/persistence
