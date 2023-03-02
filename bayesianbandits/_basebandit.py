@@ -120,15 +120,9 @@ class Bandit:
 
     """
 
-    # if TYPE_CHECKING:
     rng: Union[np.random.Generator, None, int] = field(default=None, repr=False)
     last_arm_pulled: Optional[ArmProtocol] = field(default=None, init=False, repr=False)
     cache: Optional[MutableMapping[Any, ArmProtocol]] = field(default=None, repr=False)
-
-    # else:
-    #     rng: Union[np.random.Generator, None, int]
-    #     cache: Optional[MutableMapping[Any, ArmProtocol]]
-    #     last_arm_pulled: Optional[ArmProtocol]
 
     learner: ClassVar[Learner]
     policy: ClassVar[Callable[..., ArmProtocol]]
@@ -384,6 +378,41 @@ class Bandit:
                 "A bandit must have at least one arm. "
                 "Add an arm to the class definition."
             )
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        """Set the state of the bandit.
+
+        This method is called by pickle when loading a bandit from disk.
+        This implementation ensures that arms that are no longer defined
+        are deleted and arms that are newly defined are initialized, while
+        preserving the state of the arms that are still defined.
+        """
+        self.__dict__.update(state)
+
+        currently_defined_arms = {
+            name: attr
+            for name, attr in self.__class__.__annotations__.items()
+            if attr is ArmProtocol
+        }
+
+        # delete arms that are no longer defined
+        to_del = [
+            arm_name for arm_name in self.arms if arm_name not in currently_defined_arms
+        ]
+
+        for arm_name in to_del:
+            del self.arms[arm_name]
+            del self.__dict__[arm_name]
+
+        # initialize arms that are newly defined
+        for arm_name, arm in currently_defined_arms.items():
+            if arm_name not in self.arms:
+                new_arm = self.__class__.__dataclass_fields__[
+                    arm_name
+                ].default_factory()
+                new_arm.learner = cast(Learner, clone(self.learner))  # type: ignore
+                setattr(self, arm_name, new_arm)  # type: ignore
+                self.arms[arm_name] = self.__dict__[arm_name]
 
     @cached_property
     def arms(self: BanditProtocol) -> Dict[str, ArmProtocol]:
