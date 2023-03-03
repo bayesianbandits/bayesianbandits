@@ -7,7 +7,7 @@ Building an agent is as simple as defining arms and using the necessary decorato
 ```python
 import numpy as np
 
-from bayesianbandits import contextfree, bandit, epsilon_greedy, Arm, DirichletClassifier
+from bayesianbandits import Bandit, Arm, epsilon_greedy, DirichletClassifier
 
 def reward_func(x):
     return np.take(x, 0, axis=-1)
