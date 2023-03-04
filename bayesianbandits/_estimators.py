@@ -12,6 +12,8 @@ from sklearn.utils.validation import check_X_y  # type: ignore
 from sklearn.utils.validation import NotFittedError, check_is_fitted
 from typing_extensions import Self
 
+from ._np_utils import groupby_array
+
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     """
@@ -156,13 +158,8 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         return self
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
-        sort_keys = X[:, 0].argsort()  # type: ignore
-        X, y = X[sort_keys], y[sort_keys]  # type: ignore
-
-        groups, start_indexes = np.unique(X[:, 0], return_index=True)
-
-        for group, arr in zip(groups, np.split(y, start_indexes)[1:]):
-            key = group.item()
+        for group, arr in groupby_array(X[:, 0], y, by=X[:, 0]):
+            key = group[0].item()
             vals = np.row_stack((self.known_alphas_[key], arr))
 
             decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
@@ -330,22 +327,13 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
         # Performs the gamma-poisson update
 
-        # Sort the data by the first column
-        sort_keys = X[:, 0].argsort()  # type: ignore
-        X, y = X[sort_keys], y[sort_keys]  # type: ignore
-
-        # Get the unique groups and their start indexes
-        groups, start_indexes = np.unique(X[:, 0], return_index=True)
-
-        for group, arr in zip(groups, np.split(y, start_indexes)[1:]):
-            key = group.item()
+        for group, arr in groupby_array(X[:, 0], y, by=X[:, 0]):
+            key = group[0].item()
 
             # the update is computed by stacking the prior with the data,
             # where alpha and the counts are stacked together and beta is
             # stacked with ones
-
             data = np.column_stack((arr, np.ones_like(arr)))
-
             vals = np.row_stack((self.coef_[key], data))
 
             # Calculate the decay index for nonstationary models
