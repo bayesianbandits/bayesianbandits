@@ -26,7 +26,8 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         training data.
     learning_rate : float, default=1.0
         Learning rate for the Dirichlet distribution. Higher values will give
-        more weight to recent data.
+        more weight to recent data. This transforms the model into a recursive
+        Bayesian estimator.
     random_state : Union[int, np.random.Generator, None], default=None
         Random state for sampling from the Dirichlet distribution.
 
@@ -227,7 +228,8 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     beta : float
         Inverse scale parameter of the gamma distribution.
     learning_rate : float, default=1.0
-        Learning rate for the model.
+        Learning rate for the model. This transforms the model into a recursive
+        Bayesian estimator.
     random_state : int, np.random.Generator, default=None
         Random state for the model.
 
@@ -413,9 +415,8 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     beta : float
         The prior for the precision of the noise.
     learning_rate : float, default=1.0
-        The learning rate for the model. If `learning_rate` is less than 1.0, the
-        model is nonstationary and the prior is decayed by a factor of
-        `learning_rate` at each iteration.
+        The learning rate for the model. This transforms the model into a recursive
+        Bayesian estimator, specifically a Kalman filter.
     random_state : int, np.random.Generator, default=None
         The random state for the model. If an int is passed, it is used to
         seed the numpy random number generator.
@@ -636,6 +637,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         Prior shape parameter of the variance.
     b : float, default=0.1
         Prior rate parameter of the variance.
+    learning_rate : float, default=1.0
+        Learning rate for the model. This transforms the model into a
+        recursive Bayesian estimator, specifically a Kalman filter.
     random_state : int, np.random.Generator, or None, default=None
         Random state for the model.
 
