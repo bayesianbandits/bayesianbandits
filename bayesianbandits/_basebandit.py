@@ -52,7 +52,7 @@ class Bandit:
     ----------
     rng : Union[np.random.Generator, int, None], optional
         Random number generator to use for choosing arms, by default None
-    cache : Optional[MutableMapping[Any, ArmProtocol]], optional
+    cache : Optional[MutableMapping[Any, str]], optional
         Cache to use for storing arms when `delayed_reward` is set to `True`,
         by default None. If `delayed_reward` is set to `True` and `cache` is
         not set, a `dict` will be used.
@@ -70,7 +70,7 @@ class Bandit:
         Dictionary of arms.
     last_arm_pulled: Optional[ArmProtocol]
         Last arm pulled.
-    cache : Optional[MutableMapping[Any, ArmProtocol]]
+    cache : Optional[MutableMapping[Any, str]]
         Cache to use for storing arms when `delayed_reward` is set to `True`.
 
     Examples
@@ -122,7 +122,7 @@ class Bandit:
 
     rng: Union[np.random.Generator, None, int] = field(default=None, repr=False)
     last_arm_pulled: Optional[ArmProtocol] = field(default=None, init=False, repr=False)
-    cache: Optional[MutableMapping[Any, ArmProtocol]] = field(default=None, repr=False)
+    cache: Optional[MutableMapping[Any, str]] = field(default=None, repr=False)
 
     learner: ClassVar[Learner]
     policy: ClassVar[Callable[..., ArmProtocol]]
