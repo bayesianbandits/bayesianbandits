@@ -6,6 +6,8 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import numpy as np
+
 project = "bayesianbandits"
 copyright = "2023, Rishi Kulkarni"
 author = "Rishi Kulkarni"
@@ -17,10 +19,15 @@ release = "0.0.1"
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
+    "sphinx.ext.autodoc.typehints",
     "numpydoc",
     "nbsphinx",
 ]
 
+autodoc_type_aliases = {
+    "NDArray": "np.typing.NDArray",
+    "ArrayLike": "np.typing.ArrayLike",
+}
 numpydoc_show_class_members = False
 
 

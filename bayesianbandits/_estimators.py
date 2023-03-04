@@ -1,3 +1,4 @@
+from __future__ import annotations
 from collections import defaultdict
 from functools import partial
 from typing import Any, Dict, Union, cast
@@ -101,7 +102,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         alphas: Dict[Union[int, str], float],
         *,
         learning_rate: float = 1.0,
-        random_state: Union[int, np.random.Generator, None] = None
+        random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alphas = alphas
         self.learning_rate = learning_rate
@@ -286,7 +287,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         beta: float,
         *,
         learning_rate: float = 1.0,
-        random_state: Union[int, np.random.Generator, None] = None
+        random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.beta = beta
@@ -483,7 +484,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         beta: float,
         *,
         learning_rate: float = 1.0,
-        random_state: Union[int, np.random.Generator, None] = None
+        random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.beta = beta
@@ -714,7 +715,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         a=0.1,
         b=0.1,
         learning_rate=1.0,
-        random_state: Union[int, np.random.Generator, None] = None
+        random_state: Union[int, np.random.Generator, None] = None,
     ):
         self.mu = mu
         self.lam = lam
