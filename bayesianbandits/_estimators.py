@@ -606,14 +606,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         prior_decay = self.learning_rate ** len(X)
 
-        # Decay the prior without making an update
+        # Decay the prior without making an update. Because we're only
+        # increasing the prior variance, we do not need to update the
+        # mean.
         cov_inv = prior_decay * self.cov_inv_
-        # Calculate the posterior mean
-        cov = np.linalg.inv(cov_inv)
-        coef = cov @ (prior_decay * self.cov_inv_ @ self.coef_)
 
         self.cov_inv_ = cov_inv
-        self.coef_ = coef
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -827,16 +825,14 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         prior_decay = self.learning_rate ** len(X)
 
+        # decay only increases the variance, so we only need to update the
+        # inverse covariance matrix, a_, and b_
         V_n = prior_decay * self.cov_inv_
-
-        V_n_inv = np.linalg.inv(V_n)
-        m_n = V_n_inv @ (prior_decay * self.cov_inv_ @ self.coef_)
 
         a_n = prior_decay * self.a_
 
         b_n = prior_decay * self.b_
 
         self.cov_inv_ = V_n
-        self.coef_ = m_n
         self.a_ = a_n
         self.b_ = b_n
