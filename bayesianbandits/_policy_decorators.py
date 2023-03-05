@@ -14,7 +14,7 @@ def epsilon_greedy(
     samples: int = 1000,
 ) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates an epsilon-greedy choice algorithm. To be used with the
-    `bandit` decorator.
+    `Bandit` class.
 
     Parameters
     ----------
@@ -50,7 +50,7 @@ def upper_confidence_bound(
     samples: int = 1000,
 ) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates a UCB choice algorithm. To be used with the
-    `bandit` decorator.
+    `Bandit` class.
 
     Actually uses the upper bound of the one-sided credible interval,
     which will deviate from the upper bound of the one-sided confidence
@@ -69,6 +69,18 @@ def upper_confidence_bound(
     -------
     Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
         Closure that chooses an arm using UCB.
+
+    Notes
+    -----
+    A deeper analysis of this Bayesian UCB algorithm can be found in
+    [1].
+
+    References
+    ----------
+    [1] E. Kaufmann, O. Cappé, and A. Garivier, “On Bayesian upper confidence
+        bounds for bandit problems,” In Proceedings of the 15th International
+        Conference on Artificial Intelligence and Statistics, 2012.
+
     """
 
     if not 0 < alpha < 1:
@@ -88,7 +100,7 @@ def upper_confidence_bound(
 
 def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
     """Creates a Thompson sampling choice algorithm. To be used with the
-    `bandit` decorator.
+    `Bandit` class.
 
     Returns
     -------
