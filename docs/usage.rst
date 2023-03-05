@@ -14,4 +14,5 @@ library.
 
     notebooks/demo
     notebooks/counts
+    notebooks/linear-bandits
     notebooks/persistence
