@@ -106,6 +106,18 @@ def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmPr
     -------
     Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
         Closure that chooses an arm using Thompson sampling.
+
+    Notes
+    -----
+    This is a very simple implementation of Thompson sampling, identical
+    to the one used in [1]. This generally works well in practice and
+    has no hyperparameters to tune.
+
+    References
+    ----------
+    [1] D. Russo, B. Van Row, A. Kazerouni, I. Osband, and Z. Wen, “A
+        Tutorial on Thompson Sampling,” Foundations and Trends® in Machine
+        Learning, vol. 11, no. 1, pp. 1-96, 2018.
     """
 
     def _choose_arm(
