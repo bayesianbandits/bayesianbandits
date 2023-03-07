@@ -588,7 +588,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior(X)
 
-        cov = np.linalg.inv(self.cov_inv_)
+        cov = solve(
+            self.cov_inv_, np.eye(self.n_features_), check_finite=False, assume_a="pos"
+        )
         rv_gen = partial(
             multivariate_normal.rvs, size=size, random_state=self.random_state_
         )
@@ -804,7 +806,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         except NotFittedError:
             self._initialize_prior(X)
 
-        shape = (self.b_ / self.a_) * np.linalg.inv(self.cov_inv_)
+        extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
+        shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
+
         df = 2 * self.a_
         rv_gen = partial(multivariate_t.rvs, size=size, random_state=self.random_state_)
 
