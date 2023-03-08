@@ -595,9 +595,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             multivariate_normal.rvs, size=size, random_state=self.random_state_
         )
 
-        samples = np.atleast_2d(rv_gen(self.coef_, cov))  # type: ignore
+        samples = np.atleast_1d(rv_gen(self.coef_, cov))  # type: ignore
 
-        return np.einsum("ij,...j", X, samples)  # type: ignore
+        if self.n_features_ == 1:
+            samples = np.expand_dims(samples, -1)
+
+        return np.atleast_2d(samples @ X.T)  # type: ignore
 
     def decay(self, X: NDArray[Any]) -> None:
         """
@@ -812,9 +815,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
         df = 2 * self.a_
         rv_gen = partial(multivariate_t.rvs, size=size, random_state=self.random_state_)
 
-        samples = np.atleast_2d(rv_gen(self.coef_, shape, df))  # type: ignore
+        samples = np.atleast_1d(rv_gen(self.coef_, shape, df))  # type: ignore
+        if self.n_features_ == 1:
+            samples = np.expand_dims(samples, -1)
 
-        return np.einsum("ij,...j", X, samples)  # type: ignore
+        return np.atleast_2d(samples @ X.T)  # type: ignore
 
     def decay(self, X: NDArray[Any]):
         """

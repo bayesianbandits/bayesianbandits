@@ -1,3 +1,4 @@
+from typing import Literal
 import numpy as np
 import pytest
 from numpy.testing import assert_almost_equal
@@ -530,6 +531,49 @@ def test_normal_regressor_decay(
     assert_almost_equal(clf.predict(X), pre_decay)
 
 
+@pytest.mark.parametrize("obs", [1, 2, 3, 4])
+@pytest.mark.parametrize("covariates", [1, 2, 3, 4])
+def test_normal_regressor_predict_covariates(
+    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4]
+):
+    """Test NormalRegressor predict with covariates."""
+
+    X = np.random.rand(obs, covariates)
+    y = np.random.rand(obs)
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    pred = clf.predict(X)
+
+    assert pred.shape == (obs,)
+
+    single_pred = clf.predict(X[[0]])
+    assert single_pred.shape == (1,)
+
+
+@pytest.mark.parametrize("obs", [1, 2, 3, 4])
+@pytest.mark.parametrize("covariates", [1, 2, 3, 4])
+@pytest.mark.parametrize("size", [1, 2, 3, 4])
+def test_normal_regressor_sample_covariates(
+    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4], size: Literal[1, 2, 3, 4]
+):
+    """Test NormalRegressor predict with covariates."""
+
+    X = np.random.rand(obs, covariates)
+    y = np.random.rand(obs)
+
+    clf = NormalRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y)
+
+    pred = clf.sample(X, size=size)
+
+    assert pred.shape == (size, obs)
+
+    single_pred = clf.sample(X[[0]], size=size)
+    assert single_pred.shape == (size, 1)
+
+
 def test_normal_inverse_gamma_regressor_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
@@ -702,3 +746,46 @@ def test_normal_inverse_gamma_regressor_decay(
     clf.decay(X)
 
     assert_almost_equal(clf.predict(X), pre_decay)
+
+
+@pytest.mark.parametrize("obs", [1, 2, 3, 4])
+@pytest.mark.parametrize("covariates", [1, 2, 3, 4])
+def test_normal_inverse_gamma_regressor_predict_covariates(
+    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4]
+):
+    """Test NormalRegressor predict with covariates."""
+
+    X = np.random.rand(obs, covariates)
+    y = np.random.rand(obs)
+
+    clf = NormalInverseGammaRegressor()
+    clf.fit(X, y)
+
+    pred = clf.predict(X)
+
+    assert pred.shape == (obs,)
+
+    single_pred = clf.predict(X[[0]])
+    assert single_pred.shape == (1,)
+
+
+@pytest.mark.parametrize("obs", [1, 2, 3, 4])
+@pytest.mark.parametrize("covariates", [1, 2, 3, 4])
+@pytest.mark.parametrize("size", [1, 2, 3, 4])
+def test_normal_inverse_gamma_regressor_sample_covariates(
+    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4], size: Literal[1, 2, 3, 4]
+):
+    """Test NormalRegressor predict with covariates."""
+
+    X = np.random.rand(obs, covariates)
+    y = np.random.rand(obs)
+
+    clf = NormalInverseGammaRegressor()
+    clf.fit(X, y)
+
+    pred = clf.sample(X, size=size)
+
+    assert pred.shape == (size, obs)
+
+    single_pred = clf.sample(X[[0]], size=size)
+    assert single_pred.shape == (size, 1)
