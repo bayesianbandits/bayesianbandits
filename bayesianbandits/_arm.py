@@ -61,7 +61,7 @@ class Arm:
         """Pull the arm."""
         if self.learner is None:
             raise ValueError("Learner is not set.")
-        self.action_function()
+        return self.action_function()
 
     def sample(
         self,

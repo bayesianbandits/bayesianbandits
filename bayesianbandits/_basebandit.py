@@ -242,12 +242,14 @@ class Bandit:
                     "`delayed_reward = True`."
                 )
 
-        arm.pull()
+        ret_val = arm.pull()
 
         if self.__class__._delayed_reward is True:
             (self.cache[unique_id],) = [  # type: ignore
                 k for k, v in self.arms.items() if v is self.last_arm_pulled
             ]
+
+        return ret_val
 
     @overload
     def update(self, y: ArrayLike, /) -> None:
