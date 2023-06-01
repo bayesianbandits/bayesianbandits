@@ -15,13 +15,9 @@ class Arm:
 
     Parameters
     ----------
-    action_function : Callable
-        Nullary function to call when the arm is pulled. Should have
-        either directly produce the reward or have a side effect that
-        eventually produces reward. For example, if the arm represents an action
-        to take in an experiment, the action function should perform the
-        database query to update the experiment table with the action to take.
-        Later, the `update` method should be called with the computed reward.
+    action_token : Any
+        Token to return when the arm is pulled. This should be something processed
+        by the user's code to execute the action associated with the arm.
     reward_function : Callable
         Function to call to compute the reward. Takes the output of the learner's
         `sample` function as input and should return a scalar reward.
