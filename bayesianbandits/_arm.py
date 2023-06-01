@@ -1,10 +1,13 @@
 from __future__ import annotations
-from typing import Callable, Optional, cast
+from typing import Callable, Optional, TypeVar, cast, Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from ._typing import DecayingLearner, Learner
+from ._typing import DecayingLearner, Learner, ActionToken
+
+
+R = TypeVar("R")
 
 
 class Arm:
@@ -29,8 +32,6 @@ class Arm:
     --------
     >>> from bayesianbandits import Arm
     >>> import numpy as np
-    >>> def action_function():
-    ...     print("Action taken.")
     >>> def reward_function(sample):
     ...     return sample
     >>> class MyLearner:
@@ -40,28 +41,28 @@ class Arm:
     ...     def partial_fit(self, X, y):
     ...         pass
     >>> learner = MyLearner()
-    >>> arm = Arm(action_function, reward_function, learner)
+    >>> arm = Arm("Action taken.", reward_function, learner)
     >>> arm.pull()
-    Action taken.
+    'Action taken.'
     >>> arm.update(1)
 
     """
 
     def __init__(
         self,
-        action_function: Callable[[], None],
+        action_token: Any,
         reward_function: Callable[[ArrayLike], ArrayLike],
         learner: Optional[Learner] = None,
     ) -> None:
-        self.action_function = action_function
+        self.action_token = ActionToken(action_token)
         self.reward_function = reward_function
         self.learner = learner
 
-    def pull(self) -> None:
+    def pull(self) -> ActionToken:
         """Pull the arm."""
         if self.learner is None:
             raise ValueError("Learner is not set.")
-        return self.action_function()
+        return self.action_token
 
     def sample(
         self,
@@ -112,6 +113,6 @@ class Arm:
 
     def __repr__(self) -> str:
         return (
-            f"Arm(action_function={self.action_function},"
+            f"Arm(action_token={self.action_token},"
             f" reward_function={self.reward_function}"
         )

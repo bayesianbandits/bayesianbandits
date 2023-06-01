@@ -22,12 +22,17 @@ from typing_extensions import dataclass_transform
 
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
+
+class BaseBandit:
+    pass
+
+
 _B = TypeVar("_B", bound="Bandit")
 
 
-@dataclass_transform(field_specifiers=(Field, field))
+@dataclass_transform(field_specifiers=(Field[Any], field))
 @dataclass
-class Bandit:
+class Bandit(BaseBandit):
     """
     Base class for bandits. This class is not meant to be instantiated directly.
     Instead, it should be subclassed and the `learner` and `policy` arguments to
@@ -84,14 +89,12 @@ class Bandit:
     >>> from bayesianbandits import Arm, GammaRegressor, epsilon_greedy
     >>> clf = GammaRegressor(alpha=1, beta=1)
     >>> policy = epsilon_greedy(0.1)
-    >>> def action_func():
-    ...     print("Action!")
     >>> def reward_func(x):
     ...     return x
     >>> class MyBandit(Bandit, learner=clf, policy=policy):
-    ...     arm1 = Arm(action_func, reward_func)
-    ...     arm2 = Arm(action_func, reward_func)
-    >>> bandit = MyBandit()
+    ...     arm1 = Arm("Action 1!", reward_func)
+    ...     arm2 = Arm("Action 2!", reward_func)
+    >>> bandit = MyBandit(rng=0)
 
     Once subclassed and instantiated, the `pull` method can be used to pull
     arms. For non-contextual bandits, the `pull` method takes no arguments.
@@ -99,23 +102,23 @@ class Bandit:
     learner underlying the arm.
 
     >>> bandit.pull()
-    Action!
+    'Action 1!'
     >>> bandit.update(1)
 
     For delayed reward bandits, the subclass must set the `delayed_reward`
     argument to `__init_subclass__` to `True`.
 
     >>> class MyDelayedBandit(Bandit, learner=clf, policy=policy, delayed_reward=True):
-    ...     arm1 = Arm(action_func, reward_func)
-    ...     arm2 = Arm(action_func, reward_func)
-    >>> bandit = MyDelayedBandit(cache={})
+    ...     arm1 = Arm("Action 1!", reward_func)
+    ...     arm2 = Arm("Action 2!", reward_func)
+    >>> bandit = MyDelayedBandit(cache={}, rng=0)
 
     When `delayed_reward` is set to `True`, the `pull` method takes an additional
     argument, `unique_id`, which is used to identify the arm pulled. This is
     used to retrieve the arm from the `cache` when the `update` method is called.
 
     >>> bandit.pull(unique_id=1)
-    Action!
+    'Action 1!'
     >>> bandit.update(1, unique_id=1)
 
     """
@@ -134,7 +137,7 @@ class Bandit:
         learner: Learner,
         policy: Callable[..., ArmProtocol],
         delayed_reward: bool = False,
-        **kwargs,
+        **kwargs: Dict[str, Any],
     ):
         """Initialize a subclass of `Bandit`.
 
@@ -164,7 +167,7 @@ class Bandit:
         annotations["cache"] = Optional[MutableMapping[Any, ArmProtocol]]
 
         # collect and annotate all ArmProtocol instances
-        arm_annotations = {}
+        arm_annotations: Dict[str, Any] = {}
 
         for name, attr in cls.__dict__.items():
             if isinstance(attr, ArmProtocol):
@@ -177,9 +180,10 @@ class Bandit:
 
         # make sure all ArmProtocol instances are first in the annotations
         # for dataclass magic - this is unnecessary in Python 3.10
-        arm_annotations.update(
-            {k: v for k, v in annotations.items() if k not in arm_annotations}
-        )
+        other_annotations = {
+            k: v for k, v in annotations.items() if k not in arm_annotations
+        }
+        arm_annotations.update(other_annotations)
 
         setattr(cls, "__annotations__", arm_annotations)
 
@@ -187,19 +191,19 @@ class Bandit:
         dataclass(cls)
 
     @overload
-    def pull(self, X: ArrayLike, /) -> None:
+    def pull(self, X: ArrayLike, /) -> Any:
         ...
 
     @overload
-    def pull(self, X: ArrayLike, /, *, unique_id: Any) -> None:
+    def pull(self, X: ArrayLike, /, *, unique_id: Any) -> Any:
         ...
 
     @overload
-    def pull(self, /) -> None:
+    def pull(self, /) -> Any:
         ...
 
     @overload
-    def pull(self, /, *, unique_id: Any) -> None:
+    def pull(self, /, *, unique_id: Any) -> Any:
         ...
 
     def pull(
@@ -207,7 +211,7 @@ class Bandit:
         X: Optional[ArrayLike] = None,
         /,
         **kwargs: Any,
-    ) -> None:
+    ) -> Any:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
@@ -233,6 +237,7 @@ class Bandit:
 
         arm = self.policy(X)
         self.last_arm_pulled = arm
+        unique_id = None
 
         if self.__class__._delayed_reward is True:
             unique_id = kwargs.get("unique_id")
@@ -245,7 +250,10 @@ class Bandit:
         ret_val = arm.pull()
 
         if self.__class__._delayed_reward is True:
-            (self.cache[unique_id],) = [  # type: ignore
+            # this is here for the type checker
+            assert self.cache is not None
+
+            (self.cache[unique_id],) = [
                 k for k, v in self.arms.items() if v is self.last_arm_pulled
             ]
 
@@ -268,11 +276,7 @@ class Bandit:
         ...
 
     def update(
-        self,
-        X: ArrayLike,
-        y: Optional[ArrayLike] = None,
-        /,
-        **kwargs: Any,
+        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Dict[str, Any]
     ) -> None:
         """Update the learner for the last arm pulled.
 
@@ -407,7 +411,7 @@ class Bandit:
             del self.__dict__[arm_name]
 
         # initialize arms that are newly defined
-        for arm_name, arm in currently_defined_arms.items():
+        for arm_name, _ in currently_defined_arms.items():
             if arm_name not in self.arms:
                 new_arm = self.__class__.__dataclass_fields__[
                     arm_name
@@ -453,31 +457,29 @@ def contextual(
     >>> from bayesianbandits import Arm, GammaRegressor, epsilon_greedy
     >>> clf = GammaRegressor(alpha=1, beta=1)
     >>> policy = epsilon_greedy(0.1)
-    >>> def action_func():
-    ...     print("Action!")
     >>> def reward_func(x):
     ...     return x
     >>> @contextual
     ... class MyBandit(Bandit, learner=clf, policy=policy):
-    ...     arm1 = Arm(action_func, reward_func)
-    ...     arm2 = Arm(action_func, reward_func)
-    >>> bandit = MyBandit()
+    ...     arm1 = Arm("Action 1!", reward_func)
+    ...     arm2 = Arm("Action 2!", reward_func)
+    >>> bandit = MyBandit(rng=0)
 
     The `pull`, `sample`, and `update` methods now take an `X` argument.
 
     >>> bandit.pull(1)
-    Action!
+    'Action 1!'
     >>> bandit.update(1, 1)
 
     """
 
     check_is_bandit(cls)
 
-    orig_post_init = cls.__post_init__  # type: ignore
+    orig_post_init = cls.__post_init__
 
-    def _contextual_post_init(self) -> None:
+    def _contextual_post_init(self: _B) -> None:
         orig_post_init(self)
-        self._contextual = True
+        self._contextual = True  # type: ignore
 
     setattr(cls, "__post_init__", _contextual_post_init)
 
@@ -515,6 +517,6 @@ def restless(
     return cast(Type[_B], cls)
 
 
-def check_is_bandit(cls):
+def check_is_bandit(cls: type):
     if not issubclass(cls, Bandit):
         raise ValueError("This decorator can only be used on a Bandit subclass.")

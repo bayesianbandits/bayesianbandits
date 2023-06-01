@@ -145,7 +145,7 @@ def _compute_arm_upper_bound(
     X: Optional[ArrayLike] = None,
     *,
     alpha: float = 0.68,
-    samples=1000,
+    samples: int = 1000,
 ) -> np.float_:
     """Compute the upper bound of a one-sided credible interval with size
     `alpha` from the posterior distribution for the arm."""
@@ -159,7 +159,7 @@ def _compute_arm_mean(
     arm: ArmProtocol,
     X: Optional[ArrayLike] = None,
     *,
-    samples=1000,
+    samples: int = 1000,
 ) -> np.float_:
     """Compute the mean of the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
