@@ -12,20 +12,12 @@ from bayesianbandits import Bandit, Arm, epsilon_greedy, DirichletClassifier
 def reward_func(x):
     return np.take(x, 0, axis=-1)
 
-def action1_func():
-    # do action 1
-    ...
-
-def action2_func():
-    # do action 2
-    ...
-
 clf = DirichletClassifier({"yes": 1.0, "no": 1.0})
 policy = epsilon_greedy(0.1)
 
 class Agent(Bandit, learner=clf, policy=policy):
-    arm1 = Arm(action1_func, reward_func)
-    arm2 = Arm(action2_func, reward_func)
+    arm1 = Arm("action 1", reward_func)
+    arm2 = Arm("action 2", reward_func)
 
 agent = Agent()
 
@@ -44,4 +36,4 @@ pip install -U bayesianbandits
 
 ## Usage
 
-Check out the [documentation](https://bayesianbandits.readthedocs.io/en/latest/) for examples and an API reference. 
+Check out the [documentation](https://bayesianbandits.readthedocs.io/en/latest/) for examples and an API reference.
