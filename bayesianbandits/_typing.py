@@ -1,8 +1,19 @@
 from __future__ import annotations
-from typing import Any, Callable, Dict, Optional, Protocol, Union, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    NewType,
+    Optional,
+    Protocol,
+    Union,
+    runtime_checkable,
+)
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+ActionToken = NewType("TokenType", Any)
 
 
 class Learner(Protocol):
@@ -51,7 +62,7 @@ class ArmProtocol(Protocol):
 
     learner: Optional[Learner]
 
-    def pull(self) -> None:
+    def pull(self) -> ActionToken:
         ...
 
     def sample(
@@ -89,7 +100,7 @@ class BanditProtocol(Protocol):
     ) -> None:
         ...
 
-    def pull(self, X: Optional[ArrayLike] = None, **kwargs: Any) -> None:
+    def pull(self, X: Optional[ArrayLike] = None, **kwargs: Any) -> ActionToken:
         ...
 
     def sample(

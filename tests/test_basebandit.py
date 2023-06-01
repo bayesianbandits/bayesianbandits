@@ -1,9 +1,9 @@
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 import pytest
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from functools import partial
-from sklearn.base import check_is_fitted
+from sklearn.base import check_is_fitted  # type: ignore
 from bayesianbandits import (
     Arm,
     DirichletClassifier,
@@ -105,6 +105,9 @@ def bandit_class(
     return Experiment
 
 
+B = TypeVar("B", bound=Bandit)
+
+
 @pytest.mark.parametrize("restless_decorator", [None, restless])
 @pytest.mark.parametrize("X", [None, np.array([[2.0]])])
 class TestBanditDecorator:
@@ -170,7 +173,7 @@ class TestBanditDecorator:
     def test_pull(
         self,
         X: Optional[NDArray[np.float_]],
-        restless_decorator,
+        restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
     ) -> None:
         klass = bandit_class
@@ -187,7 +190,7 @@ class TestBanditDecorator:
         pull_kwargs: Dict[str, Any] = {}
         if X is not None:
             pull_args.append(X)
-        if bandit_class._delayed_reward:
+        if bandit_class._delayed_reward:  # type: ignore
             pull_kwargs["unique_id"] = 1
 
         instance.pull(*pull_args, **pull_kwargs)
@@ -196,16 +199,17 @@ class TestBanditDecorator:
         assert instance.last_arm_pulled is not None
         assert instance.last_arm_pulled in instance.arms.values()
 
-        if bandit_class._delayed_reward:
+        if bandit_class._delayed_reward:  # type: ignore
             # check that the last arm pulled is in the cache
-            cached_arm = instance.arms[instance.cache[1]]  # type: ignore
+            assert instance.cache is not None
+            cached_arm = instance.arms[instance.cache[1]]
             assert cached_arm is instance.last_arm_pulled
 
     @pytest.mark.parametrize("size", [1, 2])
     def test_sample(
         self,
         X: Optional[NDArray[np.float_]],
-        restless_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
         size: int,
     ) -> None:
@@ -230,7 +234,7 @@ class TestBanditDecorator:
     def test_update(
         self,
         X: Optional[NDArray[np.float_]],
-        restless_decorator: Optional[Callable[[type], type]],
+        restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
     ) -> None:
         klass = bandit_class
@@ -247,7 +251,7 @@ class TestBanditDecorator:
         pull_kwargs: Dict[str, Any] = {}
         if X is not None:
             pull_args.append(X)
-        if bandit_class._delayed_reward:
+        if bandit_class._delayed_reward:  # type: ignore
             pull_kwargs["unique_id"] = 1
 
         instance.pull(*pull_args, **pull_kwargs)
@@ -255,7 +259,7 @@ class TestBanditDecorator:
 
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
-        assert check_is_fitted(instance.last_arm_pulled.learner) is None
+        assert check_is_fitted(instance.last_arm_pulled.learner) is None  # type: ignore
 
     def test_context_exceptions(
         self,
@@ -275,7 +279,7 @@ class TestBanditDecorator:
 
         pull_kwargs: Dict[str, Any] = {}
 
-        if bandit_class._delayed_reward:
+        if bandit_class._delayed_reward:  # type: ignore
             pull_kwargs["unique_id"] = 1
 
         if X is None:
