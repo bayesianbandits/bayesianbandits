@@ -218,6 +218,24 @@ def test_dirichletclassifier_decay(
     assert_almost_equal(clf.predict(X), pre_decay)
 
 
+def test_dirichletclassifier_manual_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor decay only increases variance."""
+
+    clf = DirichletClassifier(
+        alphas={1: 1, 2: 1, 3: 1}, learning_rate=1.0, random_state=0
+    )
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X, decay_rate=0.9)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
 def test_gamma_regressor_init() -> None:
     """Test GammaRegressor init."""
 
@@ -353,6 +371,22 @@ def test_gamma_regressor_decay(
     pre_decay = clf.predict(X)
 
     clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_gamma_regressor_manual_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test GammaRegressor decay only increases variance."""
+
+    clf = GammaRegressor(alpha=1, beta=1, learning_rate=1.0, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -527,6 +561,22 @@ def test_normal_regressor_decay(
     pre_decay = clf.predict(X)
 
     clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_normal_regressor_manual_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor decay only increases variance."""
+
+    clf = NormalRegressor(alpha=1, beta=1, learning_rate=1.0, random_state=0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -744,6 +794,22 @@ def test_normal_inverse_gamma_regressor_decay(
     pre_decay = clf.predict(X)
 
     clf.decay(X)
+
+    assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_normal_inverse_gamma_regressor_manual_decay(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor decay only increases variance."""
+
+    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0)
+    clf.fit(X, y)
+
+    pre_decay = clf.predict(X)
+
+    clf.decay(X, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X), pre_decay)
 

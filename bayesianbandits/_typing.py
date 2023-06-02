@@ -44,7 +44,7 @@ class Learner(Protocol):
 class DecayingLearner(Learner, Protocol):
     learning_rate: float
 
-    def decay(self, X: NDArray[Any]) -> None:
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         ...
 
 
@@ -57,6 +57,7 @@ class ArmProtocol(Protocol):
     - `pull`
     - `sample`
     - `update`
+    - `decay`
 
     """
 
@@ -73,7 +74,12 @@ class ArmProtocol(Protocol):
     def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         ...
 
-    def decay(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
+    def decay(
+        self,
+        X: NDArray[np.float_],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         ...
 
 

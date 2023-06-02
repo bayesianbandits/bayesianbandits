@@ -105,6 +105,8 @@ class Arm:
     def decay(
         self,
         X: NDArray[np.float_],
+        *,
+        decay_rate: Optional[float] = None,
     ) -> None:
         """Decay the learner.
 
@@ -112,7 +114,7 @@ class Arm:
         if not hasattr(self.learner, "decay"):
             raise ValueError("Learner does not have a decay method.")
 
-        cast(DecayingLearner, self.learner).decay(X)
+        cast(DecayingLearner, self.learner).decay(X, decay_rate=decay_rate)
 
     def __repr__(self) -> str:
         return (

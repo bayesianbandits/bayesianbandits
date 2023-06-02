@@ -369,7 +369,12 @@ class Bandit:
         ...
 
     def decay(
-        self, X: Optional[ArrayLike] = None, /, *, decay_last_arm: bool = True
+        self,
+        X: Optional[ArrayLike] = None,
+        /,
+        *,
+        decay_rate: Optional[float] = None,
+        decay_last_arm: bool = True,
     ) -> None:
         """Decay the all arms in the bandit.
 
@@ -396,7 +401,7 @@ class Bandit:
 
         for arm in self.arms.values():
             if decay_last_arm or arm is not self.last_arm_pulled:
-                arm.decay(X_decay)
+                arm.decay(X_decay, decay_rate=decay_rate)
 
     def __post_init__(self) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
