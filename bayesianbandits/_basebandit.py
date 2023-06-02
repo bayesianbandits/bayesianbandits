@@ -35,11 +35,13 @@ class Bandit:
     the `__init_subclass__` method should be set. Optionally, the `delayed_reward`
     argument can be set to `True` to enable delayed rewards.
 
-    By default, `Bandit` subclasses take the following arguments to their
-    `__init__` method:
+    Subclass parameters should be passed to `__init_subclass__` during
+    subclassing as keyword arguments. These parameters will be added to
+    the subclass as class attributes.
 
     Subclass Parameters
     -------------------
+
     learner : Learner
         Learner underlying each arm. Must implement `partial_fit` and `sample`.
     policy : Callable[..., ArmProtocol]

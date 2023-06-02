@@ -1,4 +1,4 @@
-﻿bayesianbandits.Bandit
+bayesianbandits.Bandit
 ======================
 
 .. currentmodule:: bayesianbandits
