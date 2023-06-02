@@ -1,7 +1,7 @@
 from __future__ import annotations
 from collections import defaultdict
 from functools import partial
-from typing import Any, Dict, Union, cast
+from typing import Any, Dict, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray, ArrayLike
@@ -208,14 +208,18 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
             )
         )
 
-    def decay(self, X: NDArray[Any]) -> None:
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
         Decay the prior by a factor of `learning_rate`.
         """
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
         for x in X:
-            self.known_alphas_[x.item()] *= self.learning_rate
+            self.known_alphas_[x.item()] *= decay_rate
 
 
 class GammaRegressor(BaseEstimator, RegressorMixin):
@@ -394,14 +398,18 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             )
         )
 
-    def decay(self, X: NDArray[Any]) -> None:
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
         Decay the prior by a factor of `learning_rate`.
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior()
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
         for x in X:
-            self.coef_[x.item()] *= self.learning_rate
+            self.coef_[x.item()] *= decay_rate
 
 
 class NormalRegressor(BaseEstimator, RegressorMixin):
@@ -602,14 +610,17 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
-    def decay(self, X: NDArray[Any]) -> None:
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
         Decay the prior by a factor of `learning_rate`.
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior(X)
 
-        prior_decay = self.learning_rate ** len(X)
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        prior_decay = decay_rate ** len(X)
 
         # Decay the prior without making an update. Because we're only
         # increasing the prior variance, we do not need to update the
@@ -821,7 +832,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
-    def decay(self, X: NDArray[Any]):
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
         Decay the prior by a factor of `learning_rate`. This is equivalent to
         applying the learning rate to the prior, and then ignoring the data.
@@ -832,7 +843,10 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if not hasattr(self, "coef_"):
             self._initialize_prior(X)
 
-        prior_decay = self.learning_rate ** len(X)
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        prior_decay = decay_rate ** len(X)
 
         # decay only increases the variance, so we only need to update the
         # inverse covariance matrix, a_, and b_

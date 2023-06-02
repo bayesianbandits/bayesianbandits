@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Optional, TypeVar, cast, Any
+from typing import Callable, Dict, Optional, TypeVar, cast, Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -8,6 +8,17 @@ from ._typing import DecayingLearner, Learner, ActionToken
 
 
 R = TypeVar("R")
+
+
+def requires_learner(func: Callable[..., R]) -> Callable[..., R]:
+    """Decorator to check if the arm has a learner set."""
+
+    def wrapper(self: Arm, *args: Any, **kwargs: Dict[str, Any]):
+        if self.learner is None:
+            raise ValueError("Learner is not set.")
+        return func(self, *args, **kwargs)
+
+    return wrapper
 
 
 class Arm:
@@ -54,20 +65,18 @@ class Arm:
         self.reward_function = reward_function
         self.learner = learner
 
+    @requires_learner
     def pull(self) -> ActionToken:
         """Pull the arm."""
-        if self.learner is None:
-            raise ValueError("Learner is not set.")
         return self.action_token
 
+    @requires_learner
     def sample(
         self,
         X: Optional[ArrayLike] = None,
         size: int = 1,
     ) -> NDArray[np.float_]:
         """Sample from learner and compute the reward."""
-        if self.learner is None:
-            raise ValueError("Learner is not set.")
         if X is None:
             X_new = np.array([[1]])
         else:
@@ -75,37 +84,37 @@ class Arm:
 
         return self.reward_function(self.learner.sample(X_new, size))  # type: ignore
 
+    @requires_learner
     def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
         """Update the learner.
 
         If y is None, the data in X is used as the target and X is set to
         a `len(X)` rows of ones.
         """
-        if self.learner is None:
-            raise ValueError("Learner is not set.")
+
         if y is None:
             y_fit = np.atleast_1d(X)
             X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
         else:
             y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
+        assert self.learner is not None  # for type checker
         self.learner.partial_fit(X_fit, y_fit)
 
-    def decay(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
+    @requires_learner
+    def decay(
+        self,
+        X: NDArray[np.float_],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         """Decay the learner.
 
         Takes a `y` argument for consistency with `update` but does not use it."""
-        if self.learner is None:
-            raise ValueError("Learner is not set.")
         if not hasattr(self.learner, "decay"):
             raise ValueError("Learner does not have a decay method.")
-        if y is None:
-            y_fit = np.atleast_1d(X)
-            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
-        else:
-            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
 
-        cast(DecayingLearner, self.learner).decay(X_fit)
+        cast(DecayingLearner, self.learner).decay(X, decay_rate=decay_rate)
 
     def __repr__(self) -> str:
         return (

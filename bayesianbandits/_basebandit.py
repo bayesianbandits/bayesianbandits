@@ -23,16 +23,12 @@ from typing_extensions import dataclass_transform
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
 
-class BaseBandit:
-    pass
-
-
 _B = TypeVar("_B", bound="Bandit")
 
 
 @dataclass_transform(field_specifiers=(Field[Any], field))
 @dataclass
-class Bandit(BaseBandit):
+class Bandit:
     """
     Base class for bandits. This class is not meant to be instantiated directly.
     Instead, it should be subclassed and the `learner` and `policy` arguments to
@@ -364,6 +360,49 @@ class Bandit(BaseBandit):
         # but I can't imagine a situation where this would be a bottleneck.
         return np.array([self.policy(X).sample(X) for _ in range(size)])
 
+    @overload
+    def decay(self, /, *, decay_last_arm: bool = True) -> None:
+        ...
+
+    @overload
+    def decay(self, X: ArrayLike, /, *, decay_last_arm: bool = True) -> None:
+        ...
+
+    def decay(
+        self,
+        X: Optional[ArrayLike] = None,
+        /,
+        *,
+        decay_rate: Optional[float] = None,
+        decay_last_arm: bool = True,
+    ) -> None:
+        """Decay the all arms in the bandit.
+
+        Optionally, decay the last arm pulled.
+
+        Parameters
+        ----------
+        X : Optional[ArrayLike]
+            Context for the bandit. Only provided when the @contextual
+            decorator is used.
+        decay_last_arm : bool, default=True
+            Whether to decay the last arm pulled.
+        """
+        if X is None and self._contextual:
+            raise ValueError("X must be an array-like for a contextual bandit.")
+        elif X is not None and not self._contextual:
+            raise ValueError("X must be None for a non-contextual bandit.")
+
+        if not self._contextual:
+            X_decay = np.array([[1]])
+        else:
+            assert X is not None  # for the type checker
+            X_decay = np.atleast_2d(X)
+
+        for arm in self.arms.values():
+            if decay_last_arm or arm is not self.last_arm_pulled:
+                arm.decay(X_decay, decay_rate=decay_rate)
+
     def __post_init__(self) -> None:
         """Moves all class attributes that are instances of `Arm` to instance
         attributes.
@@ -508,9 +547,11 @@ def restless(
         **kwargs: ArrayLike,
     ) -> None:
         orig_update(self, X, y, **kwargs)  # type: ignore
-        for arm in self.arms.values():
-            if arm is not self.last_arm_pulled:
-                arm.decay(X, y)
+
+        if self._contextual:  # type: ignore
+            self.decay(X, decay_last_arm=False)
+        else:
+            self.decay(decay_last_arm=False)
 
     setattr(cls, "update", _restless_update)
 

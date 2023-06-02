@@ -1,4 +1,4 @@
-bayesianbandits.Bandit
+﻿bayesianbandits.Bandit
 ======================
 
 .. currentmodule:: bayesianbandits
@@ -14,6 +14,7 @@ bayesianbandits.Bandit
    .. autosummary::
    
       ~Bandit.__init__
+      ~Bandit.decay
       ~Bandit.pull
       ~Bandit.sample
       ~Bandit.update

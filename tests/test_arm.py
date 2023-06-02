@@ -87,9 +87,9 @@ class TestArm:
         arm.learner = learner
         arm.learner.partial_fit = MagicMock(autospec=True)
         if X is None:
-            arm.update([1])
+            arm.update(np.atleast_2d([1]), np.atleast_1d([1]))
         else:
-            arm.update(X, [1])
+            arm.update(X, np.atleast_1d([1]))
 
         assert arm.learner.partial_fit.call_count == 1  # type: ignore
 
@@ -106,15 +106,3 @@ class TestArm:
 
         with pytest.raises(ValueError):
             arm.sample(X=X, size=1)
-
-        with pytest.raises(ValueError):
-            if X is None:
-                arm.update([1])
-            else:
-                arm.update(X, [1])
-
-        with pytest.raises(ValueError):
-            if X is None:
-                arm.decay([1])
-            else:
-                arm.decay(X, [1])

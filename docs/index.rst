@@ -13,7 +13,7 @@ recursive Bayesian estimators to represent the knowledge of the reward distribut
 of each arm.
 
 This library is still under development and the API is subject to change. 
-If you have any questions orsuggestions, please feel free to open an issue
+If you have any questions or suggestions, please feel free to open an issue
 on the project page on GitHub or contact me at <rishi@kulkarni.science>.
 
 .. toctree::
