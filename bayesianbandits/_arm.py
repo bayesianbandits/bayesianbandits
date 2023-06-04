@@ -1,19 +1,23 @@
 from __future__ import annotations
-from typing import Callable, Dict, Optional, TypeVar, cast, Any
-
+from functools import wraps
+from typing import Callable, Optional, TypeVar, cast, Any
+from typing_extensions import ParamSpec, Concatenate
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from ._typing import DecayingLearner, Learner, ActionToken
 
+P = ParamSpec("P")
+R = TypeVar("R", covariant=True)
 
-R = TypeVar("R")
 
-
-def requires_learner(func: Callable[..., R]) -> Callable[..., R]:
+def requires_learner(
+    func: Callable[Concatenate[Arm, P], R]
+) -> Callable[Concatenate[Arm, P], R]:
     """Decorator to check if the arm has a learner set."""
 
-    def wrapper(self: Arm, *args: Any, **kwargs: Dict[str, Any]):
+    @wraps(func)
+    def wrapper(self: "Arm", *args: P.args, **kwargs: P.kwargs) -> R:
         if self.learner is None:
             raise ValueError("Learner is not set.")
         return func(self, *args, **kwargs)
