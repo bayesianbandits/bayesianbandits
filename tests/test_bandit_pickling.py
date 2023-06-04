@@ -82,3 +82,4 @@ def test_new_arm(temp_model_file):
     assert not hasattr(loaded, "arm3")
 
     assert hasattr(loaded, "arm4")
+    assert loaded.arm4.learner.random_state == loaded.arm1.learner.random_state
