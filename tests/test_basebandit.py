@@ -304,3 +304,23 @@ class TestBanditDecorator:
             instance.pull(X, **pull_kwargs)
             with pytest.raises(ValueError):
                 instance.update("a", **pull_kwargs)
+
+
+def test_bandit_arms_with_existing_learners() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    learner_class = GammaRegressor(1, 2)  # set this to a non-Dirichlet learner
+
+    class Experiment(  # type: ignore
+        Bandit, learner=learner_class, policy=thompson_sampling(), delayed_reward=True
+    ):
+        arm1 = Arm(0, reward_func, learner=DirichletClassifier({1: 1.0, 2: 1.0}))
+        arm2 = Arm(1, reward_func, learner=DirichletClassifier({1: 6.0, 2: 1.0}))
+
+    instance = Experiment()
+
+    assert isinstance(instance.arms["arm1"].learner, DirichletClassifier)
+    assert instance.arms["arm1"].learner.alphas[1] == 1.0
+    assert isinstance(instance.arms["arm2"].learner, DirichletClassifier)
+    assert instance.arms["arm2"].learner.alphas[1] == 6.0

@@ -396,7 +396,7 @@ class Bandit:
             raise ValueError("X must be None for a non-contextual bandit.")
 
         if not self._contextual:
-            X_decay = np.array([[1]])
+            X_decay = np.array([[1]], dtype=float)
         else:
             assert X is not None  # for the type checker
             X_decay = np.atleast_2d(X)
@@ -417,14 +417,19 @@ class Bandit:
         # initialize the arms with copies of the learner and
         # point the learner rng to the bandit rng
         for arm in self.arms.values():
-            arm.learner = cast(Learner, clone(self.learner))  # type: ignore
-            arm.learner.set_params(random_state=self.rng)
+            self._set_learner(arm)
 
         if ArmProtocol not in self.__annotations__.values():
             raise ValueError(
                 "A bandit must have at least one arm. "
                 "Add an arm to the class definition."
             )
+
+    def _set_learner(self, arm: ArmProtocol) -> None:
+        """Set the learner for an arm, if it is not already set."""
+        if arm.learner is None:
+            arm.learner = clone(self.learner)  # type: ignore
+            arm.learner.set_params(random_state=self.rng)
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         """Set the state of the bandit.
@@ -457,7 +462,7 @@ class Bandit:
                 new_arm = self.__class__.__dataclass_fields__[
                     arm_name
                 ].default_factory()
-                new_arm.learner = cast(Learner, clone(self.learner))  # type: ignore
+                self._set_learner(new_arm)
                 setattr(self, arm_name, new_arm)  # type: ignore
                 self.arms[arm_name] = self.__dict__[arm_name]
 
