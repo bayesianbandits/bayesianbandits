@@ -55,7 +55,7 @@ class Arm:
     >>> arm = Arm("Action taken.", reward_function, learner)
     >>> arm.pull()
     'Action taken.'
-    >>> arm.update(1)
+    >>> arm.update(np.array([[1]]), np.array([1]))
 
     """
 
@@ -89,21 +89,14 @@ class Arm:
         return self.reward_function(self.learner.sample(X_new, size))  # type: ignore
 
     @requires_learner
-    def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
+    def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:
         """Update the learner.
 
         If y is None, the data in X is used as the target and X is set to
         a `len(X)` rows of ones.
         """
-
-        if y is None:
-            y_fit = np.atleast_1d(X)
-            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
-        else:
-            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
-
         assert self.learner is not None  # for type checker
-        self.learner.partial_fit(X_fit, y_fit)
+        self.learner.partial_fit(X, y)
 
     @requires_learner
     def decay(

@@ -5,6 +5,7 @@ from typing import (
     Any,
     Callable,
     ClassVar,
+    Collection,
     Dict,
     MutableMapping,
     Optional,
@@ -16,10 +17,11 @@ from typing import (
 )
 
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
 from typing_extensions import dataclass_transform
 
+from ._np_utils import groupby_array
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
 
@@ -274,7 +276,7 @@ class Bandit:
         ...
 
     def update(
-        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Dict[str, Any]
+        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Any
     ) -> None:
         """Update the learner for the last arm pulled.
 
@@ -299,29 +301,53 @@ class Bandit:
             Unique identifier for the pull. Required when the `@delayed_reward`
             decorator is used.
         """
-        if y is None and self._contextual:
-            raise ValueError(
-                "X and y must both be array-likes for a contextual bandit."
-            )
-        elif y is not None and not self._contextual:
-            raise ValueError(
-                "The second argument must be None for a non-contextual bandit."
-                " The first argument to `update` must be the outcome."
-            )
+        if self._contextual:
+            if y is None:
+                raise ValueError(
+                    "X and y must both be array-likes for a contextual bandit."
+                )
+            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
+        else:
+            if y is not None:
+                raise ValueError(
+                    "The second argument must be None for a non-contextual bandit."
+                    " The first argument to `update` must be the outcome."
+                )
+            y_fit = np.atleast_1d(X)
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
 
         if self.__class__._delayed_reward is True:
-            unique_id = kwargs.get("unique_id")
+            unique_id: Union[Collection[Any], str, None] = kwargs.get("unique_id", None)
             if unique_id is None:
                 raise ValueError(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
+            # check if `unique_id` is a non-string iterable
+            elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
+                return self._update_batch(
+                    X_fit, y_fit, cast(Collection[Any], unique_id)
+                )
+
             arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
 
         else:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
 
-        arm_to_update.update(X, y)
+        arm_to_update.update(X_fit, y_fit)
+
+    def _update_batch(
+        self, X: NDArray[np.float_], y: NDArray[np.float_], unique_ids: Collection[Any]
+    ):
+        # fetch the arms names from the cache
+        assert self.cache is not None  # for the type checker
+        arm_names = np.array(
+            [self.cache.pop(unique_id) for unique_id in unique_ids], dtype=str
+        )
+
+        for X_part, y_part, arms in groupby_array(X, y, arm_names, by=arm_names):
+            arm_name = arms[0]
+            self.arms[arm_name].update(X_part, y_part)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
@@ -363,11 +389,20 @@ class Bandit:
         return np.array([self.policy(X).sample(X) for _ in range(size)])
 
     @overload
-    def decay(self, /, *, decay_last_arm: bool = True) -> None:
+    def decay(
+        self, /, *, decay_rate: Optional[float] = None, decay_last_arm: bool = True
+    ) -> None:
         ...
 
     @overload
-    def decay(self, X: ArrayLike, /, *, decay_last_arm: bool = True) -> None:
+    def decay(
+        self,
+        X: ArrayLike,
+        /,
+        *,
+        decay_rate: Optional[float] = None,
+        decay_last_arm: bool = True,
+    ) -> None:
         ...
 
     def decay(
