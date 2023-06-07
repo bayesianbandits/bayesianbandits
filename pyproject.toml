@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bayesianbandits"
-version = "0.3.1"
+version = "0.4.0"
 description = ""
 authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
 readme = "README.md"
