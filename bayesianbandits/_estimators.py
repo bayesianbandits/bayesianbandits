@@ -1,16 +1,27 @@
 from __future__ import annotations
+
 from collections import defaultdict
-from functools import partial
+from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
 
 import numpy as np
-from numpy.typing import NDArray, ArrayLike
-from scipy.linalg import solve
-from scipy.stats import dirichlet, gamma, multivariate_normal, multivariate_t
+from numpy.typing import ArrayLike, NDArray
+from scipy.linalg import cholesky, solve
+from scipy.stats import (
+    Covariance,
+    dirichlet,
+    gamma,
+    multivariate_normal,
+    multivariate_t,
+)
+from scipy.stats._multivariate import _squeeze_output
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
-from sklearn.utils.validation import check_array  # type: ignore
-from sklearn.utils.validation import check_X_y  # type: ignore
-from sklearn.utils.validation import NotFittedError, check_is_fitted
+from sklearn.utils.validation import (
+    NotFittedError,
+    check_array,  # type: ignore
+    check_is_fitted,
+    check_X_y,  # type: ignore
+)
 from typing_extensions import Self
 
 from ._np_utils import groupby_array
@@ -519,7 +530,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         return self
 
     def _initialize_prior(self, X: NDArray[Any]) -> None:
-        if isinstance(self.random_state, int):
+        if isinstance(self.random_state, int) or self.random_state is None:
             self.random_state_ = np.random.default_rng(self.random_state)
         else:
             self.random_state_ = self.random_state
@@ -527,6 +538,16 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self.n_features_ = X.shape[1]
         self.coef_ = np.zeros(self.n_features_)
         self.cov_inv_ = np.eye(self.n_features_) / self.alpha
+
+    @cached_property
+    def cov_(self) -> Covariance:
+        """
+        The covariance matrix of the model.
+        """
+        cov = solve(
+            self.cov_inv_, np.eye(self.n_features_), check_finite=False, assume_a="pos"
+        )
+        return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
         # Apply the learning rate to the new data, if there are multiple observations
@@ -552,6 +573,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         )
 
         self.cov_inv_ = cov_inv
+        # Delete the cached covariance matrix, since it is no longer valid
+        if hasattr(self, "cov_"):
+            del self.cov_
         self.coef_ = coef
 
     def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
@@ -596,17 +620,11 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior(X)
 
-        cov = solve(
-            self.cov_inv_, np.eye(self.n_features_), check_finite=False, assume_a="pos"
-        )
         rv_gen = partial(
             multivariate_normal.rvs, size=size, random_state=self.random_state_
         )
 
-        samples = np.atleast_1d(rv_gen(self.coef_, cov))  # type: ignore
-
-        if self.n_features_ == 1:
-            samples = np.expand_dims(samples, -1)
+        samples = np.atleast_1d(rv_gen(self.coef_, self.cov_))  # type: ignore
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
@@ -713,11 +731,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
     multivariate t distribution.
 
     >>> est.sample(X[[0]], size=5)
-    array([[14.02432731],
-           [14.27002665],
-           [13.76856141],
-           [14.81894146],
-           [14.33232679]])
+    array([[15.01030526],
+           [14.64281737],
+           [15.21457505],
+           [14.1703107 ],
+           [14.57089036]])
 
     """
 
@@ -739,7 +757,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.random_state = random_state
 
     def _initialize_prior(self, X: NDArray[Any]) -> None:
-        if isinstance(self.random_state, int):
+        if isinstance(self.random_state, int) or self.random_state is None:
             self.random_state_ = np.random.default_rng(self.random_state)
         else:
             self.random_state_ = self.random_state
@@ -805,9 +823,18 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         # Posteriors become priors for the next batch
         self.cov_inv_ = V_n
+        # Delete the cached shape_ property so it is recalculated
+        if hasattr(self, "shape_"):
+            del self.shape_
         self.coef_ = m_n
         self.a_ = a_n
         self.b_ = b_n
+
+    @cached_property
+    def shape_(self) -> Covariance:
+        extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
+        shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
+        return Covariance.from_cholesky(cholesky(shape, lower=True))
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
@@ -820,13 +847,28 @@ class NormalInverseGammaRegressor(NormalRegressor):
         except NotFittedError:
             self._initialize_prior(X)
 
-        extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
-        shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
-
         df = 2 * self.a_
-        rv_gen = partial(multivariate_t.rvs, size=size, random_state=self.random_state_)
 
-        samples = np.atleast_1d(rv_gen(self.coef_, shape, df))  # type: ignore
+        # Reimplement multivariate_t.rvs because scipy doesn't support
+        # Covariance objects
+
+        dim, loc, _, df = multivariate_t._process_parameters(
+            self.coef_, self.shape_.covariance, df
+        )
+
+        x = self.random_state_.chisquare(df, size=size) / df
+
+        z = multivariate_normal.rvs(
+            np.zeros(dim),
+            self.shape_,
+            size=size,
+            random_state=self.random_state_,
+        )
+        samples = loc + z / np.sqrt(x)[..., None]
+        samples = _squeeze_output(samples)
+
+        # End of multivariate_t.rvs implementation
+
         if self.n_features_ == 1:
             samples = np.expand_dims(samples, -1)
 
