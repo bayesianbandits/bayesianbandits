@@ -15,4 +15,5 @@ library.
     notebooks/demo
     notebooks/counts
     notebooks/linear-bandits
+    notebooks/delayed-reward
     notebooks/persistence
