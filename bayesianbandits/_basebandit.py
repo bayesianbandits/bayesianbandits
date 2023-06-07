@@ -5,6 +5,7 @@ from typing import (
     Any,
     Callable,
     ClassVar,
+    Collection,
     Dict,
     MutableMapping,
     Optional,
@@ -274,7 +275,7 @@ class Bandit:
         ...
 
     def update(
-        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Dict[str, Any]
+        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Any
     ) -> None:
         """Update the learner for the last arm pulled.
 
@@ -299,29 +300,38 @@ class Bandit:
             Unique identifier for the pull. Required when the `@delayed_reward`
             decorator is used.
         """
-        if y is None and self._contextual:
-            raise ValueError(
-                "X and y must both be array-likes for a contextual bandit."
-            )
-        elif y is not None and not self._contextual:
-            raise ValueError(
-                "The second argument must be None for a non-contextual bandit."
-                " The first argument to `update` must be the outcome."
-            )
+        if self._contextual:
+            if y is None:
+                raise ValueError(
+                    "X and y must both be array-likes for a contextual bandit."
+                )
+            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
+        else:
+            if y is not None:
+                raise ValueError(
+                    "The second argument must be None for a non-contextual bandit."
+                    " The first argument to `update` must be the outcome."
+                )
+            y_fit = np.atleast_1d(X)
+            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
 
         if self.__class__._delayed_reward is True:
-            unique_id = kwargs.get("unique_id")
+            unique_id: Union[Collection[Any], str, None] = kwargs.get("unique_id", None)
             if unique_id is None:
                 raise ValueError(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
+            # check if `unique_id` is a non-string iterable
+            elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
+                pass
+
             arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
 
         else:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
 
-        arm_to_update.update(X, y)
+        arm_to_update.update(X_fit, y_fit)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:

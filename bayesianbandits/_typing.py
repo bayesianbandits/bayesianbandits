@@ -71,7 +71,7 @@ class ArmProtocol(Protocol):
     ) -> NDArray[np.float_]:
         ...
 
-    def update(self, X: ArrayLike, y: Optional[ArrayLike] = None) -> None:
+    def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:
         ...
 
     def decay(
