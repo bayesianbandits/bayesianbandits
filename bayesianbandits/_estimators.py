@@ -1,25 +1,27 @@
 from __future__ import annotations
+
 from collections import defaultdict
-from functools import partial, cached_property
+from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
 
 import numpy as np
-from numpy.typing import NDArray, ArrayLike
-from scipy.linalg import solve, cholesky
+from numpy.typing import ArrayLike, NDArray
+from scipy.linalg import cholesky, solve
 from scipy.stats import (
+    Covariance,
     dirichlet,
     gamma,
     multivariate_normal,
     multivariate_t,
-    Covariance,
 )
-
 from scipy.stats._multivariate import _squeeze_output
-
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
-from sklearn.utils.validation import check_array  # type: ignore
-from sklearn.utils.validation import check_X_y  # type: ignore
-from sklearn.utils.validation import NotFittedError, check_is_fitted
+from sklearn.utils.validation import (
+    NotFittedError,
+    check_array,  # type: ignore
+    check_is_fitted,
+    check_X_y,  # type: ignore
+)
 from typing_extensions import Self
 
 from ._np_utils import groupby_array
