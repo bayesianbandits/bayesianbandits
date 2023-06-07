@@ -324,3 +324,31 @@ def test_bandit_arms_with_existing_learners() -> None:
     assert instance.arms["arm1"].learner.alphas[1] == 1.0
     assert isinstance(instance.arms["arm2"].learner, DirichletClassifier)
     assert instance.arms["arm2"].learner.alphas[1] == 6.0
+
+
+def test_contextual_bandit_batch_update() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    @contextual
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0, reward_func)
+        arm2 = Arm(1, reward_func)
+
+    instance = Experiment(rng=0)
+
+    X = np.array([[1, 2], [3, 4], [5, 6]])
+    instance.pull(X[0], unique_id=1)
+    instance.pull(X[1], unique_id=2)
+    instance.pull(X[2], unique_id=3)
+    instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
+
+    # 0.1 + 0.5 - one update. this test could break if the rng changes
+    assert instance.arm1.learner.a_ == 0.6  # type: ignore
+    # 0.1 + 0.5 + 0.5 - two updates. this test could break if the rng changes
+    assert instance.arm2.learner.a_ == 1.1  # type: ignore

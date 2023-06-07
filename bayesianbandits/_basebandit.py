@@ -17,10 +17,11 @@ from typing import (
 )
 
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
 from typing_extensions import dataclass_transform
 
+from ._np_utils import groupby_array
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
 
@@ -324,7 +325,9 @@ class Bandit:
                 )
             # check if `unique_id` is a non-string iterable
             elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
-                pass
+                return self._update_batch(
+                    X_fit, y_fit, cast(Collection[Any], unique_id)
+                )
 
             arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
 
@@ -332,6 +335,19 @@ class Bandit:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
 
         arm_to_update.update(X_fit, y_fit)
+
+    def _update_batch(
+        self, X: NDArray[np.float_], y: NDArray[np.float_], unique_ids: Collection[Any]
+    ):
+        # fetch the arms names from the cache
+        assert self.cache is not None  # for the type checker
+        arm_names = np.array(
+            [self.cache.pop(unique_id) for unique_id in unique_ids], dtype=str
+        )
+
+        for X_part, y_part, arms in groupby_array(X, y, arm_names, by=arm_names):
+            arm_name = arms[0]
+            self.arms[arm_name].update(X_part, y_part)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
@@ -373,11 +389,20 @@ class Bandit:
         return np.array([self.policy(X).sample(X) for _ in range(size)])
 
     @overload
-    def decay(self, /, *, decay_last_arm: bool = True) -> None:
+    def decay(
+        self, /, *, decay_rate: Optional[float] = None, decay_last_arm: bool = True
+    ) -> None:
         ...
 
     @overload
-    def decay(self, X: ArrayLike, /, *, decay_last_arm: bool = True) -> None:
+    def decay(
+        self,
+        X: ArrayLike,
+        /,
+        *,
+        decay_rate: Optional[float] = None,
+        decay_last_arm: bool = True,
+    ) -> None:
         ...
 
     def decay(
