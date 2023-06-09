@@ -77,16 +77,11 @@ class Arm:
     @requires_learner
     def sample(
         self,
-        X: Optional[ArrayLike] = None,
+        X: NDArray[np.float_],
         size: int = 1,
     ) -> NDArray[np.float_]:
         """Sample from learner and compute the reward."""
-        if X is None:
-            X_new = np.array([[1]])
-        else:
-            X_new = np.atleast_2d(X)
-
-        return self.reward_function(self.learner.sample(X_new, size))  # type: ignore
+        return self.reward_function(self.learner.sample(X, size))  # type: ignore
 
     @requires_learner
     def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:
