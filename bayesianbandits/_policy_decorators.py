@@ -1,9 +1,9 @@
 from __future__ import annotations
 from functools import partial
-from typing import Callable, Optional, cast
+from typing import Callable, cast
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 
 from ._typing import ArmProtocol, BanditProtocol
 
@@ -12,7 +12,7 @@ def epsilon_greedy(
     epsilon: float = 0.1,
     *,
     samples: int = 1000,
-) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
     """Creates an epsilon-greedy choice algorithm. To be used with the
     `Bandit` class.
 
@@ -25,13 +25,13 @@ def epsilon_greedy(
 
     Returns
     -------
-    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
         Closure that chooses an arm using epsilon-greedy.
     """
 
     def _choose_arm(
         self: BanditProtocol,
-        X: Optional[ArrayLike] = None,
+        X: NDArray[np.float_],
     ) -> ArmProtocol:
         """Choose an arm using epsilon-greedy."""
 
@@ -48,7 +48,7 @@ def upper_confidence_bound(
     alpha: float = 0.68,
     *,
     samples: int = 1000,
-) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
     """Creates a UCB choice algorithm. To be used with the
     `Bandit` class.
 
@@ -67,7 +67,7 @@ def upper_confidence_bound(
 
     Returns
     -------
-    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
         Closure that chooses an arm using UCB.
 
     Notes
@@ -88,7 +88,7 @@ def upper_confidence_bound(
 
     def _choose_arm(
         self: BanditProtocol,
-        X: Optional[ArrayLike] = None,
+        X: NDArray[np.float_],
     ) -> ArmProtocol:
         """Choose an arm using UCB1."""
 
@@ -98,13 +98,13 @@ def upper_confidence_bound(
     return _choose_arm
 
 
-def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+def thompson_sampling() -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
     """Creates a Thompson sampling choice algorithm. To be used with the
     `Bandit` class.
 
     Returns
     -------
-    Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
         Closure that chooses an arm using Thompson sampling.
 
     Notes
@@ -122,7 +122,7 @@ def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmPr
 
     def _choose_arm(
         self: BanditProtocol,
-        X: Optional[ArrayLike] = None,
+        X: NDArray[np.float_],
     ) -> ArmProtocol:
         """Choose an arm using Thompson sampling."""
 
@@ -132,17 +132,14 @@ def thompson_sampling() -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmPr
     return _choose_arm
 
 
-def _draw_one_sample(
-    arm: ArmProtocol,
-    X: Optional[ArrayLike] = None,
-) -> np.float_:
+def _draw_one_sample(arm: ArmProtocol, X: NDArray[np.float_]) -> np.float_:
     """Draw one sample from the posterior distribution for the arm."""
     return arm.sample(X, size=1).item()  # type: ignore
 
 
 def _compute_arm_upper_bound(
     arm: ArmProtocol,
-    X: Optional[ArrayLike] = None,
+    X: NDArray[np.float_],
     *,
     alpha: float = 0.68,
     samples: int = 1000,
@@ -157,7 +154,7 @@ def _compute_arm_upper_bound(
 
 def _compute_arm_mean(
     arm: ArmProtocol,
-    X: Optional[ArrayLike] = None,
+    X: NDArray[np.float_],
     *,
     samples: int = 1000,
 ) -> np.float_:

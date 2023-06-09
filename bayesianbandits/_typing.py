@@ -66,9 +66,7 @@ class ArmProtocol(Protocol):
     def pull(self) -> ActionToken:
         ...
 
-    def sample(
-        self, X: Optional[ArrayLike] = None, size: int = 1
-    ) -> NDArray[np.float_]:
+    def sample(self, X: NDArray[np.float_], size: int = 1) -> NDArray[np.float_]:
         ...
 
     def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:

@@ -9,6 +9,7 @@ from typing import (
     Dict,
     MutableMapping,
     Optional,
+    Tuple,
     Type,
     TypeVar,
     Union,
@@ -19,7 +20,7 @@ from typing import (
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
-from typing_extensions import dataclass_transform
+from typing_extensions import Literal, dataclass_transform
 
 from ._np_utils import groupby_array
 from ._typing import ArmProtocol, BanditProtocol, Learner
@@ -230,12 +231,9 @@ class Bandit:
             decorator is used.
         """
 
-        if X is None and self._contextual:
-            raise ValueError("X must be an array-like for a contextual bandit.")
-        elif X is not None and not self._contextual:
-            raise ValueError("X must be None for a non-contextual bandit.")
+        X_pull, _ = _validate_arrays(X, None, self._contextual, check_y=False)
 
-        arm = self.policy(X)
+        arm = self.policy(X_pull)
         self.last_arm_pulled = arm
         unique_id = None
 
@@ -301,20 +299,7 @@ class Bandit:
             Unique identifier for the pull. Required when the `@delayed_reward`
             decorator is used.
         """
-        if self._contextual:
-            if y is None:
-                raise ValueError(
-                    "X and y must both be array-likes for a contextual bandit."
-                )
-            y_fit, X_fit = np.atleast_1d(y), np.atleast_2d(X)
-        else:
-            if y is not None:
-                raise ValueError(
-                    "The second argument must be None for a non-contextual bandit."
-                    " The first argument to `update` must be the outcome."
-                )
-            y_fit = np.atleast_1d(X)
-            X_fit = np.ones_like(y_fit, dtype=np.float64)[:, np.newaxis]
+        X_fit, y_fit = _validate_arrays(X, y, self._contextual, check_y=True)
 
         if self.__class__._delayed_reward is True:
             unique_id: Union[Collection[Any], str, None] = kwargs.get("unique_id", None)
@@ -379,14 +364,11 @@ class Bandit:
             Number of samples to draw.
 
         """
-        if X is None and self._contextual:
-            raise ValueError("X must be an array-like for a contextual bandit.")
-        elif X is not None and not self._contextual:
-            raise ValueError("X must be None for a non-contextual bandit.")
+        X_sample, _ = _validate_arrays(X, None, self._contextual, check_y=False)
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
-        return np.array([self.policy(X).sample(X) for _ in range(size)])
+        return np.array([self.policy(X_sample).sample(X_sample) for _ in range(size)])
 
     @overload
     def decay(
@@ -425,16 +407,9 @@ class Bandit:
         decay_last_arm : bool, default=True
             Whether to decay the last arm pulled.
         """
-        if X is None and self._contextual:
-            raise ValueError("X must be an array-like for a contextual bandit.")
-        elif X is not None and not self._contextual:
-            raise ValueError("X must be None for a non-contextual bandit.")
-
-        if not self._contextual:
-            X_decay = np.array([[1]], dtype=float)
-        else:
-            assert X is not None  # for the type checker
-            X_decay = np.atleast_2d(X)
+        X_decay, _ = _validate_arrays(
+            X, None, contextual=self._contextual, check_y=False
+        )
 
         for arm in self.arms.values():
             if decay_last_arm or arm is not self.last_arm_pulled:
@@ -508,6 +483,79 @@ class Bandit:
             for name, attr in self.__dict__.items()
             if isinstance(attr, ArmProtocol)
         }
+
+
+@overload
+def _validate_arrays(
+    X: ArrayLike,
+    y: Optional[ArrayLike],
+    /,
+    contextual: bool,
+    check_y: Literal[True] = True,
+) -> Tuple[NDArray[np.float_], NDArray[np.float_]]:
+    ...
+
+
+@overload
+def _validate_arrays(
+    X: Optional[ArrayLike],
+    y: Literal[None],
+    /,
+    contextual: bool,
+    check_y: Literal[False] = False,
+) -> Tuple[NDArray[np.float_], None]:
+    ...
+
+
+def _validate_arrays(
+    X: Optional[ArrayLike],
+    y: Optional[ArrayLike],
+    /,
+    contextual: bool,
+    check_y: bool = True,
+) -> Tuple[NDArray[np.float_], Optional[NDArray[np.float_]]]:
+    """Validate the `X` and `y` arrays.
+
+    Parameters
+    ----------
+    X : ArrayLike
+        Context for the bandit. Only provided when the @contextual
+        decorator is used. Otherwise, this position is used for `y`.
+    y : Optional[ArrayLike]
+        Reward for the bandit. Only provided when the @contextual
+        decorator is used. Otherwise, this position should be None.
+    contextual : bool
+        Whether the bandit is contextual.
+    check_y : bool, default=True
+        Whether to check the `y` array.
+
+    Returns
+    -------
+    Tuple[NDArray, NDArray]
+        Validated `X` and `y` arrays.
+    """
+    if check_y:
+        should_not_be_none_if_contextual = y
+    else:
+        should_not_be_none_if_contextual = X
+
+    if contextual and should_not_be_none_if_contextual is None:
+        raise ValueError("Context must be provided for a contextual bandit.")
+    if not contextual and should_not_be_none_if_contextual is not None:
+        raise ValueError("Context must be None for a non-contextual bandit.")
+
+    if contextual:
+        X = np.atleast_2d(cast(ArrayLike, X))  # type: ignore
+        y = np.atleast_1d(cast(ArrayLike, y)) if check_y else None
+    else:
+        y = np.atleast_1d(cast(ArrayLike, X)) if check_y else None
+        X = (  # type: ignore
+            np.ones_like(y, dtype=float)[:, np.newaxis]
+            if check_y
+            else np.array([[1]], dtype=float)
+        )
+
+    return X, y
 
 
 def contextual(
