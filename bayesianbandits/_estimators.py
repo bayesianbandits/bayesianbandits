@@ -510,22 +510,22 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self.learning_rate = learning_rate
         self.random_state = random_state
 
-    def fit(self, X: NDArray[Any], y: NDArray[Any]) -> Self:
+    def fit(self, X_fit: NDArray[Any], y: NDArray[Any]) -> Self:
         """
         Fit the model using X as training data and y as target values. y must be
         count data.
         """
-        X, y = check_X_y(
-            X,
+        X_fit, y = check_X_y(
+            X_fit,
             y,
             copy=True,
             ensure_2d=True,
             dtype=np.float_,
         )
 
-        self._initialize_prior(X)
+        self._initialize_prior(X_fit)
 
-        self._fit_helper(X, y)
+        self._fit_helper(X_fit, y)
 
         return self
 
@@ -646,6 +646,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         cov_inv = prior_decay * self.cov_inv_
 
         self.cov_inv_ = cov_inv
+        # Delete the cached covariance matrix, since it is no longer valid
+        if hasattr(self, "cov_"):
+            del self.cov_
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -744,9 +747,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         *,
         mu: ArrayLike = 0.0,
         lam: ArrayLike = 1.0,
-        a=0.1,
-        b=0.1,
-        learning_rate=1.0,
+        a: float = 0.1,
+        b: float = 0.1,
+        learning_rate: float = 1.0,
         random_state: Union[int, np.random.Generator, None] = None,
     ):
         self.mu = mu
@@ -765,7 +768,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.n_features_ = X.shape[1]
         if np.isscalar(self.mu):
             self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float_)
-        elif cast(NDArray, self.mu).ndim == 1:
+        elif cast(NDArray[np.float_], self.mu).ndim == 1:
             self.coef_ = cast(NDArray[np.float_], self.mu)
         else:
             raise ValueError("The prior mean must be a scalar or vector.")
@@ -826,6 +829,8 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Delete the cached shape_ property so it is recalculated
         if hasattr(self, "shape_"):
             del self.shape_
+        if hasattr(self, "cov_"):
+            del self.cov_
         self.coef_ = m_n
         self.a_ = a_n
         self.b_ = b_n
@@ -899,5 +904,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         b_n = prior_decay * self.b_
 
         self.cov_inv_ = V_n
+        if hasattr(self, "shape_"):
+            del self.shape_
+        if hasattr(self, "cov_"):
+            del self.cov_
         self.a_ = a_n
         self.b_ = b_n
