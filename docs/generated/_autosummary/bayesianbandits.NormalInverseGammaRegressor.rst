@@ -1,4 +1,4 @@
-bayesianbandits.NormalInverseGammaRegressor
+﻿bayesianbandits.NormalInverseGammaRegressor
 ===========================================
 
 .. currentmodule:: bayesianbandits
@@ -26,5 +26,12 @@ bayesianbandits.NormalInverseGammaRegressor
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~NormalInverseGammaRegressor.cov_
+      ~NormalInverseGammaRegressor.shape_
    
    
