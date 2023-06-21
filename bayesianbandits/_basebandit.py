@@ -351,7 +351,13 @@ class Bandit:
             dtype=str,
         )
 
-        # warn if there are missing ids
+        # warn if there are missing ids, raise if all are missing
+        if len(present_ids) == 0:
+            raise DelayedRewardException(
+                f"None of the unique_ids {unique_ids} are in the cache. "
+                "Please use valid unique identifiers."
+            )
+
         if (missing_ids := len(arm_names) - len(present_ids)) > 0:
             warn(
                 f"{missing_ids} unique_ids not in the cache. Skipping those updates.",
@@ -360,15 +366,14 @@ class Bandit:
             )
 
         # update the arms, dropping the missing ids
-        if len(present_ids) > 0:
-            for X_part, y_part, arms in groupby_array(
-                X[present_ids],
-                y[present_ids],
-                arm_names[present_ids],
-                by=arm_names[present_ids],
-            ):
-                arm_name = arms[0]
-                self.arms[arm_name].update(X_part, y_part)
+        for X_part, y_part, arms in groupby_array(
+            X[present_ids],
+            y[present_ids],
+            arm_names[present_ids],
+            by=arm_names[present_ids],
+        ):
+            arm_name = arms[0]
+            self.arms[arm_name].update(X_part, y_part)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
