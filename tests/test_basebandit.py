@@ -1,23 +1,30 @@
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
-import pytest
-import numpy as np
-from numpy.typing import ArrayLike, NDArray
 from functools import partial
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
+
+import numpy as np
+import pytest
+from numpy.typing import ArrayLike, NDArray
 from sklearn.base import check_is_fitted  # type: ignore
+
 from bayesianbandits import (
     Arm,
     DirichletClassifier,
     GammaRegressor,
-    NormalRegressor,
     NormalInverseGammaRegressor,
+    NormalRegressor,
+)
+from bayesianbandits._basebandit import (
+    Bandit,
+    DelayedRewardException,
+    contextual,
+    restless,
 )
 from bayesianbandits._policy_decorators import (
     epsilon_greedy,
-    upper_confidence_bound,
     thompson_sampling,
+    upper_confidence_bound,
 )
-from bayesianbandits._basebandit import Bandit, restless, contextual
-from bayesianbandits._typing import Learner, BanditProtocol, ArmProtocol
+from bayesianbandits._typing import ArmProtocol, BanditProtocol, Learner
 
 
 @pytest.fixture(params=["dirichlet", "gamma", "normal", "normal-inverse-gamma"])
@@ -39,7 +46,7 @@ def learner_class(request: pytest.FixtureRequest) -> Learner:
 )
 def choice(
     request: pytest.FixtureRequest,
-) -> Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol]:
+) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
     if request.param == "epsilon_greedy":
         return epsilon_greedy(0.5)
     elif request.param == "thompson_sampling":
@@ -352,3 +359,24 @@ def test_contextual_bandit_batch_update() -> None:
     assert instance.arm1.learner.a_ == 0.6  # type: ignore
     # 0.1 + 0.5 + 0.5 - two updates. this test could break if the rng changes
     assert instance.arm2.learner.a_ == 1.1  # type: ignore
+
+
+def test_delayed_reward_reused_unique_id_exception() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0, reward_func)
+        arm2 = Arm(1, reward_func)
+
+    instance = Experiment(rng=0)
+
+    instance.pull(unique_id=1)
+
+    with pytest.raises(DelayedRewardException):
+        instance.pull(unique_id=1)

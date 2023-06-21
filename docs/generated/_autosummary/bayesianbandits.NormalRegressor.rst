@@ -1,4 +1,4 @@
-bayesianbandits.NormalRegressor
+﻿bayesianbandits.NormalRegressor
 ===============================
 
 .. currentmodule:: bayesianbandits
@@ -26,5 +26,11 @@ bayesianbandits.NormalRegressor
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~NormalRegressor.cov_
    
    
