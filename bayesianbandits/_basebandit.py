@@ -25,7 +25,6 @@ from typing_extensions import Literal, dataclass_transform
 from ._np_utils import groupby_array
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
-
 _B = TypeVar("_B", bound="Bandit")
 
 
@@ -243,6 +242,13 @@ class Bandit:
                 raise ValueError(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
+                )
+            assert self.cache is not None  # this is here for the type checker
+
+            if unique_id in self.cache:
+                raise DelayedRewardException(
+                    f"The unique_id {unique_id} has already been used. "
+                    "Please use a unique identifier."
                 )
 
         ret_val = arm.pull()
@@ -651,3 +657,12 @@ def restless(
 def check_is_bandit(cls: type):
     if not issubclass(cls, Bandit):
         raise ValueError("This decorator can only be used on a Bandit subclass.")
+
+
+class DelayedRewardException(Exception):
+    """Exception raised when the user does not handle delayed reward bandits
+    correctly.
+
+    For example, if the user tries to reuse a `unique_id`."""
+
+    pass

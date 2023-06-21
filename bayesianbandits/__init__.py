@@ -79,19 +79,29 @@ is useful for restless bandits.
     NormalRegressor
     NormalInverseGammaRegressor
 
+Exceptions
+==========
+
+These are custom exceptions raised by the bandit classes.
+
+.. autosummary::
+    :toctree: _autosummary
+
+    DelayedRewardException
+
 """
 
 
-from ._basebandit import Bandit, contextual, restless
 from ._arm import Arm
+from ._basebandit import Bandit, DelayedRewardException, contextual, restless
+from ._estimators import (
+    DirichletClassifier,
+    GammaRegressor,
+    NormalInverseGammaRegressor,
+    NormalRegressor,
+)
 from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
-)
-from ._estimators import (
-    DirichletClassifier,
-    GammaRegressor,
-    NormalRegressor,
-    NormalInverseGammaRegressor,
 )
