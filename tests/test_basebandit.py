@@ -419,7 +419,7 @@ def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
     instance.pull(unique_id=3)
 
     # update two non-existent unique_ids
-    with pytest.warns(DelayedRewardWarning, match="2 unique_ids"):
+    with pytest.raises(DelayedRewardException):
         instance.update([1, 2], unique_id=[1, 2])
 
     assert instance.arm1.learner.a_ == 0.1  # type: ignore
