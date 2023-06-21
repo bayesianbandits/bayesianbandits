@@ -16,6 +16,7 @@ from bayesianbandits import (
 from bayesianbandits._basebandit import (
     Bandit,
     DelayedRewardException,
+    DelayedRewardWarning,
     contextual,
     restless,
 )
@@ -380,3 +381,70 @@ def test_delayed_reward_reused_unique_id_exception() -> None:
 
     with pytest.raises(DelayedRewardException):
         instance.pull(unique_id=1)
+
+
+def test_delayed_reward_update_unknown_unique_id_exception() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0, reward_func)
+        arm2 = Arm(1, reward_func)
+
+    instance = Experiment(rng=0)
+
+    with pytest.raises(DelayedRewardException):
+        instance.update(1, unique_id=1)
+
+
+def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0, reward_func)
+        arm2 = Arm(1, reward_func)
+
+    instance = Experiment(rng=0)
+    instance.pull(unique_id=3)
+
+    # update two non-existent unique_ids
+    with pytest.warns(DelayedRewardWarning, match="2 unique_ids"):
+        instance.update([1, 2], unique_id=[1, 2])
+
+    assert instance.arm1.learner.a_ == 0.1  # type: ignore
+    assert instance.arm2.learner.a_ == 0.1  # type: ignore
+
+
+def test_delayed_reward_batch_update_known_and_unknown_unique_id_warning() -> None:
+    def reward_func(x: ArrayLike) -> ArrayLike:
+        return np.take(x, 0, axis=-1)  # type: ignore
+
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0, reward_func)
+        arm2 = Arm(1, reward_func)
+
+    instance = Experiment(rng=0)
+    instance.pull(unique_id=1)
+
+    # update one non-existent unique_id, one valid unique_id
+    with pytest.warns(DelayedRewardWarning, match="1 unique_ids"):
+        instance.update([1, 2], unique_id=[1, 2])
+
+    assert instance.arm1.learner.a_ == 0.1  # type: ignore
+    assert instance.arm2.learner.a_ == 0.6  # type: ignore

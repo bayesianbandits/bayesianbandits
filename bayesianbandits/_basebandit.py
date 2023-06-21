@@ -16,6 +16,7 @@ from typing import (
     cast,
     overload,
 )
+from warnings import warn
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -320,7 +321,13 @@ class Bandit:
                     X_fit, y_fit, cast(Collection[Any], unique_id)
                 )
 
-            arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
+            try:
+                arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
+            except KeyError:
+                raise DelayedRewardException(
+                    f"The unique_id {unique_id} is not in the cache. "
+                    "Please use a valid unique identifier."
+                )
 
         else:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
@@ -332,13 +339,36 @@ class Bandit:
     ):
         # fetch the arms names from the cache
         assert self.cache is not None  # for the type checker
-        arm_names = np.array(
-            [self.cache.pop(unique_id) for unique_id in unique_ids], dtype=str
+
+        # get indexes of unique_ids that are in the cache
+        present_ids = np.array(
+            [idx for idx, v in enumerate(unique_ids) if v in self.cache], dtype=int
         )
 
-        for X_part, y_part, arms in groupby_array(X, y, arm_names, by=arm_names):
-            arm_name = arms[0]
-            self.arms[arm_name].update(X_part, y_part)
+        # get the arm names from the cache, get None for missing ids
+        arm_names = np.array(
+            [self.cache.pop(unique_id, None) for unique_id in unique_ids],
+            dtype=str,
+        )
+
+        # warn if there are missing ids
+        if (missing_ids := len(arm_names) - len(present_ids)) > 0:
+            warn(
+                f"{missing_ids} unique_ids not in the cache. Skipping those updates.",
+                DelayedRewardWarning,
+                stacklevel=2,
+            )
+
+        # update the arms, dropping the missing ids
+        if len(present_ids) > 0:
+            for X_part, y_part, arms in groupby_array(
+                X[present_ids],
+                y[present_ids],
+                arm_names[present_ids],
+                by=arm_names[present_ids],
+            ):
+                arm_name = arms[0]
+                self.arms[arm_name].update(X_part, y_part)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
@@ -661,6 +691,15 @@ def check_is_bandit(cls: type):
 
 class DelayedRewardException(Exception):
     """Exception raised when the user does not handle delayed reward bandits
+    correctly.
+
+    For example, if the user tries to reuse a `unique_id`."""
+
+    pass
+
+
+class DelayedRewardWarning(UserWarning):
+    """Warning raised when the user does not handle delayed reward bandits
     correctly.
 
     For example, if the user tries to reuse a `unique_id`."""
