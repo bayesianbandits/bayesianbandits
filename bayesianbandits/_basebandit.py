@@ -351,13 +351,14 @@ class Bandit:
             dtype=str,
         )
 
-        # warn if there are missing ids, raise if all are missing
+        # raise if all ids are missing
         if len(present_ids) == 0:
             raise DelayedRewardException(
                 f"None of the unique_ids {unique_ids} are in the cache. "
                 "Please use valid unique identifiers."
             )
 
+        # warn if some ids are missing
         if (missing_ids := len(arm_names) - len(present_ids)) > 0:
             warn(
                 f"{missing_ids} unique_ids not in the cache. Skipping those updates.",
