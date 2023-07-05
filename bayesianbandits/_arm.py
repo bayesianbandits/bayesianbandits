@@ -1,14 +1,19 @@
 from __future__ import annotations
 from functools import wraps
-from typing import Callable, Optional, TypeVar, cast, Any
+from typing import Callable, Optional, TypeVar, Union, cast, Any
 from typing_extensions import ParamSpec, Concatenate
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 
 from ._typing import DecayingLearner, Learner, ActionToken
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
+RewardFunction = Union[
+    Callable[..., np.float_],
+    Callable[..., NDArray[np.float_]],
+    Callable[..., Union[np.float_, NDArray[np.float_]]],
+]
 
 
 def requires_learner(
@@ -33,9 +38,11 @@ class Arm:
     action_token : Any
         Token to return when the arm is pulled. This should be something processed
         by the user's code to execute the action associated with the arm.
-    reward_function : Callable
+    reward_function : RewardFunction
         Function to call to compute the reward. Takes the output of the learner's
-        `sample` function as input and should return a scalar reward.
+        `sample` function as input and should return a scalar reward. Should take
+        a single scalar or array-like argument and return a scalar or
+        1D array.
     learner : Optional[Learner], default=None
         Learner to use for the arm. If None, the arm cannot be used.
 
@@ -62,7 +69,7 @@ class Arm:
     def __init__(
         self,
         action_token: Any,
-        reward_function: Callable[[ArrayLike], ArrayLike],
+        reward_function: RewardFunction,
         learner: Optional[Learner] = None,
     ) -> None:
         self.action_token = ActionToken(action_token)
