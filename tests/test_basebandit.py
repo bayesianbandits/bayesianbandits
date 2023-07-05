@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 import numpy as np
 import pytest
@@ -75,7 +75,7 @@ def bandit_class(
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
     delayed_reward: bool,
 ) -> type:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     def action_func(x: int) -> None:
@@ -315,7 +315,7 @@ class TestBanditDecorator:
 
 
 def test_bandit_arms_with_existing_learners() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     learner_class = GammaRegressor(1, 2)  # set this to a non-Dirichlet learner
@@ -335,7 +335,7 @@ def test_bandit_arms_with_existing_learners() -> None:
 
 
 def test_contextual_bandit_batch_update() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     @contextual
@@ -363,7 +363,7 @@ def test_contextual_bandit_batch_update() -> None:
 
 
 def test_delayed_reward_reused_unique_id_exception() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     class Experiment(
@@ -384,7 +384,7 @@ def test_delayed_reward_reused_unique_id_exception() -> None:
 
 
 def test_delayed_reward_update_unknown_unique_id_exception() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     class Experiment(
@@ -403,7 +403,7 @@ def test_delayed_reward_update_unknown_unique_id_exception() -> None:
 
 
 def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     class Experiment(
@@ -427,7 +427,7 @@ def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
 
 
 def test_delayed_reward_batch_update_known_and_unknown_unique_id_warning() -> None:
-    def reward_func(x: ArrayLike) -> ArrayLike:
+    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     class Experiment(

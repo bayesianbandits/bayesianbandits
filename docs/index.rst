@@ -17,7 +17,7 @@ If you have any questions or suggestions, please feel free to open an issue
 on the project page on GitHub or contact me at <rishi@kulkarni.science>.
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Contents:
 
    installation
