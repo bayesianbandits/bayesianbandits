@@ -687,7 +687,7 @@ def restless(
 
     setattr(cls, "update", _restless_update)
 
-    return cast(Type[_B], cls)
+    return cls
 
 
 def check_is_bandit(cls: type):
