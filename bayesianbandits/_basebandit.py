@@ -322,12 +322,23 @@ class Bandit:
                 )
 
             try:
-                arm_to_update = self.arms[self.cache.pop(unique_id)]  # type: ignore
+                assert self.cache is not None  # this is here for the type checker
+                arm = self.cache.pop(unique_id)
             except KeyError:
                 raise DelayedRewardException(
                     f"The unique_id {unique_id} is not in the cache. "
                     "Please use a valid unique identifier."
                 )
+            try:
+                arm_to_update = self.arms[arm]
+            except KeyError:
+                warn(
+                    DelayedRewardWarning(
+                        f"The arm {arm} is not in the bandit. Skipping."
+                    ),
+                    stacklevel=2,
+                )
+                return
 
         else:
             arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
@@ -374,7 +385,17 @@ class Bandit:
             by=arm_names[present_ids],
         ):
             arm_name = arms[0]
-            self.arms[arm_name].update(X_part, y_part)
+            try:
+                arm_to_update = self.arms[arm_name]
+            except KeyError:
+                warn(
+                    DelayedRewardWarning(
+                        f"The arm {arm_name} is not in the bandit. Skipping."
+                    ),
+                    stacklevel=2,
+                )
+                continue
+            arm_to_update.update(X_part, y_part)
 
     @overload
     def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
@@ -687,7 +708,7 @@ def restless(
 
     setattr(cls, "update", _restless_update)
 
-    return cast(Type[_B], cls)
+    return cls
 
 
 def check_is_bandit(cls: type):
