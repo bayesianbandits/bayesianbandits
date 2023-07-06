@@ -88,12 +88,19 @@ These are custom exceptions raised by the bandit classes.
     :toctree: _autosummary
 
     DelayedRewardException
+    DelayedRewardWarning
 
 """
 
 
 from ._arm import Arm
-from ._basebandit import Bandit, DelayedRewardException, contextual, restless
+from ._basebandit import (
+    Bandit,
+    DelayedRewardException,
+    DelayedRewardWarning,
+    contextual,
+    restless,
+)
 from ._estimators import (
     DirichletClassifier,
     GammaRegressor,
