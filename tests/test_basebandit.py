@@ -75,8 +75,13 @@ def bandit_class(
     choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
     delayed_reward: bool,
 ) -> type:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
+    if isinstance(learner_class, DirichletClassifier):
+
+        def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
+            return np.take(x, 0, axis=-1)  # type: ignore
+
+    else:
+        reward_func = None
 
     def action_func(x: int) -> None:
         print(f"action{x}")

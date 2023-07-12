@@ -30,6 +30,12 @@ def requires_learner(
     return wrapper
 
 
+def identity(
+    x: Union[np.float_, NDArray[np.float_]]
+) -> Union[np.float_, NDArray[np.float_]]:
+    return x
+
+
 class Arm:
     """Arm of a bandit.
 
@@ -38,11 +44,11 @@ class Arm:
     action_token : Any
         Token to return when the arm is pulled. This should be something processed
         by the user's code to execute the action associated with the arm.
-    reward_function : RewardFunction
+    reward_function : Optional[RewardFunction], default=None
         Function to call to compute the reward. Takes the output of the learner's
         `sample` function as input and should return a scalar reward. Should take
         a single scalar or array-like argument and return a scalar or
-        1D array.
+        1D array. If None, the identity function is used.
     learner : Optional[Learner], default=None
         Learner to use for the arm. If None, the arm cannot be used.
 
@@ -69,10 +75,12 @@ class Arm:
     def __init__(
         self,
         action_token: Any,
-        reward_function: RewardFunction,
+        reward_function: Optional[RewardFunction] = None,
         learner: Optional[Learner] = None,
     ) -> None:
         self.action_token = ActionToken(action_token)
+        if reward_function is None:
+            reward_function = identity
         self.reward_function = reward_function
         self.learner = learner
 
