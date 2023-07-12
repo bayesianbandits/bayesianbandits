@@ -75,7 +75,7 @@ class Arm:
     def __init__(
         self,
         action_token: Any,
-        reward_function: Optional[RewardFunction],
+        reward_function: Optional[RewardFunction] = None,
         learner: Optional[Learner] = None,
     ) -> None:
         self.action_token = ActionToken(action_token)
