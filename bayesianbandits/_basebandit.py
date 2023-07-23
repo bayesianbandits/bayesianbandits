@@ -7,6 +7,8 @@ from typing import (
     ClassVar,
     Collection,
     Dict,
+    Hashable,
+    List,
     MutableMapping,
     Optional,
     Tuple,
@@ -21,7 +23,7 @@ from warnings import warn
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
-from typing_extensions import Literal, dataclass_transform
+from typing_extensions import Literal, dataclass_transform, TypeGuard
 
 from ._np_utils import groupby_array
 from ._typing import ArmProtocol, BanditProtocol, Learner
@@ -212,7 +214,7 @@ class Bandit:
         X: Optional[ArrayLike] = None,
         /,
         **kwargs: Any,
-    ) -> Any:
+    ) -> Union[Any, List[Any]]:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
 
@@ -226,24 +228,38 @@ class Bandit:
 
         Options
         -------
-        unique_id : Any
+        unique_id : Any | Collection[Any]
             Unique identifier for the pull. Required when the `@delayed_reward`
-            decorator is used.
+            decorator is used. If a Collection is provided and the bandit is
+            contextual, the `X` array must have the same number of rows as the
+            length of the Collection. The pull will be performed as a batch and
+            the tokens will be returned as a list.
         """
 
         X_pull, _ = _validate_arrays(X, None, self._contextual, check_y=False)
 
-        arm = self.policy(X_pull)
-        self.last_arm_pulled = arm
         unique_id = None
 
         if self.__class__._delayed_reward is True:
-            unique_id = kwargs.get("unique_id")
+            unique_id: Union[Hashable, Collection[Hashable]] = kwargs.get(
+                "unique_id", None
+            )
+
             if unique_id is None:
                 raise ValueError(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
+
+            elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
+                return self._pull_batch(X_pull, cast(Collection[Any], unique_id))
+            else:
+                if not _validate_unique_id(unique_id):
+                    raise ValueError(
+                        "The unique_id must be hashable. "
+                        "Please use a hashable unique identifier."
+                    )
+
             assert self.cache is not None  # this is here for the type checker
 
             if unique_id in self.cache:
@@ -252,17 +268,55 @@ class Bandit:
                     "Please use a unique identifier."
                 )
 
+        arm = self.policy(X_pull)
         ret_val = arm.pull()
+        self.last_arm_pulled = arm
 
         if self.__class__._delayed_reward is True:
             # this is here for the type checker
             assert self.cache is not None
-
-            (self.cache[unique_id],) = [
-                k for k, v in self.arms.items() if v is self.last_arm_pulled
-            ]
+            self.cache[unique_id] = arm.name
 
         return ret_val
+
+    def _pull_batch(
+        self, X: NDArray[np.float_], unique_ids: Collection[Any]
+    ) -> List[Any]:
+        assert self.cache is not None  # for the type checker
+
+        if not _validate_unique_ids(unique_ids):
+            raise ValueError(
+                "All unique_ids must be hashable. "
+                "Please use hashable unique identifiers."
+            )
+
+        _already_used_ids = [
+            unique_id for unique_id in unique_ids if unique_id in self.cache
+        ]
+        if len(_already_used_ids) > 0:
+            raise DelayedRewardException(
+                f"The unique_ids {_already_used_ids} have already been used. "
+                "Please use unique identifiers."
+            )
+
+        if self._contextual:
+            if len(unique_ids) != X.shape[0]:
+                raise ValueError(
+                    "The number of unique_ids must match the number of rows in `X`."
+                )
+            arms = [self.policy(np.atleast_2d(row)) for row in X]
+
+        else:
+            arms = [self.policy(X) for _ in unique_ids]
+
+        ret_vals = [arm.pull() for arm in arms]
+
+        for unique_id, arm in zip(unique_ids, arms):
+            self.cache[unique_id] = arm.name
+
+        self.last_arm_pulled = arms[-1]
+
+        return ret_vals
 
     @overload
     def update(self, y: ArrayLike, /) -> None:
@@ -302,9 +356,11 @@ class Bandit:
 
         Options
         -------
-        unique_id : Any
+        unique_id : Any | Collection[Any]
             Unique identifier for the pull. Required when the `@delayed_reward`
-            decorator is used.
+            decorator is used. If a Collection is provided, all arrays must have
+            the same length as the Collection. The update will be performed as a
+            batch.
         """
         X_fit, y_fit = _validate_arrays(X, y, self._contextual, check_y=True)
 
@@ -350,6 +406,11 @@ class Bandit:
     ):
         # fetch the arms names from the cache
         assert self.cache is not None  # for the type checker
+
+        if len(unique_ids) != X.shape[0]:
+            raise ValueError(
+                "`X`, `y`, and `unique_ids` must have the same number of rows."
+            )
 
         # get indexes of unique_ids that are in the cache
         present_ids = np.array(
@@ -570,6 +631,21 @@ def _validate_arrays(
     ...
 
 
+def _validate_unique_id(
+    unique_id: Any,
+) -> TypeGuard[Hashable]:
+    return isinstance(unique_id, Hashable)
+
+
+def _validate_unique_ids(
+    unique_ids: Collection[Any],
+) -> TypeGuard[Collection[Hashable]]:
+    for unique_id in unique_ids:
+        if not _validate_unique_id(unique_id):
+            return False
+    return True
+
+
 def _validate_arrays(
     X: Optional[ArrayLike],
     y: Optional[ArrayLike],
@@ -617,6 +693,12 @@ def _validate_arrays(
             if check_y
             else np.array([[1]], dtype=float)
         )
+
+    if check_y:
+        if X.shape[0] != y.shape[0]:  # type: ignore
+            raise ValueError(
+                "The number of rows in `X` must match the number of rows in `y`."
+            )
 
     return X, y
 

@@ -134,6 +134,7 @@ def thompson_sampling() -> Callable[[BanditProtocol, NDArray[np.float_]], ArmPro
 
 def _draw_one_sample(arm: ArmProtocol, X: NDArray[np.float_]) -> np.float_:
     """Draw one sample from the posterior distribution for the arm."""
+
     return arm.sample(X, size=1).item()  # type: ignore
 
 

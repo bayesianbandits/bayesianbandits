@@ -84,6 +84,9 @@ class Arm:
         self.reward_function = reward_function
         self.learner = learner
 
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name = name
+
     @requires_learner
     def pull(self) -> ActionToken:
         """Pull the arm."""
