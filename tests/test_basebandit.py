@@ -339,6 +339,27 @@ def test_bandit_arms_with_existing_learners() -> None:
     assert instance.arms["arm2"].learner.alphas[1] == 6.0
 
 
+def test_bandit_batch_pull_and_update() -> None:
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    instance.pull(unique_id=[1, 2, 3])
+    instance.update([1, 2, 1], unique_id=[1, 2, 3])
+
+    # 0.1 + 0.5 - one update. this test could break if the rng changes
+    assert instance.arm1.learner.a_ == 0.1  # type: ignore
+    # 0.1 + 0.5 + 0.5 - two updates. this test could break if the rng changes
+    assert instance.arm2.learner.a_ == 1.6  # type: ignore
+
+
 def test_contextual_bandit_batch_pull_and_update() -> None:
     @contextual
     class Experiment(
@@ -363,6 +384,33 @@ def test_contextual_bandit_batch_pull_and_update() -> None:
     assert instance.arm2.learner.a_ == 1.1  # type: ignore
 
 
+def test_contextual_bandit_batch_pull_length_mismatch_exception() -> None:
+    @contextual
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    X = np.array([[1, 2], [3, 4], [5, 6]])
+
+    with pytest.raises(ValueError):
+        instance.pull(X, unique_id=[1, 2])
+
+    instance.pull(X, unique_id=[1, 2, 3])
+
+    with pytest.raises(ValueError):
+        instance.update(X, [1, 2, 3], unique_id=[1, 2])
+
+    with pytest.raises(ValueError):
+        instance.update(X, [1, 2], unique_id=[1, 2, 3])
+
+
 def test_delayed_reward_reused_unique_id_exception() -> None:
     class Experiment(
         Bandit,
@@ -379,6 +427,24 @@ def test_delayed_reward_reused_unique_id_exception() -> None:
 
     with pytest.raises(DelayedRewardException):
         instance.pull(unique_id=1)
+
+
+def test_delayed_reward_batch_reused_unique_id_exception() -> None:
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    instance.pull(unique_id=[1, 2, 3])
+
+    with pytest.raises(DelayedRewardException):
+        instance.pull(unique_id=[1, 2, 4])
 
 
 def test_delayed_reward_update_unknown_unique_id_exception() -> None:
@@ -437,3 +503,38 @@ def test_delayed_reward_batch_update_known_and_unknown_unique_id_warning() -> No
 
     assert instance.arm1.learner.a_ == 0.1  # type: ignore
     assert instance.arm2.learner.a_ == 0.6  # type: ignore
+
+
+class UnhashableClass:
+    __hash__ = None
+
+
+def test_delayed_reward_bad_unique_id_errors() -> None:
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    with pytest.raises(ValueError, match="hashable"):
+        instance.pull(unique_id=[[1]])
+
+    with pytest.raises(ValueError, match="hashable"):
+        instance.pull(unique_id=[UnhashableClass()])
+
+    with pytest.raises(ValueError, match="hashable"):
+        instance.pull(unique_id=UnhashableClass())
+
+    with pytest.raises(ValueError, match="hashable"):
+        instance.pull(unique_id=[1, [2]])
+
+    with pytest.raises(ValueError):
+        instance.pull()
+
+    with pytest.raises(ValueError):
+        instance.update(1)
