@@ -339,10 +339,7 @@ def test_bandit_arms_with_existing_learners() -> None:
     assert instance.arms["arm2"].learner.alphas[1] == 6.0
 
 
-def test_contextual_bandit_batch_update() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
+def test_contextual_bandit_batch_pull_and_update() -> None:
     @contextual
     class Experiment(
         Bandit,
@@ -350,15 +347,14 @@ def test_contextual_bandit_batch_update() -> None:
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
-        arm1 = Arm(0, reward_func)
-        arm2 = Arm(1, reward_func)
+        arm1 = Arm(0)
+        arm2 = Arm(1)
 
     instance = Experiment(rng=0)
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
-    instance.pull(X[0], unique_id=1)
-    instance.pull(X[1], unique_id=2)
-    instance.pull(X[2], unique_id=3)
+
+    instance.pull(X, unique_id=[1, 2, 3])
     instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
 
     # 0.1 + 0.5 - one update. this test could break if the rng changes
@@ -368,17 +364,14 @@ def test_contextual_bandit_batch_update() -> None:
 
 
 def test_delayed_reward_reused_unique_id_exception() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
     class Experiment(
         Bandit,
         learner=NormalInverseGammaRegressor(),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
-        arm1 = Arm(0, reward_func)
-        arm2 = Arm(1, reward_func)
+        arm1 = Arm(0)
+        arm2 = Arm(1)
 
     instance = Experiment(rng=0)
 
@@ -389,17 +382,14 @@ def test_delayed_reward_reused_unique_id_exception() -> None:
 
 
 def test_delayed_reward_update_unknown_unique_id_exception() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
     class Experiment(
         Bandit,
         learner=NormalInverseGammaRegressor(),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
-        arm1 = Arm(0, reward_func)
-        arm2 = Arm(1, reward_func)
+        arm1 = Arm(0)
+        arm2 = Arm(1)
 
     instance = Experiment(rng=0)
 
@@ -408,17 +398,14 @@ def test_delayed_reward_update_unknown_unique_id_exception() -> None:
 
 
 def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
     class Experiment(
         Bandit,
         learner=NormalInverseGammaRegressor(),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
-        arm1 = Arm(0, reward_func)
-        arm2 = Arm(1, reward_func)
+        arm1 = Arm(0)
+        arm2 = Arm(1)
 
     instance = Experiment(rng=0)
     instance.pull(unique_id=3)
@@ -432,17 +419,14 @@ def test_delayed_reward_batch_update_unknown_unique_id_warning() -> None:
 
 
 def test_delayed_reward_batch_update_known_and_unknown_unique_id_warning() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-        return np.take(x, 0, axis=-1)  # type: ignore
-
     class Experiment(
         Bandit,
         learner=NormalInverseGammaRegressor(),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
-        arm1 = Arm(0, reward_func)
-        arm2 = Arm(1, reward_func)
+        arm1 = Arm(0)
+        arm2 = Arm(1)
 
     instance = Experiment(rng=0)
     instance.pull(unique_id=1)
