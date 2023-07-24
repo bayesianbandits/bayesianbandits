@@ -23,9 +23,10 @@ from warnings import warn
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
-from typing_extensions import Literal, dataclass_transform, TypeGuard
+from typing_extensions import Literal, TypeGuard, dataclass_transform
 
 from ._np_utils import groupby_array
+from ._policy_decorators import ArmChoicePolicy
 from ._typing import ArmProtocol, BanditProtocol, Learner
 
 _B = TypeVar("_B", bound="Bandit")
@@ -131,14 +132,15 @@ class Bandit:
     cache: Optional[MutableMapping[Any, str]] = field(default=None, repr=False)
 
     learner: ClassVar[Learner]
-    policy: ClassVar[Callable[..., ArmProtocol]]
+    policy: ClassVar[ArmChoicePolicy]
+
     _delayed_reward: ClassVar[bool] = False
 
     def __init_subclass__(
         cls,
         /,
         learner: Learner,
-        policy: Callable[..., ArmProtocol],
+        policy: ArmChoicePolicy,
         delayed_reward: bool = False,
         **kwargs: Dict[str, Any],
     ):
@@ -155,7 +157,7 @@ class Bandit:
 
         # set learner and policy as class variables
         cls.learner = learner
-        cls.policy = policy
+        cls.policy = staticmethod(policy)  # type: ignore
 
         # if delayed reward, set cache as an initializable instance variable,
         # otherwise leave it uninitializable
@@ -235,6 +237,7 @@ class Bandit:
             length of the Collection. The pull will be performed as a batch and
             the tokens will be returned as a list.
         """
+        assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
         X_pull, _ = _validate_arrays(X, None, self._contextual, check_y=False)
 
@@ -260,7 +263,7 @@ class Bandit:
                         "Please use a hashable unique identifier."
                     )
 
-            assert self.cache is not None  # this is here for the type checker
+            assert self.cache is not None  # for the type checker
 
             if unique_id in self.cache:
                 raise DelayedRewardException(
@@ -268,7 +271,14 @@ class Bandit:
                     "Please use a unique identifier."
                 )
 
-        arm = self.policy(X_pull)
+        if X_pull.shape[0] > 1:
+            raise ValueError(
+                "The `X` array must have only one row when `delayed_reward = False`."
+            )
+
+        arm = self.policy(self.arms, X_pull, self.rng)
+
+        assert isinstance(arm, ArmProtocol)  # for the type checker
         ret_val = arm.pull()
         self.last_arm_pulled = arm
 
@@ -283,6 +293,7 @@ class Bandit:
         self, X: NDArray[np.float_], unique_ids: Collection[Any]
     ) -> List[Any]:
         assert self.cache is not None  # for the type checker
+        assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
         if not _validate_unique_ids(unique_ids):
             raise ValueError(
@@ -304,10 +315,12 @@ class Bandit:
                 raise ValueError(
                     "The number of unique_ids must match the number of rows in `X`."
                 )
-            arms = [self.policy(np.atleast_2d(row)) for row in X]
-
+            arms = self.policy(self.arms, X, self.rng)
         else:
-            arms = [self.policy(X) for _ in unique_ids]
+            arms = self.policy(self.arms, X.repeat(len(unique_ids), axis=0), self.rng)
+
+        if isinstance(arms, ArmProtocol):
+            arms = [arms]
 
         ret_vals = [arm.pull() for arm in arms]
 
@@ -488,11 +501,17 @@ class Bandit:
             Number of samples to draw.
 
         """
+        assert isinstance(self.rng, np.random.Generator)  # for the type checker
         X_sample, _ = _validate_arrays(X, None, self._contextual, check_y=False)
         # choose an arm, draw a sample, and repeat `size` times
         # TODO: this is not the most efficient way to do this
         # but I can't imagine a situation where this would be a bottleneck.
-        return np.array([self.policy(X_sample).sample(X_sample) for _ in range(size)])
+        return np.array(
+            [
+                self.policy(self.arms, X_sample, self.rng).sample(X_sample)
+                for _ in range(size)
+            ]
+        )
 
     @overload
     def decay(
