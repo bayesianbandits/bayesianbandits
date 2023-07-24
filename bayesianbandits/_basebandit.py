@@ -3,7 +3,6 @@ from dataclasses import Field, dataclass, field
 from functools import cached_property, partial
 from typing import (
     Any,
-    Callable,
     ClassVar,
     Collection,
     Dict,
@@ -508,7 +507,9 @@ class Bandit:
         # but I can't imagine a situation where this would be a bottleneck.
         return np.array(
             [
-                self.policy(self.arms, X_sample, self.rng).sample(X_sample)
+                cast(ArmProtocol, self.policy(self.arms, X_sample, self.rng)).sample(
+                    X_sample
+                )
                 for _ in range(size)
             ]
         )
