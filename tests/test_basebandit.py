@@ -594,8 +594,8 @@ def test_delayed_reward_bad_unique_id_errors() -> None:
     with pytest.raises(ValueError, match="hashable"):
         instance.pull(unique_id=[1, [2]])
 
-    with pytest.raises(ValueError):
+    with pytest.raises(DelayedRewardException):
         instance.pull()
 
-    with pytest.raises(ValueError):
+    with pytest.raises(DelayedRewardException):
         instance.update(1)

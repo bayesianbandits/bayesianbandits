@@ -1,3 +1,4 @@
+from __future__ import annotations
 from copy import deepcopy
 from dataclasses import Field, dataclass, field
 from functools import cached_property, partial
@@ -227,48 +228,81 @@ class Bandit:
             Context for the bandit. Only provided when the @contextual
             decorator is used.
 
-        Options
-        -------
+        Keyword Arguments
+        -----------------
         unique_id : Any | Collection[Any]
             Unique identifier for the pull. Required when the `@delayed_reward`
             decorator is used. If a Collection is provided and the bandit is
             contextual, the `X` array must have the same number of rows as the
             length of the Collection. The pull will be performed as a batch and
             the tokens will be returned as a list.
+
+        Returns
+        -------
+        Any | List[Any]
+            Token of the arm pulled. If `unique_id` is a Collection, a list of
+            tokens will be returned.
+
+        Raises
+        ------
+        DelayedRewardException
+            Raised when `unique_id` is not provided and `delayed_reward = True`,
+            or when any `unique_id` has already been used.
+        ValueError
+            Raised when `unique_id` is not hashable, or when `X` does not have
+            the same number of rows as `unique_id` when `unique_id` is a
+            Collection. Also raised when `X` has more than one row when
+            `delayed_reward = False`.
         """
         assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
         X_pull, _ = _validate_arrays(X, None, self._contextual, check_y=False)
-
         unique_id = None
 
-        if self.__class__._delayed_reward is True:
+        if self._delayed_reward is True:
             unique_id: Union[Hashable, Collection[Hashable]] = kwargs.get(
                 "unique_id", None
             )
 
             if unique_id is None:
-                raise ValueError(
+                raise DelayedRewardException(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
 
             elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
-                return self._pull_batch(X_pull, cast(Collection[Any], unique_id))
-            else:
-                if not _validate_unique_id(unique_id):
-                    raise ValueError(
-                        "The unique_id must be hashable. "
-                        "Please use a hashable unique identifier."
-                    )
-
-            assert self.cache is not None  # for the type checker
-
-            if unique_id in self.cache:
-                raise DelayedRewardException(
-                    f"The unique_id {unique_id} has already been used. "
-                    "Please use a unique identifier."
+                return self._pull_batch_delayed_reward(
+                    X_pull, cast(Collection[Any], unique_id)
                 )
+
+            else:
+                return self._pull_single_delayed_reward(X_pull, unique_id)
+
+        return self._pull_single(X_pull)
+
+    def _pull_single(self, X_pull: NDArray[np.float_]) -> Any:
+        """Makes a single decision and pulls one arm.
+
+        If given, validates that `X_pull` has only one row, as making several
+        decisions for multiple context vectors is not possible when
+        `delayed_reward = False`.
+
+        Parameters
+        ----------
+        X_pull : NDArray[np.float_]
+            Context vector - must have only one row.
+
+        Returns
+        -------
+        Any
+            Token of the arm pulled.
+
+        Raises
+        ------
+        ValueError
+            Raised when `X_pull` has more than one row.
+        """
+        assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
         if X_pull.shape[0] > 1:
             raise ValueError(
@@ -280,17 +314,93 @@ class Bandit:
         assert isinstance(arm, ArmProtocol)  # for the type checker
         ret_val = arm.pull()
         self.last_arm_pulled = arm
+        return ret_val
 
-        if self.__class__._delayed_reward is True:
-            # this is here for the type checker
-            assert self.cache is not None
-            self.cache[unique_id] = arm.name
+    def _pull_single_delayed_reward(
+        self, X: NDArray[np.float_], unique_id: Hashable
+    ) -> Any:
+        """Makes a single decision and pulls one arm for a delayed reward bandit.
+
+        By calling `_pull_single`, this method validates that `X` has only one
+        row. It also validates that `unique_id` is hashable and has not been
+        used before. This branch is only taken when `delayed_reward = True` and
+        a single `unique_id` is provided.
+
+        Parameters
+        ----------
+        X : NDArray[np.float_]
+            Context vector - must have only one row.
+        unique_id : Hashable
+            Unique identifier for the pull.
+
+        Returns
+        -------
+        Any
+            Token of the arm pulled.
+
+        Raises
+        ------
+        ValueError
+            Raised when `X` has more than one row.
+        ValueError
+            Raised when `unique_id` is not hashable.
+        DelayedRewardException
+            Raised when `unique_id` has already been used.
+        """
+
+        assert self.cache is not None
+
+        if not _validate_unique_id(unique_id):
+            raise ValueError(
+                "The unique_id must be hashable. "
+                "Please use a hashable unique identifier."
+            )
+
+        if unique_id in self.cache:
+            raise DelayedRewardException(
+                f"The unique_id {unique_id} has already been used. "
+                "Please use a unique identifier."
+            )
+
+        ret_val = self._pull_single(X)
+        self.cache[unique_id] = cast(ArmProtocol, self.last_arm_pulled).name
 
         return ret_val
 
-    def _pull_batch(
+    def _pull_batch_delayed_reward(
         self, X: NDArray[np.float_], unique_ids: Collection[Any]
     ) -> List[Any]:
+        """Makes a batch of decisions and pulls a batch of arms for a delayed
+        reward bandit.
+
+        This method validates that `X` has the same number of rows as
+        `unique_ids`. It also validates that `unique_ids` is a collection of
+        hashable objects and that none of the `unique_ids` have been used
+        before. This branch is only taken when `delayed_reward = True` and a
+        collection of `unique_ids` is provided.
+
+        Parameters
+        ----------
+        X : NDArray[np.float_]
+            Context array - must have the same number of rows as `unique_ids`.
+        unique_ids : Collection[Any]
+            Unique identifiers for the pulls.
+
+        Returns
+        -------
+        List[Any]
+            Tokens of the arms pulled, in the same order as `unique_ids`.
+
+        Raises
+        ------
+        ValueError
+            Raised when `X` does not have the same number of rows as
+            `unique_ids`.
+        DelayedRewardException
+            Raised when any of the `unique_ids` have already been used.
+        ValueError
+            Raised when `unique_ids` is not a collection of hashable objects.
+        """
         assert self.cache is not None  # for the type checker
         assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
@@ -366,8 +476,8 @@ class Bandit:
         ValueError
             If no arm has been pulled yet.
 
-        Options
-        -------
+        Keyword Arguments
+        -----------------
         unique_id : Any | Collection[Any]
             Unique identifier for the pull. Required when the `@delayed_reward`
             decorator is used. If a Collection is provided, all arrays must have
@@ -379,7 +489,7 @@ class Bandit:
         if self.__class__._delayed_reward is True:
             unique_id: Union[Collection[Any], str, None] = kwargs.get("unique_id", None)
             if unique_id is None:
-                raise ValueError(
+                raise DelayedRewardException(
                     "The `unique_id` keyword argument is required when the "
                     "`delayed_reward = True`."
                 )
