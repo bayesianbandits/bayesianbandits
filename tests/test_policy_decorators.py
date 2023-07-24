@@ -1,61 +1,136 @@
-from typing import Any, Callable
-from unittest.mock import MagicMock
+from typing import Dict
 import numpy as np
-from numpy import floating
+from numpy.typing import NDArray
 
 import pytest
 
-from bayesianbandits import Arm
+from bayesianbandits import Arm, NormalInverseGammaRegressor
+from bayesianbandits._typing import ArmProtocol
 from bayesianbandits._policy_decorators import (
     upper_confidence_bound,
-    _compute_arm_mean,
-    _compute_arm_upper_bound,
-    _draw_one_sample,
+    thompson_sampling,
+    epsilon_greedy,
+    ArmChoicePolicy,
 )
 
 
 @pytest.fixture
-def mock_arm():
+def test_arms():
     """Mock arm with a learner."""
-    arm = MagicMock(autospec=True)
-    return arm
+    arm1 = Arm(0, learner=NormalInverseGammaRegressor(mu=0, a=50, b=50))
+    arm2 = Arm(1, learner=NormalInverseGammaRegressor(mu=1, a=50, b=50))
+    arm3 = Arm(2, learner=NormalInverseGammaRegressor(mu=2, a=50, b=50))
+    arm4 = Arm(3, learner=NormalInverseGammaRegressor(mu=300, a=50, b=50))
+
+    return {
+        "arm1": arm1,
+        "arm2": arm2,
+        "arm3": arm3,
+        "arm4": arm4,
+    }
+
+
+@pytest.fixture(params=["len_1", "len_100"])
+def X(request: pytest.FixtureRequest):
+    """Mock data."""
+    if request.param == "len_1":
+        return np.random.normal(size=(1, 2))
+    else:
+        return np.random.normal(size=(100, 2))
 
 
 @pytest.mark.parametrize(
-    "aggregation_func", [_compute_arm_mean, _compute_arm_upper_bound, _draw_one_sample]
+    "policy",
+    [upper_confidence_bound(), thompson_sampling(), epsilon_greedy()],
+    ids=[
+        "upper_confidence_bound",
+        "thompson_sampling",
+        "epsilon_greedy",
+    ],
 )
-def test_aggregation_functions_return_type(
-    aggregation_func: Callable[..., floating[Any]], mock_arm: Arm
+def test_policies(
+    policy: ArmChoicePolicy, X: NDArray[np.float_], test_arms: Dict[str, ArmProtocol]
 ):
-    """Test that aggregation functions return the correct type."""
+    """Test that the policies return an arm."""
 
-    mock_arm.sample.return_value = np.array([1.0])
+    rng = np.random.default_rng(0)
 
-    assert isinstance(aggregation_func(mock_arm, None), float)
+    arms = policy(test_arms, X, rng)
 
-
-def test_compute_arm_mean(mock_arm: Arm):
-    """Test that the mean of the posterior distribution is computed correctly."""
-
-    mock_arm.sample.return_value = np.array([1.0, 2.0, 3.0])
-
-    assert _compute_arm_mean(mock_arm, None) == 2.0
+    if isinstance(arms, list):
+        for arm in arms:
+            assert isinstance(arm, Arm)
+    else:
+        assert isinstance(arms, Arm)
 
 
-def test_compute_arm_upper_bound(mock_arm: Arm):
-    """Test that the upper bound of the posterior distribution is computed correctly."""
+def test_thompson_sampling_statistics(test_arms: Dict[str, ArmProtocol]):
+    sampler = thompson_sampling()
 
-    mock_arm.sample.return_value = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    rng = np.random.default_rng(0)
 
-    assert _compute_arm_upper_bound(mock_arm, None, alpha=0.8) == 5.0
+    # Add intercept
+    X = np.ones((100, 3))
+
+    arms = sampler(test_arms, X, rng)
+
+    assert isinstance(arms, list)
+
+    # check that arm 4 is the most likely to be chosen
+    counts = np.array([0, 0, 0, 0])
+
+    for arm in arms:
+        counts[arm.action_token] += 1
+
+    assert counts[3] > counts[0]
+    assert counts[3] > counts[1]
+    assert counts[3] > counts[2]
 
 
-def test_draw_one_sample(mock_arm: Arm):
-    """Test that a sample is drawn correctly."""
+def test_epsilon_greedy_statistics(test_arms: Dict[str, ArmProtocol]):
+    sampler = epsilon_greedy(epsilon=0.01)
 
-    mock_arm.sample.return_value = np.array([1.0])
+    rng = np.random.default_rng(0)
 
-    assert _draw_one_sample(mock_arm, None) == 1.0
+    # Add intercept
+    X = np.ones((100, 3))
+
+    arms = sampler(test_arms, X, rng)
+
+    assert isinstance(arms, list)
+
+    # check that arm 4 is the most likely to be chosen
+    counts = np.array([0, 0, 0, 0])
+
+    for arm in arms:
+        counts[arm.action_token] += 1
+
+    assert counts[3] > counts[0]
+    assert counts[3] > counts[1]
+    assert counts[3] > counts[2]
+
+
+def test_ucb_statistics(test_arms: Dict[str, ArmProtocol]):
+    sampler = upper_confidence_bound()
+
+    rng = np.random.default_rng(0)
+
+    # Add intercept
+    X = np.ones((100, 3))
+
+    arms = sampler(test_arms, X, rng)
+
+    assert isinstance(arms, list)
+
+    # check that arm 4 is the most likely to be chosen
+    counts = np.array([0, 0, 0, 0])
+
+    for arm in arms:
+        counts[arm.action_token] += 1
+
+    assert counts[3] > counts[0]
+    assert counts[3] > counts[1]
+    assert counts[3] > counts[2]
 
 
 def test_upper_confidence_bound_bad_alpha():

@@ -3,7 +3,7 @@ from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 import numpy as np
 import pytest
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import NDArray
 from sklearn.base import check_is_fitted  # type: ignore
 
 from bayesianbandits import (
@@ -21,11 +21,12 @@ from bayesianbandits._basebandit import (
     restless,
 )
 from bayesianbandits._policy_decorators import (
+    ArmChoicePolicy,
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
 )
-from bayesianbandits._typing import ArmProtocol, BanditProtocol, Learner
+from bayesianbandits._typing import Learner
 
 
 @pytest.fixture(params=["dirichlet", "gamma", "normal", "normal-inverse-gamma"])
@@ -47,7 +48,7 @@ def learner_class(request: pytest.FixtureRequest) -> Learner:
 )
 def choice(
     request: pytest.FixtureRequest,
-) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
+) -> ArmChoicePolicy:
     if request.param == "epsilon_greedy":
         return epsilon_greedy(0.5)
     elif request.param == "thompson_sampling":
@@ -72,7 +73,7 @@ def delayed_reward(request: pytest.FixtureRequest) -> bool:
 def bandit_class(
     request: pytest.FixtureRequest,
     learner_class: Learner,
-    choice: Callable[[BanditProtocol, Optional[ArrayLike]], ArmProtocol],
+    choice: ArmChoicePolicy,
     delayed_reward: bool,
 ) -> type:
     if isinstance(learner_class, DirichletClassifier):
@@ -360,6 +361,25 @@ def test_bandit_batch_pull_and_update() -> None:
     assert instance.arm2.learner.a_ == 1.6  # type: ignore
 
 
+def test_bandit_batch_pull_and_update_single() -> None:
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    instance.pull(unique_id=[1])
+    instance.update([1], unique_id=[1])
+
+    # 0.1 + 0.5 - one update. this test could break if the rng changes
+    assert instance.arm2.learner.a_ == 0.6  # type: ignore
+
+
 def test_contextual_bandit_batch_pull_and_update() -> None:
     @contextual
     class Experiment(
@@ -379,9 +399,31 @@ def test_contextual_bandit_batch_pull_and_update() -> None:
     instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
 
     # 0.1 + 0.5 - one update. this test could break if the rng changes
-    assert instance.arm1.learner.a_ == 0.6  # type: ignore
+    assert instance.arm1.learner.a_ == 1.1  # type: ignore
     # 0.1 + 0.5 + 0.5 - two updates. this test could break if the rng changes
-    assert instance.arm2.learner.a_ == 1.1  # type: ignore
+    assert instance.arm2.learner.a_ == 0.6  # type: ignore
+
+
+def test_contextual_bandit_batch_pull_and_update_single() -> None:
+    @contextual
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=True,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    X = np.array([[1, 2]])
+
+    instance.pull(X, unique_id=[1])
+    instance.update(X, [1], unique_id=[1])
+
+    # 0.1 + 0.5 - one update. this test could break if the rng changes
+    assert instance.arm2.learner.a_ == 0.6  # type: ignore
 
 
 def test_contextual_bandit_batch_pull_length_mismatch_exception() -> None:
@@ -409,6 +451,25 @@ def test_contextual_bandit_batch_pull_length_mismatch_exception() -> None:
 
     with pytest.raises(ValueError):
         instance.update(X, [1, 2], unique_id=[1, 2, 3])
+
+
+def test_contextual_bandit_batch_without_restless_exception() -> None:
+    @contextual
+    class Experiment(
+        Bandit,
+        learner=NormalInverseGammaRegressor(),
+        policy=thompson_sampling(),
+        delayed_reward=False,
+    ):
+        arm1 = Arm(0)
+        arm2 = Arm(1)
+
+    instance = Experiment(rng=0)
+
+    X = np.array([[1, 2], [3, 4], [5, 6]])
+
+    with pytest.raises(ValueError):
+        instance.pull(X)
 
 
 def test_delayed_reward_reused_unique_id_exception() -> None:
