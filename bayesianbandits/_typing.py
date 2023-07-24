@@ -59,9 +59,12 @@ class ArmProtocol(Protocol):
     - `update`
     - `decay`
 
+    Additionally, Arms must have a `name` attribute.
+
     """
 
     learner: Optional[Learner]
+    name: str
 
     def pull(self) -> ActionToken:
         ...

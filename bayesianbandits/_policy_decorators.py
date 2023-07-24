@@ -1,18 +1,23 @@
 from __future__ import annotations
-from functools import partial
-from typing import Callable, cast
+
+from typing import Callable, Dict, List, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
-from ._typing import ArmProtocol, BanditProtocol
+from ._typing import ArmProtocol
+
+ArmChoicePolicy = Callable[
+    [Dict[str, ArmProtocol], NDArray[np.float_], np.random.Generator],
+    Union[ArmProtocol, List[ArmProtocol]],
+]
 
 
 def epsilon_greedy(
     epsilon: float = 0.1,
     *,
     samples: int = 1000,
-) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
+) -> ArmChoicePolicy:
     """Creates an epsilon-greedy choice algorithm. To be used with the
     `Bandit` class.
 
@@ -30,16 +35,36 @@ def epsilon_greedy(
     """
 
     def _choose_arm(
-        self: BanditProtocol,
+        arms: Dict[str, ArmProtocol],
         X: NDArray[np.float_],
-    ) -> ArmProtocol:
+        rng: np.random.Generator,
+    ) -> Union[ArmProtocol, List[ArmProtocol]]:
         """Choose an arm using epsilon-greedy."""
 
-        if self.rng.random() < epsilon:  # type: ignore
-            return self.rng.choice(list(self.arms.values()))  # type: ignore
-        else:
-            key_func = partial(_compute_arm_mean, X=X, samples=samples)
-            return max(self.arms.values(), key=key_func)  # type: ignore
+        arm_list = list(arms.values())
+
+        means = np.stack(
+            tuple(_compute_arm_mean(arm, X, samples=samples) for arm in arm_list)
+        )
+
+        choices = _return_based_on_size(arm_list, means)
+
+        if not isinstance(choices, list):
+            if rng.random() < epsilon:
+                return rng.choice(arm_list)  # type: ignore
+            else:
+                return choices
+
+        choice_idx_to_explore = rng.random(size=len(choices)) < epsilon
+
+        final_choices: List[ArmProtocol] = []
+        for explore, choice in zip(choice_idx_to_explore, choices):
+            if explore:
+                final_choices.append(rng.choice(arm_list))  # type: ignore
+            else:
+                final_choices.append(choice)
+
+        return final_choices
 
     return _choose_arm
 
@@ -48,7 +73,7 @@ def upper_confidence_bound(
     alpha: float = 0.68,
     *,
     samples: int = 1000,
-) -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
+) -> ArmChoicePolicy:
     """Creates a UCB choice algorithm. To be used with the
     `Bandit` class.
 
@@ -87,18 +112,30 @@ def upper_confidence_bound(
         raise ValueError("alpha must be in (0, 1).")
 
     def _choose_arm(
-        self: BanditProtocol,
+        arms: Dict[str, ArmProtocol],
         X: NDArray[np.float_],
-    ) -> ArmProtocol:
+        rng: np.random.Generator,
+    ) -> Union[ArmProtocol, List[ArmProtocol]]:
         """Choose an arm using UCB1."""
 
-        key_func = partial(_compute_arm_upper_bound, X=X, alpha=alpha, samples=samples)
-        return max(self.arms.values(), key=key_func)  # type: ignore
+        arm_list = list(arms.values())
+
+        # Compute the upper bound of the one-sided credible interval for
+        # each arm.
+        upper_bounds = np.stack(
+            tuple(
+                _compute_arm_upper_bound(arm, X, alpha=alpha, samples=samples)
+                for arm in arm_list
+            )
+        )
+
+        # Return the arm(s) with the largest upper bound.
+        return _return_based_on_size(arm_list, upper_bounds)
 
     return _choose_arm
 
 
-def thompson_sampling() -> Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]:
+def thompson_sampling() -> ArmChoicePolicy:
     """Creates a Thompson sampling choice algorithm. To be used with the
     `Bandit` class.
 
@@ -121,20 +158,42 @@ def thompson_sampling() -> Callable[[BanditProtocol, NDArray[np.float_]], ArmPro
     """
 
     def _choose_arm(
-        self: BanditProtocol,
+        arms: Dict[str, ArmProtocol],
         X: NDArray[np.float_],
-    ) -> ArmProtocol:
+        rng: np.random.Generator,
+    ) -> Union[ArmProtocol, List[ArmProtocol]]:
         """Choose an arm using Thompson sampling."""
 
-        key_func = partial(_draw_one_sample, X=X)
-        return max(self.arms.values(), key=key_func)  # type: ignore
+        arm_list = list(arms.values())
+
+        # Sample from the posterior distribution for each arm.
+        posterior_summaries = np.stack(
+            tuple(_draw_one_sample(arm, X) for arm in arm_list)
+        )
+
+        return _return_based_on_size(arm_list, posterior_summaries)
 
     return _choose_arm
 
 
-def _draw_one_sample(arm: ArmProtocol, X: NDArray[np.float_]) -> np.float_:
+def _return_based_on_size(
+    arm_list: List[ArmProtocol],
+    posterior_summaries: NDArray[np.float_],
+):
+    best_arm_indexes = cast(
+        NDArray[np.int_], np.atleast_1d(np.argmax(posterior_summaries, axis=0))
+    )
+
+    if len(best_arm_indexes) == 1:
+        return arm_list[best_arm_indexes.item()]
+
+    else:
+        return [arm_list[cast(int, i)] for i in best_arm_indexes]
+
+
+def _draw_one_sample(arm: ArmProtocol, X: NDArray[np.float_]) -> NDArray[np.float_]:
     """Draw one sample from the posterior distribution for the arm."""
-    return arm.sample(X, size=1).item()  # type: ignore
+    return arm.sample(X, size=1).squeeze(axis=0)
 
 
 def _compute_arm_upper_bound(
@@ -147,9 +206,8 @@ def _compute_arm_upper_bound(
     """Compute the upper bound of a one-sided credible interval with size
     `alpha` from the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
-    posterior_samples = cast(NDArray[np.float64], posterior_samples)
 
-    return np.quantile(posterior_samples, q=alpha)  # type: ignore
+    return np.quantile(posterior_samples, q=alpha, axis=0)  # type: ignore
 
 
 def _compute_arm_mean(
@@ -160,6 +218,4 @@ def _compute_arm_mean(
 ) -> np.float_:
     """Compute the mean of the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
-    posterior_samples = cast(NDArray[np.float64], posterior_samples)
-
-    return np.mean(posterior_samples)
+    return np.mean(posterior_samples, axis=0)
