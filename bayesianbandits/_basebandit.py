@@ -1,4 +1,3 @@
-from __future__ import annotations
 from copy import deepcopy
 from dataclasses import Field, dataclass, field
 from functools import cached_property, partial
