@@ -1,4 +1,4 @@
-﻿bayesianbandits.DelayedRewardWarning
+bayesianbandits.DelayedRewardWarning
 ====================================
 
 .. currentmodule:: bayesianbandits
