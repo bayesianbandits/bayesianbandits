@@ -1,4 +1,4 @@
-﻿bayesianbandits.DelayedRewardException
+bayesianbandits.DelayedRewardException
 ======================================
 
 .. currentmodule:: bayesianbandits
