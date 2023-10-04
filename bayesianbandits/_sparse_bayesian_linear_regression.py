@@ -11,13 +11,36 @@ def multivariate_normal_sample_from_sparse_precision(
     Sample from a multivariate normal distribution with mean mu (default 0)
     and sparse precision matrix Q.
 
-    Parameters:
-    - Q: Sparse precision matrix (inverse of the covariance matrix).
-    - mu: Mean vector. Default is 0.
-    - size: Number of samples to draw.
+    Parameters
+    ----------
+    mean : array_like, optional
+        Mean of the distribution. Default is 0.
+    prec : array_like
+        Precision matrix of the distribution. Ideally a csc sparse matrix.
+    size : int or tuple of ints, optional
+        Given a shape of, for example, (m,n,k), m*n*k samples are generated,
+        and packed in an m-by-n-by-k arrangement. Because each sample is
+        N-dimensional, the output shape is (m,n,k,N). If no shape is specified,
+        a single (N-D) sample is returned.
+    random_state : int, RandomState instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random.default_rng`.
 
-    Returns:
-    - Samples from the multivariate normal distribution with shape (Q.shape[0], size).
+    Returns
+    -------
+    out : ndarray
+        The drawn samples, of shape size, if that was provided. If not, the
+        shape is (N,).
+
+    Examples
+    --------
+    >>> mean = [1, 2]
+    >>> cov = [[1, 0], [0, 1]]
+    >>> x = multivariate_normal_sample_from_sparse_precision(mean, cov, 1000)
+    >>> x.shape
+    (1000, 2)
     """
     # Ensure Q is in CSC format for efficient solving
     Q = csc_matrix(prec)
@@ -53,6 +76,44 @@ def multivariate_normal_sample_from_sparse_precision(
 def multivariate_t_sample_from_sparse_precision(
     loc, shape, df=1, size=1, random_state=None
 ):
+    """
+    Sample from a multivariate t distribution with mean loc, shape matrix
+    shape, and degrees of freedom df.
+
+    Parameters
+    ----------
+    loc : array_like
+        Mean of the distribution.
+    shape : array_like
+        Shape matrix of the distribution. Ideally a csc sparse matrix.
+    df : int or float, optional
+        Degrees of freedom of the distribution. Default is 1.
+    size : int or tuple of ints, optional
+        Given a shape of, for example, (m,n,k), m*n*k samples are generated,
+        and packed in an m-by-n-by-k arrangement. Because each sample is
+        N-dimensional, the output shape is (m,n,k,N). If no shape is specified,
+        a single (N-D) sample is returned.
+    random_state : int, RandomState instance or None, optional (default=None)
+        If int, random_state is the seed used by the random number generator;
+        If RandomState instance, random_state is the random number generator;
+        If None, the random number generator is the RandomState instance used
+        by `np.random.default_rng`.
+
+    Returns
+    -------
+    out : ndarray
+        The drawn samples, of shape size, if that was provided. If not, the
+        shape is (N,).
+
+    Examples
+    --------
+    >>> loc = np.array([1, 2])
+    >>> shape = np.array([[1, 0], [0, 1]])
+    >>> x = multivariate_t_sample_from_sparse_precision(loc, shape, size=1000)
+    >>> x.shape
+    (1000, 2)
+    """
+
     # Set the random state
     rng = np.random.default_rng(random_state)
 
@@ -62,7 +123,7 @@ def multivariate_t_sample_from_sparse_precision(
         mean=None, prec=shape, size=size, random_state=random_state
     )
 
-    samples = loc[:, np.newaxis] + z / np.sqrt(x)
+    samples = loc + z / np.sqrt(x)[:, np.newaxis]
     samples = _squeeze_output(samples)
 
     return samples
