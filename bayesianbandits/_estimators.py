@@ -471,14 +471,14 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     NormalRegressor(alpha=0.1, beta=1, random_state=0)
 
     >>> model.predict(X)
-    array([0.84615385, 1.69230769, 2.53846154, 3.38461538, 4.23076923])
+    array([0.99818512, 1.99637024, 2.99455535, 3.99274047, 4.99092559])
 
     Unlike the intercept-only conjugate prior models in this package, this model
     learns a coefficient for each feature. The coefficients are stored in the
     `coef_` attribute.
 
     >>> model.coef_
-    array([0.84615385])
+    array([0.99818512])
 
     For compatibility with the `Bandit` class, this model also has a `partial_fit`
     method that updates the model using a single data point or a batch of data.
@@ -486,13 +486,13 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     >>> model.partial_fit(X, y)
     NormalRegressor(alpha=0.1, beta=1, random_state=0)
     >>> model.predict(X)
-    array([0.91666667, 1.83333333, 2.75      , 3.66666667, 4.58333333])
+    array([0.99909173, 1.99818347, 2.9972752 , 3.99636694, 4.99545867])
 
     Futhermore, this model also has a `sample` method that samples from the
     posterior distribution of the coefficients.
 
     >>> model.sample(X)
-    array([[0.92814421, 1.85628843, 2.78443264, 3.71257685, 4.64072107]])
+    array([[1.0110742 , 2.02214839, 3.03322259, 4.04429678, 5.05537098]])
 
 
     """
@@ -537,7 +537,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.n_features_ = X.shape[1]
         self.coef_ = np.zeros(self.n_features_)
-        self.cov_inv_ = np.eye(self.n_features_) / self.alpha
+        self.cov_inv_ = np.eye(self.n_features_) * self.alpha
 
     @cached_property
     def cov_(self) -> Covariance:
