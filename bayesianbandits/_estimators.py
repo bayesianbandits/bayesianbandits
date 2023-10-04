@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
-
 import numpy as np
+import scipy.sparse as sparse
+import scipy.sparse.linalg as spla
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
 from scipy.stats import (
@@ -25,6 +26,9 @@ from sklearn.utils.validation import (
 from typing_extensions import Self
 
 from ._np_utils import groupby_array
+from ._sparse_bayesian_linear_regression import (
+    multivariate_normal_sample_from_sparse_precision,
+)
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
@@ -437,6 +441,8 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     learning_rate : float, default=1.0
         The learning rate for the model. This transforms the model into a recursive
         Bayesian estimator, specifically a Kalman filter.
+    sparse : bool, default=False
+        Whether to use a sparse representation for the precision matrix.
     random_state : int, np.random.Generator, default=None
         The random state for the model. If an int is passed, it is used to
         seed the numpy random number generator.
@@ -503,11 +509,13 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         beta: float,
         *,
         learning_rate: float = 1.0,
+        sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.beta = beta
         self.learning_rate = learning_rate
+        self.sparse = sparse
         self.random_state = random_state
 
     def fit(self, X_fit: NDArray[Any], y: NDArray[Any]) -> Self:
@@ -537,16 +545,27 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.n_features_ = X.shape[1]
         self.coef_ = np.zeros(self.n_features_)
-        self.cov_inv_ = np.eye(self.n_features_) * self.alpha
+        if self.sparse:
+            self.cov_inv_ = sparse.eye(self.n_features_, format="csc") * self.alpha
+        else:
+            self.cov_inv_ = np.eye(self.n_features_) * self.alpha
 
     @cached_property
     def cov_(self) -> Covariance:
         """
         The covariance matrix of the model.
         """
-        cov = solve(
-            self.cov_inv_, np.eye(self.n_features_), check_finite=False, assume_a="pos"
-        )
+        if self.sparse:
+            raise NotImplementedError(
+                "cov_ attribute is not implemented for sparse models."
+            )
+        else:
+            cov = solve(
+                self.cov_inv_,
+                np.eye(self.n_features_),
+                check_finite=False,
+                assume_a="pos",
+            )
         return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
@@ -562,19 +581,29 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         prior_decay = self.learning_rate ** len(X)
 
-        # Calculate the posterior covariance
-        cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
-        # Calculate the posterior mean
-        coef = solve(
-            cov_inv,
-            prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
-            check_finite=False,
-            assume_a="pos",
-        )
+        if self.sparse:
+            # Calculate the posterior covariance
+            cov_inv = prior_decay * self.cov_inv_ + self.beta * sparse.csc_matrix(
+                X.T
+            ) @ sparse.csc_matrix(X)
+            # Calculate the posterior mean
+            coef = spla.spsolve(
+                cov_inv,
+                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+            )
+
+        else:
+            # Calculate the posterior covariance
+            cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
+            # Calculate the posterior mean
+            coef = solve(
+                cov_inv,
+                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+            )
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if hasattr(self, "cov_"):
+        if not self.sparse and hasattr(self, "cov_"):
             del self.cov_
         self.coef_ = coef
 
@@ -620,11 +649,22 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior(X)
 
-        rv_gen = partial(
-            multivariate_normal.rvs, size=size, random_state=self.random_state_
-        )
+        if self.sparse:
+            samples = np.atleast_1d(
+                multivariate_normal_sample_from_sparse_precision(
+                    self.coef_,
+                    self.cov_inv_,
+                    size=size,
+                    random_state=self.random_state_,
+                )
+            )
 
-        samples = np.atleast_1d(rv_gen(self.coef_, self.cov_))  # type: ignore
+        else:
+            rv_gen = partial(
+                multivariate_normal.rvs, size=size, random_state=self.random_state_
+            )
+
+            samples = np.atleast_1d(rv_gen(self.coef_, self.cov_))  # type: ignore
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
@@ -647,7 +687,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if hasattr(self, "cov_"):
+        if not self.sparse and hasattr(self, "cov_"):
             del self.cov_
 
 
