@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
-from warnings import warn
-
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.linalg as spla
