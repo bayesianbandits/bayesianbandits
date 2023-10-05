@@ -28,6 +28,7 @@ from typing_extensions import Self
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     multivariate_normal_sample_from_sparse_precision,
+    multivariate_t_sample_from_sparse_precision,
 )
 
 
@@ -650,6 +651,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             self._initialize_prior(X)
 
         if self.sparse:
+            assert isinstance(self.cov_inv_, sparse.csc_matrix)
             samples = np.atleast_1d(
                 multivariate_normal_sample_from_sparse_precision(
                     self.coef_,
@@ -790,6 +792,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         a: float = 0.1,
         b: float = 0.1,
         learning_rate: float = 1.0,
+        sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ):
         self.mu = mu
@@ -797,6 +800,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.a = a
         self.b = b
         self.learning_rate = learning_rate
+        self.sparse = sparse
         self.random_state = random_state
 
     def _initialize_prior(self, X: NDArray[Any]) -> None:
@@ -813,16 +817,28 @@ class NormalInverseGammaRegressor(NormalRegressor):
         else:
             raise ValueError("The prior mean must be a scalar or vector.")
 
-        if np.isscalar(self.lam):
-            self.cov_inv_ = cast(np.float_, self.lam) * np.eye(self.n_features_)
-        elif cast(NDArray[np.float_], self.lam).ndim == 1:
-            self.cov_inv_ = np.diag(self.lam)
-        elif cast(NDArray[np.float_], self.lam).ndim == 2:
-            self.cov_inv_ = cast(NDArray[np.float_], self.lam)
+        if self.sparse:
+            if np.isscalar(self.lam):
+                self.cov_inv_ = sparse.eye(self.n_features_, format="csc") * self.lam
+            elif cast(NDArray[np.float_], self.lam).ndim == 1:
+                self.cov_inv_ = sparse.diags(self.lam, format="csc")
+            elif cast(NDArray[np.float_], self.lam).ndim == 2:
+                self.cov_inv_ = sparse.csc_matrix(self.lam)
+            else:
+                raise ValueError(
+                    "The prior covariance must be a scalar, vector, or matrix."
+                )
         else:
-            raise ValueError(
-                "The prior covariance must be a scalar, vector, or matrix."
-            )
+            if np.isscalar(self.lam):
+                self.cov_inv_ = cast(np.float_, self.lam) * np.eye(self.n_features_)
+            elif cast(NDArray[np.float_], self.lam).ndim == 1:
+                self.cov_inv_ = np.diag(self.lam)
+            elif cast(NDArray[np.float_], self.lam).ndim == 2:
+                self.cov_inv_ = cast(NDArray[np.float_], self.lam)
+            else:
+                raise ValueError(
+                    "The prior covariance must be a scalar, vector, or matrix."
+                )
 
         self.a_ = self.a
         self.b_ = self.b
@@ -843,17 +859,29 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         prior_decay = self.learning_rate ** len(X)
 
-        # Update the inverse covariance matrix
-        V_n = prior_decay * self.cov_inv_ + X.T @ X
+        if self.sparse:
+            # Update the inverse covariance matrix
+            V_n = prior_decay * self.cov_inv_ + sparse.csc_matrix(
+                X
+            ).T @ sparse.csc_matrix(X)
+            # Update the mean vector.
+            m_n = spla.spsolve(
+                V_n,
+                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+            )
 
-        # Update the mean vector. Keeping track of the precision matrix
-        # ensures we only need to do one LAPACK call.
-        m_n = solve(
-            V_n,
-            prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
-            check_finite=False,
-            assume_a="pos",
-        )
+        else:
+            # Update the inverse covariance matrix
+            V_n = prior_decay * self.cov_inv_ + X.T @ X
+
+            # Update the mean vector. Keeping track of the precision matrix
+            # ensures we only need to do one LAPACK call.
+            m_n = solve(
+                V_n,
+                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+                check_finite=False,
+                assume_a="pos",
+            )
 
         # Update the shape and rate parameters of the variance
         a_n = prior_decay * self.a_ + 0.5 * (obs_decays**2).sum()
@@ -867,9 +895,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Posteriors become priors for the next batch
         self.cov_inv_ = V_n
         # Delete the cached shape_ property so it is recalculated
-        if hasattr(self, "shape_"):
+        if not self.sparse and hasattr(self, "shape_"):
             del self.shape_
-        if hasattr(self, "cov_"):
+        if not self.sparse and hasattr(self, "cov_"):
             del self.cov_
         self.coef_ = m_n
         self.a_ = a_n
@@ -877,9 +905,15 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     @cached_property
     def shape_(self) -> Covariance:
-        extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
-        shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
-        return Covariance.from_cholesky(cholesky(shape, lower=True))
+        if self.sparse:
+            raise NotImplementedError(
+                "The shape of the coefficient posterior is not available for sparse "
+                "design matrices."
+            )
+        else:
+            extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
+            shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
+            return Covariance.from_cholesky(cholesky(shape, lower=True))
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
@@ -894,23 +928,34 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         df = 2 * self.a_
 
-        # Reimplement multivariate_t.rvs because scipy doesn't support
-        # Covariance objects
+        # Sparse sampling is not supported by scipy, so we use our own implementation
+        if self.sparse:
+            assert isinstance(self.cov_inv_, sparse.csc_matrix)
+            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
 
-        dim, loc, _, df = multivariate_t._process_parameters(
-            self.coef_, self.shape_.covariance, df
-        )
+            samples = multivariate_t_sample_from_sparse_precision(
+                self.coef_, shape_inv_, df, size, self.random_state_
+            )
 
-        x = self.random_state_.chisquare(df, size=size) / df
+        else:
+            # Reimplement multivariate_t.rvs because scipy doesn't support
+            # Covariance objects
 
-        z = multivariate_normal.rvs(
-            np.zeros(dim),
-            self.shape_,
-            size=size,
-            random_state=self.random_state_,
-        )
-        samples = loc + z / np.sqrt(x)[..., None]
-        samples = _squeeze_output(samples)
+            dim, loc, _, df = multivariate_t._process_parameters(
+                self.coef_, self.shape_.covariance, df
+            )
+
+            x = self.random_state_.chisquare(df, size=size) / df
+
+            z = multivariate_normal.rvs(
+                np.zeros(dim),
+                self.shape_,
+                size=size,
+                random_state=self.random_state_,
+            )
+
+            samples = loc + z / np.sqrt(x)[..., None]
+            samples = _squeeze_output(samples)
 
         # End of multivariate_t.rvs implementation
 
@@ -944,9 +989,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         b_n = prior_decay * self.b_
 
         self.cov_inv_ = V_n
-        if hasattr(self, "shape_"):
+        if not self.sparse and hasattr(self, "shape_"):
             del self.shape_
-        if hasattr(self, "cov_"):
+        if not self.sparse and hasattr(self, "cov_"):
             del self.cov_
         self.a_ = a_n
         self.b_ = b_n
