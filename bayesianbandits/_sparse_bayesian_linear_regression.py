@@ -1,11 +1,47 @@
+from typing import Union
 import numpy as np
-from scipy.sparse import csc_matrix
-from scipy.sparse.linalg import spsolve
+from scipy.sparse import csc_matrix, csr_matrix, diags
+from scipy.sparse.linalg import splu, spsolve_triangular
 from scipy.stats._multivariate import _squeeze_output
 
 
+def sparse_cholesky(A: csc_matrix) -> csc_matrix:
+    """Compute the Cholesky decomposition of a sparse, positive-definite matrix.
+
+    In Bayesian linear regression, the precision matrix is always positive-definite.
+
+    Parameters
+    ----------
+    A : csc_matrix
+        Sparse, positive-definite matrix.
+
+    Returns
+    -------
+    _type_
+        _description_
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """
+    # The input matrix A must be sparse and symmetric positive-definite.
+    # Fortunately, any reasonable precision matrix in a Bayesian model is
+    # sparse and symmetric positive-definite.
+    n = A.shape[0]
+    LU = splu(A, diag_pivot_thresh=0)  # sparse LU decomposition
+
+    if (LU.perm_r == np.arange(n)).all() and (LU.U.diagonal() > 0).all():
+        return LU.L.dot(diags(np.sqrt(LU.U.diagonal())))
+    else:
+        raise ValueError("A is not positive-definite")
+
+
 def multivariate_normal_sample_from_sparse_precision(
-    mean, prec, size=1, random_state=None
+    mean: Union[csc_matrix, np.ndarray, None],
+    prec: csc_matrix,
+    size=1,
+    random_state: Union[int, None, np.random.Generator] = None,
 ):
     """
     Sample from a multivariate normal distribution with mean mu (default 0)
@@ -59,12 +95,11 @@ def multivariate_normal_sample_from_sparse_precision(
     # Sample Z from a standard multivariate normal distribution
     Z = rng.standard_normal(size)
 
-    # Solve the linear system QX = Z
-    X = spsolve(Q, Z)
+    # Compute Cholesky decomposition of Q
+    L = sparse_cholesky(Q)
 
-    # Solve the linear system QY = X to get Y = LZ
-    # Transpose so the output has the same shape as multivariate_normal.rvs
-    Y = spsolve(Q, X).T
+    # Colorize Z using the Cholesky decomposition of Q
+    Y = spsolve_triangular(csr_matrix(L), Z, lower=True).T
 
     # Add the mean vector to each sample if provided
     if mean is not None:
@@ -74,7 +109,11 @@ def multivariate_normal_sample_from_sparse_precision(
 
 
 def multivariate_t_sample_from_sparse_precision(
-    loc, shape, df=1, size=1, random_state=None
+    loc: Union[csc_matrix, np.ndarray],
+    shape_inv_: csc_matrix,
+    df=1.0,
+    size=1,
+    random_state: Union[int, None, np.random.Generator] = None,
 ):
     """
     Sample from a multivariate t distribution with mean loc, shape matrix
@@ -84,8 +123,8 @@ def multivariate_t_sample_from_sparse_precision(
     ----------
     loc : array_like
         Mean of the distribution.
-    shape : array_like
-        Shape matrix of the distribution. Ideally a csc sparse matrix.
+    shape_inv_ : array_like
+        Inverse of the shape matrix of the distribution. Ideally a csc sparse matrix.
     df : int or float, optional
         Degrees of freedom of the distribution. Default is 1.
     size : int or tuple of ints, optional
@@ -120,10 +159,10 @@ def multivariate_t_sample_from_sparse_precision(
     x = rng.chisquare(df, size) / df
 
     z = multivariate_normal_sample_from_sparse_precision(
-        mean=None, prec=shape, size=size, random_state=random_state
+        mean=None, prec=shape_inv_, size=size, random_state=random_state
     )
 
-    samples = loc + z / np.sqrt(x)[:, np.newaxis]
+    samples = loc + z / np.sqrt(x)[..., None]
     samples = _squeeze_output(samples)
 
     return samples
