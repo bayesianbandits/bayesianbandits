@@ -1,6 +1,7 @@
 from typing import Literal
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from numpy.testing import assert_almost_equal
 from numpy.typing import NDArray
 
@@ -527,46 +528,24 @@ def test_normal_regressor_sample(
     clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     clf.fit(X, y)
 
-    # sparse uses a custom sample method which does not necessarily return the same
-    # values as the dense version, even with the same random seed
-    if sparse:
-        assert_almost_equal(
-            clf.sample(X),
-            np.array(
+    assert_almost_equal(
+        clf.sample(X),
+        np.array(
+            [
                 [
-                    [
-                        1.0465796,
-                        1.0465796,
-                        1.0465796,
-                        2.0931593,
-                        2.0931593,
-                        2.0931593,
-                        3.1397389,
-                        3.1397389,
-                        3.1397389,
-                    ]
+                    1.0656853,
+                    1.0656853,
+                    1.0656853,
+                    2.1313706,
+                    2.1313706,
+                    2.1313706,
+                    3.1970559,
+                    3.1970559,
+                    3.1970559,
                 ]
-            ),
-        )
-    else:
-        assert_almost_equal(
-            clf.sample(X),
-            np.array(
-                [
-                    [
-                        1.0656853,
-                        1.0656853,
-                        1.0656853,
-                        2.1313706,
-                        2.1313706,
-                        2.1313706,
-                        3.1970559,
-                        3.1970559,
-                        3.1970559,
-                    ]
-                ]
-            ),
-        )
+            ]
+        ),
+    )
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -687,63 +666,89 @@ def test_normal_regressor_sample_covariates(
     assert single_pred.shape == (size, 1)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor fit."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.fit(X, y)
+
+    if sparse:
+        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        cov_inv_ = clf.cov_inv_.toarray()
+    else:
+        cov_inv_ = clf.cov_inv_
 
     # worked these out by hand and by ref implementations
     assert_almost_equal(clf.coef_, np.array([1.04651163]))
-    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+    assert_almost_equal(cov_inv_, np.array([[43.0]]))
     assert_almost_equal(clf.a_, 4.6)
     assert_almost_equal(clf.b_, 1.5534883720930197)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_partial_fit_never_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor partial_fit."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.partial_fit(X, y)
+
+    if sparse:
+        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        cov_inv_ = clf.cov_inv_.toarray()
+    else:
+        cov_inv_ = clf.cov_inv_
 
     # worked these out by hand and by ref implementations
     assert_almost_equal(clf.coef_, np.array([1.04651163]))
-    assert_almost_equal(clf.cov_inv_, np.array([[43.0]]))
+    assert_almost_equal(cov_inv_, np.array([[43.0]]))
     assert_almost_equal(clf.a_, 4.6)
     assert_almost_equal(clf.b_, 1.5534883720930197)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_partial_fit_already_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor partial_fit."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.fit(X, y)
     clf.partial_fit(X, y)
+
+    if sparse:
+        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        cov_inv_ = clf.cov_inv_.toarray()
+    else:
+        cov_inv_ = clf.cov_inv_
 
     # worked these out by hand and by ref implementations
     # worked these out by hand and by ref implementations
     assert_almost_equal(clf.coef_, np.array([1.05882353]))
-    assert_almost_equal(clf.cov_inv_, np.array([[85.0]]))
+    assert_almost_equal(cov_inv_, np.array([[85.0]]))
     assert_almost_equal(clf.a_, 9.1)
     assert_almost_equal(clf.b_, 2.452941176470587)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_predict(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor predict."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.fit(X, y)
     assert_almost_equal(
         clf.predict(X),
@@ -763,13 +768,15 @@ def test_normal_inverse_gamma_regressor_predict(
     )
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_predict_no_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor predict."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     assert_almost_equal(
         clf.predict(X),
         np.array(
@@ -788,13 +795,15 @@ def test_normal_inverse_gamma_regressor_predict_no_fit(
     )
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_sample(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor sample."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.fit(X, y)
 
     assert_almost_equal(
@@ -817,13 +826,15 @@ def test_normal_inverse_gamma_regressor_sample(
     )
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_sample_no_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor sample."""
 
-    clf = NormalInverseGammaRegressor(random_state=0)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
 
     assert_almost_equal(
         clf.sample(X),
@@ -845,13 +856,15 @@ def test_normal_inverse_gamma_regressor_sample_no_fit(
     )
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_decay(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
 
-    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=0.9)
+    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=0.9, sparse=sparse)
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
@@ -861,13 +874,15 @@ def test_normal_inverse_gamma_regressor_decay(
     assert_almost_equal(clf.predict(X), pre_decay)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_manual_decay(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    sparse: bool,
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
 
-    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0)
+    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0, sparse=sparse)
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
@@ -879,16 +894,20 @@ def test_normal_inverse_gamma_regressor_manual_decay(
 
 @pytest.mark.parametrize("obs", [1, 2, 3, 4])
 @pytest.mark.parametrize("covariates", [1, 2, 3, 4])
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_predict_covariates(
-    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4]
+    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4], sparse: bool
 ):
     """Test NormalRegressor predict with covariates."""
 
     X = np.random.rand(obs, covariates)
     y = np.random.rand(obs)
 
-    clf = NormalInverseGammaRegressor()
+    clf = NormalInverseGammaRegressor(sparse=sparse)
     clf.fit(X, y)
+
+    if sparse:
+        assert isinstance(clf.cov_inv_, sp.csc_matrix)
 
     pred = clf.predict(X)
 
@@ -901,16 +920,23 @@ def test_normal_inverse_gamma_regressor_predict_covariates(
 @pytest.mark.parametrize("obs", [1, 2, 3, 4])
 @pytest.mark.parametrize("covariates", [1, 2, 3, 4])
 @pytest.mark.parametrize("size", [1, 2, 3, 4])
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_sample_covariates(
-    obs: Literal[1, 2, 3, 4], covariates: Literal[1, 2, 3, 4], size: Literal[1, 2, 3, 4]
+    obs: Literal[1, 2, 3, 4],
+    covariates: Literal[1, 2, 3, 4],
+    size: Literal[1, 2, 3, 4],
+    sparse: bool,
 ):
     """Test NormalRegressor predict with covariates."""
 
     X = np.random.rand(obs, covariates)
     y = np.random.rand(obs)
 
-    clf = NormalInverseGammaRegressor()
+    clf = NormalInverseGammaRegressor(sparse=sparse)
     clf.fit(X, y)
+
+    if sparse:
+        assert isinstance(clf.cov_inv_, sp.csc_matrix)
 
     pred = clf.sample(X, size=size)
 
