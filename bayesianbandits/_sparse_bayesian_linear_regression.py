@@ -17,13 +17,13 @@ def sparse_cholesky(A: csc_matrix) -> csc_matrix:
 
     Returns
     -------
-    _type_
-        _description_
+    csc_matrix
+        Cholesky decomposition of A (lower triangular matrix)
 
     Raises
     ------
     ValueError
-        _description_
+        If A is not positive-definite.
     """
     # The input matrix A must be sparse and symmetric positive-definite.
     # Fortunately, any reasonable precision matrix in a Bayesian model is
