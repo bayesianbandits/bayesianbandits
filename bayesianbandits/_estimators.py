@@ -674,8 +674,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         """
         Decay the prior by a factor of `learning_rate`.
         """
+        # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
-            self._initialize_prior(X)
+            return
 
         if decay_rate is None:
             decay_rate = self.learning_rate
@@ -949,7 +950,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
             z = multivariate_normal.rvs(
                 np.zeros(dim),
-                self.shape_,
+                self.shape_,  # type: ignore
                 size=size,
                 random_state=self.random_state_,
             )
@@ -971,9 +972,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         It does not change the mean of the coefficient marginal posterior, but
         it does increase the variance.
         """
-
+        # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
-            self._initialize_prior(X)
+            return
 
         if decay_rate is None:
             decay_rate = self.learning_rate
