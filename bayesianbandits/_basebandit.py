@@ -704,6 +704,12 @@ class Bandit:
         """
         self.__dict__.update(state)
 
+        # 0.4.6+ compatibility: add name to arms - this attribute was added in 0.4.6
+        # and is not present in older versions, breaking old pickles
+        for arm_name, arm in self.arms.items():
+            if not hasattr(arm, "name"):
+                arm.name = arm_name
+
         currently_defined_arms = {
             name: attr
             for name, attr in self.__class__.__annotations__.items()
