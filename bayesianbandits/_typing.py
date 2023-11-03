@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -8,7 +10,6 @@ from typing import (
     Protocol,
     Union,
     runtime_checkable,
-    TYPE_CHECKING,
 )
 
 import numpy as np
