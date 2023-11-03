@@ -5,11 +5,11 @@ from typing import Callable, Dict, List, Union, cast
 import numpy as np
 from numpy.typing import NDArray
 
-from ._typing import ArmProtocol
+from ._arm import Arm
 
 ArmChoicePolicy = Callable[
-    [Dict[str, ArmProtocol], NDArray[np.float_], np.random.Generator],
-    Union[ArmProtocol, List[ArmProtocol]],
+    [Dict[str, Arm], NDArray[np.float_], np.random.Generator],
+    Union[Arm, List[Arm]],
 ]
 
 
@@ -30,15 +30,15 @@ def epsilon_greedy(
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
         Closure that chooses an arm using epsilon-greedy.
     """
 
     def _choose_arm(
-        arms: Dict[str, ArmProtocol],
+        arms: Dict[str, Arm],
         X: NDArray[np.float_],
         rng: np.random.Generator,
-    ) -> Union[ArmProtocol, List[ArmProtocol]]:
+    ) -> Union[Arm, List[Arm]]:
         """Choose an arm using epsilon-greedy."""
 
         arm_list = list(arms.values())
@@ -57,7 +57,7 @@ def epsilon_greedy(
 
         choice_idx_to_explore = rng.random(size=len(choices)) < epsilon
 
-        final_choices: List[ArmProtocol] = []
+        final_choices: List[Arm] = []
         for explore, choice in zip(choice_idx_to_explore, choices):
             if explore:
                 final_choices.append(rng.choice(arm_list))  # type: ignore
@@ -92,7 +92,7 @@ def upper_confidence_bound(
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
         Closure that chooses an arm using UCB.
 
     Notes
@@ -112,10 +112,10 @@ def upper_confidence_bound(
         raise ValueError("alpha must be in (0, 1).")
 
     def _choose_arm(
-        arms: Dict[str, ArmProtocol],
+        arms: Dict[str, Arm],
         X: NDArray[np.float_],
         rng: np.random.Generator,
-    ) -> Union[ArmProtocol, List[ArmProtocol]]:
+    ) -> Union[Arm, List[Arm]]:
         """Choose an arm using UCB1."""
 
         arm_list = list(arms.values())
@@ -141,7 +141,7 @@ def thompson_sampling() -> ArmChoicePolicy:
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], ArmProtocol]
+    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
         Closure that chooses an arm using Thompson sampling.
 
     Notes
@@ -158,10 +158,10 @@ def thompson_sampling() -> ArmChoicePolicy:
     """
 
     def _choose_arm(
-        arms: Dict[str, ArmProtocol],
+        arms: Dict[str, Arm],
         X: NDArray[np.float_],
         rng: np.random.Generator,
-    ) -> Union[ArmProtocol, List[ArmProtocol]]:
+    ) -> Union[Arm, List[Arm]]:
         """Choose an arm using Thompson sampling."""
 
         arm_list = list(arms.values())
@@ -177,7 +177,7 @@ def thompson_sampling() -> ArmChoicePolicy:
 
 
 def _return_based_on_size(
-    arm_list: List[ArmProtocol],
+    arm_list: List[Arm],
     posterior_summaries: NDArray[np.float_],
 ):
     best_arm_indexes = cast(
@@ -191,13 +191,13 @@ def _return_based_on_size(
         return [arm_list[cast(int, i)] for i in best_arm_indexes]
 
 
-def _draw_one_sample(arm: ArmProtocol, X: NDArray[np.float_]) -> NDArray[np.float_]:
+def _draw_one_sample(arm: Arm, X: NDArray[np.float_]) -> NDArray[np.float_]:
     """Draw one sample from the posterior distribution for the arm."""
     return arm.sample(X, size=1).squeeze(axis=0)
 
 
 def _compute_arm_upper_bound(
-    arm: ArmProtocol,
+    arm: Arm,
     X: NDArray[np.float_],
     *,
     alpha: float = 0.68,
@@ -211,7 +211,7 @@ def _compute_arm_upper_bound(
 
 
 def _compute_arm_mean(
-    arm: ArmProtocol,
+    arm: Arm,
     X: NDArray[np.float_],
     *,
     samples: int = 1000,

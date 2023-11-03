@@ -26,7 +26,8 @@ from typing_extensions import Literal, TypeGuard, dataclass_transform
 
 from ._np_utils import groupby_array
 from ._policy_decorators import ArmChoicePolicy
-from ._typing import ArmProtocol, BanditProtocol, Learner
+from ._typing import BanditProtocol, Learner
+from ._arm import Arm
 
 _B = TypeVar("_B", bound="Bandit")
 
@@ -49,9 +50,9 @@ class Bandit:
 
     learner : Learner
         Learner underlying each arm. Must implement `partial_fit` and `sample`.
-    policy : Callable[..., ArmProtocol]
+    policy : Callable[..., Arm]
         Policy for choosing arms. Must take a `Bandit` instance as its first
-        argument and return an `ArmProtocol` instance.
+        argument and return an `Arm` instance.
     delayed_reward : bool, optional
         Whether or not rewards are measured between pulls, by default False.
 
@@ -69,14 +70,14 @@ class Bandit:
     ----------
     learner : Learner
         Learner underlying each arm. Must implement `partial_fit` and `sample`.
-    policy : Callable[..., ArmProtocol]
+    policy : Callable[..., Arm]
         Policy for choosing arms. Must take a `Bandit` instance as its first
-        argument and return an `ArmProtocol` instance.
+        argument and return an `Arm` instance.
     rng: Union[np.random.Generator, None, int]
         Random number generator to use for choosing arms.
-    arms: Dict[str, ArmProtocol]
+    arms: Dict[str, Arm]
         Dictionary of arms.
-    last_arm_pulled: Optional[ArmProtocol]
+    last_arm_pulled: Optional[Arm]
         Last arm pulled.
     cache : Optional[MutableMapping[Any, str]]
         Cache to use for storing arms when `delayed_reward` is set to `True`.
@@ -86,7 +87,7 @@ class Bandit:
 
     Minimally, a subclass of `Bandit` must pass a `learner` and `policy` to
     `__init_subclass__`. Additionally, all subclasses must define some
-    `ArmProtocol` instances as class attributes. These will be used to
+    `Arm` instances as class attributes. These will be used to
     initialize the arms of the bandit.
 
     >>> from bayesianbandits import Arm, GammaRegressor, epsilon_greedy
@@ -127,7 +128,7 @@ class Bandit:
     """
 
     rng: Union[np.random.Generator, None, int] = field(default=None, repr=False)
-    last_arm_pulled: Optional[ArmProtocol] = field(default=None, init=False, repr=False)
+    last_arm_pulled: Optional[Arm] = field(default=None, init=False, repr=False)
     cache: Optional[MutableMapping[Any, str]] = field(default=None, repr=False)
 
     learner: ClassVar[Learner]
@@ -149,7 +150,7 @@ class Bandit:
         ----------
         learner : Learner
             Learner to use for each arm.
-        policy : Callable[..., ArmProtocol]
+        policy : Callable[..., Arm]
             Policy to use for choosing arms.
         """
         super().__init_subclass__(**kwargs)
@@ -168,21 +169,21 @@ class Bandit:
 
         # make sure cache is annotated for dataclass magic
         annotations: dict[str, Any] = getattr(cls, "__annotations__", {})
-        annotations["cache"] = Optional[MutableMapping[Any, ArmProtocol]]
+        annotations["cache"] = Optional[MutableMapping[Any, Arm]]
 
-        # collect and annotate all ArmProtocol instances
+        # collect and annotate all Arm instances
         arm_annotations: Dict[str, Any] = {}
 
         for name, attr in cls.__dict__.items():
-            if isinstance(attr, ArmProtocol):
-                arm_annotations[name] = ArmProtocol
+            if isinstance(attr, Arm):
+                arm_annotations[name] = Arm
                 setattr(
                     cls,
                     name,
                     field(default_factory=partial(deepcopy, attr), init=False),
                 )
 
-        # make sure all ArmProtocol instances are first in the annotations
+        # make sure all Arm instances are first in the annotations
         # for dataclass magic - this is unnecessary in Python 3.10
         other_annotations = {
             k: v for k, v in annotations.items() if k not in arm_annotations
@@ -310,7 +311,7 @@ class Bandit:
 
         arm = self.policy(self.arms, X_pull, self.rng)
 
-        assert isinstance(arm, ArmProtocol)  # for the type checker
+        assert isinstance(arm, Arm)  # for the type checker
         ret_val = arm.pull()
         self.last_arm_pulled = arm
         return ret_val
@@ -362,7 +363,7 @@ class Bandit:
             )
 
         ret_val = self._pull_single(X)
-        self.cache[unique_id] = cast(ArmProtocol, self.last_arm_pulled).name
+        self.cache[unique_id] = cast(Arm, self.last_arm_pulled).name
 
         return ret_val
 
@@ -427,7 +428,7 @@ class Bandit:
         else:
             arms = self.policy(self.arms, X.repeat(len(unique_ids), axis=0), self.rng)
 
-        if isinstance(arms, ArmProtocol):
+        if isinstance(arms, Arm):
             arms = [arms]
 
         ret_vals = [arm.pull() for arm in arms]
@@ -518,7 +519,7 @@ class Bandit:
                 return
 
         else:
-            arm_to_update = cast(ArmProtocol, self.last_arm_pulled)
+            arm_to_update = cast(Arm, self.last_arm_pulled)
 
         arm_to_update.update(X_fit, y_fit)
 
@@ -616,9 +617,7 @@ class Bandit:
         # but I can't imagine a situation where this would be a bottleneck.
         return np.array(
             [
-                cast(ArmProtocol, self.policy(self.arms, X_sample, self.rng)).sample(
-                    X_sample
-                )
+                cast(Arm, self.policy(self.arms, X_sample, self.rng)).sample(X_sample)
                 for _ in range(size)
             ]
         )
@@ -682,13 +681,13 @@ class Bandit:
         for arm in self.arms.values():
             self._set_learner(arm)
 
-        if ArmProtocol not in self.__annotations__.values():
+        if Arm not in self.__annotations__.values():
             raise ValueError(
                 "A bandit must have at least one arm. "
                 "Add an arm to the class definition."
             )
 
-    def _set_learner(self, arm: ArmProtocol) -> None:
+    def _set_learner(self, arm: Arm) -> None:
         """Set the learner for an arm, if it is not already set."""
         if arm.learner is None:
             arm.learner = clone(self.learner)  # type: ignore
@@ -713,7 +712,7 @@ class Bandit:
         currently_defined_arms = {
             name: attr
             for name, attr in self.__class__.__annotations__.items()
-            if attr is ArmProtocol
+            if attr is Arm
         }
 
         # delete arms that are no longer defined
@@ -736,11 +735,9 @@ class Bandit:
                 self.arms[arm_name] = self.__dict__[arm_name]
 
     @cached_property
-    def arms(self: BanditProtocol) -> Dict[str, ArmProtocol]:
+    def arms(self: BanditProtocol) -> Dict[str, Arm]:
         return {
-            name: attr
-            for name, attr in self.__dict__.items()
-            if isinstance(attr, ArmProtocol)
+            name: attr for name, attr in self.__dict__.items() if isinstance(attr, Arm)
         }
 
 
