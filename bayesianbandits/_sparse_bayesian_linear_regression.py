@@ -29,7 +29,7 @@ def sparse_cholesky(A: csc_matrix) -> csc_matrix:
     # Fortunately, any reasonable precision matrix in a Bayesian model is
     # sparse and symmetric positive-definite.
     n = A.shape[0]
-    LU = splu(A, diag_pivot_thresh=0)  # sparse LU decomposition
+    LU = splu(A, permc_spec="NATURAL", diag_pivot_thresh=0)  # sparse LU decomposition
 
     if (LU.perm_r == np.arange(n)).all() and (LU.U.diagonal() > 0).all():
         return LU.L.dot(diags(np.sqrt(LU.U.diagonal())))
