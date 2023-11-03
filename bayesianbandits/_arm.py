@@ -1,11 +1,13 @@
 from __future__ import annotations
+
 from functools import wraps
-from typing import Callable, Optional, TypeVar, Union, cast, Any
-from typing_extensions import ParamSpec, Concatenate
+from typing import Any, Callable, Optional, TypeVar, Union, cast
+
 import numpy as np
 from numpy.typing import NDArray
+from typing_extensions import Concatenate, ParamSpec
 
-from ._typing import DecayingLearner, Learner, ActionToken
+from ._typing import ActionToken, DecayingLearner, Learner
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)

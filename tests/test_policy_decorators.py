@@ -5,7 +5,6 @@ from numpy.typing import NDArray
 import pytest
 
 from bayesianbandits import Arm, NormalInverseGammaRegressor
-from bayesianbandits._typing import ArmProtocol
 from bayesianbandits._policy_decorators import (
     upper_confidence_bound,
     thompson_sampling,
@@ -49,7 +48,7 @@ def X(request: pytest.FixtureRequest):
     ],
 )
 def test_policies(
-    policy: ArmChoicePolicy, X: NDArray[np.float_], test_arms: Dict[str, ArmProtocol]
+    policy: ArmChoicePolicy, X: NDArray[np.float_], test_arms: Dict[str, Arm]
 ):
     """Test that the policies return an arm."""
 
@@ -64,7 +63,7 @@ def test_policies(
         assert isinstance(arms, Arm)
 
 
-def test_thompson_sampling_statistics(test_arms: Dict[str, ArmProtocol]):
+def test_thompson_sampling_statistics(test_arms: Dict[str, Arm]):
     sampler = thompson_sampling()
 
     rng = np.random.default_rng(0)
@@ -87,7 +86,7 @@ def test_thompson_sampling_statistics(test_arms: Dict[str, ArmProtocol]):
     assert counts[3] > counts[2]
 
 
-def test_epsilon_greedy_statistics(test_arms: Dict[str, ArmProtocol]):
+def test_epsilon_greedy_statistics(test_arms: Dict[str, Arm]):
     sampler = epsilon_greedy(epsilon=0.01)
 
     rng = np.random.default_rng(0)
@@ -110,7 +109,7 @@ def test_epsilon_greedy_statistics(test_arms: Dict[str, ArmProtocol]):
     assert counts[3] > counts[2]
 
 
-def test_ucb_statistics(test_arms: Dict[str, ArmProtocol]):
+def test_ucb_statistics(test_arms: Dict[str, Arm]):
     sampler = upper_confidence_bound()
 
     rng = np.random.default_rng(0)

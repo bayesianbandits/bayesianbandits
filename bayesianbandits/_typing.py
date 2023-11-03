@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -12,6 +14,9 @@ from typing import (
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+if TYPE_CHECKING:
+    from ._arm import Arm
 
 ActionToken = NewType("TokenType", Any)
 
@@ -49,42 +54,6 @@ class DecayingLearner(Learner, Protocol):
 
 
 @runtime_checkable
-class ArmProtocol(Protocol):
-    """Protocol for Arms and Bandits. Bandits themselves can be used as arms
-    in other bandits, so both must implement the same minimal interface.
-
-    Each Arm or Bandit must implement the following methods:
-    - `pull`
-    - `sample`
-    - `update`
-    - `decay`
-
-    Additionally, Arms must have a `name` attribute.
-
-    """
-
-    learner: Optional[Learner]
-    name: str
-
-    def pull(self) -> ActionToken:
-        ...
-
-    def sample(self, X: NDArray[np.float_], size: int = 1) -> NDArray[np.float_]:
-        ...
-
-    def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:
-        ...
-
-    def decay(
-        self,
-        X: NDArray[np.float_],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        ...
-
-
-@runtime_checkable
 class BanditProtocol(Protocol):
     """Protocol for Bandits.
 
@@ -96,9 +65,9 @@ class BanditProtocol(Protocol):
 
     """
 
-    arms: Dict[str, ArmProtocol]
-    policy: Callable[..., ArmProtocol]
-    last_arm_pulled: Optional[ArmProtocol]
+    arms: Dict[str, "Arm"]
+    policy: Callable[..., "Arm"]
+    last_arm_pulled: Optional["Arm"]
     rng: Union[np.random.Generator, int, None]
     _contextual: bool
 
@@ -121,5 +90,5 @@ class BanditProtocol(Protocol):
         ...
 
     @property
-    def arm_to_update(self) -> ArmProtocol:
+    def arm_to_update(self) -> Arm:
         ...
