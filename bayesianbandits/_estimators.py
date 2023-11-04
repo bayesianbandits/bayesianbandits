@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
+
 import numpy as np
 import scipy.sparse as sparse
 import scipy.sparse.linalg as spla
@@ -27,8 +28,9 @@ from typing_extensions import Self
 
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
-    multivariate_normal_sample_from_sparse_precision,
-    multivariate_t_sample_from_sparse_precision,
+    CovViaSparsePrecision,
+    multivariate_normal_sample_from_sparse_covariance,
+    multivariate_t_sample_from_sparse_covariance,
 )
 
 
@@ -557,9 +559,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         The covariance matrix of the model.
         """
         if self.sparse:
-            raise NotImplementedError(
-                "cov_ attribute is not implemented for sparse models."
-            )
+            return CovViaSparsePrecision(self.cov_inv_)  # type: ignore
         else:
             cov = solve(
                 self.cov_inv_,
@@ -604,7 +604,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if not self.sparse and hasattr(self, "cov_"):
+        if hasattr(self, "cov_"):
             del self.cov_
         self.coef_ = coef
 
@@ -653,9 +653,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         if self.sparse:
             assert isinstance(self.cov_inv_, sparse.csc_matrix)
             samples = np.atleast_1d(
-                multivariate_normal_sample_from_sparse_precision(
+                multivariate_normal_sample_from_sparse_covariance(
                     self.coef_,
-                    self.cov_inv_,
+                    self.cov_,
                     size=size,
                     random_state=self.random_state_,
                 )
@@ -896,9 +896,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Posteriors become priors for the next batch
         self.cov_inv_ = V_n
         # Delete the cached shape_ property so it is recalculated
-        if not self.sparse and hasattr(self, "shape_"):
+        if hasattr(self, "shape_"):
             del self.shape_
-        if not self.sparse and hasattr(self, "cov_"):
+        if hasattr(self, "cov_"):
             del self.cov_
         self.coef_ = m_n
         self.a_ = a_n
@@ -906,14 +906,16 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     @cached_property
     def shape_(self) -> Covariance:
+        shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
         if self.sparse:
-            raise NotImplementedError(
-                "The shape of the coefficient posterior is not available for sparse "
-                "design matrices."
-            )
+            return CovViaSparsePrecision(shape_inv_)  # type: ignore
         else:
-            extra_var = self.b_ / self.a_ * np.eye(self.n_features_)
-            shape = solve(self.cov_inv_, extra_var, check_finite=False, assume_a="pos")
+            shape = solve(
+                shape_inv_,
+                np.eye(self.n_features_),
+                check_finite=False,
+                assume_a="pos",
+            )
             return Covariance.from_cholesky(cholesky(shape, lower=True))
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
@@ -932,10 +934,8 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Sparse sampling is not supported by scipy, so we use our own implementation
         if self.sparse:
             assert isinstance(self.cov_inv_, sparse.csc_matrix)
-            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
-
-            samples = multivariate_t_sample_from_sparse_precision(
-                self.coef_, shape_inv_, df, size, self.random_state_
+            samples = multivariate_t_sample_from_sparse_covariance(
+                self.coef_, self.shape_, df, size, self.random_state_
             )
 
         else:

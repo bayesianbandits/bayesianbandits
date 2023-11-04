@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 from functools import partial
 from typing import Any, Generator, Tuple, TypeVar
+
 import numpy as np
 from numpy.typing import NDArray
 

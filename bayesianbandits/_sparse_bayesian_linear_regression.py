@@ -1,9 +1,39 @@
+from functools import cached_property
 from typing import Union
 
 import numpy as np
-from scipy.sparse import csc_matrix, csr_matrix, diags
-from scipy.sparse.linalg import splu, spsolve_triangular
+from scipy.sparse import csc_matrix, diags, eye, issparse
+from scipy.sparse.linalg import factorized, splu, spsolve
+from scipy.stats import Covariance
 from scipy.stats._multivariate import _squeeze_output
+
+
+class CovViaSparsePrecision(Covariance):
+    def __init__(self, prec: csc_matrix):
+        if not issparse(prec):
+            raise ValueError("prec must be a sparse matrix")
+
+        self._precision = prec
+        # Compute the Covariance matrix from the precision matrix
+        self._chol_P = sparse_cholesky(prec)
+        self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+        self._rank = prec.shape[-1]  # must be full rank for cholesky
+        self._shape = prec.shape
+        self._allow_singular = False
+
+    @cached_property
+    def colorize_solve(self):
+        return factorized(self._chol_P)
+
+    @cached_property
+    def _covariance(self):
+        return spsolve(self._precision, eye(self._precision.shape[0], format="csc"))
+
+    def _whiten(self, x):
+        return x @ self._chol_P
+
+    def _colorize(self, x):
+        return self.colorize_solve(x.T).T
 
 
 def sparse_cholesky(A: csc_matrix) -> csc_matrix:
@@ -38,9 +68,9 @@ def sparse_cholesky(A: csc_matrix) -> csc_matrix:
         raise ValueError("A is not positive-definite")
 
 
-def multivariate_normal_sample_from_sparse_precision(
+def multivariate_normal_sample_from_sparse_covariance(
     mean: Union[csc_matrix, np.ndarray, None],
-    prec: csc_matrix,
+    cov: Covariance,
     size=1,
     random_state: Union[int, None, np.random.Generator] = None,
 ):
@@ -71,36 +101,23 @@ def multivariate_normal_sample_from_sparse_precision(
         The drawn samples, of shape size, if that was provided. If not, the
         shape is (N,).
 
-    Examples
-    --------
-    >>> mean = [1, 2]
-    >>> cov = [[1, 0], [0, 1]]
-    >>> x = multivariate_normal_sample_from_sparse_precision(mean, cov, 1000)
-    >>> x.shape
-    (1000, 2)
     """
-    # Ensure Q is in CSC format for efficient solving
-    Q = csc_matrix(prec)
-
     # Set the random state
     rng = np.random.default_rng(random_state)
 
     # Compute size from the shape of Q plus the size parameter
     if isinstance(size, int):
-        size = (Q.shape[0], size)
+        size = (size,) + (cov.shape[-1],)
     elif isinstance(size, tuple):
-        size = (Q.shape[0],) + size
+        size = size + (cov.shape[-1],)
     else:
         raise ValueError("size must be an int or tuple")
 
     # Sample Z from a standard multivariate normal distribution
     Z = rng.standard_normal(size)
 
-    # Compute Cholesky decomposition of Q
-    L = sparse_cholesky(Q)
-
-    # Colorize Z using the Cholesky decomposition of Q
-    Y = spsolve_triangular(csr_matrix(L), Z, lower=True).T
+    # Colorize Z
+    Y = cov.colorize(Z)
 
     # Add the mean vector to each sample if provided
     if mean is not None:
@@ -109,9 +126,9 @@ def multivariate_normal_sample_from_sparse_precision(
     return Y
 
 
-def multivariate_t_sample_from_sparse_precision(
+def multivariate_t_sample_from_sparse_covariance(
     loc: Union[csc_matrix, np.ndarray],
-    shape_inv_: csc_matrix,
+    shape: Covariance,
     df=1.0,
     size=1,
     random_state: Union[int, None, np.random.Generator] = None,
@@ -145,13 +162,7 @@ def multivariate_t_sample_from_sparse_precision(
         The drawn samples, of shape size, if that was provided. If not, the
         shape is (N,).
 
-    Examples
-    --------
-    >>> loc = np.array([1, 2])
-    >>> shape = np.array([[1, 0], [0, 1]])
-    >>> x = multivariate_t_sample_from_sparse_precision(loc, shape, size=1000)
-    >>> x.shape
-    (1000, 2)
+
     """
 
     # Set the random state
@@ -159,8 +170,8 @@ def multivariate_t_sample_from_sparse_precision(
 
     x = rng.chisquare(df, size) / df
 
-    z = multivariate_normal_sample_from_sparse_precision(
-        mean=None, prec=shape_inv_, size=size, random_state=random_state
+    z = multivariate_normal_sample_from_sparse_covariance(
+        mean=None, cov=shape, size=size, random_state=random_state
     )
 
     samples = loc + z / np.sqrt(x)[..., None]
