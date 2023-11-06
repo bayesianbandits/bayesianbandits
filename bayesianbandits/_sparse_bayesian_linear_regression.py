@@ -83,7 +83,7 @@ def multivariate_normal_sample_from_sparse_covariance(
     mean : array_like, optional
         Mean of the distribution. Default is 0.
     prec : array_like
-        Precision matrix of the distribution. Ideally a csc sparse matrix.
+        Precision matrix of the distribution. Ideally a csc sparse array.
     size : int or tuple of ints, optional
         Given a shape of, for example, (m,n,k), m*n*k samples are generated,
         and packed in an m-by-n-by-k arrangement. Because each sample is
@@ -140,7 +140,7 @@ def multivariate_t_sample_from_sparse_covariance(
     loc : array_like
         Mean of the distribution.
     shape_inv_ : array_like
-        Inverse of the shape matrix of the distribution. Ideally a csc sparse matrix.
+        Inverse of the shape matrix of the distribution. Ideally a csc sparse array.
     df : int or float, optional
         Degrees of freedom of the distribution. Default is 1.
     size : int or tuple of ints, optional
