@@ -30,7 +30,16 @@ from bayesianbandits._policy_decorators import (
 from bayesianbandits._typing import Learner
 
 
-@pytest.fixture(params=["dirichlet", "gamma", "normal", "normal-inverse-gamma"])
+@pytest.fixture(
+    params=[
+        "dirichlet",
+        "gamma",
+        "normal",
+        "normal sparse",
+        "normal-inverse-gamma",
+        "normal-inverse-gamma sparse",
+    ]
+)
 def learner_class(request: pytest.FixtureRequest) -> Learner:
     if request.param == "dirichlet":
         return DirichletClassifier({1: 1.0, 2: 1.0})
@@ -38,8 +47,12 @@ def learner_class(request: pytest.FixtureRequest) -> Learner:
         return GammaRegressor(alpha=1, beta=1)
     elif request.param == "normal":
         return NormalRegressor(alpha=1, beta=1)
+    elif request.param == "normal sparse":
+        return NormalRegressor(alpha=1, beta=1, sparse=True)
     elif request.param == "normal-inverse-gamma":
         return NormalInverseGammaRegressor()
+    elif request.param == "normal-inverse-gamma sparse":
+        return NormalInverseGammaRegressor(sparse=True)
     else:
         raise ValueError("invalid param")
 
