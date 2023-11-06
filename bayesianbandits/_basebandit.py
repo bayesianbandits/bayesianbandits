@@ -20,14 +20,15 @@ from typing import (
 from warnings import warn
 
 import numpy as np
+import scipy.sparse as sp
 from numpy.typing import ArrayLike, NDArray
 from sklearn.base import clone
 from typing_extensions import Literal, TypeGuard, dataclass_transform
 
+from ._arm import Arm
 from ._np_utils import groupby_array
 from ._policy_decorators import ArmChoicePolicy
 from ._typing import BanditProtocol, Learner
-from ._arm import Arm
 
 _B = TypeVar("_B", bound="Bandit")
 
@@ -196,11 +197,11 @@ class Bandit:
         dataclass(cls)
 
     @overload
-    def pull(self, X: ArrayLike, /) -> Any:
+    def pull(self, X: Union[ArrayLike, sp.csc_matrix], /) -> Any:
         ...
 
     @overload
-    def pull(self, X: ArrayLike, /, *, unique_id: Any) -> Any:
+    def pull(self, X: Union[ArrayLike, sp.csc_matrix], /, *, unique_id: Any) -> Any:
         ...
 
     @overload
@@ -213,7 +214,7 @@ class Bandit:
 
     def pull(
         self,
-        X: Optional[ArrayLike] = None,
+        X: Union[ArrayLike, sp.csc_matrix, None] = None,
         /,
         **kwargs: Any,
     ) -> Union[Any, List[Any]]:
@@ -449,15 +450,21 @@ class Bandit:
         ...
 
     @overload
-    def update(self, X: ArrayLike, y: ArrayLike, /) -> None:
+    def update(self, X: Union[ArrayLike, sp.csc_matrix], y: ArrayLike, /) -> None:
         ...
 
     @overload
-    def update(self, X: ArrayLike, y: ArrayLike, /, *, unique_id: Any) -> None:
+    def update(
+        self, X: Union[ArrayLike, sp.csc_matrix], y: ArrayLike, /, *, unique_id: Any
+    ) -> None:
         ...
 
     def update(
-        self, X: ArrayLike, y: Optional[ArrayLike] = None, /, **kwargs: Any
+        self,
+        X: Union[ArrayLike, sp.csc_matrix],
+        y: Optional[ArrayLike] = None,
+        /,
+        **kwargs: Any,
     ) -> None:
         """Update the learner for the last arm pulled.
 
@@ -578,10 +585,13 @@ class Bandit:
                     stacklevel=2,
                 )
                 continue
+
             arm_to_update.update(X_part, y_part)
 
     @overload
-    def sample(self, X: ArrayLike, /, *, size: int = 1) -> ArrayLike:
+    def sample(
+        self, X: Union[ArrayLike, sp.csc_matrix], /, *, size: int = 1
+    ) -> ArrayLike:
         ...
 
     @overload
@@ -590,7 +600,7 @@ class Bandit:
 
     def sample(
         self,
-        X: Optional[ArrayLike] = None,
+        X: Union[ArrayLike, sp.csc_matrix, None] = None,
         /,
         *,
         size: int = 1,
@@ -631,7 +641,7 @@ class Bandit:
     @overload
     def decay(
         self,
-        X: ArrayLike,
+        X: Union[ArrayLike, sp.csc_matrix],
         /,
         *,
         decay_rate: Optional[float] = None,
@@ -641,7 +651,7 @@ class Bandit:
 
     def decay(
         self,
-        X: Optional[ArrayLike] = None,
+        X: Union[ArrayLike, sp.csc_matrix, None] = None,
         /,
         *,
         decay_rate: Optional[float] = None,
@@ -743,7 +753,7 @@ class Bandit:
 
 @overload
 def _validate_arrays(
-    X: ArrayLike,
+    X: Union[ArrayLike, sp.csc_matrix],
     y: Optional[ArrayLike],
     /,
     contextual: bool,
@@ -754,7 +764,7 @@ def _validate_arrays(
 
 @overload
 def _validate_arrays(
-    X: Optional[ArrayLike],
+    X: Union[ArrayLike, sp.csc_matrix, None],
     y: Literal[None],
     /,
     contextual: bool,
@@ -779,12 +789,12 @@ def _validate_unique_ids(
 
 
 def _validate_arrays(
-    X: Optional[ArrayLike],
+    X: Union[ArrayLike, sp.csc_matrix, None],
     y: Optional[ArrayLike],
     /,
     contextual: bool,
     check_y: bool = True,
-) -> Tuple[NDArray[np.float_], Optional[NDArray[np.float_]]]:
+) -> Tuple[Union[NDArray[np.float_], sp.csc_matrix], Optional[NDArray[np.float_]]]:
     """Validate the `X` and `y` arrays.
 
     Parameters
@@ -816,7 +826,7 @@ def _validate_arrays(
         raise ValueError("Context must be None for a non-contextual bandit.")
 
     if contextual:
-        X = np.atleast_2d(cast(ArrayLike, X))  # type: ignore
+        X = np.atleast_2d(cast(ArrayLike, X)) if not sp.issparse(X) else X
         y = np.atleast_1d(cast(ArrayLike, y)) if check_y else None
     else:
         y = np.atleast_1d(cast(ArrayLike, X)) if check_y else None
@@ -831,7 +841,7 @@ def _validate_arrays(
             raise ValueError(
                 "The number of rows in `X` must match the number of rows in `y`."
             )
-
+    assert isinstance(X, (np.ndarray, sp.csc_matrix))  # for the type checker
     return X, y
 
 

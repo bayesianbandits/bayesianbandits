@@ -521,7 +521,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self.sparse = sparse
         self.random_state = random_state
 
-    def fit(self, X_fit: NDArray[Any], y: NDArray[Any]) -> Self:
+    def fit(
+        self, X_fit: Union[NDArray[Any], sparse.csc_matrix], y: NDArray[Any]
+    ) -> Self:
         """
         Fit the model using X as training data and y as target values. y must be
         count data.
@@ -532,6 +534,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             copy=True,
             ensure_2d=True,
             dtype=np.float_,
+            accept_sparse=self.sparse,
         )
 
         self._initialize_prior(X_fit)
@@ -540,7 +543,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         return self
 
-    def _initialize_prior(self, X: NDArray[Any]) -> None:
+    def _initialize_prior(self, X: Union[NDArray[Any], sparse.csc_matrix]) -> None:
         if isinstance(self.random_state, int) or self.random_state is None:
             self.random_state_ = np.random.default_rng(self.random_state)
         else:
@@ -569,33 +572,42 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             )
         return Covariance.from_cholesky(cholesky(cov, lower=True))
 
-    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
+    def _fit_helper(self, X: Union[NDArray[Any], sparse.csc_matrix], y: NDArray[Any]):
         # Apply the learning rate to the new data, if there are multiple observations
         # in the batch. This is done to ensure that one-at-a-time updates are
         # equivalent to batch updates.
-        if len(X) > 1:
+        # Apply the learning rate to the new data, if there are multiple observations
+        # in the batch. This is done to ensure that one-at-a-time updates are
+        # equivalent to batch updates.
+        if self.sparse and not sparse.isspmatrix_csc(X):
+            X = sparse.csc_matrix(X)
+
+        if X.shape[0] > 1:
             obs_decays = np.flip(
-                np.power(np.sqrt(self.learning_rate), np.arange(len(X)))
+                np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
             )
-            X = X * obs_decays[:, np.newaxis]
+            X = (
+                X * obs_decays[:, np.newaxis]
+                if not sparse.issparse(X)
+                else cast(sparse.csc_matrix, X).multiply(obs_decays[:, np.newaxis])
+            )
             y = y * obs_decays
 
-        prior_decay = self.learning_rate ** len(X)
+        else:
+            obs_decays = np.array([1.0])
+
+        prior_decay = self.learning_rate ** X.shape[0]
+
+        # Update the inverse covariance matrix
+        cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
 
         if self.sparse:
-            # Calculate the posterior covariance
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * sparse.csc_matrix(
-                X.T
-            ) @ sparse.csc_matrix(X)
             # Calculate the posterior mean
             coef = spla.spsolve(
                 cov_inv,
                 prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
             )
-
         else:
-            # Calculate the posterior covariance
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
             # Calculate the posterior mean
             coef = solve(
                 cov_inv,
@@ -608,7 +620,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             del self.cov_
         self.coef_ = coef
 
-    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
+    def partial_fit(self, X: Union[NDArray[Any], sparse.csc_matrix], y: NDArray[Any]):
         """
         Update the model using X as training data and y as target values.
         """
@@ -623,12 +635,13 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             copy=True,
             ensure_2d=True,
             dtype=np.float_,
+            accept_sparse=self.sparse,
         )
 
         self._fit_helper(X_fit, y)
         return self
 
-    def predict(self, X: NDArray[Any]) -> NDArray[Any]:
+    def predict(self, X: Union[NDArray[Any], sparse.csc_matrix]) -> NDArray[Any]:
         """
         Predict class for X.
         """
@@ -637,11 +650,13 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_pred = check_array(X, copy=True, ensure_2d=True)
+        X_pred = check_array(X, copy=True, ensure_2d=True, accept_sparse=self.sparse)
 
         return X_pred @ self.coef_
 
-    def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
+    def sample(
+        self, X: Union[NDArray[Any], sparse.csc_matrix], size: int = 1
+    ) -> NDArray[np.float64]:
         """
         Sample from the model posterior at X.
         """
@@ -670,7 +685,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
-    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
+    def decay(
+        self,
+        X: Union[NDArray[Any], sparse.csc_matrix],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         """
         Decay the prior by a factor of `learning_rate`.
         """
@@ -681,7 +701,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         if decay_rate is None:
             decay_rate = self.learning_rate
 
-        prior_decay = decay_rate ** len(X)
+        prior_decay = decay_rate ** X.shape[0]
 
         # Decay the prior without making an update. Because we're only
         # increasing the prior variance, we do not need to update the
@@ -804,7 +824,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.sparse = sparse
         self.random_state = random_state
 
-    def _initialize_prior(self, X: NDArray[Any]) -> None:
+    def _initialize_prior(self, X: Union[NDArray[Any], sparse.csc_matrix]) -> None:
         if isinstance(self.random_state, int) or self.random_state is None:
             self.random_state_ = np.random.default_rng(self.random_state)
         else:
@@ -844,27 +864,33 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.a_ = self.a
         self.b_ = self.b
 
-    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
+    def _fit_helper(self, X: Union[NDArray[Any], sparse.csc_matrix], y: NDArray[Any]):
         # Apply the learning rate to the new data, if there are multiple observations
         # in the batch. This is done to ensure that one-at-a-time updates are
         # equivalent to batch updates.
-        if len(X) > 1:
+        if self.sparse and not sparse.isspmatrix_csc(X):
+            X = sparse.csc_matrix(X)
+
+        if X.shape[0] > 1:
             obs_decays = np.flip(
-                np.power(np.sqrt(self.learning_rate), np.arange(len(X)))
+                np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
             )
-            X = X * obs_decays[:, np.newaxis]
+            X = (
+                X * obs_decays[:, np.newaxis]
+                if not sparse.issparse(X)
+                else cast(sparse.csc_matrix, X).multiply(obs_decays[:, np.newaxis])
+            )
             y = y * obs_decays
 
         else:
             obs_decays = np.array([1.0])
 
-        prior_decay = self.learning_rate ** len(X)
+        prior_decay = self.learning_rate ** X.shape[0]
+
+        # Update the inverse covariance matrix
+        V_n = prior_decay * self.cov_inv_ + X.T @ X
 
         if self.sparse:
-            # Update the inverse covariance matrix
-            V_n = prior_decay * self.cov_inv_ + sparse.csc_matrix(
-                X
-            ).T @ sparse.csc_matrix(X)
             # Update the mean vector.
             m_n = spla.spsolve(
                 V_n,
@@ -872,9 +898,6 @@ class NormalInverseGammaRegressor(NormalRegressor):
             )
 
         else:
-            # Update the inverse covariance matrix
-            V_n = prior_decay * self.cov_inv_ + X.T @ X
-
             # Update the mean vector. Keeping track of the precision matrix
             # ensures we only need to do one LAPACK call.
             m_n = solve(
@@ -918,7 +941,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
             )
             return Covariance.from_cholesky(cholesky(shape, lower=True))
 
-    def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
+    def sample(
+        self, X: Union[NDArray[Any], sparse.csc_matrix], size: int = 1
+    ) -> NDArray[np.float64]:
         """
         Sample from the coefficient marginal posterior at X. This is equivalent to
         sampling from a multivariate t distribution with the posterior mean and
@@ -965,7 +990,12 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         return np.atleast_2d(samples @ X.T)  # type: ignore
 
-    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
+    def decay(
+        self,
+        X: Union[NDArray[Any], sparse.csc_matrix],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         """
         Decay the prior by a factor of `learning_rate`. This is equivalent to
         applying the learning rate to the prior, and then ignoring the data.
@@ -979,7 +1009,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if decay_rate is None:
             decay_rate = self.learning_rate
 
-        prior_decay = decay_rate ** len(X)
+        prior_decay = decay_rate ** X.shape[0]
 
         # decay only increases the variance, so we only need to update the
         # inverse covariance matrix, a_, and b_
