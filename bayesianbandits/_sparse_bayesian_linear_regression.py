@@ -11,7 +11,7 @@ from scipy.stats._multivariate import _squeeze_output
 class CovViaSparsePrecision(Covariance):
     def __init__(self, prec: csc_array):
         if not issparse(prec):
-            raise ValueError("prec must be a sparse matrix")
+            raise ValueError("prec must be a sparse array")
 
         self._precision = prec
         # Compute the Covariance matrix from the precision matrix
