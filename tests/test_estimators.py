@@ -410,7 +410,7 @@ def test_normal_regressor_fit(
 
     clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
@@ -435,7 +435,7 @@ def test_normal_regressor_partial_fit_never_fit(
 
     clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.partial_fit(X_fit, y)
@@ -459,7 +459,7 @@ def test_normal_regressor_partial_fit_already_fit(
 
     clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
@@ -482,7 +482,7 @@ def test_normal_regressor_predict(
 ) -> None:
     """Test NormalRegressor predict."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -514,7 +514,7 @@ def test_normal_regressor_predict_no_fit(
 ) -> None:
     """Test NormalRegressor predict."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -545,7 +545,7 @@ def test_normal_regressor_sample(
 ) -> None:
     """Test NormalRegressor sample."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -580,7 +580,7 @@ def test_normal_regressor_sample_no_fit(
 ) -> None:
     """Test NormalRegressor sample."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -614,7 +614,7 @@ def test_normal_regressor_decay(
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -638,7 +638,7 @@ def test_normal_regressor_manual_decay(
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -666,7 +666,7 @@ def test_normal_regressor_predict_covariates(
     y = np.random.rand(obs)
 
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -697,7 +697,7 @@ def test_normal_regressor_sample_covariates(
     y = np.random.rand(obs)
 
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -722,13 +722,13 @@ def test_normal_inverse_gamma_regressor_fit(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
 
     if sparse:
-        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        assert isinstance(clf.cov_inv_, sp.csc_array)
         cov_inv_ = clf.cov_inv_.toarray()
     else:
         cov_inv_ = clf.cov_inv_
@@ -750,13 +750,13 @@ def test_normal_inverse_gamma_regressor_partial_fit_never_fit(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.partial_fit(X_fit, y)
 
     if sparse:
-        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        assert isinstance(clf.cov_inv_, sp.csc_array)
         cov_inv_ = clf.cov_inv_.toarray()
     else:
         cov_inv_ = clf.cov_inv_
@@ -779,14 +779,14 @@ def test_normal_inverse_gamma_regressor_partial_fit_already_fit(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
     clf.partial_fit(X_fit, y)
 
     if sparse:
-        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        assert isinstance(clf.cov_inv_, sp.csc_array)
         cov_inv_ = clf.cov_inv_.toarray()
     else:
         cov_inv_ = clf.cov_inv_
@@ -810,7 +810,7 @@ def test_normal_inverse_gamma_regressor_predict(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
@@ -842,7 +842,7 @@ def test_normal_inverse_gamma_regressor_predict_no_fit(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     assert_almost_equal(
@@ -873,7 +873,7 @@ def test_normal_inverse_gamma_regressor_sample(
 
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
@@ -909,7 +909,7 @@ def test_normal_inverse_gamma_regressor_sample_no_fit(
     clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
 
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -943,7 +943,7 @@ def test_normal_inverse_gamma_regressor_decay(
 
     clf = NormalInverseGammaRegressor(random_state=0, learning_rate=0.9, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -966,7 +966,7 @@ def test_normal_inverse_gamma_regressor_manual_decay(
 
     clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0, sparse=sparse)
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
     clf.fit(X_fit, y)
@@ -990,7 +990,7 @@ def test_normal_inverse_gamma_regressor_predict_covariates(
     y = np.random.rand(obs)
 
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -998,7 +998,7 @@ def test_normal_inverse_gamma_regressor_predict_covariates(
     clf.fit(X_fit, y)
 
     if sparse:
-        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        assert isinstance(clf.cov_inv_, sp.csc_array)
 
     pred = clf.predict(X_fit)
 
@@ -1024,7 +1024,7 @@ def test_normal_inverse_gamma_regressor_sample_covariates(
     y = np.random.rand(obs)
 
     if sparse:
-        X_fit = sp.csc_matrix(X)
+        X_fit = sp.csc_array(X)
     else:
         X_fit = X
 
@@ -1032,7 +1032,7 @@ def test_normal_inverse_gamma_regressor_sample_covariates(
     clf.fit(X_fit, y)
 
     if sparse:
-        assert isinstance(clf.cov_inv_, sp.csc_matrix)
+        assert isinstance(clf.cov_inv_, sp.csc_array)
 
     pred = clf.sample(X_fit, size=size)
 

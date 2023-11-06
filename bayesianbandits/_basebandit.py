@@ -20,8 +20,8 @@ from typing import (
 from warnings import warn
 
 import numpy as np
-import scipy.sparse as sp
 from numpy.typing import ArrayLike, NDArray
+from scipy.sparse import csc_array, issparse
 from sklearn.base import clone
 from typing_extensions import Literal, TypeGuard, dataclass_transform
 
@@ -197,11 +197,11 @@ class Bandit:
         dataclass(cls)
 
     @overload
-    def pull(self, X: Union[ArrayLike, sp.csc_matrix], /) -> Any:
+    def pull(self, X: Union[ArrayLike, csc_array], /) -> Any:
         ...
 
     @overload
-    def pull(self, X: Union[ArrayLike, sp.csc_matrix], /, *, unique_id: Any) -> Any:
+    def pull(self, X: Union[ArrayLike, csc_array], /, *, unique_id: Any) -> Any:
         ...
 
     @overload
@@ -214,7 +214,7 @@ class Bandit:
 
     def pull(
         self,
-        X: Union[ArrayLike, sp.csc_matrix, None] = None,
+        X: Union[ArrayLike, csc_array, None] = None,
         /,
         **kwargs: Any,
     ) -> Union[Any, List[Any]]:
@@ -450,18 +450,18 @@ class Bandit:
         ...
 
     @overload
-    def update(self, X: Union[ArrayLike, sp.csc_matrix], y: ArrayLike, /) -> None:
+    def update(self, X: Union[ArrayLike, csc_array], y: ArrayLike, /) -> None:
         ...
 
     @overload
     def update(
-        self, X: Union[ArrayLike, sp.csc_matrix], y: ArrayLike, /, *, unique_id: Any
+        self, X: Union[ArrayLike, csc_array], y: ArrayLike, /, *, unique_id: Any
     ) -> None:
         ...
 
     def update(
         self,
-        X: Union[ArrayLike, sp.csc_matrix],
+        X: Union[ArrayLike, csc_array],
         y: Optional[ArrayLike] = None,
         /,
         **kwargs: Any,
@@ -589,9 +589,7 @@ class Bandit:
             arm_to_update.update(X_part, y_part)
 
     @overload
-    def sample(
-        self, X: Union[ArrayLike, sp.csc_matrix], /, *, size: int = 1
-    ) -> ArrayLike:
+    def sample(self, X: Union[ArrayLike, csc_array], /, *, size: int = 1) -> ArrayLike:
         ...
 
     @overload
@@ -600,7 +598,7 @@ class Bandit:
 
     def sample(
         self,
-        X: Union[ArrayLike, sp.csc_matrix, None] = None,
+        X: Union[ArrayLike, csc_array, None] = None,
         /,
         *,
         size: int = 1,
@@ -641,7 +639,7 @@ class Bandit:
     @overload
     def decay(
         self,
-        X: Union[ArrayLike, sp.csc_matrix],
+        X: Union[ArrayLike, csc_array],
         /,
         *,
         decay_rate: Optional[float] = None,
@@ -651,7 +649,7 @@ class Bandit:
 
     def decay(
         self,
-        X: Union[ArrayLike, sp.csc_matrix, None] = None,
+        X: Union[ArrayLike, csc_array, None] = None,
         /,
         *,
         decay_rate: Optional[float] = None,
@@ -753,7 +751,7 @@ class Bandit:
 
 @overload
 def _validate_arrays(
-    X: Union[ArrayLike, sp.csc_matrix],
+    X: Union[ArrayLike, csc_array],
     y: Optional[ArrayLike],
     /,
     contextual: bool,
@@ -764,7 +762,7 @@ def _validate_arrays(
 
 @overload
 def _validate_arrays(
-    X: Union[ArrayLike, sp.csc_matrix, None],
+    X: Union[ArrayLike, csc_array, None],
     y: Literal[None],
     /,
     contextual: bool,
@@ -789,12 +787,12 @@ def _validate_unique_ids(
 
 
 def _validate_arrays(
-    X: Union[ArrayLike, sp.csc_matrix, None],
+    X: Union[ArrayLike, csc_array, None],
     y: Optional[ArrayLike],
     /,
     contextual: bool,
     check_y: bool = True,
-) -> Tuple[Union[NDArray[np.float_], sp.csc_matrix], Optional[NDArray[np.float_]]]:
+) -> Tuple[Union[NDArray[np.float_], csc_array], Optional[NDArray[np.float_]]]:
     """Validate the `X` and `y` arrays.
 
     Parameters
@@ -826,7 +824,7 @@ def _validate_arrays(
         raise ValueError("Context must be None for a non-contextual bandit.")
 
     if contextual:
-        X = np.atleast_2d(cast(ArrayLike, X)) if not sp.issparse(X) else X
+        X = np.atleast_2d(cast(ArrayLike, X)) if not issparse(X) else X
         y = np.atleast_1d(cast(ArrayLike, y)) if check_y else None
     else:
         y = np.atleast_1d(cast(ArrayLike, X)) if check_y else None
@@ -841,7 +839,7 @@ def _validate_arrays(
             raise ValueError(
                 "The number of rows in `X` must match the number of rows in `y`."
             )
-    assert isinstance(X, (np.ndarray, sp.csc_matrix))  # for the type checker
+    assert isinstance(X, (np.ndarray, csc_array))  # for the type checker
     return X, y
 
 

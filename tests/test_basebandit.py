@@ -400,7 +400,7 @@ def test_contextual_bandit_batch_pull_and_update(sparse: bool) -> None:
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
     if sparse:
-        X = sp.csc_matrix(X)
+        X = sp.csc_array(X)
 
     instance.pull(X, unique_id=[1, 2, 3])
     instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
@@ -427,7 +427,7 @@ def test_contextual_bandit_batch_pull_and_update_single(sparse: bool) -> None:
 
     X = np.array([[1, 2]])
     if sparse:
-        X = sp.csc_matrix(X)
+        X = sp.csc_array(X)
 
     instance.pull(X, unique_id=[1])
     instance.update(X, [1], unique_id=[1])
@@ -452,7 +452,7 @@ def test_contextual_bandit_batch_pull_length_mismatch_exception(sparse: bool) ->
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
     if sparse:
-        X = sp.csc_matrix(X)
+        X = sp.csc_array(X)
 
     with pytest.raises(ValueError):
         instance.pull(X, unique_id=[1, 2])
