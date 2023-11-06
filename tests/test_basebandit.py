@@ -3,6 +3,7 @@ from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from numpy.typing import NDArray
 from sklearn.base import check_is_fitted  # type: ignore
 
@@ -82,7 +83,7 @@ def bandit_class(
             return np.take(x, 0, axis=-1)  # type: ignore
 
     else:
-        reward_func = None
+        reward_func = None  # type: ignore
 
     def action_func(x: int) -> None:
         print(f"action{x}")
@@ -340,10 +341,11 @@ def test_bandit_arms_with_existing_learners() -> None:
     assert instance.arms["arm2"].learner.alphas[1] == 6.0
 
 
-def test_bandit_batch_pull_and_update() -> None:
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bandit_batch_pull_and_update(sparse: bool) -> None:
     class Experiment(
         Bandit,
-        learner=NormalInverseGammaRegressor(),
+        learner=NormalInverseGammaRegressor(sparse=sparse),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
@@ -353,6 +355,7 @@ def test_bandit_batch_pull_and_update() -> None:
     instance = Experiment(rng=0)
 
     instance.pull(unique_id=[1, 2, 3])
+
     instance.update([1, 2, 1], unique_id=[1, 2, 3])
 
     # 0.1 + 0.5 - one update. this test could break if the rng changes
@@ -361,10 +364,11 @@ def test_bandit_batch_pull_and_update() -> None:
     assert instance.arm2.learner.a_ == 1.6  # type: ignore
 
 
-def test_bandit_batch_pull_and_update_single() -> None:
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bandit_batch_pull_and_update_single(sparse: bool) -> None:
     class Experiment(
         Bandit,
-        learner=NormalInverseGammaRegressor(),
+        learner=NormalInverseGammaRegressor(sparse=sparse),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
@@ -380,11 +384,12 @@ def test_bandit_batch_pull_and_update_single() -> None:
     assert instance.arm2.learner.a_ == 0.6  # type: ignore
 
 
-def test_contextual_bandit_batch_pull_and_update() -> None:
+@pytest.mark.parametrize("sparse", [True, False])
+def test_contextual_bandit_batch_pull_and_update(sparse: bool) -> None:
     @contextual
     class Experiment(
         Bandit,
-        learner=NormalInverseGammaRegressor(),
+        learner=NormalInverseGammaRegressor(sparse=sparse),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
@@ -394,6 +399,8 @@ def test_contextual_bandit_batch_pull_and_update() -> None:
     instance = Experiment(rng=0)
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
+    if sparse:
+        X = sp.csc_array(X)
 
     instance.pull(X, unique_id=[1, 2, 3])
     instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
@@ -404,11 +411,12 @@ def test_contextual_bandit_batch_pull_and_update() -> None:
     assert instance.arm2.learner.a_ == 0.6  # type: ignore
 
 
-def test_contextual_bandit_batch_pull_and_update_single() -> None:
+@pytest.mark.parametrize("sparse", [True, False])
+def test_contextual_bandit_batch_pull_and_update_single(sparse: bool) -> None:
     @contextual
     class Experiment(
         Bandit,
-        learner=NormalInverseGammaRegressor(),
+        learner=NormalInverseGammaRegressor(sparse=sparse),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
@@ -418,6 +426,8 @@ def test_contextual_bandit_batch_pull_and_update_single() -> None:
     instance = Experiment(rng=0)
 
     X = np.array([[1, 2]])
+    if sparse:
+        X = sp.csc_array(X)
 
     instance.pull(X, unique_id=[1])
     instance.update(X, [1], unique_id=[1])
@@ -426,11 +436,12 @@ def test_contextual_bandit_batch_pull_and_update_single() -> None:
     assert instance.arm2.learner.a_ == 0.6  # type: ignore
 
 
-def test_contextual_bandit_batch_pull_length_mismatch_exception() -> None:
+@pytest.mark.parametrize("sparse", [True, False])
+def test_contextual_bandit_batch_pull_length_mismatch_exception(sparse: bool) -> None:
     @contextual
     class Experiment(
         Bandit,
-        learner=NormalInverseGammaRegressor(),
+        learner=NormalInverseGammaRegressor(sparse=sparse),
         policy=thompson_sampling(),
         delayed_reward=True,
     ):
@@ -440,6 +451,8 @@ def test_contextual_bandit_batch_pull_length_mismatch_exception() -> None:
     instance = Experiment(rng=0)
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
+    if sparse:
+        X = sp.csc_array(X)
 
     with pytest.raises(ValueError):
         instance.pull(X, unique_id=[1, 2])
@@ -567,7 +580,7 @@ def test_delayed_reward_batch_update_known_and_unknown_unique_id_warning() -> No
 
 
 class UnhashableClass:
-    __hash__ = None
+    __hash__ = None  # type: ignore
 
 
 def test_delayed_reward_bad_unique_id_errors() -> None:

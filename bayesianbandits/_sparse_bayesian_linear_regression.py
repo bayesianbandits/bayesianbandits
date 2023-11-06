@@ -2,16 +2,16 @@ from functools import cached_property
 from typing import Union
 
 import numpy as np
-from scipy.sparse import csc_matrix, diags, eye, issparse
+from scipy.sparse import csc_array, diags, eye, issparse
 from scipy.sparse.linalg import factorized, splu, spsolve
 from scipy.stats import Covariance
 from scipy.stats._multivariate import _squeeze_output
 
 
 class CovViaSparsePrecision(Covariance):
-    def __init__(self, prec: csc_matrix):
+    def __init__(self, prec: csc_array):
         if not issparse(prec):
-            raise ValueError("prec must be a sparse matrix")
+            raise ValueError("prec must be a sparse array")
 
         self._precision = prec
         # Compute the Covariance matrix from the precision matrix
@@ -36,19 +36,19 @@ class CovViaSparsePrecision(Covariance):
         return self.colorize_solve(x.T).T
 
 
-def sparse_cholesky(A: csc_matrix) -> csc_matrix:
+def sparse_cholesky(A: csc_array) -> csc_array:
     """Compute the Cholesky decomposition of a sparse, positive-definite matrix.
 
     In Bayesian linear regression, the precision matrix is always positive-definite.
 
     Parameters
     ----------
-    A : csc_matrix
+    A : csc_array
         Sparse, positive-definite matrix.
 
     Returns
     -------
-    csc_matrix
+    csc_array
         Cholesky decomposition of A (lower triangular matrix)
 
     Raises
@@ -69,9 +69,9 @@ def sparse_cholesky(A: csc_matrix) -> csc_matrix:
 
 
 def multivariate_normal_sample_from_sparse_covariance(
-    mean: Union[csc_matrix, np.ndarray, None],
+    mean: Union[csc_array, np.ndarray, None],
     cov: Covariance,
-    size=1,
+    size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
 ):
     """
@@ -83,7 +83,7 @@ def multivariate_normal_sample_from_sparse_covariance(
     mean : array_like, optional
         Mean of the distribution. Default is 0.
     prec : array_like
-        Precision matrix of the distribution. Ideally a csc sparse matrix.
+        Precision matrix of the distribution. Ideally a csc sparse array.
     size : int or tuple of ints, optional
         Given a shape of, for example, (m,n,k), m*n*k samples are generated,
         and packed in an m-by-n-by-k arrangement. Because each sample is
@@ -107,14 +107,12 @@ def multivariate_normal_sample_from_sparse_covariance(
 
     # Compute size from the shape of Q plus the size parameter
     if isinstance(size, int):
-        size = (size,) + (cov.shape[-1],)
-    elif isinstance(size, tuple):
-        size = size + (cov.shape[-1],)
+        gen_size = (size,) + (cov.shape[-1],)
     else:
-        raise ValueError("size must be an int or tuple")
+        raise ValueError("size must be an int")
 
     # Sample Z from a standard multivariate normal distribution
-    Z = rng.standard_normal(size)
+    Z = rng.standard_normal(gen_size)
 
     # Colorize Z
     Y = cov.colorize(Z)
@@ -127,10 +125,10 @@ def multivariate_normal_sample_from_sparse_covariance(
 
 
 def multivariate_t_sample_from_sparse_covariance(
-    loc: Union[csc_matrix, np.ndarray],
+    loc: Union[csc_array, np.ndarray],
     shape: Covariance,
-    df=1.0,
-    size=1,
+    df: float = 1.0,
+    size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
 ):
     """
@@ -142,7 +140,7 @@ def multivariate_t_sample_from_sparse_covariance(
     loc : array_like
         Mean of the distribution.
     shape_inv_ : array_like
-        Inverse of the shape matrix of the distribution. Ideally a csc sparse matrix.
+        Inverse of the shape matrix of the distribution. Ideally a csc sparse array.
     df : int or float, optional
         Degrees of freedom of the distribution. Default is 1.
     size : int or tuple of ints, optional

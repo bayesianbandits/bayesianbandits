@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
 from typing import Any, Generator, Tuple, TypeVar
 
 import numpy as np
@@ -44,7 +43,7 @@ def groupby_array(
     sorted_arrays = [array[sort_keys] for array in arrays]
 
     group_indexes = np.unique(sorted_by, return_index=True)[1][1:]
-    splitter = partial(np.split, indices_or_sections=group_indexes)
+    split_indexes = np.split(np.arange(len(sorted_by)), group_indexes)
 
-    for group in zip(*map(splitter, sorted_arrays)):
-        yield group  # type: ignore
+    for split in split_indexes:
+        yield tuple(array[split] for array in sorted_arrays)
