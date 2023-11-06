@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.sparse import csc_array
 from typing_extensions import Concatenate, ParamSpec
 
 from ._typing import ActionToken, DecayingLearner, Learner
@@ -97,26 +98,29 @@ class Arm:
     @requires_learner
     def sample(
         self,
-        X: NDArray[np.float_],
+        X: Union[csc_array, NDArray[np.float_]],
         size: int = 1,
     ) -> NDArray[np.float_]:
         """Sample from learner and compute the reward."""
         return self.reward_function(self.learner.sample(X, size))  # type: ignore
 
     @requires_learner
-    def update(self, X: NDArray[np.float_], y: NDArray[np.float_]) -> None:
+    def update(
+        self, X: Union[csc_array, NDArray[np.float_]], y: NDArray[np.float_]
+    ) -> None:
         """Update the learner.
 
         If y is None, the data in X is used as the target and X is set to
         a `len(X)` rows of ones.
         """
         assert self.learner is not None  # for type checker
-        self.learner.partial_fit(X, y)
+        # sparse learners are supported by some, but not all learners
+        self.learner.partial_fit(X, y)  # type: ignore
 
     @requires_learner
     def decay(
         self,
-        X: NDArray[np.float_],
+        X: Union[csc_array, NDArray[np.float_]],
         *,
         decay_rate: Optional[float] = None,
     ) -> None:
@@ -125,8 +129,8 @@ class Arm:
         Takes a `y` argument for consistency with `update` but does not use it."""
         if not hasattr(self.learner, "decay"):
             raise ValueError("Learner does not have a decay method.")
-
-        cast(DecayingLearner, self.learner).decay(X, decay_rate=decay_rate)
+        # sparse learners are supported by some, but not all learners
+        cast(DecayingLearner, self.learner).decay(X, decay_rate=decay_rate)  # type: ignore
 
     def __repr__(self) -> str:
         return (
