@@ -1,11 +1,22 @@
+import os
 from functools import cached_property
 from typing import Union
 
 import numpy as np
-from scipy.sparse import csc_array, diags, eye, issparse
+from scipy.sparse import csc_array, csc_matrix, diags, eye, issparse
 from scipy.sparse.linalg import factorized, splu, spsolve
 from scipy.stats import Covariance
 from scipy.stats._multivariate import _squeeze_output
+
+try:
+    from sksparse.cholmod import cholesky
+
+    use_cholmod = True
+except ImportError:
+    use_cholmod = False
+
+if os.environ.get("BB_NO_CHOLMOD", "0") == "1":
+    use_cholmod = False
 
 
 class CovViaSparsePrecision(Covariance):
@@ -14,9 +25,15 @@ class CovViaSparsePrecision(Covariance):
             raise ValueError("prec must be a sparse array")
 
         self._precision = prec
+
         # Compute the Covariance matrix from the precision matrix
-        self._chol_P = sparse_cholesky(prec)
-        self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+        if use_cholmod:
+            self._chol_P = cholesky(csc_matrix(prec)).L()
+            self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+        else:
+            self._chol_P = sparse_cholesky(prec)
+            self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
         self._allow_singular = False
@@ -33,6 +50,9 @@ class CovViaSparsePrecision(Covariance):
         return x @ self._chol_P
 
     def _colorize(self, x):
+        if use_cholmod:
+            return cholesky(self._chol_P)(x.T).T  # type: ignore
+
         return self.colorize_solve(x.T).T
 
 

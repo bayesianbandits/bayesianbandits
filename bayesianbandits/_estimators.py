@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import os
 from collections import defaultdict
 from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
 from scipy.sparse.linalg import spsolve
-from scipy.sparse import csc_array, eye, diags
+from scipy.sparse import csc_array, eye, diags, csc_matrix
 from scipy.stats import (
     Covariance,
     dirichlet,
@@ -32,6 +32,17 @@ from ._sparse_bayesian_linear_regression import (
     multivariate_normal_sample_from_sparse_covariance,
     multivariate_t_sample_from_sparse_covariance,
 )
+
+use_cholmod = False
+try:
+    from sksparse.cholmod import sp_cholesky
+
+    use_cholmod = True
+except ImportError:
+    pass
+
+if os.environ.get("BB_NO_CHOLMOD", "0") == "1":
+    use_cholmod = False
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
@@ -445,7 +456,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         The learning rate for the model. This transforms the model into a recursive
         Bayesian estimator, specifically a Kalman filter.
     sparse : bool, default=False
-        Whether to use a sparse representation for the precision matrix.
+        Whether to use a sparse representation for the precision matrix. If True
+        and CHOLMOD is installed, the model will use CHOLMOD to solve the linear
+        system. If False, the model will use scipy.sparse.linalg.spsolve.
     random_state : int, np.random.Generator, default=None
         The random state for the model. If an int is passed, it is used to
         seed the numpy random number generator.
@@ -461,6 +474,11 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     -----
     This model implements the "known variance" version of the Bayesian linear
     formulation described in Chapter 7 of ref [1].
+
+    If the model is initialized with `sparse=True` and CHOLMOD is installed
+    and made available with `scikit-sparse`, the model will use CHOLMOD to
+    solve the linear system. Otherwise, the model will use
+    `scipy.sparse.linalg.spsolve`.
 
     References
     ----------
@@ -596,11 +614,16 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
 
         if self.sparse:
-            # Calculate the posterior mean
-            coef = spsolve(
-                cov_inv,
-                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
-            )
+            if use_cholmod:
+                coef = sp_cholesky(cov_inv)(
+                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
+                )
+            else:
+                # Calculate the posterior mean
+                coef = spsolve(
+                    cov_inv,
+                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+                )
         else:
             # Calculate the posterior mean
             coef = solve(
@@ -738,6 +761,10 @@ class NormalInverseGammaRegressor(NormalRegressor):
     learning_rate : float, default=1.0
         Learning rate for the model. This transforms the model into a
         recursive Bayesian estimator, specifically a Kalman filter.
+    sparse : bool, default=False
+        Whether to use a sparse representation for the precision matrix. If True
+        and CHOLMOD is installed, the model will use CHOLMOD to solve the linear
+        system. If False, the model will use scipy.sparse.linalg.spsolve.
     random_state : int, np.random.Generator, or None, default=None
         Random state for the model.
 
@@ -758,6 +785,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
     -----
     This model implements the "unknown variance" version of the Bayesian linear
     formulation described in Chapter 7 of ref [1].
+
+    If the model is initialized with `sparse=True` and CHOLMOD is installed
+    and made available with `scikit-sparse`, the model will use CHOLMOD to
+    solve the linear system. Otherwise, the model will use
+    `scipy.sparse.linalg.spsolve`.
 
     References
     ----------
@@ -889,10 +921,15 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         if self.sparse:
             # Update the mean vector.
-            m_n = spsolve(
-                V_n,
-                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
-            )
+            if use_cholmod:
+                m_n = sp_cholesky(csc_matrix(V_n))(
+                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
+                )
+            else:
+                m_n = spsolve(
+                    V_n,
+                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+                )
 
         else:
             # Update the mean vector. Keeping track of the precision matrix
