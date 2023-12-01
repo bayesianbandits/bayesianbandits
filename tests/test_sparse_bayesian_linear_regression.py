@@ -12,6 +12,14 @@ import joblib
 from pathlib import Path
 
 
+@pytest.fixture(params=[0, 1], autouse=True, ids=["cholmod", "no_cholmod"])
+def cholmod_envvar(request, monkeypatch):
+    """Allows running test suite with and without CHOLMOD."""
+    monkeypatch.setenv("BB_NO_CHOLMOD", str(request.param))
+    yield request.param
+    monkeypatch.delenv("BB_NO_CHOLMOD")
+
+
 @pytest.fixture(params=["identity", "diag"])
 def sparse_array(request):
     if request.param == "identity":
