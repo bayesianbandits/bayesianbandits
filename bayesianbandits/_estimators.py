@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Union, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import spsolve, use_solver
 from scipy.sparse import csc_array, eye, diags, csc_matrix
 from scipy.stats import (
     Covariance,
@@ -33,16 +33,18 @@ from ._sparse_bayesian_linear_regression import (
     multivariate_t_sample_from_sparse_covariance,
 )
 
-use_cholmod = False
-try:
-    from sksparse.cholmod import sp_cholesky
+use_solver(useUmfpack=False)
 
-    use_cholmod = True
+try:
+    from scikits.umfpack import splu as umfpack_splu
+
+    use_suitesparse = True
 except ImportError:
-    pass
+    use_suitesparse = False
+
 
 if os.environ.get("BB_NO_CHOLMOD", "0") == "1":
-    use_cholmod = False
+    use_suitesparse = False
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
@@ -614,8 +616,8 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
 
         if self.sparse:
-            if use_cholmod:
-                coef = sp_cholesky(cov_inv)(
+            if use_suitesparse:
+                coef = umfpack_splu(cov_inv).solve(
                     prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
                 )
             else:
@@ -921,8 +923,8 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         if self.sparse:
             # Update the mean vector.
-            if use_cholmod:
-                m_n = sp_cholesky(csc_matrix(V_n))(
+            if use_suitesparse:
+                m_n = umfpack_splu(csc_matrix(V_n)).solve(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
                 )
             else:
