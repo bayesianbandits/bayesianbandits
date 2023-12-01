@@ -1,11 +1,25 @@
+import os
 from functools import cached_property
 from typing import Union
 
 import numpy as np
-from scipy.sparse import csc_array, diags, eye, issparse
-from scipy.sparse.linalg import factorized, splu, spsolve
+from scipy.sparse import csc_array, csc_matrix, diags, eye, issparse
+from scipy.sparse.linalg import splu, spsolve, use_solver
 from scipy.stats import Covariance
 from scipy.stats._multivariate import _squeeze_output
+
+use_solver(useUmfpack=False)
+
+try:
+    from scikits.umfpack import splu as umfpack_splu
+
+    use_suitesparse = True
+except ImportError:
+    use_suitesparse = False
+
+
+if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
+    use_suitesparse = False
 
 
 class CovViaSparsePrecision(Covariance):
@@ -14,16 +28,19 @@ class CovViaSparsePrecision(Covariance):
             raise ValueError("prec must be a sparse array")
 
         self._precision = prec
-        # Compute the Covariance matrix from the precision matrix
+
         self._chol_P = sparse_cholesky(prec)
         self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
         self._allow_singular = False
 
-    @cached_property
+    @property
     def colorize_solve(self):
-        return factorized(self._chol_P)
+        if use_suitesparse:
+            return umfpack_splu(csc_matrix(self._chol_P)).solve
+        return splu(self._chol_P).solve
 
     @cached_property
     def _covariance(self):

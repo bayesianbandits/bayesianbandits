@@ -29,7 +29,9 @@ jobs:
           poetry config virtualenvs.path ~/.virtualenvs
 
       - name: Install Dependencies
-        run: poetry install
+        run: |
+          sudo apt-get install -y swig libsuitesparse-dev
+          poetry install
         if: steps.cache.outputs.cache-hit != 'true'
 
       - name: Run tests
