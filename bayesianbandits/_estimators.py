@@ -43,7 +43,7 @@ except ImportError:
     use_suitesparse = False
 
 
-if os.environ.get("BB_NO_CHOLMOD", "0") == "1":
+if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
     use_suitesparse = False
 
 
