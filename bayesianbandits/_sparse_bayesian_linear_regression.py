@@ -36,7 +36,7 @@ class CovViaSparsePrecision(Covariance):
         self._shape = prec.shape
         self._allow_singular = False
 
-    @cached_property
+    @property
     def colorize_solve(self):
         if use_suitesparse:
             return umfpack_splu(csc_matrix(self._chol_P)).solve
