@@ -12,8 +12,8 @@ from bayesianbandits import (
 )
 
 
-@pytest.fixture(params=[0, 1], autouse=True, ids=["cholmod", "no_cholmod"])
-def cholmod_envvar(request, monkeypatch):
+@pytest.fixture(params=[0, 1], autouse=True, ids=["suitesparse", "no_suitesparse"])
+def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
     monkeypatch.setenv("BB_NO_SUITESPARSE", str(request.param))
     yield request.param
