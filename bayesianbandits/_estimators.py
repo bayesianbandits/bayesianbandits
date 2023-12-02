@@ -1003,26 +1003,17 @@ class NormalInverseGammaRegressor(NormalRegressor):
             )
 
         else:
-            # Reimplement multivariate_t.rvs because scipy doesn't support
-            # Covariance objects
-
-            dim, loc, _, df = multivariate_t._process_parameters(
+            _, loc, _, df = multivariate_t._process_parameters(
                 self.coef_, self.shape_.covariance, df
             )
 
-            x = self.random_state_.chisquare(df, size=size) / df
-
-            z = multivariate_normal.rvs(
-                np.zeros(dim),
-                self.shape_,  # type: ignore
-                size=size,
-                random_state=self.random_state_,
+            samples = multivariate_t_sample_from_covariance(
+                loc,
+                self.shape_,
+                df,
+                size,
+                self.random_state_,
             )
-
-            samples = loc + z / np.sqrt(x)[..., None]
-            samples = _squeeze_output(samples)
-
-        # End of multivariate_t.rvs implementation
 
         if self.n_features_ == 1:
             samples = np.expand_dims(samples, -1)
@@ -1065,3 +1056,51 @@ class NormalInverseGammaRegressor(NormalRegressor):
             del self.cov_
         self.a_ = a_n
         self.b_ = b_n
+
+
+def multivariate_t_sample_from_covariance(
+    loc: NDArray[np.float_],
+    shape: Covariance,
+    df: float = 1,
+    size: int = 1,
+    random_state: Union[int, np.random.Generator, None] = None,
+):
+    """
+    Sample from a multivariate t distribution with the given mean and covariance.
+
+    Parameters
+    ----------
+    loc : NDArray[np.float_]
+        Mean of the distribution.
+    shape : Covariance
+        Covariance of the distribution.
+    df : float, default=1
+        Degrees of freedom of the distribution.
+    size : int, default=1
+        Number of samples to draw.
+    random_state : int, np.random.Generator, or None, default=None
+        Random state for the model.
+
+    Returns
+    -------
+    samples : NDArray[np.float_]
+        Samples from the distribution.
+
+    Notes
+    -----
+    This function is a reimplementation of `scipy.stats.multivariate_t.rvs` that
+    uses a `Covariance` object instead of a covariance matrix.
+    """
+    rng = np.random.default_rng(random_state)
+
+    x = rng.chisquare(df, size=size) / df
+
+    z = multivariate_normal.rvs(
+        0,
+        shape,  # type: ignore
+        size=size,
+        random_state=rng,
+    )
+
+    samples = loc + z / np.sqrt(x)[..., None]
+    return _squeeze_output(samples)

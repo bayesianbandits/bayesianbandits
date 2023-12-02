@@ -32,7 +32,7 @@ class CovViaSparsePrecision(Covariance):
         if self.use_suitesparse:
             self._chol_P = cholmod_cholesky(csc_matrix(prec))
         else:
-            self._chol_P = sparse_cholesky(prec).T
+            self._chol_P = csc_array(sparse_cholesky(prec).T)
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -41,8 +41,8 @@ class CovViaSparsePrecision(Covariance):
     @property
     def colorize_solve(self):
         if self.use_suitesparse:
-            return lambda x: self._chol_P.apply_Pt(
-                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)
+            return lambda x: self._chol_P.apply_Pt(  # type: ignore
+                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)  # type: ignore
             )
         return splu(self._chol_P).solve
 
