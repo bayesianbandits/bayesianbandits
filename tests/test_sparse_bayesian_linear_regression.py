@@ -28,12 +28,16 @@ def sparse_array(request):
         return cast(sp.csc_array, sp.diags([5] * 100, format="csc"))
 
 
-@pytest.fixture(params=[0, 1], ids=["suitesparse", "no_suitesparse"])
+@pytest.fixture(
+    params=[True, False], autouse=True, ids=["suitesparse", "no_suitesparse"]
+)
 def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
-    monkeypatch.setenv("BB_NO_SUITESPARSE", str(request.param))
-    yield request.param
-    monkeypatch.delenv("BB_NO_SUITESPARSE")
+    with patch(
+        "bayesianbandits._sparse_bayesian_linear_regression.use_suitesparse",
+        request.param,
+    ):
+        yield
 
 
 @pytest.mark.usefixtures("suitesparse_envvar")
@@ -111,6 +115,14 @@ class TestCovViaSparsePrecision:
         assert_array_almost_equal(
             scipy_cov.colorize(random_samples), sparse_cov.colorize(random_samples)
         )
+
+    def test_inversion(self, precision_matrix):
+        sparse_cov = CovViaSparsePrecision(
+            sp.csc_array(precision_matrix), use_suitesparse=False
+        )
+        scipy_cov = Covariance.from_precision(precision_matrix)
+
+        assert_array_almost_equal(scipy_cov.covariance, sparse_cov.covariance.toarray())
 
     @pytest.mark.parametrize(
         "matrix",

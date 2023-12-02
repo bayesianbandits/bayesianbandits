@@ -1,5 +1,5 @@
 from typing import Literal
-
+from unittest import mock
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -13,12 +13,13 @@ from bayesianbandits import (
 )
 
 
-@pytest.fixture(params=[0, 1], autouse=True, ids=["suitesparse", "no_suitesparse"])
+@pytest.fixture(
+    params=[True, False], autouse=True, ids=["suitesparse", "no_suitesparse"]
+)
 def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
-    monkeypatch.setenv("BB_NO_SUITESPARSE", str(request.param))
-    yield request.param
-    monkeypatch.delenv("BB_NO_SUITESPARSE")
+    with mock.patch("bayesianbandits._estimators.use_suitesparse", request.param):
+        yield
 
 
 @pytest.fixture
@@ -701,5 +702,7 @@ class TestDenseVsSparseLearnedPrecisionMatrix:
         dense_clf = NormalRegressor(alpha=1, beta=1, sparse=False, random_state=0)
         sparse_clf.fit(X, y)
         dense_clf.fit(X, y)
+        assert isinstance(sparse_clf.cov_inv_, sp.csc_array)
+        assert isinstance(dense_clf.cov_inv_, np.ndarray)
         assert_almost_equal(sparse_clf.cov_inv_.toarray(), dense_clf.cov_inv_)  # type: ignore
         assert_almost_equal(sparse_clf.coef_, dense_clf.coef_)
