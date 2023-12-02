@@ -18,21 +18,23 @@ except ImportError:
     use_suitesparse = False
 
 
+if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
+    use_suitesparse = False
+
+
 class CovViaSparsePrecision(Covariance):
     def __init__(self, prec: csc_array, use_suitesparse=use_suitesparse):
         if not issparse(prec):
             raise ValueError("prec must be a sparse array")
 
         self.use_suitesparse = use_suitesparse
-        if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
-            self.use_suitesparse = False
 
         self._precision = prec
 
         if self.use_suitesparse:
             self._chol_P = cholmod_cholesky(csc_matrix(prec))
         else:
-            self._chol_P = sparse_cholesky(prec).T
+            self._chol_P = csc_array(sparse_cholesky(prec).T)
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -41,8 +43,8 @@ class CovViaSparsePrecision(Covariance):
     @property
     def colorize_solve(self):
         if self.use_suitesparse:
-            return lambda x: self._chol_P.apply_Pt(
-                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)
+            return lambda x: self._chol_P.apply_Pt(  # type: ignore
+                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)  # type: ignore
             )
         return splu(self._chol_P).solve
 
@@ -51,7 +53,7 @@ class CovViaSparsePrecision(Covariance):
         return spsolve(self._precision, eye(self._precision.shape[0], format="csc"))
 
     def _whiten(self, x):
-        return x @ self._chol_P
+        raise NotImplementedError("Not implemented for sparse matrices")
 
     def _colorize(self, x):
         return self.colorize_solve(x.T).T
@@ -127,10 +129,7 @@ def multivariate_normal_sample_from_sparse_covariance(
     rng = np.random.default_rng(random_state)
 
     # Compute size from the shape of Q plus the size parameter
-    if isinstance(size, int):
-        gen_size = (size,) + (cov.shape[-1],)
-    else:
-        raise ValueError("size must be an int")
+    gen_size = (size,) + (cov.shape[-1],)
 
     # Sample Z from a standard multivariate normal distribution
     Z = rng.standard_normal(gen_size)
@@ -146,7 +145,7 @@ def multivariate_normal_sample_from_sparse_covariance(
 
 
 def multivariate_t_sample_from_sparse_covariance(
-    loc: Union[csc_array, np.ndarray],
+    loc: Union[csc_array, np.ndarray, None],
     shape: Covariance,
     df: float = 1.0,
     size: int = 1,
@@ -192,7 +191,8 @@ def multivariate_t_sample_from_sparse_covariance(
     z = multivariate_normal_sample_from_sparse_covariance(
         mean=None, cov=shape, size=size, random_state=random_state
     )
-
+    if loc is None:
+        loc = np.zeros_like(z)
     samples = loc + z / np.sqrt(x)[..., None]
     samples = _squeeze_output(samples)
 
