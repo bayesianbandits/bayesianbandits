@@ -146,7 +146,7 @@ def multivariate_normal_sample_from_sparse_covariance(
 
 
 def multivariate_t_sample_from_sparse_covariance(
-    loc: Union[csc_array, np.ndarray],
+    loc: Union[csc_array, np.ndarray, None],
     shape: Covariance,
     df: float = 1.0,
     size: int = 1,
@@ -192,7 +192,8 @@ def multivariate_t_sample_from_sparse_covariance(
     z = multivariate_normal_sample_from_sparse_covariance(
         mean=None, cov=shape, size=size, random_state=random_state
     )
-
+    if loc is None:
+        loc = np.zeros_like(z)
     samples = loc + z / np.sqrt(x)[..., None]
     samples = _squeeze_output(samples)
 

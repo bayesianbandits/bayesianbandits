@@ -1059,7 +1059,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
 
 def multivariate_t_sample_from_covariance(
-    loc: NDArray[np.float_],
+    loc: Optional[NDArray[np.float_]],
     shape: Covariance,
     df: float = 1,
     size: int = 1,
@@ -1101,6 +1101,7 @@ def multivariate_t_sample_from_covariance(
         size=size,
         random_state=rng,
     )
-
+    if loc is None:
+        loc = np.zeros_like(z)
     samples = loc + z / np.sqrt(x)[..., None]
     return _squeeze_output(samples)
