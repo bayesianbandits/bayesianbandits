@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import os
 from collections import defaultdict
 from functools import cached_property, partial
@@ -7,8 +8,8 @@ from typing import Any, Dict, Optional, Union, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
+from scipy.sparse import csc_array, csc_matrix, diags, eye
 from scipy.sparse.linalg import spsolve, use_solver
-from scipy.sparse import csc_array, eye, diags, csc_matrix
 from scipy.stats import (
     Covariance,
     dirichlet,
@@ -36,7 +37,7 @@ from ._sparse_bayesian_linear_regression import (
 use_solver(useUmfpack=False)
 
 try:
-    from scikits.umfpack import splu as umfpack_splu
+    from sksparse.cholmod import cholesky as cholmod_cholesky
 
     use_suitesparse = True
 except ImportError:
@@ -617,7 +618,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         if self.sparse:
             if use_suitesparse:
-                coef = umfpack_splu(cov_inv).solve(
+                coef = cholmod_cholesky(csc_matrix(cov_inv))(
                     prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
                 )
             else:
@@ -924,7 +925,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if self.sparse:
             # Update the mean vector.
             if use_suitesparse:
-                m_n = umfpack_splu(csc_matrix(V_n)).solve(
+                m_n = cholmod_cholesky(csc_matrix(V_n))(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
                 )
             else:
