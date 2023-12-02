@@ -11,26 +11,28 @@ from scipy.stats._multivariate import _squeeze_output
 use_solver(useUmfpack=False)
 
 try:
-    from scikits.umfpack import splu as umfpack_splu
+    from sksparse.cholmod import cholesky as cholmod_cholesky
 
     use_suitesparse = True
 except ImportError:
     use_suitesparse = False
 
 
-if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
-    use_suitesparse = False
-
-
 class CovViaSparsePrecision(Covariance):
-    def __init__(self, prec: csc_array):
+    def __init__(self, prec: csc_array, use_suitesparse=use_suitesparse):
         if not issparse(prec):
             raise ValueError("prec must be a sparse array")
 
+        self.use_suitesparse = use_suitesparse
+        if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
+            self.use_suitesparse = False
+
         self._precision = prec
 
-        self._chol_P = sparse_cholesky(prec)
-        self._log_pdet = 2 * np.log(self._chol_P.diagonal()).sum(axis=-1)
+        if self.use_suitesparse:
+            self._chol_P = cholmod_cholesky(csc_matrix(prec))
+        else:
+            self._chol_P = sparse_cholesky(prec).T
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -38,8 +40,10 @@ class CovViaSparsePrecision(Covariance):
 
     @property
     def colorize_solve(self):
-        if use_suitesparse:
-            return umfpack_splu(csc_matrix(self._chol_P)).solve
+        if self.use_suitesparse:
+            return lambda x: self._chol_P.apply_Pt(
+                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)
+            )
         return splu(self._chol_P).solve
 
     @cached_property
