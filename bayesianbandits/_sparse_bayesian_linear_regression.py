@@ -122,38 +122,6 @@ class CovViaSparsePrecision(Covariance):
         return self.colorize_solve(x.T).T
 
 
-def sparse_cholesky(A: csc_array) -> csc_array:
-    """Compute the Cholesky decomposition of a sparse, positive-definite matrix.
-
-    In Bayesian linear regression, the precision matrix is always positive-definite.
-
-    Parameters
-    ----------
-    A : csc_array
-        Sparse, positive-definite matrix.
-
-    Returns
-    -------
-    csc_array
-        Cholesky decomposition of A (lower triangular matrix)
-
-    Raises
-    ------
-    ValueError
-        If A is not positive-definite.
-    """
-    # The input matrix A must be sparse and symmetric positive-definite.
-    # Fortunately, any reasonable precision matrix in a Bayesian model is
-    # sparse and symmetric positive-definite.
-    n = A.shape[0]
-    LU = splu(A, permc_spec="NATURAL", diag_pivot_thresh=0)  # sparse LU decomposition
-
-    if (LU.perm_r == np.arange(n)).all() and (LU.U.diagonal() > 0).all():
-        return LU.L.dot(diags(np.sqrt(LU.U.diagonal())))
-    else:
-        raise ValueError("A is not positive-definite")
-
-
 def multivariate_normal_sample_from_sparse_covariance(
     mean: Union[csc_array, np.ndarray, None],
     cov: Covariance,
