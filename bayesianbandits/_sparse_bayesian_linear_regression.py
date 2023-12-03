@@ -23,6 +23,54 @@ if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
 
 
 class CovViaSparsePrecision(Covariance):
+    """Covariance class for sparse precision matrices.
+
+    Parameters
+    ----------
+    prec : csc_array
+        Sparse precision matrix.
+    use_suitesparse : bool, optional
+        Whether to use the sksparse.cholmod module for solving linear systems.
+        If False, use scipy.sparse.linalg.splu instead. Default is True if
+        sksparse.cholmod is installed, False otherwise.
+
+    Raises
+    ------
+    ValueError
+        If prec is not a sparse array.
+    ValueError
+        If prec is not symmetric.
+
+    Notes
+    -----
+    This class is used to colorize samples from a standard normal distribution
+    with a sparse precision matrix. The precision matrix is assumed to be
+    positive-definite, because our Bayesian linear regression models always
+    have positive-definite precision matrices (due to the prior).
+
+    A coloring transform from a precision matrix is performed by first finding
+    a factor W such that W W^T = P. Then, the colorizing transform is given by
+    W^T X = Z, where Z is a standard normal random variable. The resulting
+    random variable X has the precision matrix P.
+
+    If using suitesparse, this is done by computing the Cholesky decomposition
+    of P, which may or may not be permuted. CHOLMOD's solve_Lt solves W^T X = Z
+    to color X with the permuted precision matrix P'. This P' is the precision
+    matrix we would have gotten if we'd reordered the features of the training
+    data to be in the order given by the permutation. Therefore, we need only
+    apply the inverse permutation to X to get samples colored with our actual
+    precision matrix P.
+
+    If not using suitesparse, this is done by computing the LU decomposition
+    using SuperLU. By telling SuperLU that the matrix is symmetric by setting
+    options=dict(SymmetricMode=True), diag_pivot_thresh=0, and
+    permc_spec="MMD_AT_PLUS_A", we can prevent partial pivoting and get a
+    symmetric factorization L L^T = P', where P' is some permutation of P.
+    L^T X = Z is solved to color X with the permuted precision matrix P', same
+    as with suitesparse. The inverse permutation is applied to X to get samples
+    colored with the original precision matrix P.
+    """
+
     def __init__(self, prec: csc_array, use_suitesparse=use_suitesparse):
         if not issparse(prec):
             raise ValueError("prec must be a sparse array")
@@ -40,6 +88,8 @@ class CovViaSparsePrecision(Covariance):
                 permc_spec="MMD_AT_PLUS_A",
                 options=dict(SymmetricMode=True),
             )
+            if (self._W.perm_r != self._W.perm_c).any():
+                raise ValueError("W must be symmetric")
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -47,26 +97,6 @@ class CovViaSparsePrecision(Covariance):
 
     @property
     def colorize_solve(self):
-        """
-        A coloring transform from a precision matrix is performed by first finding
-        a factor W such that W W^T = P. Then, the colorizing transform is given by
-        W^T X = Z, where Z is a standard normal random variable. The resulting
-        random variable X has the precision matrix P.
-
-        If using suitesparse, this is done by computing the Cholesky decomposition
-        of P, which may or may not be permuted. CHOLMOD's solve_Lt solves W^T X = Z
-        to color X with the permuted precision matrix P'. The inverse permutation
-        is applied to X to get samples colored with the original precision matrix P.
-
-        If not using suitesparse, this is done by computing the LU decomposition
-        using SuperLU. By telling SuperLU that the matrix is symmetric by setting
-        options=dict(SymmetricMode=True), diag_pivot_thresh=0, and
-        permc_spec="MMD_AT_PLUS_A", we can prevent partial pivoting and get a
-        symmetric permutation matrix L L^T = P', where P' is some permutation of P.
-        L^T X = Z is solved to color X with the permuted precision matrix P', same
-        as with suitesparse. The inverse permutation is applied to X to get samples
-        colored with the original precision matrix P.
-        """
         if self.use_suitesparse:
             return lambda x: self._W.apply_Pt(  # type: ignore
                 self._W.solve_Lt(x, False)  # type: ignore
