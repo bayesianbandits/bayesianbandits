@@ -849,7 +849,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self,
         *,
         mu: ArrayLike = 0.0,
-        lam: ArrayLike = 1.0,
+        lam: Union[ArrayLike, csc_array] = 1.0,
         a: float = 0.1,
         b: float = 0.1,
         learning_rate: float = 1.0,
@@ -884,18 +884,19 @@ class NormalInverseGammaRegressor(NormalRegressor):
                     csc_array(eye(self.n_features_, format="csc")) * self.lam
                 )
             elif cast(NDArray[np.float_], self.lam).ndim == 1:
-                self.cov_inv_ = diags(self.lam, format="csc")
+                self.cov_inv_ = csc_array(diags(self.lam, format="csc"))
             elif cast(NDArray[np.float_], self.lam).ndim == 2:
                 self.cov_inv_ = csc_array(self.lam)
             else:
                 raise ValueError(
                     "The prior covariance must be a scalar, vector, or matrix."
                 )
+
         else:
             if np.isscalar(self.lam):
                 self.cov_inv_ = cast(np.float_, self.lam) * np.eye(self.n_features_)
             elif cast(NDArray[np.float_], self.lam).ndim == 1:
-                self.cov_inv_ = np.diag(self.lam)
+                self.cov_inv_ = np.diag(self.lam)  # type: ignore
             elif cast(NDArray[np.float_], self.lam).ndim == 2:
                 self.cov_inv_ = cast(NDArray[np.float_], self.lam)
             else:

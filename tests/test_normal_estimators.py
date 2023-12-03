@@ -354,15 +354,33 @@ def test_normal_regressor_sample_covariates(
     assert single_pred.shape == (size, 1)
 
 
+@pytest.mark.parametrize("mu_shape", ["scalar", "vector"])
+@pytest.mark.parametrize("lam_shape", ["scalar", "vector", "matrix"])
 @pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_fit(
     X: NDArray[np.int_],
     y: NDArray[np.int_],
+    mu_shape: Literal["scalar", "vector"],
+    lam_shape: Literal["scalar", "vector", "matrix"],
     sparse: bool,
 ) -> None:
     """Test NormalRegressor fit."""
 
-    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
+    prior_mu = 0.0
+    if mu_shape == "vector":
+        prior_mu = np.full_like(X[0], prior_mu)
+
+    prior_lam = 1.0
+    if lam_shape == "vector":
+        prior_lam = np.full_like(X[0], prior_lam)
+    elif lam_shape == "matrix":
+        prior_lam = np.eye(X.shape[1])
+        if sparse:
+            prior_lam = sp.csc_array(prior_lam)
+
+    clf = NormalInverseGammaRegressor(
+        mu=prior_mu, lam=prior_lam, random_state=0, sparse=sparse
+    )
     if sparse:
         X_fit = sp.csc_array(X)
     else:
