@@ -741,7 +741,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if not self.sparse and hasattr(self, "cov_"):
+        if hasattr(self, "cov_"):
             del self.cov_
 
 
@@ -1061,9 +1061,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         b_n = prior_decay * self.b_
 
         self.cov_inv_ = V_n
-        if not self.sparse and hasattr(self, "shape_"):
+        if hasattr(self, "shape_"):
             del self.shape_
-        if not self.sparse and hasattr(self, "cov_"):
+        if hasattr(self, "cov_"):
             del self.cov_
         self.a_ = a_n
         self.b_ = b_n
