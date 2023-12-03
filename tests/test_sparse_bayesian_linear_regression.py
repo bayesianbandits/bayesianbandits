@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 import joblib
@@ -18,14 +17,6 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
 )
 
 
-@pytest.fixture(params=["identity", "diag"])
-def sparse_array(request):
-    if request.param == "identity":
-        return cast(sp.csc_array, sp.eye(100, format="csc"))
-    elif request.param == "diag":
-        return cast(sp.csc_array, sp.diags([5] * 100, format="csc"))
-
-
 @pytest.fixture(params=[True, False], ids=["suitesparse", "no_suitesparse"])
 def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
@@ -39,6 +30,7 @@ def suitesparse_envvar(request, monkeypatch):
 @pytest.mark.parametrize("size", [1, 10])
 def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matrices(
     size,
+    suitesparse_envvar,
 ):
     this_file_path = Path(__file__)
     test_data_dir = this_file_path.parent / "ill_conditioned_matrices"
