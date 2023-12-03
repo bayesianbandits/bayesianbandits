@@ -32,9 +32,14 @@ class CovViaSparsePrecision(Covariance):
         self._precision = prec
 
         if self.use_suitesparse:
-            self._chol_P = cholmod_cholesky(csc_matrix(prec))
+            self._W = cholmod_cholesky(csc_matrix(prec))
         else:
-            self._chol_P = csc_array(sparse_cholesky(prec).T)
+            self._W = splu(
+                prec,
+                diag_pivot_thresh=0,
+                permc_spec="MMD_AT_PLUS_A",
+                options=dict(SymmetricMode=True),
+            )
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -42,11 +47,39 @@ class CovViaSparsePrecision(Covariance):
 
     @property
     def colorize_solve(self):
+        """
+        A coloring transform from a precision matrix is performed by first finding
+        a factor W such that W W^T = P. Then, the colorizing transform is given by
+        W^T X = Z, where Z is a standard normal random variable. The resulting
+        random variable X has the precision matrix P.
+
+        If using suitesparse, this is done by computing the Cholesky decomposition
+        of P, which may or may not be permuted. CHOLMOD's solve_Lt solves W^T X = Z
+        to color X with the permuted precision matrix P'. The inverse permutation
+        is applied to X to get samples colored with the original precision matrix P.
+
+        If not using suitesparse, this is done by computing the LU decomposition
+        using SuperLU. By telling SuperLU that the matrix is symmetric by setting
+        options=dict(SymmetricMode=True), diag_pivot_thresh=0, and
+        permc_spec="MMD_AT_PLUS_A", we can prevent partial pivoting and get a
+        symmetric permutation matrix L L^T = P', where P' is some permutation of P.
+        L^T X = Z is solved to color X with the permuted precision matrix P', same
+        as with suitesparse. The inverse permutation is applied to X to get samples
+        colored with the original precision matrix P.
+        """
         if self.use_suitesparse:
-            return lambda x: self._chol_P.apply_Pt(  # type: ignore
-                self._chol_P.solve_Lt(self._chol_P.apply_P(x), False)  # type: ignore
+            return lambda x: self._W.apply_Pt(  # type: ignore
+                self._W.solve_Lt(x, False)  # type: ignore
             )
-        return splu(self._chol_P).solve
+        else:
+            lower = self._W.L.dot(diags(np.sqrt(self._W.U.diagonal())))
+            Pr = csc_matrix(
+                (
+                    np.ones(lower.shape[0]),
+                    (self._W.perm_r, np.arange(lower.shape[0])),
+                )
+            )
+        return lambda x: Pr.T @ spsolve(csc_array(lower.T), x)
 
     @cached_property
     def _covariance(self):

@@ -9,7 +9,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
 from scipy.sparse import csc_array, csc_matrix, diags, eye
-from scipy.sparse.linalg import spsolve, use_solver
+from scipy.sparse.linalg import splu, use_solver
 from scipy.stats import (
     Covariance,
     dirichlet,
@@ -623,10 +623,16 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
                 )
             else:
                 # Calculate the posterior mean
-                coef = spsolve(
+                lu = splu(
                     cov_inv,
-                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+                    diag_pivot_thresh=0,
+                    permc_spec="MMD_AT_PLUS_A",
+                    options=dict(SymmetricMode=True),
                 )
+                coef = lu.solve(  # type: ignore
+                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
+                )
+
         else:
             # Calculate the posterior mean
             coef = solve(
@@ -929,8 +935,13 @@ class NormalInverseGammaRegressor(NormalRegressor):
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
                 )
             else:
-                m_n = spsolve(
+                lu = splu(
                     V_n,
+                    diag_pivot_thresh=0,
+                    permc_spec="MMD_AT_PLUS_A",
+                    options=dict(SymmetricMode=True),
+                )
+                m_n = lu.solve(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
                 )
 

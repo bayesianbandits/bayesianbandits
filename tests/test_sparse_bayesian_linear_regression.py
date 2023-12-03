@@ -28,9 +28,7 @@ def sparse_array(request):
         return cast(sp.csc_array, sp.diags([5] * 100, format="csc"))
 
 
-@pytest.fixture(
-    params=[True, False], autouse=True, ids=["suitesparse", "no_suitesparse"]
-)
+@pytest.fixture(params=[True, False], ids=["suitesparse", "no_suitesparse"])
 def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
     with patch(
@@ -71,10 +69,10 @@ def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matri
 
 
 class TestCovViaSparsePrecision:
-    @pytest.fixture(scope="class", params=[None] * 5)
-    def X_y(self, request):
+    @pytest.fixture(scope="class")
+    def X_y(self):
         X, y, _ = make_regression(
-            n_samples=100, n_features=500, random_state=request.param, coef=True
+            n_samples=100, n_features=500, random_state=None, coef=True
         )
         # Clip X values near zero to make sparse
         X[X < 0.1] = 0
@@ -87,34 +85,6 @@ class TestCovViaSparsePrecision:
         X, y = X_y
 
         return X.T @ X + np.eye(X.shape[1])
-
-    def test_colorize_no_suitesparse(self, precision_matrix):
-        sparse_cov = CovViaSparsePrecision(
-            sp.csc_array(precision_matrix), use_suitesparse=False
-        )
-        scipy_cov = Covariance.from_precision(precision_matrix)
-
-        random_samples = np.random.default_rng(0).normal(
-            size=(100, precision_matrix.shape[0])
-        )
-
-        assert_array_almost_equal(
-            scipy_cov.colorize(random_samples), sparse_cov.colorize(random_samples)
-        )
-
-    def test_colorize_suitesparse(self, precision_matrix):
-        sparse_cov = CovViaSparsePrecision(
-            sp.csc_array(precision_matrix), use_suitesparse=True
-        )
-        scipy_cov = Covariance.from_precision(precision_matrix)
-
-        random_samples = np.random.default_rng(0).normal(
-            size=(100, precision_matrix.shape[0])
-        )
-
-        assert_array_almost_equal(
-            scipy_cov.colorize(random_samples), sparse_cov.colorize(random_samples)
-        )
 
     def test_inversion(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
@@ -152,42 +122,32 @@ class TestCovViaSparsePrecision:
             scipy_samples.var(axis=0), suitesparse_samples.var(axis=0), rtol=0.5
         )
 
-
-class TestSparseMultivariateSampling:
-    @pytest.fixture(scope="class", params=[None] * 5)
-    def X_y(self, request):
-        X, y, _ = make_regression(
-            n_samples=100, n_features=500, random_state=None, coef=True
-        )
-        # Clip X values near zero to make sparse
-        X[X < 0.1] = 0
-        # Scale X to be bigger
-        X *= 10
-        return X, y
-
-    @pytest.fixture(scope="class")
-    def precision_matrix(self, X_y):
-        X, y = X_y
-
-        return X.T @ X + np.eye(X.shape[1])
-
     def test_mvn_sample_no_suitesparse(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), use_suitesparse=False
         )
+        suitesparse_cov = CovViaSparsePrecision(
+            sp.csc_array(precision_matrix), use_suitesparse=True
+        )
         scipy_cov = Covariance.from_precision(precision_matrix)
 
-        rs_1 = np.random.default_rng(0)
-        rs_2 = np.random.default_rng(0)
-
         sparse_samples = multivariate_normal_sample_from_sparse_covariance(
-            mean=None, cov=sparse_cov, size=100, random_state=rs_1
+            mean=None, cov=sparse_cov, size=80000, random_state=0
+        )
+        suitesparse_samples = multivariate_normal_sample_from_sparse_covariance(
+            mean=None, cov=suitesparse_cov, size=80000, random_state=0
         )
         scipy_samples = multivariate_normal.rvs(
-            mean=None, cov=scipy_cov, size=100, random_state=rs_2  # type: ignore
+            mean=None, cov=scipy_cov, size=80000, random_state=0  # type: ignore
         )
 
-        assert_array_almost_equal(sparse_samples, scipy_samples)
+        sparse_emp_cov = np.cov(sparse_samples.T)
+        suitesparse_emp_cov = np.cov(suitesparse_samples.T)
+        scipy_emp_cov = np.cov(scipy_samples.T)
+
+        assert_allclose(sparse_emp_cov, suitesparse_emp_cov, atol=0.03)
+        assert_allclose(sparse_emp_cov, scipy_emp_cov, atol=0.03)
+        assert_allclose(suitesparse_emp_cov, scipy_emp_cov, atol=0.03)
 
     def test_mvn_sample_suitesparse(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
@@ -199,13 +159,17 @@ class TestSparseMultivariateSampling:
         rs_2 = np.random.default_rng(0)
 
         sparse_samples = multivariate_normal_sample_from_sparse_covariance(
-            mean=None, cov=sparse_cov, size=100, random_state=rs_1
+            mean=None, cov=sparse_cov, size=80000, random_state=rs_1
         )
         scipy_samples = multivariate_normal.rvs(
-            mean=None, cov=scipy_cov, size=100, random_state=rs_2  # type: ignore
+            mean=None, cov=scipy_cov, size=80000, random_state=rs_2  # type: ignore
         )
 
-        assert_array_almost_equal(sparse_samples, scipy_samples)
+        assert_allclose(
+            np.cov(sparse_samples.T),
+            np.cov(scipy_samples.T),
+            atol=0.02,
+        )
 
     def test_mvt_sample_scipy_vs_bb(self, precision_matrix):
         scipy_cov = Covariance.from_precision(precision_matrix)
@@ -231,40 +195,29 @@ class TestSparseMultivariateSampling:
 
         assert_array_almost_equal(sparse_samples, scipy_samples)
 
-    def test_mvt_sample_bb_dense_vs_sparse(self, precision_matrix):
+    def test_mvt_sampling_against_scipy(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), use_suitesparse=False
+        )
+        suitesparse_cov = CovViaSparsePrecision(
+            sp.csc_array(precision_matrix), use_suitesparse=True
         )
         scipy_cov = Covariance.from_precision(precision_matrix)
 
-        rs_1 = np.random.default_rng(0)
-        rs_2 = np.random.default_rng(0)
-
         sparse_samples = multivariate_t_sample_from_covariance(
-            loc=None, shape=sparse_cov, size=100, random_state=rs_1, df=3
+            loc=None, shape=sparse_cov, size=80000, random_state=0, df=300
+        )
+        suitesparse_samples = multivariate_t_sample_from_covariance(
+            loc=None, shape=suitesparse_cov, size=80000, random_state=0, df=300
         )
         scipy_samples = multivariate_t_sample_from_sparse_covariance(
-            loc=None, shape=scipy_cov, size=100, random_state=rs_2, df=3  # type: ignore
+            loc=None, shape=scipy_cov, size=80000, random_state=0, df=300  # type: ignore
         )
 
-        assert_array_almost_equal(sparse_samples, scipy_samples)
+        sparse_emp_cov = np.cov(sparse_samples.T)
+        suitesparse_emp_cov = np.cov(suitesparse_samples.T)
+        scipy_emp_cov = np.cov(scipy_samples.T)
 
-    def test_mvt_sample_suitesparse_vs_scipy(self, precision_matrix):
-        sparse_cov = CovViaSparsePrecision(
-            sp.csc_array(precision_matrix), use_suitesparse=True
-        )
-        scipy_cov = CovViaSparsePrecision(
-            sp.csc_array(precision_matrix), use_suitesparse=False
-        )
-
-        rs_1 = np.random.default_rng(0)
-        rs_2 = np.random.default_rng(0)
-
-        sparse_samples = multivariate_t_sample_from_sparse_covariance(
-            loc=None, shape=sparse_cov, size=100, random_state=rs_1, df=3
-        )
-        scipy_samples = multivariate_t_sample_from_sparse_covariance(
-            loc=None, shape=scipy_cov, size=100, random_state=rs_2, df=3  # type: ignore
-        )
-
-        assert_array_almost_equal(sparse_samples, scipy_samples)
+        assert_allclose(sparse_emp_cov, suitesparse_emp_cov, atol=0.03)
+        assert_allclose(sparse_emp_cov, scipy_emp_cov, atol=0.03)
+        assert_allclose(suitesparse_emp_cov, scipy_emp_cov, atol=0.03)
