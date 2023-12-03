@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import cast
 from unittest.mock import patch
 
 import joblib
@@ -7,7 +6,6 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 from numpy.testing import assert_allclose, assert_array_almost_equal
-from scipy.linalg import cholesky
 from scipy.stats import Covariance, multivariate_normal, multivariate_t
 from sklearn.datasets import make_regression
 
@@ -16,16 +14,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     CovViaSparsePrecision,
     multivariate_normal_sample_from_sparse_covariance,
     multivariate_t_sample_from_sparse_covariance,
-    sparse_cholesky,
 )
-
-
-@pytest.fixture(params=["identity", "diag"])
-def sparse_array(request):
-    if request.param == "identity":
-        return cast(sp.csc_array, sp.eye(100, format="csc"))
-    elif request.param == "diag":
-        return cast(sp.csc_array, sp.diags([5] * 100, format="csc"))
 
 
 @pytest.fixture(params=[True, False], ids=["suitesparse", "no_suitesparse"])
@@ -38,24 +27,10 @@ def suitesparse_envvar(request, monkeypatch):
         yield
 
 
-@pytest.mark.usefixtures("suitesparse_envvar")
-class TestSparseCholesky:
-    def test_sparse_cholesky(self, sparse_array):
-        chol = sparse_cholesky(sparse_array)
-
-        assert_array_almost_equal(chol.toarray(), cholesky(sparse_array.toarray()))
-
-    def test_sparse_cholesky_ill_conditioned_matrices(self):
-        this_file_path = Path(__file__)
-        test_data_dir = this_file_path.parent / "ill_conditioned_matrices"
-        for file_path in test_data_dir.glob("*"):
-            sparse_array = joblib.load(file_path)
-            sparse_cholesky(sparse_array)
-
-
 @pytest.mark.parametrize("size", [1, 10])
 def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matrices(
     size,
+    suitesparse_envvar,
 ):
     this_file_path = Path(__file__)
     test_data_dir = this_file_path.parent / "ill_conditioned_matrices"
@@ -122,7 +97,7 @@ class TestCovViaSparsePrecision:
             scipy_samples.var(axis=0), suitesparse_samples.var(axis=0), rtol=0.5
         )
 
-    def test_mvn_sample_no_suitesparse(self, precision_matrix):
+    def test_mvn_sampling_against_scipy(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), use_suitesparse=False
         )
@@ -148,28 +123,6 @@ class TestCovViaSparsePrecision:
         assert_allclose(sparse_emp_cov, suitesparse_emp_cov, atol=0.03)
         assert_allclose(sparse_emp_cov, scipy_emp_cov, atol=0.03)
         assert_allclose(suitesparse_emp_cov, scipy_emp_cov, atol=0.03)
-
-    def test_mvn_sample_suitesparse(self, precision_matrix):
-        sparse_cov = CovViaSparsePrecision(
-            sp.csc_array(precision_matrix), use_suitesparse=True
-        )
-        scipy_cov = Covariance.from_precision(precision_matrix)
-
-        rs_1 = np.random.default_rng(0)
-        rs_2 = np.random.default_rng(0)
-
-        sparse_samples = multivariate_normal_sample_from_sparse_covariance(
-            mean=None, cov=sparse_cov, size=80000, random_state=rs_1
-        )
-        scipy_samples = multivariate_normal.rvs(
-            mean=None, cov=scipy_cov, size=80000, random_state=rs_2  # type: ignore
-        )
-
-        assert_allclose(
-            np.cov(sparse_samples.T),
-            np.cov(scipy_samples.T),
-            atol=0.02,
-        )
 
     def test_mvt_sample_scipy_vs_bb(self, precision_matrix):
         scipy_cov = Covariance.from_precision(precision_matrix)
