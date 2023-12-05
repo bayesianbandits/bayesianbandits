@@ -1,4 +1,5 @@
 # `bayesianbandits`
+[![Downloads](https://static.pepy.tech/badge/bayesianbandits/month)](https://pepy.tech/project/bayesianbandits)
 
 bayesianbandits is a Pythonic framework for building agents to maximize rewards in multi-armed bandit (MAB) problems. These agents can handle a number of MAB subproblems, such as contextual, restless, and delayed reward bandits.
 
