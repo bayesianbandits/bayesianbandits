@@ -479,7 +479,7 @@ def test_contextual_bandit_batch_pull_length_mismatch_exception(sparse: bool) ->
         instance.update(X, [1, 2], unique_id=[1, 2, 3])
 
 
-def test_contextual_bandit_batch_without_restless_exception() -> None:
+def test_contextual_bandit_batch_without_delayed_reward() -> None:
     @contextual
     class Experiment(
         Bandit,
@@ -494,8 +494,8 @@ def test_contextual_bandit_batch_without_restless_exception() -> None:
 
     X = np.array([[1, 2], [3, 4], [5, 6]])
 
-    with pytest.raises(ValueError):
-        instance.pull(X)
+    choices = instance.pull(X)
+    assert len(choices) == 3
 
 
 def test_delayed_reward_reused_unique_id_exception() -> None:

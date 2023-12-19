@@ -282,12 +282,11 @@ class Bandit:
 
             if len(choices) == 1:
                 return choices[0]
-            else:
-                return choices
+            return choices
 
-        return self._pull_single(X_pull)
+        return self._pull_batch(X_pull)
 
-    def _pull_single(self, X_pull: NDArray[np.float_]) -> Any:
+    def _pull_batch(self, X_pull: NDArray[np.float_]) -> Any:
         """Makes a single decision and pulls one arm.
 
         If given, validates that `X_pull` has only one row, as making several
@@ -311,17 +310,17 @@ class Bandit:
         """
         assert isinstance(self.rng, np.random.Generator)  # for the type checker
 
-        if X_pull.shape[0] > 1:
-            raise ValueError(
-                "The `X` array must have only one row when `delayed_reward = False`."
-            )
+        arms = self.policy(self.arms, X_pull, self.rng)
 
-        arm = self.policy(self.arms, X_pull, self.rng)
+        if isinstance(arms, Arm):
+            arms = [arms]
 
-        assert isinstance(arm, Arm)  # for the type checker
-        ret_val = arm.pull()
-        self.last_arm_pulled = arm
-        return ret_val
+        ret_vals = [arm.pull() for arm in arms]
+        self.last_arm_pulled = arms[-1]
+
+        if len(ret_vals) == 1:
+            return ret_vals[0]
+        return ret_vals
 
     def _pull_batch_delayed_reward(
         self, X: NDArray[np.float_], unique_ids: Collection[Any]
