@@ -271,13 +271,19 @@ class Bandit:
                     "`delayed_reward = True`."
                 )
 
-            elif isinstance(unique_id, Collection) and not isinstance(unique_id, str):
-                return self._pull_batch_delayed_reward(
-                    X_pull, cast(Collection[Any], unique_id)
-                )
+            if not (
+                isinstance(unique_id, Collection) and not isinstance(unique_id, str)
+            ):
+                unique_id = [unique_id]
 
+            choices = self._pull_batch_delayed_reward(
+                X_pull, cast(Collection[Any], unique_id)
+            )
+
+            if len(choices) == 1:
+                return choices[0]
             else:
-                return self._pull_single_delayed_reward(X_pull, unique_id)
+                return choices
 
         return self._pull_single(X_pull)
 
@@ -315,57 +321,6 @@ class Bandit:
         assert isinstance(arm, Arm)  # for the type checker
         ret_val = arm.pull()
         self.last_arm_pulled = arm
-        return ret_val
-
-    def _pull_single_delayed_reward(
-        self, X: NDArray[np.float_], unique_id: Hashable
-    ) -> Any:
-        """Makes a single decision and pulls one arm for a delayed reward bandit.
-
-        By calling `_pull_single`, this method validates that `X` has only one
-        row. It also validates that `unique_id` is hashable and has not been
-        used before. This branch is only taken when `delayed_reward = True` and
-        a single `unique_id` is provided.
-
-        Parameters
-        ----------
-        X : NDArray[np.float_]
-            Context vector - must have only one row.
-        unique_id : Hashable
-            Unique identifier for the pull.
-
-        Returns
-        -------
-        Any
-            Token of the arm pulled.
-
-        Raises
-        ------
-        ValueError
-            Raised when `X` has more than one row.
-        ValueError
-            Raised when `unique_id` is not hashable.
-        DelayedRewardException
-            Raised when `unique_id` has already been used.
-        """
-
-        assert self.cache is not None
-
-        if not _validate_unique_id(unique_id):
-            raise ValueError(
-                "The unique_id must be hashable. "
-                "Please use a hashable unique identifier."
-            )
-
-        if unique_id in self.cache:
-            raise DelayedRewardException(
-                f"The unique_id {unique_id} has already been used. "
-                "Please use a unique identifier."
-            )
-
-        ret_val = self._pull_single(X)
-        self.cache[unique_id] = cast(Arm, self.last_arm_pulled).name
-
         return ret_val
 
     def _pull_batch_delayed_reward(
