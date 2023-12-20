@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from functools import cached_property, partial
 from typing import Any, Dict, Optional, Union, cast
@@ -30,22 +29,13 @@ from typing_extensions import Self
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CovViaSparsePrecision,
+    SparseSolver,
     multivariate_normal_sample_from_sparse_covariance,
     multivariate_t_sample_from_sparse_covariance,
+    solver,
 )
 
 use_solver(useUmfpack=False)
-
-try:
-    from sksparse.cholmod import cholesky as cholmod_cholesky
-
-    use_suitesparse = True
-except ImportError:
-    use_suitesparse = False
-
-
-if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
-    use_suitesparse = False
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
@@ -581,7 +571,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         The covariance matrix of the model.
         """
         if self.sparse:
-            return CovViaSparsePrecision(self.cov_inv_)  # type: ignore
+            return CovViaSparsePrecision(self.cov_inv_, solver=solver)  # type: ignore
         else:
             cov = solve(
                 self.cov_inv_,
@@ -617,9 +607,18 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
 
         if self.sparse:
-            if use_suitesparse:
+            if solver == SparseSolver.CHOLMOD:
+                from sksparse.cholmod import cholesky as cholmod_cholesky
+
                 coef = cholmod_cholesky(csc_matrix(cov_inv))(
                     prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
+                )
+            elif solver == SparseSolver.UMFPACK:
+                from scikits.umfpack import spsolve as umfpack_solve
+
+                coef = umfpack_solve(
+                    csc_matrix(cov_inv),  # type: ignorw
+                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
                 )
             else:
                 # Calculate the posterior mean
@@ -931,9 +930,18 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         if self.sparse:
             # Update the mean vector.
-            if use_suitesparse:
+            if solver == SparseSolver.CHOLMOD:
+                from sksparse.cholmod import cholesky as cholmod_cholesky
+
                 m_n = cholmod_cholesky(csc_matrix(V_n))(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
+                )
+            elif solver == SparseSolver.UMFPACK:
+                from scikits.umfpack import spsolve as umfpack_solve
+
+                m_n = umfpack_solve(
+                    csc_matrix(V_n),  # type: ignore
+                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
                 )
             else:
                 lu = splu(

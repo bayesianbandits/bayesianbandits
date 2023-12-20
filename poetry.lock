@@ -2153,6 +2153,20 @@ numpy = ">=1.13.3"
 scipy = ">=0.19"
 
 [[package]]
+name = "scikit-umfpack"
+version = "0.4.1"
+description = "Python interface to UMFPACK sparse direct solver."
+optional = false
+python-versions = ">=3.9"
+files = [
+    {file = "scikit_umfpack-0.4.1.tar.gz", hash = "sha256:23a16750fbf866d32341ab3885fd59687bc9d5fbb9d372e50f6a968059604d59"},
+]
+
+[package.dependencies]
+numpy = "*"
+scipy = "*"
+
+[[package]]
 name = "scipy"
 version = "1.11.4"
 description = "Fundamental algorithms for scientific computing in Python"
@@ -2574,4 +2588,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.9, <3.12"
-content-hash = "171b867989f3879344a10121505dc3078d5ebd1aaf25dca27ec4ebb06c9e08e6"
+content-hash = "632367219a89f32d97462d2b32033ce33981dcb5d7da8575014748efd6192eb9"
