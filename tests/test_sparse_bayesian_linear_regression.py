@@ -7,7 +7,6 @@ import pytest
 import scipy.sparse as sp
 from numpy.testing import assert_allclose, assert_array_almost_equal
 from scipy.stats import Covariance, multivariate_normal, multivariate_t
-from sklearn.datasets import make_regression
 
 from bayesianbandits._estimators import multivariate_t_sample_from_covariance
 from bayesianbandits._sparse_bayesian_linear_regression import (
