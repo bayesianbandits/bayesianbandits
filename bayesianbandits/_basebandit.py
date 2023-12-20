@@ -196,6 +196,36 @@ class Bandit:
         # modifies cls in-place
         dataclass(cls)
 
+    def arm(self, action_token: Any) -> Arm:
+        """Get the arm with the given token.
+
+        Parameters
+        ----------
+        token : Any
+            Token of the arm to retrieve.
+
+        Returns
+        -------
+        Arm
+            Arm with the given token.
+
+        Raises
+        ------
+        KeyError
+            Raised when the token is not in the bandit.
+        """
+        matching_arms = [
+            arm for arm in self.arms.values() if arm.action_token == action_token
+        ]
+        if len(matching_arms) == 0:
+            raise KeyError(f"Arm with action token {action_token} not found.")
+        if len(matching_arms) > 1:
+            raise KeyError(
+                f"Multiple arms with action token {action_token} found. "
+                "Please use a unique token."
+            )
+        return matching_arms[0]
+
     @overload
     def pull(self, X: Union[ArrayLike, csc_array], /) -> Any:
         ...
@@ -220,8 +250,6 @@ class Bandit:
     ) -> Union[Any, List[Any]]:
         """Choose an arm and pull it. Set `last_arm_pulled` to the name of the
         arm that was pulled.
-
-        This method is added to the bandit class by the `bandit` decorator.
 
         Parameters
         ----------
@@ -421,8 +449,6 @@ class Bandit:
         **kwargs: Any,
     ) -> None:
         """Update the learner for the last arm pulled.
-
-        This method is added to the bandit class by the `bandit` decorator.
 
         Parameters
         ----------
