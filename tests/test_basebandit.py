@@ -98,32 +98,29 @@ def bandit_class(
     else:
         reward_func = None  # type: ignore
 
-    def action_func(x: int) -> None:
-        print(f"action{x}")
-
     if request.param == "no types":
 
         class Experiment(  # type: ignore
             Bandit, learner=learner_class, policy=choice, delayed_reward=delayed_reward
         ):
-            arm1 = Arm(partial(action_func, 1), reward_func)
-            arm2 = Arm(partial(action_func, 2), reward_func)
+            arm1 = Arm(1, reward_func)
+            arm2 = Arm(2, reward_func)
 
     elif request.param == "with types":
 
         class Experiment(  # type: ignore
             Bandit, learner=learner_class, policy=choice, delayed_reward=delayed_reward
         ):
-            arm1: Arm = Arm(partial(action_func, 1), reward_func)
-            arm2: Arm = Arm(partial(action_func, 2), reward_func)
+            arm1: Arm = Arm(1, reward_func)
+            arm2: Arm = Arm(2, reward_func)
 
     elif request.param == "with extra types":
 
         class Experiment(  # type: ignore
             Bandit, learner=learner_class, policy=choice, delayed_reward=delayed_reward
         ):
-            arm1: Arm = Arm(partial(action_func, 1), reward_func)
-            arm2: Arm = Arm(partial(action_func, 2), reward_func)
+            arm1: Arm = Arm(1, reward_func)
+            arm2: Arm = Arm(2, reward_func)
 
             extension_: int = 1
 
@@ -288,6 +285,35 @@ class TestBanditDecorator:
         # check that the learner was updated with the correct reward
         assert instance.last_arm_pulled is not None
         assert check_is_fitted(instance.last_arm_pulled.learner) is None  # type: ignore
+
+    def test_arm(
+        self,
+        X: Optional[NDArray[np.float_]],
+        restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
+        bandit_class: Type[Bandit],
+    ) -> None:
+        klass = bandit_class
+
+        if X is not None:
+            klass = contextual(klass)
+
+        if restless_decorator is not None:
+            klass = restless_decorator(klass)
+
+        instance = klass()
+
+        pull_args: List[Any] = []
+        pull_kwargs: Dict[str, Any] = {}
+        if X is not None:
+            pull_args.append(X)
+        if bandit_class._delayed_reward:  # type: ignore
+            pull_kwargs["unique_id"] = 1
+
+        arm = instance.arm(1)
+        assert arm is instance.arms["arm1"]
+
+        with pytest.raises(KeyError):
+            instance.arm(3)
 
     def test_context_exceptions(
         self,
