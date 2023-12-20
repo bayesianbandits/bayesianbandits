@@ -12,13 +12,16 @@ from bayesianbandits import (
     NormalRegressor,
 )
 
+from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
+
 
 @pytest.fixture(
-    params=[True, False], autouse=True, ids=["suitesparse", "no_suitesparse"]
+    params=[SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK],
+    autouse=True,
 )
 def suitesparse_envvar(request, monkeypatch):
     """Allows running test suite with and without CHOLMOD."""
-    with mock.patch("bayesianbandits._estimators.use_suitesparse", request.param):
+    with mock.patch("bayesianbandits._estimators.solver", request.param):
         yield
 
 
@@ -714,7 +717,9 @@ class TestDenseVsSparseLearnedPrecisionMatrix:
         X *= 10
         return X, y
 
-    def test_learned_precision_matrix_is_identical(self, X_y):
+    def test_learned_precision_matrix_is_identical_normal(
+        self, X_y, suitesparse_envvar
+    ):
         X, y = X_y
         sparse_clf = NormalRegressor(alpha=1, beta=1, sparse=True, random_state=0)
         dense_clf = NormalRegressor(alpha=1, beta=1, sparse=False, random_state=0)
@@ -722,5 +727,20 @@ class TestDenseVsSparseLearnedPrecisionMatrix:
         dense_clf.fit(X, y)
         assert isinstance(sparse_clf.cov_inv_, sp.csc_array)
         assert isinstance(dense_clf.cov_inv_, np.ndarray)
+
+        assert_almost_equal(sparse_clf.cov_inv_.toarray(), dense_clf.cov_inv_)  # type: ignore
+        assert_almost_equal(sparse_clf.coef_, dense_clf.coef_)
+
+    def test_learned_precision_matrix_is_identical_normal_inverse_gamma(
+        self, X_y, suitesparse_envvar
+    ):
+        X, y = X_y
+        sparse_clf = NormalInverseGammaRegressor(sparse=True, random_state=0)
+        dense_clf = NormalInverseGammaRegressor(sparse=False, random_state=0)
+        sparse_clf.fit(X, y)
+        dense_clf.fit(X, y)
+        assert isinstance(sparse_clf.cov_inv_, sp.csc_array)
+        assert isinstance(dense_clf.cov_inv_, np.ndarray)
+
         assert_almost_equal(sparse_clf.cov_inv_.toarray(), dense_clf.cov_inv_)  # type: ignore
         assert_almost_equal(sparse_clf.coef_, dense_clf.coef_)

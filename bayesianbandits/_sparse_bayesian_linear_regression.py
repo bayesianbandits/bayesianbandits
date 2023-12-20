@@ -1,9 +1,11 @@
 import os
+from enum import Enum
 from functools import cached_property
 from typing import Union
 
 import numpy as np
-from scipy.sparse import csc_array, csc_matrix, diags, eye, issparse
+from attr import dataclass
+from scipy.sparse import csc_array, csc_matrix, csr_matrix, diags, eye, issparse
 from scipy.sparse.linalg import splu, spsolve, use_solver
 from scipy.stats import Covariance
 from scipy.stats._multivariate import _squeeze_output
@@ -13,13 +15,43 @@ use_solver(useUmfpack=False)
 try:
     from sksparse.cholmod import cholesky as cholmod_cholesky
 
-    use_suitesparse = True
+    use_cholmod = True
 except ImportError:
-    use_suitesparse = False
+    use_cholmod = False
+
+try:
+    import scikits.umfpack as um
+
+    use_umfpack = True
+except ImportError:
+    use_umfpack = False
 
 
 if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
-    use_suitesparse = False
+    use_cholmod = False
+    use_umfpack = False
+
+
+class SparseSolver(Enum):
+    """Enum for sparse solvers."""
+
+    SUPERLU = 0
+    CHOLMOD = 1
+    UMFPACK = 2
+
+
+if use_cholmod:
+    solver = SparseSolver.CHOLMOD
+elif use_umfpack:
+    solver = SparseSolver.UMFPACK
+else:
+    solver = SparseSolver.SUPERLU
+
+
+@dataclass
+class LUObject:
+    L: csr_matrix
+    Pr: csc_array
 
 
 class CovViaSparsePrecision(Covariance):
@@ -71,25 +103,53 @@ class CovViaSparsePrecision(Covariance):
     colored with the original precision matrix P.
     """
 
-    def __init__(self, prec: csc_array, use_suitesparse=use_suitesparse):
+    def __init__(self, prec: csc_array, solver=solver):
         if not issparse(prec):
             raise ValueError("prec must be a sparse array")
 
-        self.use_suitesparse = use_suitesparse
+        self.solver = solver
 
         self._precision = prec
 
-        if self.use_suitesparse:
+        if self.solver == SparseSolver.CHOLMOD:
             self._W = cholmod_cholesky(csc_matrix(prec))
+
+        elif self.solver == SparseSolver.UMFPACK:
+            umc = um.UmfpackContext()
+            # Tells umfpack that we have a symmetric matrix and we only want to pivot on the diagonal
+            umc.control[um.UMFPACK_STRATEGY] = um.UMFPACK_STRATEGY_SYMMETRIC  # type: ignore
+            umc.control[um.UMFPACK_SYM_PIVOT_TOLERANCE] = 0.0  # type: ignore
+            umc.control[um.UMFPACK_SCALE] = um.UMFPACK_SCALE_NONE  # type: ignore
+
+            L, U, P, Q, _, _ = umc.lu(csc_matrix(prec))
+            if not (P == Q).all():
+                raise ValueError("P != Q. Was a diagonal element of prec zero?")
+
+            self._W = LUObject(
+                L=L.dot(diags(np.sqrt(U.diagonal()))),
+                Pr=csc_array((np.ones(L.shape[0]), (P, np.arange(L.shape[0])))),
+            )
+
         else:
-            self._W = splu(
+            # Tells SuperLU that we have a symmetric matrix and we only want to pivot on the diagonal
+            splu_ = splu(
                 prec,
                 diag_pivot_thresh=0,
                 permc_spec="MMD_AT_PLUS_A",
                 options=dict(SymmetricMode=True),
             )
-            if (self._W.perm_r != self._W.perm_c).any():
+            if (splu_.perm_r != splu_.perm_c).any():
                 raise ValueError("W must be symmetric")
+
+            self._W = LUObject(
+                L=splu_.L.dot(diags(np.sqrt(splu_.U.diagonal()))),
+                Pr=csc_array(
+                    (
+                        np.ones(splu_.L.shape[0]),
+                        (splu_.perm_r, np.arange(splu_.L.shape[0])),
+                    )
+                ),
+            )
 
         self._rank = prec.shape[-1]  # must be full rank for cholesky
         self._shape = prec.shape
@@ -97,19 +157,14 @@ class CovViaSparsePrecision(Covariance):
 
     @property
     def colorize_solve(self):
-        if self.use_suitesparse:
+        if self.solver == SparseSolver.CHOLMOD:
             return lambda x: self._W.apply_Pt(  # type: ignore
                 self._W.solve_Lt(x, False)  # type: ignore
             )
-        else:
-            lower = self._W.L.dot(diags(np.sqrt(self._W.U.diagonal())))
-            Pr = csc_matrix(
-                (
-                    np.ones(lower.shape[0]),
-                    (self._W.perm_r, np.arange(lower.shape[0])),
-                )
-            )
-        return lambda x: Pr.T @ spsolve(csc_array(lower.T), x)
+
+        elif self.solver == SparseSolver.UMFPACK:
+            return lambda x: self._W.Pr @ um.spsolve(self._W.L.T, x)
+        return lambda x: self._W.Pr.T @ spsolve(csc_array(self._W.L.T), x)
 
     @cached_property
     def _covariance(self):
@@ -119,7 +174,12 @@ class CovViaSparsePrecision(Covariance):
         raise NotImplementedError("Not implemented for sparse matrices")
 
     def _colorize(self, x):
-        return self.colorize_solve(x.T).T
+        samples = self.colorize_solve(x.T).T
+        # csc_arrray and csc_matrix have different behavior, so CHOLMOD doesn't
+        # auto-squeeze the output. We do it here.
+        if samples.shape[0] == 1:
+            return samples[0]
+        return samples
 
 
 def multivariate_normal_sample_from_sparse_covariance(
