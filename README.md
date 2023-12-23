@@ -11,7 +11,7 @@ While the API is still evolving, this library is already being used in productio
 ## Features
 
 * **Simple API**: `bayesianbandits` provides a simple interface - most users will only need to call `pull` and `update` to get started.
-* **Fast**: `bayesianbandits` is built on top of [scikit-learn](https://scikit-learn.org/stable/) and [scipy](https://www.scipy.org/), taking advantage of conjugate priors to provide fast and accurate inference. If present, `bayesianbandits` will use SuiteSparse to speed up matrix operations on sparse matrices.
+* **Fast**: `bayesianbandits` is built on top of already fast scientific Python libraries, but, if installed, will also use SuiteSparse to further speed up matrix operations on sparse matrices. Handling tens or even hundreds of thousands of features in a sparse model is no problem.
 * **scikit-learn compatible**: Use sklearn pipelines and transformers to preprocess data before feeding it into your bandit.
 * **Flexible**: Pick from a variety of policy algorithms, including Thompson sampling, upper confidence bound, and epsilon-greedy. Pick from a variety of prior distributions, including beta, gamma, normal, and normal-inverse-gamma.
 * **Extensible**: `bayesianbandits` provides simple interfaces for creating custom policies and priors.

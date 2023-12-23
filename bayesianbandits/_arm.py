@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar, Union, cast
+from typing import Any, Callable, Generic, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -39,7 +39,10 @@ def identity(
     return x
 
 
-class Arm:
+LT = TypeVar("LT", bound=Learner)
+
+
+class Arm(Generic[LT]):
     """Arm of a bandit.
 
     Parameters
@@ -85,7 +88,7 @@ class Arm:
         if reward_function is None:
             reward_function = identity
         self.reward_function = reward_function
-        self.learner = learner
+        self.learner: LT = learner  # type: ignore
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
