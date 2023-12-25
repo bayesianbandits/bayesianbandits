@@ -5,10 +5,10 @@ from typing import Any, Callable, Generic, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Concatenate, ParamSpec
 
-from ._typing import ActionToken, DecayingLearner, Learner
+from ._typing import ActionToken, DecayingLearner
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
@@ -17,16 +17,18 @@ RewardFunction = Union[
     Callable[..., NDArray[np.float_]],
     Callable[..., Union[np.float_, NDArray[np.float_]]],
 ]
+LT = TypeVar("LT", bound=DecayingLearner)
+A = TypeVar("A", bound="Arm[Any]")
 
 
 def requires_learner(
-    func: Callable[Concatenate[Arm, P], R]
-) -> Callable[Concatenate[Arm, P], R]:
+    func: Callable[Concatenate[A, P], R],
+) -> Callable[Concatenate[A, P], R]:
     """Decorator to check if the arm has a learner set."""
 
     @wraps(func)
-    def wrapper(self: "Arm", *args: P.args, **kwargs: P.kwargs) -> R:
-        if self.learner is None:
+    def wrapper(self: A, *args: P.args, **kwargs: P.kwargs) -> R:
+        if self.learner is None:  # type: ignore
             raise ValueError("Learner is not set.")
         return func(self, *args, **kwargs)
 
@@ -34,12 +36,9 @@ def requires_learner(
 
 
 def identity(
-    x: Union[np.float_, NDArray[np.float_]]
+    x: Union[np.float_, NDArray[np.float_]],
 ) -> Union[np.float_, NDArray[np.float_]]:
     return x
-
-
-LT = TypeVar("LT", bound=Learner)
 
 
 class Arm(Generic[LT]):
@@ -82,7 +81,7 @@ class Arm(Generic[LT]):
         self,
         action_token: Any,
         reward_function: Optional[RewardFunction] = None,
-        learner: Optional[Learner] = None,
+        learner: Optional[LT] = None,
     ) -> None:
         self.action_token = ActionToken(action_token)
         if reward_function is None:

@@ -1,20 +1,29 @@
-from typing import Any, Callable, Generic, List, Optional, TypeVar, Union
+from typing import (
+    Any,
+    Callable,
+    Generic,
+    List,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Self
 
 from ._arm import Arm
-from ._basebandit import _validate_arrays
+from ._basebandit import _validate_arrays  # type: ignore
 from ._policy_decorators import (
-    _compute_arm_mean,
-    _compute_arm_upper_bound,
-    _draw_one_sample,
+    _compute_arm_mean,  # type: ignore
+    _compute_arm_upper_bound,  # type: ignore
+    _draw_one_sample,  # type: ignore
 )
 from ._typing import ActionToken
 
-AT = TypeVar("AT", bound=Arm)
+AT = TypeVar("AT", bound=Arm[Any])
 
 Policy = Callable[
     [list[AT], Union[NDArray[np.float_], csc_array], np.random.Generator], List[AT]
@@ -25,7 +34,7 @@ class ContextualMultiArmedBandit(Generic[AT]):
     def __init__(
         self,
         arms: List[AT],
-        policy: Policy,
+        policy: Policy[AT],
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
         self._arms: List[AT] = arms
@@ -34,7 +43,7 @@ class ContextualMultiArmedBandit(Generic[AT]):
         unique_tokens = set(arm.action_token for arm in arms)
         if not len(unique_tokens) == len(arms):
             raise ValueError("All arms must have unique action tokens.")
-        if not all(arm.learner is not None for arm in arms):
+        if not all(arm.learner is not None for arm in arms):  # type: ignore
             raise ValueError("All arms must have a learner.")
 
         self.policy: Callable[
@@ -97,18 +106,48 @@ class ContextualMultiArmedBandit(Generic[AT]):
             arm.decay(X_decay, decay_rate=decay_rate)
 
 
-class MultiArmedBandit(ContextualMultiArmedBandit[AT]):
+class MultiArmedBandit(Generic[AT]):
+    def __init__(
+        self,
+        arms: List[AT],
+        policy: Policy[AT],
+        random_seed: Union[int, None, np.random.Generator] = None,
+    ):
+        self._inner = ContextualMultiArmedBandit(arms, policy, random_seed=random_seed)
+
+    @property
+    def rng(self) -> np.random.Generator:
+        return self._inner.rng
+
+    @property
+    def arm_to_update(self) -> AT:
+        return self._inner.arm_to_update
+
+    @property
+    def arms(self) -> List[AT]:
+        return self._inner.arms
+
+    def add_arm(self, arm: AT) -> None:
+        self._inner.add_arm(arm)
+
+    def remove_arm(self, token: Any) -> None:
+        self._inner.remove_arm(token)
+
+    def arm(self, token: Any) -> Self:
+        self._inner.arm(token)
+        return self
+
     def pull(self):
         X_pull, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        return super().pull(X_pull)
+        return self._inner.pull(X_pull)
 
     def update(self, y: NDArray[np.float_]) -> None:
         X_update, y_update = _validate_arrays(y, None, contextual=False, check_y=True)
-        super().update(X_update, y_update)
+        self._inner.update(X_update, y_update)
 
     def decay(self, decay_rate: Optional[float] = None) -> None:
         X_decay, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        super().decay(X_decay, decay_rate=decay_rate)
+        self._inner.decay(X_decay, decay_rate=decay_rate)
 
 
 def epsilon_greedy(
@@ -141,17 +180,16 @@ def epsilon_greedy(
             tuple(_compute_arm_mean(arm, X, samples=samples) for arm in arms)
         )
 
-        best_arm_indexes = np.atleast_1d(np.argmax(means, axis=0))
+        best_arm_indexes = np.atleast_1d(
+            cast(NDArray[np.int_], np.argmax(means, axis=0))
+        )
 
         choice_idx_to_explore = rng.random(size=len(best_arm_indexes)) < epsilon
-        final_choices: List[AT] = []
-        for explore, choice in zip(choice_idx_to_explore, best_arm_indexes):
-            if explore:
-                final_choices.append(rng.choice(arms))  # type: ignore
-            else:
-                final_choices.append(arms[choice])
 
-        return final_choices
+        return [
+            arms[cast(int, choice)] if not explore else cast(AT, rng.choice(arms))  # type: ignore
+            for explore, choice in zip(choice_idx_to_explore, best_arm_indexes)
+        ]
 
     return _choose_arm
 
@@ -190,9 +228,11 @@ def upper_confidence_bound(
             )
         )
 
-        best_arm_indexes = np.atleast_1d(np.argmax(upper_bounds, axis=0))
+        best_arm_indexes = np.atleast_1d(
+            cast(NDArray[np.int_], np.argmax(upper_bounds, axis=0))
+        )
 
-        return [arms[choice] for choice in best_arm_indexes]
+        return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
     return _choose_arm
 
@@ -217,8 +257,10 @@ def thompson_sampling(*, batch_size: Optional[int] = None) -> Policy[AT]:
             tuple(_draw_one_sample(arm, X, batch_size=batch_size) for arm in arms)
         )
 
-        best_arm_indexes = np.atleast_1d(np.argmax(samples, axis=0))
+        best_arm_indexes = np.atleast_1d(
+            cast(NDArray[np.int_], np.argmax(samples, axis=0))
+        )
 
-        return [arms[choice] for choice in best_arm_indexes]
+        return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
     return _choose_arm
