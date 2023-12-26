@@ -1,4 +1,6 @@
-# `bayesianbandits` [![Downloads](https://static.pepy.tech/badge/bayesianbandits/month)](https://pepy.tech/project/bayesianbandits)
+# `bayesianbandits` 
+[![Downloads](https://static.pepy.tech/badge/bayesianbandits/month)](https://pepy.tech/project/bayesianbandits)
+[![codecov](https://codecov.io/gh/bayesianbandits/bayesianbandits/graph/badge.svg?token=1YG8LBDJ5A)](https://codecov.io/gh/bayesianbandits/bayesianbandits)
 
 ## Bayesian Multi-Armed Bandits for Python
 
