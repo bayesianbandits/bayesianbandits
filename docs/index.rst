@@ -30,6 +30,7 @@ API Reference
 .. autosummary::
    :toctree: generated/
 
+   bayesianbandits.api
    bayesianbandits
 
 

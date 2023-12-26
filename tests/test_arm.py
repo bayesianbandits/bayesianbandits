@@ -34,7 +34,7 @@ class TestArm:
         action_token: MagicMock,
         reward_function: MagicMock,
     ) -> None:
-        arm = Arm(action_token=action_token, reward_function=reward_function)
+        arm = Arm(action_token=1, reward_function=reward_function)
         assert arm.learner is None
 
     def test_pull(

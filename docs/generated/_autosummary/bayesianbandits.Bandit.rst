@@ -14,6 +14,7 @@ bayesianbandits.Bandit
    .. autosummary::
    
       ~Bandit.__init__
+      ~Bandit.arm
       ~Bandit.decay
       ~Bandit.pull
       ~Bandit.sample

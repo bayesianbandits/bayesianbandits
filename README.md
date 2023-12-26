@@ -11,7 +11,7 @@ While the API is still evolving, this library is already being used in productio
 ## Features
 
 * **Simple API**: `bayesianbandits` provides a simple interface - most users will only need to call `pull` and `update` to get started.
-* **Fast**: `bayesianbandits` is built on top of [scikit-learn](https://scikit-learn.org/stable/) and [scipy](https://www.scipy.org/), taking advantage of conjugate priors to provide fast and accurate inference. If present, `bayesianbandits` will use SuiteSparse to speed up matrix operations on sparse matrices.
+* **Fast**: `bayesianbandits` is built on top of already fast scientific Python libraries, but, if installed, will also use SuiteSparse to further speed up matrix operations on sparse matrices. Handling tens or even hundreds of thousands of features in a sparse model is no problem.
 * **scikit-learn compatible**: Use sklearn pipelines and transformers to preprocess data before feeding it into your bandit.
 * **Flexible**: Pick from a variety of policy algorithms, including Thompson sampling, upper confidence bound, and epsilon-greedy. Pick from a variety of prior distributions, including beta, gamma, normal, and normal-inverse-gamma.
 * **Extensible**: `bayesianbandits` provides simple interfaces for creating custom policies and priors.
@@ -31,28 +31,27 @@ Define a LinearUCB contextual bandit with a normal prior.
 import numpy as np
 from bayesianbandits import (
     Arm,
-    Bandit,
     NormalInverseGammaRegressor,
-    upper_confidence_bound,
-    contextual,
+)
+from bayesianbandits.api import (
+    ContextualAgent,
+    UpperConfidenceBound,
 )
 
-est = NormalInverseGammaRegressor(lam=4)
-policy = upper_confidence_bound(alpha=0.80, samples=500)
+arms = [
+    Arm(1, learner=NormalInverseGammaRegressor()),
+    Arm(2, learner=NormalInverseGammaRegressor()),
+    Arm(3, learner=NormalInverseGammaRegressor()),
+    Arm(4, learner=NormalInverseGammaRegressor()),
+]
 
-@contextual
-class Agent(Bandit, learner=est, policy=policy):
-    article_1 = Arm(1)
-    article_2 = Arm(2)
-    article_3 = Arm(3)
-    article_4 = Arm(4)
-
+policy = UpperConfidenceBound(alpha=0.84)
 ```
 
-Instantiate the bandit and pull an arm with context.
+Instantiate the agent and pull an arm with context.
 
 ```python
-agent = Agent()
+agent = ContextualAgent(arms, policy)
 
 context = np.array([[1, 0, 0, 0]])
 
@@ -66,7 +65,7 @@ agent.pull(context)
 Update the bandit with the reward.
 
 ```python
-agent.update(context, 15.0)
+agent.update(context, np.array([15.0]))
 ```
 
 That's it! Check out the [documentation](https://bayesianbandits.readthedocs.io/en/latest/) for more examples.
