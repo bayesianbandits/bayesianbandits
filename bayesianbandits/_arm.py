@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Concatenate, ParamSpec
 
-from ._typing import ActionToken, DecayingLearner
+from ._typing import DecayingLearner
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
@@ -18,7 +18,8 @@ RewardFunction = Union[
     Callable[..., Union[np.float_, NDArray[np.float_]]],
 ]
 LT = TypeVar("LT", bound=DecayingLearner)
-A = TypeVar("A", bound="Arm[Any]")
+A = TypeVar("A", bound="Arm[Any, Any]")
+T = TypeVar("T")
 
 
 def requires_learner(
@@ -41,7 +42,7 @@ def identity(
     return x
 
 
-class Arm(Generic[LT]):
+class Arm(Generic[LT, T]):
     """Arm of a bandit.
 
     Parameters
@@ -79,11 +80,11 @@ class Arm(Generic[LT]):
 
     def __init__(
         self,
-        action_token: Any,
+        action_token: T,
         reward_function: Optional[RewardFunction] = None,
         learner: Optional[LT] = None,
     ) -> None:
-        self.action_token = ActionToken(action_token)
+        self.action_token: T = action_token
         if reward_function is None:
             reward_function = identity
         self.reward_function = reward_function
@@ -93,7 +94,7 @@ class Arm(Generic[LT]):
         self.name = name
 
     @requires_learner
-    def pull(self) -> ActionToken:
+    def pull(self) -> T:
         """Pull the arm."""
         return self.action_token
 

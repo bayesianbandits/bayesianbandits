@@ -61,6 +61,7 @@ from typing import (
     Generic,
     List,
     Optional,
+    Set,
     TypeVar,
     Union,
     cast,
@@ -78,16 +79,19 @@ from ._policy_decorators import (
     _compute_arm_upper_bound,  # type: ignore
     _draw_one_sample,  # type: ignore
 )
-from ._typing import ActionToken
+from ._typing import DecayingLearner
 
-AT = TypeVar("AT", bound=Arm[Any])
+AT = TypeVar("AT", bound=Arm[Any, Any])
+T = TypeVar("T")
+L = TypeVar("L", bound=DecayingLearner)
 
 Policy = Callable[
-    [list[AT], Union[NDArray[np.float_], csc_array], np.random.Generator], List[AT]
+    [List[Arm[Any, Any]], Union[NDArray[np.float_], csc_array], np.random.Generator],
+    List[Arm[Any, Any]],
 ]
 
 
-class ContextualAgent(Generic[AT]):
+class ContextualAgent(Generic[L, T]):
     """Agent for a contextual multi-armed bandit problem.
 
     Parameters
@@ -161,35 +165,39 @@ class ContextualAgent(Generic[AT]):
 
     def __init__(
         self,
-        arms: List[AT],
-        policy: Policy[AT],
+        arms: List[Arm[L, T]],
+        policy: Policy,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._arms: List[AT] = arms
+        self._arms = arms
         if not len(arms) > 0:
             raise ValueError("At least one arm is required.")
-        unique_tokens = set(arm.action_token for arm in arms)
+        unique_tokens: Set[T] = set(arm.action_token for arm in arms)
         if not len(unique_tokens) == len(arms):
             raise ValueError("All arms must have unique action tokens.")
         if not all(arm.learner is not None for arm in arms):  # type: ignore
             raise ValueError("All arms must have a learner.")
 
         self.policy: Callable[
-            [list[AT], Union[NDArray[np.float_], csc_array], np.random.Generator],
-            List[AT],
+            [
+                List[Arm[L, T]],
+                Union[NDArray[np.float_], csc_array],
+                np.random.Generator,
+            ],
+            List[Arm[L, T]],
         ] = policy
 
-        self.arm_to_update: AT = arms[0]
+        self.arm_to_update = arms[0]
 
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
         for arm in self.arms:
             arm.learner.random_state = random_seed
 
     @property
-    def arms(self) -> List[AT]:
+    def arms(self) -> List[Arm[L, T]]:
         return self._arms
 
-    def add_arm(self, arm: AT) -> None:
+    def add_arm(self, arm: Arm[L, T]) -> None:
         """Add an arm to the bandit.
 
         Parameters
@@ -207,7 +215,7 @@ class ContextualAgent(Generic[AT]):
             raise ValueError("All arms must have unique action tokens.")
         self.arms.append(arm)
 
-    def remove_arm(self, token: Any) -> None:
+    def remove_arm(self, token: T) -> None:
         """Remove an arm from the bandit.
 
         Parameters
@@ -227,7 +235,7 @@ class ContextualAgent(Generic[AT]):
         else:
             raise KeyError(f"Arm with token {token} not found.")
 
-    def arm(self, token: Any) -> Self:
+    def arm(self, token: T) -> Self:
         """Set the `arm_to_update` and return self for chaining.
 
         Parameters
@@ -254,7 +262,7 @@ class ContextualAgent(Generic[AT]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    def pull(self, X: Union[NDArray[np.float_], csc_array]) -> List[ActionToken]:
+    def pull(self, X: Union[NDArray[np.float_], csc_array]) -> List[T]:
         """Choose an arm and pull it based on the context(s).
 
         Parameters
@@ -307,7 +315,7 @@ class ContextualAgent(Generic[AT]):
             arm.decay(X_decay, decay_rate=decay_rate)
 
 
-class Agent(Generic[AT]):
+class Agent(Generic[L, T]):
     """
     Agent for a non-contextual multi-armed bandit problem.
 
@@ -365,18 +373,30 @@ class Agent(Generic[AT]):
 
     def __init__(
         self,
-        arms: List[AT],
-        policy: Policy[AT],
+        arms: List[Arm[L, T]],
+        policy: Policy,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._inner = ContextualAgent(arms, policy, random_seed=random_seed)
+        self._inner: ContextualAgent[L, T] = ContextualAgent(
+            arms, policy, random_seed=random_seed
+        )
 
     @property
-    def policy(self) -> Policy[AT]:
+    def policy(self):
         return self._inner.policy
 
     @policy.setter
-    def policy(self, policy: Policy[AT]) -> None:
+    def policy(
+        self,
+        policy: Callable[
+            [
+                List[Arm[L, T]],
+                Union[NDArray[np.float_], csc_array],
+                np.random.Generator,
+            ],
+            List[Arm[L, T]],
+        ],
+    ) -> None:
         self._inner.policy = policy
 
     @property
@@ -384,14 +404,14 @@ class Agent(Generic[AT]):
         return self._inner.rng
 
     @property
-    def arm_to_update(self) -> AT:
+    def arm_to_update(self) -> Arm[L, T]:
         return self._inner.arm_to_update
 
     @property
-    def arms(self) -> List[AT]:
+    def arms(self) -> List[Arm[L, T]]:
         return self._inner.arms
 
-    def add_arm(self, arm: AT) -> None:
+    def add_arm(self, arm: Arm[L, T]) -> None:
         """Add an arm to the bandit.
 
         Parameters
@@ -481,7 +501,7 @@ def epsilon_greedy(
     epsilon: float = 0.1,
     *,
     samples: int = 1000,
-) -> Policy[AT]:
+) -> Policy:
     """Creates an epsilon-greedy choice algorithm.
 
     Parameters
@@ -498,10 +518,10 @@ def epsilon_greedy(
     """
 
     def _choose_arm(
-        arms: list[AT],
+        arms: list[Arm[L, T]],
         X: Union[NDArray[np.float_], csc_array],
         rng: np.random.Generator,
-    ) -> List[AT]:
+    ) -> List[Arm[L, T]]:
         """Choose an arm using epsilon-greedy."""
         means = np.stack(
             tuple(_compute_arm_mean(arm, X, samples=samples) for arm in arms)
@@ -525,7 +545,7 @@ def upper_confidence_bound(
     alpha: float = 0.68,
     *,
     samples: int = 1000,
-) -> Policy[AT]:
+) -> Policy:
     """Creates an upper confidence bound choice algorithm.
 
     Parameters
@@ -542,10 +562,10 @@ def upper_confidence_bound(
     """
 
     def _choose_arm(
-        arms: list[AT],
+        arms: list[Arm[L, T]],
         X: Union[NDArray[np.float_], csc_array],
         rng: np.random.Generator,
-    ) -> List[AT]:
+    ) -> List[Arm[L, T]]:
         """Choose an arm using upper confidence bound."""
 
         upper_bounds = np.stack(
@@ -564,7 +584,7 @@ def upper_confidence_bound(
     return _choose_arm
 
 
-def thompson_sampling(*, batch_size: Optional[int] = None) -> Policy[AT]:
+def thompson_sampling(*, batch_size: Optional[int] = None) -> Policy:
     """Creates a Thompson sampling choice algorithm.
 
     Returns
@@ -574,10 +594,10 @@ def thompson_sampling(*, batch_size: Optional[int] = None) -> Policy[AT]:
     """
 
     def _choose_arm(
-        arms: list[AT],
+        arms: List[Arm[L, T]],
         X: Union[NDArray[np.float_], csc_array],
         rng: np.random.Generator,
-    ) -> List[AT]:
+    ) -> List[Arm[L, T]]:
         """Choose an arm using Thompson sampling."""
 
         samples = np.stack(
