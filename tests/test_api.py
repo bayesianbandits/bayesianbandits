@@ -19,9 +19,9 @@ from bayesianbandits.api import (
     ContextualAgent,
     Agent,
     Policy,
-    epsilon_greedy,
-    thompson_sampling,
-    upper_confidence_bound,
+    EpsilonGreedy,
+    ThompsonSampling,
+    UpperConfidenceBound,
 )
 
 
@@ -52,18 +52,16 @@ def learner_class(request: pytest.FixtureRequest):
         raise ValueError("invalid param")
 
 
-@pytest.fixture(
-    params=["epsilon_greedy", "thompson_sampling", "upper_confidence_bound"]
-)
+@pytest.fixture(params=["EpsilonGreedy", "ThompsonSampling", "UpperConfidenceBound"])
 def choice(
     request: pytest.FixtureRequest,
 ) -> Policy:
-    if request.param == "epsilon_greedy":
-        return epsilon_greedy(0.8)
-    elif request.param == "thompson_sampling":
-        return thompson_sampling()
-    elif request.param == "upper_confidence_bound":
-        return upper_confidence_bound(0.68)
+    if request.param == "EpsilonGreedy":
+        return EpsilonGreedy(0.8)
+    elif request.param == "ThompsonSampling":
+        return ThompsonSampling()
+    elif request.param == "UpperConfidenceBound":
+        return UpperConfidenceBound(0.68)
     else:
         raise ValueError("invalid param")
 
@@ -166,7 +164,7 @@ class TestBandits:
         self,
     ):
         with pytest.raises(ValueError):
-            Agent([], epsilon_greedy())
+            Agent([], EpsilonGreedy())
 
         with pytest.raises(ValueError):
             Agent(
@@ -174,7 +172,7 @@ class TestBandits:
                     Arm(0, None, learner=NormalInverseGammaRegressor()),
                     Arm(0, None, learner=NormalInverseGammaRegressor()),
                 ],
-                epsilon_greedy(),
+                EpsilonGreedy(),
             )
 
         with pytest.raises(ValueError):
@@ -182,5 +180,5 @@ class TestBandits:
                 [
                     Arm(0, None),
                 ],
-                epsilon_greedy(),
+                EpsilonGreedy(),
             )

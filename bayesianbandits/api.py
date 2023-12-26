@@ -48,9 +48,9 @@ Policy Functions
 .. autosummary::
     :toctree: _autosummary
 
-    epsilon_greedy
-    thompson_sampling
-    upper_confidence_bound
+    EpsilonGreedy
+    ThompsonSampling
+    UpperConfidenceBound
 
 """
 
@@ -126,12 +126,12 @@ class ContextualAgent(Generic[L, T]):
     function. The arms should have a learner and a unique action token.
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
-    >>> from bayesianbandits.api import ContextualAgent, thompson_sampling
+    >>> from bayesianbandits.api import ContextualAgent, ThompsonSampling
     >>> arms = [
     ...     Arm(0, learner=NormalInverseGammaRegressor()),
     ...     Arm(1, learner=NormalInverseGammaRegressor()),
     ... ]
-    >>> agent = ContextualAgent(arms, thompson_sampling(), random_seed=0)
+    >>> agent = ContextualAgent(arms, ThompsonSampling(), random_seed=0)
 
     The agent can then be used to choose an arm and pull it. The `pull` method
     takes a context matrix as input and returns the action token of the chosen
@@ -353,12 +353,12 @@ class Agent(Generic[L, T]):
     matrix is synthesized automatically.
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
-    >>> from bayesianbandits.api import Agent, thompson_sampling
+    >>> from bayesianbandits.api import Agent, ThompsonSampling
     >>> arms = [
     ...     Arm(0, learner=NormalInverseGammaRegressor()),
     ...     Arm(1, learner=NormalInverseGammaRegressor()),
     ... ]
-    >>> agent = Agent(arms, thompson_sampling(), random_seed=0)
+    >>> agent = Agent(arms, ThompsonSampling(), random_seed=0)
     >>> agent.pull()
     [0]
 
@@ -497,72 +497,100 @@ class Agent(Generic[L, T]):
         self._inner.decay(X_decay, decay_rate=decay_rate)
 
 
-def epsilon_greedy(
-    epsilon: float = 0.1,
-    *,
-    samples: int = 1000,
-) -> Policy:
-    """Creates an epsilon-greedy choice algorithm.
+class EpsilonGreedy:
+    """
+    Policy object for epsilon-greedy.
 
     Parameters
     ----------
     epsilon : float, default=0.1
-        Probability of choosing a random arm.
+        Probability of exploration.
     samples : int, default=1000
-        Number of samples to use to compute the mean of the posterior.
+        Number of samples to use for computing the arm means.
 
-    Returns
-    -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
-        Closure that chooses an arm using epsilon-greedy.
     """
 
-    def _choose_arm(
-        arms: list[Arm[L, T]],
+    def __init__(self, epsilon: float = 0.1, samples: int = 1000):
+        self.epsilon = epsilon
+        self.samples = samples
+
+    def __call__(
+        self,
+        arms: List[Arm[L, T]],
         X: Union[NDArray[np.float_], csc_array],
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
         """Choose an arm using epsilon-greedy."""
         means = np.stack(
-            tuple(_compute_arm_mean(arm, X, samples=samples) for arm in arms)
+            tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
         )
 
         best_arm_indexes = np.atleast_1d(
             cast(NDArray[np.int_], np.argmax(means, axis=0))
         )
 
-        choice_idx_to_explore = rng.random(size=len(best_arm_indexes)) < epsilon
+        choice_idx_to_explore = rng.random(size=len(best_arm_indexes)) < self.epsilon
 
         return [
             arms[cast(int, choice)] if not explore else cast(AT, rng.choice(arms))  # type: ignore
             for explore, choice in zip(choice_idx_to_explore, best_arm_indexes)
         ]
 
-    return _choose_arm
 
-
-def upper_confidence_bound(
-    alpha: float = 0.68,
-    *,
-    samples: int = 1000,
-) -> Policy:
-    """Creates an upper confidence bound choice algorithm.
+class ThompsonSampling:
+    """
+    Policy object for Thompson sampling.
 
     Parameters
     ----------
-    c : float, default=1.0
-        Constant to control the exploration-exploitation tradeoff.
-    samples : int, default=1000
-        Number of samples to use to compute the mean of the posterior.
+    batch_size : Optional[int], default=None
+        Batch size to use for sampling. If None, no batching is used.
+        Be warned that not batching can result in excessive memory usage.
 
-    Returns
-    -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
-        Closure that chooses an arm using upper confidence bound.
     """
 
-    def _choose_arm(
-        arms: list[Arm[L, T]],
+    def __init__(self, batch_size: Optional[int] = None):
+        self.batch_size = batch_size
+
+    def __call__(
+        self,
+        arms: List[Arm[L, T]],
+        X: Union[NDArray[np.float_], csc_array],
+        rng: np.random.Generator,
+    ) -> List[Arm[L, T]]:
+        """Choose an arm using Thompson sampling."""
+
+        samples = np.stack(
+            tuple(_draw_one_sample(arm, X, batch_size=self.batch_size) for arm in arms)
+        )
+
+        best_arm_indexes = np.atleast_1d(
+            cast(NDArray[np.int_], np.argmax(samples, axis=0))
+        )
+
+        return [arms[cast(int, choice)] for choice in best_arm_indexes]
+
+
+class UpperConfidenceBound:
+    """
+    Policy object for upper confidence bound.
+
+    Parameters
+    ----------
+    alpha : float, default=0.68
+        Confidence level (one-sided)
+    samples : int, default=1000
+        Number of samples to use for computing the arm upper bounds.
+
+    """
+
+    def __init__(self, alpha: float = 0.68, samples: int = 1000):
+        self.alpha = alpha
+        self.samples = samples
+
+    def __call__(
+        self,
+        arms: List[Arm[L, T]],
         X: Union[NDArray[np.float_], csc_array],
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
@@ -570,7 +598,7 @@ def upper_confidence_bound(
 
         upper_bounds = np.stack(
             tuple(
-                _compute_arm_upper_bound(arm, X, alpha=alpha, samples=samples)
+                _compute_arm_upper_bound(arm, X, alpha=self.alpha, samples=self.samples)
                 for arm in arms
             )
         )
@@ -580,34 +608,3 @@ def upper_confidence_bound(
         )
 
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
-
-    return _choose_arm
-
-
-def thompson_sampling(*, batch_size: Optional[int] = None) -> Policy:
-    """Creates a Thompson sampling choice algorithm.
-
-    Returns
-    -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
-        Closure that chooses an arm using Thompson sampling.
-    """
-
-    def _choose_arm(
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
-        rng: np.random.Generator,
-    ) -> List[Arm[L, T]]:
-        """Choose an arm using Thompson sampling."""
-
-        samples = np.stack(
-            tuple(_draw_one_sample(arm, X, batch_size=batch_size) for arm in arms)
-        )
-
-        best_arm_indexes = np.atleast_1d(
-            cast(NDArray[np.int_], np.argmax(samples, axis=0))
-        )
-
-        return [arms[cast(int, choice)] for choice in best_arm_indexes]
-
-    return _choose_arm
