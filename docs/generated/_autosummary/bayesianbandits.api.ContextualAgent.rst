@@ -1,4 +1,4 @@
-bayesianbandits.api.ContextualAgent
+﻿bayesianbandits.api.ContextualAgent
 ===================================
 
 .. currentmodule:: bayesianbandits.api
@@ -19,6 +19,7 @@ bayesianbandits.api.ContextualAgent
       ~ContextualAgent.decay
       ~ContextualAgent.pull
       ~ContextualAgent.remove_arm
+      ~ContextualAgent.select_for_update
       ~ContextualAgent.update
    
    

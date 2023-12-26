@@ -156,7 +156,7 @@ class ContextualAgent(Generic[L, T]):
     available, and a batch of updates needs to be made later. The user is
     trusted with calling `arm` with the right action token.
 
-    >>> agent.arm(1).update(X, y)
+    >>> agent.select_for_update(1).update(X, y)
     >>> agent.arm_to_update is arms[1]
     True
     >>> agent.arm_to_update.learner.predict(X)
@@ -235,7 +235,30 @@ class ContextualAgent(Generic[L, T]):
         else:
             raise KeyError(f"Arm with token {token} not found.")
 
-    def arm(self, token: T) -> Self:
+    def arm(self, token: T) -> Arm[L, T]:
+        """Get an arm by its action token.
+
+        Parameters
+        ----------
+        token : Any
+            Action token of the arm to get.
+
+        Returns
+        -------
+        Arm
+            Arm with the action token.
+
+        Raises
+        ------
+        KeyError
+            If the arm's action token is not in the bandit.
+        """
+        for arm in self.arms:
+            if arm.action_token == token:
+                return arm
+        raise KeyError(f"Arm with token {token} not found.")
+
+    def select_for_update(self, token: T) -> Self:
         """Set the `arm_to_update` and return self for chaining.
 
         Parameters
@@ -368,7 +391,7 @@ class Agent(Generic[L, T]):
     >>> import numpy as np
     >>> y = np.array([100.0])
     >>> agent.update(y)
-    >>> agent.arm(0).update(y)
+    >>> agent.select_for_update(0).update(y)
     """
 
     def __init__(
@@ -441,7 +464,7 @@ class Agent(Generic[L, T]):
         """
         self._inner.remove_arm(token)
 
-    def arm(self, token: Any) -> Self:
+    def select_for_update(self, token: T) -> Self:
         """Set the `arm_to_update` and return self for chaining.
 
         Parameters
@@ -459,8 +482,28 @@ class Agent(Generic[L, T]):
         KeyError
             If the arm's action token is not in the bandit.
         """
-        self._inner.arm(token)
+        self._inner.select_for_update(token)
         return self
+
+    def arm(self, token: T) -> Arm[L, T]:
+        """Get an arm by its action token.
+
+        Parameters
+        ----------
+        token : Any
+            Action token of the arm to get.
+
+        Returns
+        -------
+        Self
+            Self for chaining.
+
+        Raises
+        ------
+        KeyError
+            If the arm's action token is not in the bandit.
+        """
+        return self._inner.arm(token)
 
     def pull(self):
         """Choose an arm and pull it.

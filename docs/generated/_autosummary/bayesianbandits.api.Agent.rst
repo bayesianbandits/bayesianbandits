@@ -1,4 +1,4 @@
-bayesianbandits.api.Agent
+﻿bayesianbandits.api.Agent
 =========================
 
 .. currentmodule:: bayesianbandits.api
@@ -19,6 +19,7 @@ bayesianbandits.api.Agent
       ~Agent.decay
       ~Agent.pull
       ~Agent.remove_arm
+      ~Agent.select_for_update
       ~Agent.update
    
    
