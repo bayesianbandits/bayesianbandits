@@ -154,6 +154,13 @@ class Bandit:
         policy : Callable[..., Arm]
             Policy to use for choosing arms.
         """
+        # Deprecation warning
+        warn(
+            "The `Bandit` class is deprecated and will be removed in a future "
+            "release. Please use `Agent` or `ContextualAgent` instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         super().__init_subclass__(**kwargs)
 
         # set learner and policy as class variables
