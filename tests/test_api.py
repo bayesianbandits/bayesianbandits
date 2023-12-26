@@ -1,4 +1,4 @@
-from typing import Union
+from typing import TypeVar, Union
 
 import numpy as np
 import pytest
@@ -23,6 +23,7 @@ from bayesianbandits.api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits._typing import DecayingLearner
 
 
 @pytest.fixture(
@@ -35,7 +36,11 @@ from bayesianbandits.api import (
         "normal-inverse-gamma sparse",
     ]
 )
-def learner_class(request: pytest.FixtureRequest):
+def learner_class(
+    request: pytest.FixtureRequest,
+) -> Union[
+    DirichletClassifier, GammaRegressor, NormalRegressor, NormalInverseGammaRegressor
+]:
     if request.param == "dirichlet":
         return DirichletClassifier({1: 1.0, 2: 1.0})
     elif request.param == "gamma":
@@ -66,12 +71,20 @@ def choice(
         raise ValueError("invalid param")
 
 
+LT = TypeVar("LT", bound=DecayingLearner)
+
+
 @pytest.fixture(params=[Agent, ContextualAgent])
 def bandit_instance(
     request: pytest.FixtureRequest,
-    learner_class,
+    learner_class: Union[
+        DirichletClassifier,
+        GammaRegressor,
+        NormalRegressor,
+        NormalInverseGammaRegressor,
+    ],
     choice: Policy,
-):
+) -> Union[Agent[LT, int], ContextualAgent[LT, int]]:
     if isinstance(learner_class, DirichletClassifier):
 
         def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
@@ -93,7 +106,9 @@ def bandit_instance(
 class TestBandits:
     def test_pull(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
             (token,) = bandit_instance.pull()
@@ -105,7 +120,9 @@ class TestBandits:
 
     def test_update(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
             bandit_instance.pull()
@@ -120,7 +137,9 @@ class TestBandits:
 
     def test_decay(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
             bandit_instance.decay()
@@ -131,7 +150,9 @@ class TestBandits:
 
     def test_arm(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
         bandit_instance.arm(0)
         assert bandit_instance.arm_to_update is bandit_instance.arms[0]
@@ -141,9 +162,11 @@ class TestBandits:
 
     def test_add_arm(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
-        arm_to_add = Arm(2, None, learner=clone(bandit_instance.arms[0].learner))
+        arm_to_add = Arm(2, None, learner=clone(bandit_instance.arms[0].learner))  # type: ignore
         bandit_instance.add_arm(arm_to_add)
         assert len(bandit_instance.arms) == 3
 
@@ -152,7 +175,9 @@ class TestBandits:
 
     def test_remove_arm(
         self,
-        bandit_instance,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
     ) -> None:
         bandit_instance.remove_arm(0)
         assert len(bandit_instance.arms) == 1
@@ -164,7 +189,7 @@ class TestBandits:
         self,
     ):
         with pytest.raises(ValueError):
-            Agent([], EpsilonGreedy())
+            Agent([], EpsilonGreedy())  # type: ignore
 
         with pytest.raises(ValueError):
             Agent(
@@ -178,7 +203,7 @@ class TestBandits:
         with pytest.raises(ValueError):
             Agent(
                 [
-                    Arm(0, None),
+                    Arm(0, None),  # type: ignore
                 ],
                 EpsilonGreedy(),
             )
