@@ -9,14 +9,6 @@
 
    
    
-   .. rubric:: Functions
-
-   .. autosummary::
-   
-      epsilon_greedy
-      thompson_sampling
-      upper_confidence_bound
-   
    
 
    
@@ -27,6 +19,9 @@
    
       Agent
       ContextualAgent
+      EpsilonGreedy
+      ThompsonSampling
+      UpperConfidenceBound
    
    
 
