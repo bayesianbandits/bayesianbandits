@@ -16,6 +16,7 @@ bayesianbandits.DirichletClassifier
       ~DirichletClassifier.__init__
       ~DirichletClassifier.decay
       ~DirichletClassifier.fit
+      ~DirichletClassifier.get_metadata_routing
       ~DirichletClassifier.get_params
       ~DirichletClassifier.partial_fit
       ~DirichletClassifier.predict
@@ -23,6 +24,7 @@ bayesianbandits.DirichletClassifier
       ~DirichletClassifier.sample
       ~DirichletClassifier.score
       ~DirichletClassifier.set_params
+      ~DirichletClassifier.set_score_request
    
    
 

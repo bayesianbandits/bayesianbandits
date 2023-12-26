@@ -16,8 +16,8 @@ from bayesianbandits import (
     NormalRegressor,
 )
 from bayesianbandits.api import (
-    ContextualMultiArmedBandit,
-    MultiArmedBandit,
+    ContextualAgent,
+    Agent,
     Policy,
     epsilon_greedy,
     thompson_sampling,
@@ -68,7 +68,7 @@ def choice(
         raise ValueError("invalid param")
 
 
-@pytest.fixture(params=[MultiArmedBandit, ContextualMultiArmedBandit])
+@pytest.fixture(params=[Agent, ContextualAgent])
 def bandit_instance(
     request: pytest.FixtureRequest,
     learner_class,
@@ -97,7 +97,7 @@ class TestBandits:
         self,
         bandit_instance,
     ) -> None:
-        if isinstance(bandit_instance, MultiArmedBandit):
+        if isinstance(bandit_instance, Agent):
             (token,) = bandit_instance.pull()
 
         else:
@@ -109,7 +109,7 @@ class TestBandits:
         self,
         bandit_instance,
     ) -> None:
-        if isinstance(bandit_instance, MultiArmedBandit):
+        if isinstance(bandit_instance, Agent):
             bandit_instance.pull()
             bandit_instance.update(np.array([1.0]))
         else:
@@ -124,7 +124,7 @@ class TestBandits:
         self,
         bandit_instance,
     ) -> None:
-        if isinstance(bandit_instance, MultiArmedBandit):
+        if isinstance(bandit_instance, Agent):
             bandit_instance.decay()
         else:
             bandit_instance.decay(np.array([[2.0]]), decay_rate=0.5)
@@ -166,10 +166,10 @@ class TestBandits:
         self,
     ):
         with pytest.raises(ValueError):
-            MultiArmedBandit([], epsilon_greedy())
+            Agent([], epsilon_greedy())
 
         with pytest.raises(ValueError):
-            MultiArmedBandit(
+            Agent(
                 [
                     Arm(0, None, learner=NormalInverseGammaRegressor()),
                     Arm(0, None, learner=NormalInverseGammaRegressor()),
@@ -178,7 +178,7 @@ class TestBandits:
             )
 
         with pytest.raises(ValueError):
-            MultiArmedBandit(
+            Agent(
                 [
                     Arm(0, None),
                 ],

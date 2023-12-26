@@ -1,3 +1,60 @@
+"""
+=======================================================
+Bayesian Bandits Agent API (:mod:`bayesianbandits.api`)
+=======================================================
+
+.. currentmodule:: bayesianbandits.api
+
+Fully typed API for Bayesian bandits.
+
+This module contains the API for Bayesian bandits. It passes strict type
+checking with `pyright` and is recommended for use in production code. On top
+of the type checking, this API makes it much easier to add or remove arms, change
+the policy function, and serialize/deserialize bandits in live services.
+
+It uses the same estimators and `Arm` class as the original API, but
+defines its own `ContextualAgent` and `MultiArmedBandit`
+classes, as well as a `Policy` type alias for the policy functions.
+
+This API splits the `Bandit` class into two classes, `ContextualAgent`
+and `MultiArmedBandit`. This split enables safer typing, as the contextual bandit
+always takes a context matrix as input, while the non-contextual bandit does not.
+
+Additionally, this API deprecates the `delayed_reward` decorator, as it modifies
+the function signatures of the `pull` and `update` methods. Instead, this API
+enables batch pulls and updates, but leaves it up to the user to keep track of
+matching updates with the correct pulls. Library users reported that this was
+what they were doing anyway, so this API change should encourage better practices.
+
+.. note::
+
+    Migrating from the original API to this API should be straightforward. Just
+    instantiate the `ContextualAgent` or `MultiArmedBandit` class
+    with `list(arms.values())` and the policy function of the original `Bandit`
+    subclass.
+
+Bandit Classes
+==============
+
+.. autosummary::
+    :toctree: _autosummary
+
+    ContextualAgent
+    Agent
+
+Policy Functions
+================
+
+.. autosummary::
+    :toctree: _autosummary
+
+    epsilon_greedy
+    thompson_sampling
+    upper_confidence_bound
+
+"""
+
+
 from typing import (
     Any,
     Callable,
@@ -30,8 +87,8 @@ Policy = Callable[
 ]
 
 
-class ContextualMultiArmedBandit(Generic[AT]):
-    """Agent for a contextual multi-armed bandit.k-
+class ContextualAgent(Generic[AT]):
+    """Agent for a contextual multi-armed bandit problem.
 
     Parameters
     ----------
@@ -43,6 +100,63 @@ class ContextualMultiArmedBandit(Generic[AT]):
         and the context as input and returns the chosen arm.
     random_seed : int, default=None
         Seed for the random number generator. If None, a random seed is used.
+
+    Attributes
+    ----------
+    arms : List[Arm]
+        List of arms to choose from. All arms must have a learner and a unique
+        action token.
+    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+        Function to choose an arm from the list of arms. Takes the list of arms
+        and the context as input and returns the chosen arm.
+    arm_to_update : Arm
+        Arm to update with the next reward.
+    rng : Generator
+        Random number generator used for choosing arms and decaying.
+
+
+    Examples
+    --------
+
+    Minimally, an agent can be instantiated with a list of arms and a policy
+    function. The arms should have a learner and a unique action token.
+
+    >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
+    >>> from bayesianbandits.api import ContextualAgent, thompson_sampling
+    >>> arms = [
+    ...     Arm(0, learner=NormalInverseGammaRegressor()),
+    ...     Arm(1, learner=NormalInverseGammaRegressor()),
+    ... ]
+    >>> agent = ContextualAgent(arms, thompson_sampling(), random_seed=0)
+
+    The agent can then be used to choose an arm and pull it. The `pull` method
+    takes a context matrix as input and returns the action token of the chosen
+    arm.
+
+    >>> import numpy as np
+    >>> X = np.array([[1.0, 15.0]])
+    >>> agent.pull(X)
+    [0]
+
+    The agent can then be updated with the observed reward. The `update` method
+    takes a context matrix and a reward vector as input. By default, the last
+    pulled arm is updated.
+
+    >>> y = np.array([100.0])
+    >>> agent.update(X, y)
+    >>> agent.arm_to_update.learner.predict(X)
+    array([99.55947137])
+
+    The agent can also be 'fluently' updated by chaining the `arm` method with
+    the `update` method. This is useful when the reward is not immediately
+    available, and a batch of updates needs to be made later. The user is
+    trusted with calling `arm` with the right action token.
+
+    >>> agent.arm(1).update(X, y)
+    >>> agent.arm_to_update is arms[1]
+    True
+    >>> agent.arm_to_update.learner.predict(X)
+    array([99.55947137])
     """
 
     def __init__(
@@ -114,7 +228,7 @@ class ContextualMultiArmedBandit(Generic[AT]):
             raise KeyError(f"Arm with token {token} not found.")
 
     def arm(self, token: Any) -> Self:
-        """Set the `arm_to_update`.
+        """Set the `arm_to_update` and return self for chaining.
 
         Parameters
         ----------
@@ -193,14 +307,77 @@ class ContextualMultiArmedBandit(Generic[AT]):
             arm.decay(X_decay, decay_rate=decay_rate)
 
 
-class MultiArmedBandit(Generic[AT]):
+class Agent(Generic[AT]):
+    """
+    Agent for a non-contextual multi-armed bandit problem.
+
+    The non-contextual bandit is a special case of the contextual bandit where
+    the context matrix is a single column of ones. This class is a wrapper
+    around the `ContextualAgent` class that automatically synthesizes the
+    context matrix for the `pull`, `update`, and `decay` methods.
+
+    Parameters
+    ----------
+    arms : List[Arm]
+        List of arms to choose from. All arms must have a learner and a unique
+        action token.
+    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+        Function to choose an arm from the list of arms. Takes the list of arms
+        and the context as input and returns the chosen arm.
+    random_seed : int, default=None
+        Seed for the random number generator. If None, a random seed is used.
+
+    Attributes
+    ----------
+    arms : List[Arm]
+        List of arms to choose from. All arms must have a learner and a unique
+        action token.
+    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+        Function to choose an arm from the list of arms. Takes the list of arms
+        and the context as input and returns the chosen arm.
+    arm_to_update : Arm
+        Arm to update with the next reward.
+
+    Examples
+    --------
+    The key difference between the `Agent` and the `ContextualAgent` is that
+    the `Agent` does not take a context matrix as input. Instead, the context
+    matrix is synthesized automatically.
+
+    >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
+    >>> from bayesianbandits.api import Agent, thompson_sampling
+    >>> arms = [
+    ...     Arm(0, learner=NormalInverseGammaRegressor()),
+    ...     Arm(1, learner=NormalInverseGammaRegressor()),
+    ... ]
+    >>> agent = Agent(arms, thompson_sampling(), random_seed=0)
+    >>> agent.pull()
+    [0]
+
+    This is equivalent to calling the `pull` method with a context matrix containing
+    only a global intercept. The `update` and `decay` methods work the same way.
+
+    >>> import numpy as np
+    >>> y = np.array([100.0])
+    >>> agent.update(y)
+    >>> agent.arm(0).update(y)
+    """
+
     def __init__(
         self,
         arms: List[AT],
         policy: Policy[AT],
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._inner = ContextualMultiArmedBandit(arms, policy, random_seed=random_seed)
+        self._inner = ContextualAgent(arms, policy, random_seed=random_seed)
+
+    @property
+    def policy(self) -> Policy[AT]:
+        return self._inner.policy
+
+    @policy.setter
+    def policy(self, policy: Policy[AT]) -> None:
+        self._inner.policy = policy
 
     @property
     def rng(self) -> np.random.Generator:
@@ -245,7 +422,7 @@ class MultiArmedBandit(Generic[AT]):
         self._inner.remove_arm(token)
 
     def arm(self, token: Any) -> Self:
-        """Set the `arm_to_update`.
+        """Set the `arm_to_update` and return self for chaining.
 
         Parameters
         ----------
