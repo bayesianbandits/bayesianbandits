@@ -6,7 +6,7 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-import numpy as np
+import numpy as np  # type: ignore
 
 project = "bayesianbandits"
 copyright = "2023, Rishi Kulkarni"

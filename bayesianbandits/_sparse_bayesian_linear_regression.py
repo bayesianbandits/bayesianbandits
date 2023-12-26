@@ -1,10 +1,11 @@
 import os
 from enum import Enum
 from functools import cached_property
-from typing import Union
+from typing import Any, Tuple, Union, cast
 
 import numpy as np
 from attr import dataclass
+from numpy.typing import NDArray
 from scipy.sparse import csc_array, csc_matrix, csr_matrix, diags, eye, issparse
 from scipy.sparse.linalg import splu, spsolve, use_solver
 from scipy.stats import Covariance
@@ -156,7 +157,7 @@ class CovViaSparsePrecision(Covariance):
         self._allow_singular = False
 
     @property
-    def colorize_solve(self):
+    def colorize_solve(self) -> Any:
         if self.solver == SparseSolver.CHOLMOD:
             return lambda x: self._W.apply_Pt(  # type: ignore
                 self._W.solve_Lt(x, False)  # type: ignore
@@ -167,13 +168,13 @@ class CovViaSparsePrecision(Covariance):
         return lambda x: self._W.Pr.T @ spsolve(csc_array(self._W.L.T), x)
 
     @cached_property
-    def _covariance(self):
+    def _covariance(self) -> csc_array:
         return spsolve(self._precision, eye(self._precision.shape[0], format="csc"))
 
     def _whiten(self, x):
         raise NotImplementedError("Not implemented for sparse matrices")
 
-    def _colorize(self, x):
+    def _colorize(self, x: NDArray[np.float_]) -> NDArray[np.float_]:
         samples = self.colorize_solve(x.T).T
         # csc_arrray and csc_matrix have different behavior, so CHOLMOD doesn't
         # auto-squeeze the output. We do it here.
@@ -183,11 +184,11 @@ class CovViaSparsePrecision(Covariance):
 
 
 def multivariate_normal_sample_from_sparse_covariance(
-    mean: Union[csc_array, np.ndarray, None],
+    mean: Union[csc_array, NDArray[np.float_], None],
     cov: Covariance,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
-):
+) -> NDArray[np.float_]:
     """
     Sample from a multivariate normal distribution with mean mu (default 0)
     and sparse precision matrix Q.
@@ -220,28 +221,28 @@ def multivariate_normal_sample_from_sparse_covariance(
     rng = np.random.default_rng(random_state)
 
     # Compute size from the shape of Q plus the size parameter
-    gen_size = (size,) + (cov.shape[-1],)
+    gen_size = cast(Tuple[int, int], (size,) + (cov.shape[-1],))
 
     # Sample Z from a standard multivariate normal distribution
     Z = rng.standard_normal(gen_size)
 
     # Colorize Z
-    Y = cov.colorize(Z)
+    Y = cast(NDArray[np.float_], cov.colorize(Z))
 
     # Add the mean vector to each sample if provided
     if mean is not None:
         Y += mean
 
-    return Y
+    return cast(NDArray[np.float_], Y)
 
 
 def multivariate_t_sample_from_sparse_covariance(
-    loc: Union[csc_array, np.ndarray, None],
+    loc: Union[csc_array, NDArray[np.float_], None],
     shape: Covariance,
     df: float = 1.0,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
-):
+) -> NDArray[np.float_]:
     """
     Sample from a multivariate t distribution with mean loc, shape matrix
     shape, and degrees of freedom df.
@@ -287,4 +288,4 @@ def multivariate_t_sample_from_sparse_covariance(
     samples = loc + z / np.sqrt(x)[..., None]
     samples = _squeeze_output(samples)
 
-    return samples
+    return cast(NDArray[np.float_], samples)

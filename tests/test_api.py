@@ -154,11 +154,23 @@ class TestBandits:
             Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
         ],
     ) -> None:
-        bandit_instance.arm(0)
-        assert bandit_instance.arm_to_update is bandit_instance.arms[0]
+        arm = bandit_instance.arm(0)
+        assert arm is bandit_instance.arms[0]
 
         with pytest.raises(KeyError):
             bandit_instance.arm(3)
+
+    def test_select_for_update(
+        self,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
+    ) -> None:
+        bandit_instance.select_for_update(1)
+        assert bandit_instance.arm_to_update is bandit_instance.arms[1]
+
+        with pytest.raises(KeyError):
+            bandit_instance.select_for_update(3)
 
     def test_add_arm(
         self,

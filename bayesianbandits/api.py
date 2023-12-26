@@ -13,11 +13,11 @@ of the type checking, this API makes it much easier to add or remove arms, chang
 the policy function, and serialize/deserialize bandits in live services.
 
 It uses the same estimators and `Arm` class as the original API, but
-defines its own `ContextualAgent` and `MultiArmedBandit`
-classes, as well as a `Policy` type alias for the policy functions.
+defines its own `ContextualAgent` and `Agent` classes, as well as a 
+`Policy` type alias for the policy functions.
 
 This API splits the `Bandit` class into two classes, `ContextualAgent`
-and `MultiArmedBandit`. This split enables safer typing, as the contextual bandit
+and `Agent`. This split enables safer typing, as the contextual bandit
 always takes a context matrix as input, while the non-contextual bandit does not.
 
 Additionally, this API deprecates the `delayed_reward` decorator, as it modifies
