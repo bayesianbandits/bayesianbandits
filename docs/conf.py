@@ -11,7 +11,7 @@ import numpy as np  # type: ignore
 project = "bayesianbandits"
 copyright = "2023, Rishi Kulkarni"
 author = "Rishi Kulkarni"
-release = "0.0.1"
+release = "0.6.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

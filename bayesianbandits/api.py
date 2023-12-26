@@ -1,6 +1,6 @@
 """
 =======================================================
-Bayesian Bandits Agent API (:mod:`bayesianbandits.api`)
+Agent API (:mod:`bayesianbandits.api`)
 =======================================================
 
 .. currentmodule:: bayesianbandits.api
