@@ -33,6 +33,7 @@ scikit-umfpack = "^0.4.1"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
+filterwarnings = "ignore::DeprecationWarning"
 
 [build-system]
 requires = ["poetry-core"]
