@@ -23,12 +23,12 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.sparse import csc_array, issparse
 from sklearn.base import clone
-from typing_extensions import Literal, TypeGuard, dataclass_transform
+from typing_extensions import Literal, TypeGuard, dataclass_transform, Self
 
 from ._arm import Arm
 from ._np_utils import groupby_array
 from ._policy_decorators import ArmChoicePolicy
-from ._typing import BanditProtocol, Learner
+from ._typing import Learner
 
 _B = TypeVar("_B", bound="Bandit")
 
@@ -730,7 +730,7 @@ class Bandit:
                 self.arms[arm_name] = self.__dict__[arm_name]
 
     @cached_property
-    def arms(self: BanditProtocol) -> Dict[str, Arm]:
+    def arms(self: Self) -> Dict[str, Arm]:
         return {
             name: attr for name, attr in self.__dict__.items() if isinstance(attr, Arm)
         }

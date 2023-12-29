@@ -620,6 +620,23 @@ def test_normal_inverse_gamma_regressor_decay(
 
 
 @pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_prior_exceptions(sparse) -> None:
+    """Test exceptions are raised when priors are not the right shape."""
+
+    # mu must be scalar or vector
+    with pytest.raises(ValueError):
+        est = NormalInverseGammaRegressor(mu=np.array([[1, 2], [2, 3]]), sparse=sparse)
+        est.sample(np.array([[1, 2]]))
+
+    # lam must be scalar, vector, or matrix
+    with pytest.raises(ValueError):
+        est = NormalInverseGammaRegressor(
+            lam=np.array([[[1, 2], [2, 3]]]), sparse=sparse
+        )
+        est.sample(np.array([[1, 2]]))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
 def test_normal_inverse_gamma_regressor_manual_decay(
     X: NDArray[np.int_],
     y: NDArray[np.int_],

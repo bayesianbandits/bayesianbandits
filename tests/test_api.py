@@ -57,18 +57,18 @@ def learner_class(
         raise ValueError("invalid param")
 
 
-@pytest.fixture(params=["EpsilonGreedy", "ThompsonSampling", "UpperConfidenceBound"])
+@pytest.fixture(
+    params=[
+        EpsilonGreedy(0.8),
+        ThompsonSampling(),
+        ThompsonSampling(batch_size=1),
+        UpperConfidenceBound(0.68),
+    ]
+)
 def choice(
     request: pytest.FixtureRequest,
 ) -> Policy:
-    if request.param == "EpsilonGreedy":
-        return EpsilonGreedy(0.8)
-    elif request.param == "ThompsonSampling":
-        return ThompsonSampling()
-    elif request.param == "UpperConfidenceBound":
-        return UpperConfidenceBound(0.68)
-    else:
-        raise ValueError("invalid param")
+    return request.param
 
 
 LT = TypeVar("LT", bound=DecayingLearner)
@@ -196,6 +196,24 @@ class TestBandits:
 
         with pytest.raises(KeyError):
             bandit_instance.remove_arm(0)
+
+    def test_change_policy(
+        self,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
+    ) -> None:
+        bandit_instance.policy = ThompsonSampling()
+
+        assert isinstance(bandit_instance.policy, ThompsonSampling)
+
+    def test_check_rng(
+        self,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
+    ) -> None:
+        assert isinstance(bandit_instance.rng, np.random.Generator)
 
     def test_constructor_exceptions(
         self,
