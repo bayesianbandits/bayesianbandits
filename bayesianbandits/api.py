@@ -163,6 +163,17 @@ class ContextualAgent(Generic[L, T]):
     array([99.55947137])
     """
 
+    def __repr__(self) -> str:
+        learners = set(type(arm.learner) for arm in self.arms)
+        action_space = set(arm.action_token for arm in self.arms)
+        reward_function = set(arm.reward_function for arm in self.arms)
+
+        return (
+            f"ContextualAgent(policy={self.policy}, random_seed={self.rng},\n"
+            f"arms={action_space}, reward_function={reward_function},\n"
+            f"learners={learners})"
+        )
+
     def __init__(
         self,
         arms: List[Arm[L, T]],
@@ -394,6 +405,17 @@ class Agent(Generic[L, T]):
     >>> agent.select_for_update(0).update(y)
     """
 
+    def __repr__(self) -> str:
+        learners = set(type(arm.learner) for arm in self.arms)
+        action_space = set(arm.action_token for arm in self.arms)
+        reward_function = set(arm.reward_function for arm in self.arms)
+
+        return (
+            f"Agent(policy={self.policy}, random_seed={self.rng},\n"
+            f"arms={action_space}, reward_function={reward_function},\n"
+            f"learners={learners})"
+        )
+
     def __init__(
         self,
         arms: List[Arm[L, T]],
@@ -553,6 +575,9 @@ class EpsilonGreedy:
 
     """
 
+    def __repr__(self) -> str:
+        return f"EpsilonGreedy(epsilon={self.epsilon}, samples={self.samples})"
+
     def __init__(self, epsilon: float = 0.1, samples: int = 1000):
         self.epsilon = epsilon
         self.samples = samples
@@ -592,6 +617,9 @@ class ThompsonSampling:
 
     """
 
+    def __repr__(self) -> str:
+        return f"ThompsonSampling(batch_size={self.batch_size})"
+
     def __init__(self, batch_size: Optional[int] = None):
         self.batch_size = batch_size
 
@@ -626,6 +654,9 @@ class UpperConfidenceBound:
         Number of samples to use for computing the arm upper bounds.
 
     """
+
+    def __repr__(self) -> str:
+        return f"UpperConfidenceBound(alpha={self.alpha}, samples={self.samples})"
 
     def __init__(self, alpha: float = 0.68, samples: int = 1000):
         self.alpha = alpha
