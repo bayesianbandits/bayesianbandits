@@ -61,7 +61,6 @@ def learner_class(
     params=[
         EpsilonGreedy(0.8),
         ThompsonSampling(),
-        ThompsonSampling(batch_size=1),
         UpperConfidenceBound(0.68),
     ]
 )

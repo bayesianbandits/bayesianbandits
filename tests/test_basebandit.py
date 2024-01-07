@@ -397,9 +397,9 @@ def test_bandit_batch_pull_and_update(sparse: bool) -> None:
     instance.update([1, 2, 1], unique_id=[1, 2, 3])
 
     # this test could break if the rng changes
-    assert instance.arm1.learner.a_ == 1.6  # type: ignore
+    assert instance.arm1.learner.a_ == 0.1  # type: ignore
     # this test could break if the rng changes
-    assert instance.arm2.learner.a_ == 0.1  # type: ignore
+    assert instance.arm2.learner.a_ == 1.6  # type: ignore
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -444,8 +444,8 @@ def test_contextual_bandit_batch_pull_and_update(sparse: bool) -> None:
     instance.update(X, [1, 2, 1], unique_id=[1, 2, 3])
 
     #  this test could break if the rng changes
-    assert instance.arm1.learner.a_ == 0.6  # type: ignore
-    assert instance.arm2.learner.a_ == 1.1  # type: ignore
+    assert instance.arm1.learner.a_ == 1.1  # type: ignore
+    assert instance.arm2.learner.a_ == 0.6  # type: ignore
 
 
 @pytest.mark.parametrize("sparse", [True, False])

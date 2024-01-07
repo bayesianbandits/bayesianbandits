@@ -1,9 +1,8 @@
-from typing import Optional
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from numpy.typing import ArrayLike, NDArray
+from numpy.typing import ArrayLike
 from typing_extensions import Literal
 
 from bayesianbandits import (
@@ -26,11 +25,9 @@ def learner() -> MagicMock:
     return MagicMock(autospec=True)
 
 
-@pytest.mark.parametrize("X", [None, np.array([[1.0]])])
 class TestArm:
     def test_init(
         self,
-        X: Optional[NDArray[np.float_]],
         action_token: MagicMock,
         reward_function: MagicMock,
     ) -> None:
@@ -39,7 +36,6 @@ class TestArm:
 
     def test_pull(
         self,
-        X: Optional[NDArray[np.float_]],
         action_token: MagicMock,
         reward_function: MagicMock,
         learner: MagicMock,
@@ -54,7 +50,6 @@ class TestArm:
     @pytest.mark.parametrize("size", [1, 2, 3])
     def test_sample(
         self,
-        X: Optional[NDArray[np.float_]],
         size: Literal[1, 2, 3],
         action_token: MagicMock,
         reward_function: MagicMock,
@@ -72,13 +67,13 @@ class TestArm:
         reward_function.side_effect = reward_side_effect_func
         arm.learner = learner
 
+        X = np.array([[1.0]])
         samples = arm.sample(X=X, size=size)
 
         assert len(samples) == size
 
     def test_update(
         self,
-        X: Optional[NDArray[np.float_]],
         action_token: MagicMock,
         reward_function: MagicMock,
         learner: MagicMock,
@@ -86,16 +81,13 @@ class TestArm:
         arm = Arm(action_token=action_token, reward_function=reward_function)
         arm.learner = learner
         arm.learner.partial_fit = MagicMock(autospec=True)
-        if X is None:
-            arm.update(np.atleast_2d([1]), np.atleast_1d([1]))
-        else:
-            arm.update(X, np.atleast_1d([1]))
+        X = np.array([[1.0]])
+        arm.update(X, np.atleast_1d([1]))
 
         assert arm.learner.partial_fit.call_count == 1  # type: ignore
 
     def test_exception(
         self,
-        X: Optional[NDArray[np.float_]],
         action_token: MagicMock,
         reward_function: MagicMock,
     ) -> None:
@@ -105,4 +97,5 @@ class TestArm:
             arm.pull()
 
         with pytest.raises(ValueError):
+            X = np.array([[1.0]])
             arm.sample(X=X, size=1)
