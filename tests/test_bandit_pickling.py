@@ -23,26 +23,14 @@ def temp_model_file():
         yield f
 
 
-def action1():
-    print("action1")
-
-
-def action2():
-    print("action2")
-
-
-def action3():
-    print("action3")
-
-
 def reward_func(x: NDArray[np.float_]) -> NDArray[np.float_]:
     return x
 
 
 class Agent(Bandit, learner=GammaRegressor(1, 1), policy=epsilon_greedy()):
-    arm1 = Arm(action1, reward_func)
-    arm2 = Arm(action2, reward_func)
-    arm3 = Arm(action3, reward_func)
+    arm1 = Arm("action1", reward_func)
+    arm2 = Arm("action2", reward_func)
+    arm3 = Arm("action3", reward_func)
 
 
 def test_pickle_and_load(temp_model_file: IO[bytes]):
@@ -64,8 +52,8 @@ def test_remove_arm(temp_model_file: IO[bytes]):
     global Agent
 
     class Agent(Bandit, learner=GammaRegressor(1, 1), policy=epsilon_greedy()):
-        arm1 = Arm(action1, reward_func)
-        arm2 = Arm(action2, reward_func)
+        arm1 = Arm("action1", reward_func)
+        arm2 = Arm("action2", reward_func)
 
     temp_model_file.seek(0)
     loaded = joblib.load(temp_model_file)
@@ -79,9 +67,9 @@ def test_new_arm(temp_model_file: IO[bytes]):
     global Agent
 
     class Agent(Bandit, learner=GammaRegressor(1, 1), policy=epsilon_greedy()):
-        arm1 = Arm(action1, reward_func)
-        arm2 = Arm(action2, reward_func)
-        arm4 = Arm(action3, reward_func)
+        arm1 = Arm("action1", reward_func)
+        arm2 = Arm("action2", reward_func)
+        arm4 = Arm("action3", reward_func)
 
     temp_model_file.seek(0)
     loaded = joblib.load(temp_model_file)
@@ -97,9 +85,9 @@ def test_new_arm(temp_model_file: IO[bytes]):
 class DelayedRewardAgent(
     Bandit, learner=GammaRegressor(1, 1), policy=epsilon_greedy(), delayed_reward=True
 ):
-    arm1 = Arm(action1, reward_func)
-    arm2 = Arm(action2, reward_func)
-    arm3 = Arm(action3, reward_func)
+    arm1 = Arm("action1", reward_func)
+    arm2 = Arm("action2", reward_func)
+    arm3 = Arm("action3", reward_func)
 
 
 def test_removed_arm_update_warning(temp_model_file: IO[bytes]):
@@ -116,8 +104,8 @@ def test_removed_arm_update_warning(temp_model_file: IO[bytes]):
         policy=epsilon_greedy(),
         delayed_reward=True,
     ):
-        arm2 = Arm(action1, reward_func)
-        arm3 = Arm(action2, reward_func)
+        arm2 = Arm("action1", reward_func)
+        arm3 = Arm("action2", reward_func)
 
     temp_model_file.seek(0)
     loaded = joblib.load(temp_model_file)
@@ -141,8 +129,8 @@ def test_removed_arm_update_warning_batch():
             policy=epsilon_greedy(),
             delayed_reward=True,
         ):
-            arm1 = Arm(action1, reward_func)
-            arm3 = Arm(action2, reward_func)
+            arm1 = Arm("action1", reward_func)
+            arm3 = Arm("action2", reward_func)
 
         f.seek(0)
         loaded = joblib.load(f)
