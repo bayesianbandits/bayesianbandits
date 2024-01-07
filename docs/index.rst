@@ -12,7 +12,6 @@ bandit problems. To facilitate this, it provides a number of different Bayesian 
 recursive Bayesian estimators to represent the knowledge of the reward distribution
 of each arm.
 
-This library is still under development and the API is subject to change. 
 If you have any questions or suggestions, please feel free to open an issue
 on the project page on GitHub or contact me at <rishi@kulkarni.science>.
 
