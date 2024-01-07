@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bayesianbandits"
-version = "0.6.0"
+version = "0.6.1"
 description = "A Pythoic microframework for Multi-Armed Bandit algorithms."
 authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
 readme = "README.md"
