@@ -26,7 +26,7 @@ def learner() -> MagicMock:
     return MagicMock(autospec=True)
 
 
-@pytest.mark.parametrize("X", [None, np.array([[1.0]])])
+@pytest.mark.parametrize("X", [np.array([[1.0]])])
 class TestArm:
     def test_init(
         self,
@@ -54,7 +54,7 @@ class TestArm:
     @pytest.mark.parametrize("size", [1, 2, 3])
     def test_sample(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: NDArray[np.float_],
         size: Literal[1, 2, 3],
         action_token: MagicMock,
         reward_function: MagicMock,
@@ -95,7 +95,7 @@ class TestArm:
 
     def test_exception(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: NDArray[np.float_],
         action_token: MagicMock,
         reward_function: MagicMock,
     ) -> None:

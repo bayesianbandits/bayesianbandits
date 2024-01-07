@@ -609,19 +609,10 @@ class ThompsonSampling:
     """
     Policy object for Thompson sampling.
 
-    Parameters
-    ----------
-    batch_size : Optional[int], default=None
-        Batch size to use for sampling. If None, no batching is used.
-        Be warned that not batching can result in excessive memory usage.
-
     """
 
     def __repr__(self) -> str:
-        return f"ThompsonSampling(batch_size={self.batch_size})"
-
-    def __init__(self, batch_size: Optional[int] = None):
-        self.batch_size = batch_size
+        return "ThompsonSampling()"
 
     def __call__(
         self,
@@ -631,9 +622,7 @@ class ThompsonSampling:
     ) -> List[Arm[L, T]]:
         """Choose an arm using Thompson sampling."""
 
-        samples = np.stack(
-            tuple(_draw_one_sample(arm, X, batch_size=self.batch_size) for arm in arms)
-        )
+        samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
 
         best_arm_indexes = np.atleast_1d(
             cast(NDArray[np.int_], np.argmax(samples, axis=0))

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Union, cast
+from typing import Callable, Dict, List, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -136,7 +136,7 @@ def upper_confidence_bound(
     return _choose_arm
 
 
-def thompson_sampling(*, batch_size: Optional[int] = None) -> ArmChoicePolicy:
+def thompson_sampling() -> ArmChoicePolicy:
     """Creates a Thompson sampling choice algorithm. To be used with the
     `Bandit` class.
 
@@ -169,7 +169,7 @@ def thompson_sampling(*, batch_size: Optional[int] = None) -> ArmChoicePolicy:
 
         # Sample from the posterior distribution for each arm.
         posterior_summaries = np.stack(
-            tuple(_draw_one_sample(arm, X, batch_size=batch_size) for arm in arm_list)
+            tuple(_draw_one_sample(arm, X) for arm in arm_list)
         )
 
         return _return_based_on_size(arm_list, posterior_summaries)
@@ -195,22 +195,9 @@ def _return_based_on_size(
 def _draw_one_sample(
     arm: Arm,
     X: Union[NDArray[np.float_], csc_array],
-    *,
-    batch_size: Optional[int] = None,
 ) -> NDArray[np.float_]:
     """Draw one sample from the posterior distribution for the arm."""
-
-    if batch_size is None:
-        return np.atleast_2d(arm.sample(X, size=X.shape[0])).diagonal()
-    else:
-        # Do the above, but in batches to avoid memory issues.
-        out = np.empty((X.shape[0],), dtype=np.float_)
-        for i in range(0, X.shape[0], batch_size):
-            X_batch = X[i : i + batch_size]
-            out[i : i + batch_size] = np.atleast_2d(
-                arm.sample(X_batch, size=X_batch.shape[0])
-            ).diagonal()
-        return out
+    return arm.sample(X, size=1).squeeze(axis=0)
 
 
 def _compute_arm_upper_bound(
