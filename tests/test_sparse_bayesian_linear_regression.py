@@ -46,6 +46,10 @@ class TestCovViaSparsePrecision:
             (mat @ mat.T) + 100 * sp.diags(1 + np.random.gamma(1, 1, 500))
         ).toarray()
 
+    def test_prec_must_be_sparse(self):
+        with pytest.raises(TypeError):
+            CovViaSparsePrecision(np.eye(10))  # type: ignore
+
     def test_inversion(self, precision_matrix):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), solver=SparseSolver.SUPERLU
@@ -91,6 +95,21 @@ class TestCovViaSparsePrecision:
         assert_allclose(
             suitesparse_samples.var(axis=0), umfpack_samples.var(axis=0), rtol=0.5
         )
+
+    def test_umfpack_and_superlu_errors_when_not_symmetric_and_positive_definite(
+        self,
+    ):
+        matrix = np.array([[0.0, 2.0], [1.0, 0.0]])
+        with pytest.raises(ValueError):
+            CovViaSparsePrecision(sp.csc_array(matrix), solver=SparseSolver.SUPERLU)
+        with pytest.raises(ValueError):
+            CovViaSparsePrecision(sp.csc_array(matrix), solver=SparseSolver.UMFPACK)
+
+        symmetric_but_zero_diagonal = np.array([[0.0, 2.0], [2.0, 0.0]])
+        with pytest.raises(ValueError):
+            CovViaSparsePrecision(
+                sp.csc_array(symmetric_but_zero_diagonal), solver=SparseSolver.UMFPACK
+            )
 
     @pytest.mark.parametrize(
         "solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK]

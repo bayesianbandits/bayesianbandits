@@ -106,7 +106,7 @@ class CovViaSparsePrecision(Covariance):
 
     def __init__(self, prec: csc_array, solver=solver):
         if not issparse(prec):
-            raise ValueError("prec must be a sparse array")
+            raise TypeError("prec must be a sparse array")
 
         self.solver = solver
 

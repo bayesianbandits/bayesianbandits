@@ -31,55 +31,39 @@ from bayesianbandits._typing import Learner
 
 @pytest.fixture(
     params=[
+        DirichletClassifier({1: 1.0, 2: 1.0}),
+        GammaRegressor(alpha=1, beta=1),
+        NormalRegressor(alpha=1, beta=1),
+        NormalRegressor(alpha=1, beta=1, sparse=True),
+        NormalInverseGammaRegressor(),
+        NormalInverseGammaRegressor(sparse=True),
+    ],
+    ids=[
         "dirichlet",
         "gamma",
         "normal",
         "normal sparse",
         "normal-inverse-gamma",
         "normal-inverse-gamma sparse",
-    ]
+    ],
 )
 def learner_class(request: pytest.FixtureRequest) -> Learner:
-    if request.param == "dirichlet":
-        return DirichletClassifier({1: 1.0, 2: 1.0})
-    elif request.param == "gamma":
-        return GammaRegressor(alpha=1, beta=1)
-    elif request.param == "normal":
-        return NormalRegressor(alpha=1, beta=1)
-    elif request.param == "normal sparse":
-        return NormalRegressor(alpha=1, beta=1, sparse=True)
-    elif request.param == "normal-inverse-gamma":
-        return NormalInverseGammaRegressor()
-    elif request.param == "normal-inverse-gamma sparse":
-        return NormalInverseGammaRegressor(sparse=True)
-    else:
-        raise ValueError("invalid param")
+    return request.param
 
 
 @pytest.fixture(
-    params=["epsilon_greedy", "thompson_sampling", "upper_confidence_bound"]
+    params=[epsilon_greedy(0.5), thompson_sampling(), upper_confidence_bound(0.68)],
+    ids=["epsilon_greedy", "thompson_sampling", "upper_confidence_bound"],
 )
 def choice(
     request: pytest.FixtureRequest,
 ) -> ArmChoicePolicy:
-    if request.param == "epsilon_greedy":
-        return epsilon_greedy(0.5)
-    elif request.param == "thompson_sampling":
-        return thompson_sampling()
-    elif request.param == "upper_confidence_bound":
-        return upper_confidence_bound(0.68)
-    else:
-        raise ValueError("invalid param")
+    return request.param
 
 
-@pytest.fixture(params=["delayed_reward", "not delayed"])
+@pytest.fixture(params=[True, False], ids=["delayed_reward", "not delayed"])
 def delayed_reward(request: pytest.FixtureRequest) -> bool:
-    if request.param == "delayed_reward":
-        return True
-    elif request.param == "not delayed":
-        return False
-    else:
-        raise ValueError("invalid param")
+    return request.param
 
 
 @pytest.fixture(params=["no types", "with types", "with extra types"])

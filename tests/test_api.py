@@ -28,33 +28,28 @@ from bayesianbandits._typing import DecayingLearner
 
 @pytest.fixture(
     params=[
+        DirichletClassifier({1: 1.0, 2: 1.0}),
+        GammaRegressor(alpha=1, beta=1),
+        NormalRegressor(alpha=1, beta=1),
+        NormalRegressor(alpha=1, beta=1, sparse=True),
+        NormalInverseGammaRegressor(),
+        NormalInverseGammaRegressor(sparse=True),
+    ],
+    ids=[
         "dirichlet",
         "gamma",
         "normal",
         "normal sparse",
         "normal-inverse-gamma",
         "normal-inverse-gamma sparse",
-    ]
+    ],
 )
 def learner_class(
     request: pytest.FixtureRequest,
 ) -> Union[
     DirichletClassifier, GammaRegressor, NormalRegressor, NormalInverseGammaRegressor
 ]:
-    if request.param == "dirichlet":
-        return DirichletClassifier({1: 1.0, 2: 1.0})
-    elif request.param == "gamma":
-        return GammaRegressor(alpha=1, beta=1)
-    elif request.param == "normal":
-        return NormalRegressor(alpha=1, beta=1)
-    elif request.param == "normal sparse":
-        return NormalRegressor(alpha=1, beta=1, sparse=True)
-    elif request.param == "normal-inverse-gamma":
-        return NormalInverseGammaRegressor()
-    elif request.param == "normal-inverse-gamma sparse":
-        return NormalInverseGammaRegressor(sparse=True)
-    else:
-        raise ValueError("invalid param")
+    return request.param
 
 
 @pytest.fixture(
