@@ -18,7 +18,8 @@ allows you to use any scikit-learn estimator that supports the `partial_fit`
 and `sample` methods as an arm in a bandit. Restless bandits also require the
 `decay` method.
 
-This library is still under development, and the API is subject to change.
+The Agent API found in `bayesianbandits.api` is reasonably stable and is
+currently used in production.
 
 Bandit and Arm Classes
 ======================

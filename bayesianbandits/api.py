@@ -566,6 +566,9 @@ class EpsilonGreedy:
     """
     Policy object for epsilon-greedy.
 
+    Epsilon-greedy chooses the best arm with probability 1 - epsilon and a random
+    arm with probability epsilon.
+
     Parameters
     ----------
     epsilon : float, default=0.1
@@ -573,6 +576,15 @@ class EpsilonGreedy:
     samples : int, default=1000
         Number of samples to use for computing the arm means.
 
+    Notes
+    -----
+    The implementation here is based on the implementation in [1]_.
+
+    References
+    ----------
+    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
+       thompson sampling." Advances in neural information processing systems
+       24 (2011): 2249-2257.
     """
 
     def __repr__(self) -> str:
@@ -609,6 +621,20 @@ class ThompsonSampling:
     """
     Policy object for Thompson sampling.
 
+    Thompson sampling chooses the best arm with probability equal to the
+    probability that the arm is the best arm. That is, it takes a sample from
+    each arm's posterior distribution and chooses the arm with the highest
+    sample.
+
+    Notes
+    -----
+    The implementation here is based on the implementation in [1]_.
+
+    References
+    ----------
+    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
+       thompson sampling." Advances in neural information processing systems
+       24 (2011): 2249-2257.
     """
 
     def __repr__(self) -> str:
@@ -635,6 +661,10 @@ class UpperConfidenceBound:
     """
     Policy object for upper confidence bound.
 
+    Upper confidence bound takes `samples` samples from each arm's posterior
+    distribution and chooses the arm with the highest upper bound, as defined
+    by the `alpha` parameter.
+
     Parameters
     ----------
     alpha : float, default=0.68
@@ -642,6 +672,15 @@ class UpperConfidenceBound:
     samples : int, default=1000
         Number of samples to use for computing the arm upper bounds.
 
+    Notes
+    -----
+    The implementation here is based on the implementation in [1]_.
+
+    References
+    ----------
+    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
+       thompson sampling." Advances in neural information processing systems
+       24 (2011): 2249-2257.
     """
 
     def __repr__(self) -> str:

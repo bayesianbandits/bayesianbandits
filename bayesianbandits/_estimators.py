@@ -70,11 +70,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     Notes
     -----
     This model implements the Dirichlet-Multinomial model described in Chapter 3
-    of ref [1].
+    of ref [1]_.
 
     References
     ----------
-    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
 
     Examples
     --------
@@ -267,12 +267,12 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     Notes
     -----
-    While this model is not described in ref [1], it is a simple extension
+    While this model is not described in ref [1]_, it is a simple extension
     of the logic described in the section on conjugate prior models.
 
     References
     ----------
-    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
 
     Examples
     --------
@@ -466,16 +466,18 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     Notes
     -----
     This model implements the "known variance" version of the Bayesian linear
-    formulation described in Chapter 7 of ref [1].
+    formulation described in Chapter 7 of ref [1]_.
 
     If the model is initialized with `sparse=True` and CHOLMOD is installed
     and made available with `scikit-sparse`, the model will use CHOLMOD to
-    solve the linear system. Otherwise, the model will use
-    `scipy.sparse.linalg.spsolve`.
+    solve the linear system. Otherwise, if scikit-umfpack is installed, the
+    model will use UMFPACK. Finally, if neither is installed, the model will
+    use SuperLU from `scipy.sparse.linalg`. These are roughly ordered from
+    fastest to slowest.
 
     References
     ----------
-    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
 
     Examples
     --------
@@ -778,9 +780,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     Attributes
     ----------
-    coef_ : NDArray[Any]
+    coef_ : NDArray[np.float_]
         Posterior mean of the weights.
-    cov_inv_ : NDArray[Any]
+    cov_inv_ : NDArray[np.float_]
         Posterior inverse covariance of the weights.
     n_features_ : int
         Number of features in the model.
@@ -792,16 +794,18 @@ class NormalInverseGammaRegressor(NormalRegressor):
     Notes
     -----
     This model implements the "unknown variance" version of the Bayesian linear
-    formulation described in Chapter 7 of ref [1].
+    formulation described in Chapter 7 of ref [1]_.
 
     If the model is initialized with `sparse=True` and CHOLMOD is installed
     and made available with `scikit-sparse`, the model will use CHOLMOD to
-    solve the linear system. Otherwise, the model will use
-    `scipy.sparse.linalg.spsolve`.
+    solve the linear system. Otherwise, if scikit-umfpack is installed, the
+    model will use UMFPACK. Finally, if neither is installed, the model will
+    use SuperLU from `scipy.sparse.linalg`. These are roughly ordered from
+    fastest to slowest.
 
     References
     ----------
-    [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
 
     Examples
     --------
