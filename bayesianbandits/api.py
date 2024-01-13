@@ -126,7 +126,7 @@ class ContextualAgent(Generic[L, T]):
     function. The arms should have a learner and a unique action token.
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
-    >>> from bayesianbandits.api import ContextualAgent, ThompsonSampling
+    >>> from bayesianbandits import ContextualAgent, ThompsonSampling
     >>> arms = [
     ...     Arm(0, learner=NormalInverseGammaRegressor()),
     ...     Arm(1, learner=NormalInverseGammaRegressor()),
@@ -387,7 +387,7 @@ class Agent(Generic[L, T]):
     matrix is synthesized automatically.
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
-    >>> from bayesianbandits.api import Agent, ThompsonSampling
+    >>> from bayesianbandits import Agent, ThompsonSampling
     >>> arms = [
     ...     Arm(0, learner=NormalInverseGammaRegressor()),
     ...     Arm(1, learner=NormalInverseGammaRegressor()),

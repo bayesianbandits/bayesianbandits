@@ -9,20 +9,18 @@ from sklearn.base import (
 )
 
 from bayesianbandits import (
+    Agent,
     Arm,
+    ContextualAgent,
     DirichletClassifier,
+    EpsilonGreedy,
     GammaRegressor,
     NormalInverseGammaRegressor,
     NormalRegressor,
-)
-from bayesianbandits.api import (
-    ContextualAgent,
-    Agent,
-    Policy,
-    EpsilonGreedy,
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits.api import Policy
 from bayesianbandits._typing import DecayingLearner
 
 

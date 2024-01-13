@@ -21,6 +21,27 @@ and `sample` methods as an arm in a bandit. Restless bandits also require the
 The Agent API found in `bayesianbandits.api` is reasonably stable and is
 currently used in production.
 
+Agent API
+=========
+
+The Agent API is the most ergonomic way to use this library in production. It is
+designed to maximize your IDE's ability to autocomplete and type-check your
+code. Additionally, it is designed to make it easy to modify the arms and the
+policies of your bandit as your needs change.
+
+The Agent API requires a slightly different interface for choice policies than
+the old `Bandit` API, but these policies and the policy decorators use the same
+underlying code. Both are available for backwards compatibility.
+
+.. autosummary::
+    :toctree: _autosummary
+
+    Agent
+    ContextualAgent
+    EpsilonGreedy
+    ThompsonSampling
+    UpperConfidenceBound
+
 Bandit and Arm Classes
 ======================
 
@@ -112,4 +133,11 @@ from ._policy_decorators import (
     epsilon_greedy,
     thompson_sampling,
     upper_confidence_bound,
+)
+from .api import (
+    Agent,
+    ContextualAgent,
+    EpsilonGreedy,
+    ThompsonSampling,
+    UpperConfidenceBound,
 )

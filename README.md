@@ -34,8 +34,6 @@ import numpy as np
 from bayesianbandits import (
     Arm,
     NormalInverseGammaRegressor,
-)
-from bayesianbandits.api import (
     ContextualAgent,
     UpperConfidenceBound,
 )
