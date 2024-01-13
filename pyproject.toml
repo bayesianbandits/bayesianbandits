@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bayesianbandits"
-version = "0.6.1"
+version = "0.6.2"
 description = "A Pythonic microframework for Multi-Armed Bandit algorithms."
 authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
 readme = "README.md"
@@ -9,7 +9,7 @@ readme = "README.md"
 python = "^3.9, <3.12"
 scipy = "^1.11.0"
 scikit-learn = ">=1.2.0"
-typing-extensions = "^4.8.0"
+typing-extensions = ">=4.8.0"
 
 
 [tool.poetry.group.dev.dependencies]
