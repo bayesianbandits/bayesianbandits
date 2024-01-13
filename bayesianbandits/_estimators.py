@@ -534,6 +534,18 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self.sparse = sparse
         self.random_state = random_state
 
+    def _delete_cached_properties(self):
+        try:
+            del self.cov_
+        except AttributeError:
+            pass
+
+    def __getstate__(self):
+        # Delete the cached covariance matrix, since it likely contains C
+        # objects that cannot be pickled
+        self._delete_cached_properties()
+        return super().__getstate__()
+
     def fit(self, X_fit: Union[NDArray[Any], csc_array], y: NDArray[Any]) -> Self:
         """
         Fit the model using X as training data and y as target values. y must be
@@ -549,9 +561,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         )
 
         self._initialize_prior(X_fit)
-
         self._fit_helper(X_fit, y)
-
         return self
 
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
@@ -643,8 +653,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if hasattr(self, "cov_"):
-            del self.cov_
+        self._delete_cached_properties()
         self.coef_ = coef
 
     def partial_fit(self, X: Union[NDArray[Any], csc_array], y: NDArray[Any]):
@@ -742,8 +751,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         self.cov_inv_ = cov_inv
         # Delete the cached covariance matrix, since it is no longer valid
-        if hasattr(self, "cov_"):
-            del self.cov_
+        self._delete_cached_properties()
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -867,6 +875,19 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.sparse = sparse
         self.random_state = random_state
 
+    def _delete_cached_properties(self):
+        try:
+            del self.shape_
+        except AttributeError:
+            pass
+        super()._delete_cached_properties()
+
+    def __getstate__(self):
+        # Delete the cached covariance matrix, since it likely contains C
+        # objects that cannot be pickled
+        self._delete_cached_properties()
+        return super().__getstate__()
+
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
         if isinstance(self.random_state, int) or self.random_state is None:
             self.random_state_ = np.random.default_rng(self.random_state)
@@ -980,10 +1001,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Posteriors become priors for the next batch
         self.cov_inv_ = V_n
         # Delete the cached shape_ property so it is recalculated
-        if hasattr(self, "shape_"):
-            del self.shape_
-        if hasattr(self, "cov_"):
-            del self.cov_
+        self._delete_cached_properties()
         self.coef_ = m_n
         self.a_ = a_n
         self.b_ = b_n
@@ -1074,10 +1092,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         b_n = prior_decay * self.b_
 
         self.cov_inv_ = V_n
-        if hasattr(self, "shape_"):
-            del self.shape_
-        if hasattr(self, "cov_"):
-            del self.cov_
+        self._delete_cached_properties()
         self.a_ = a_n
         self.b_ = b_n
 
