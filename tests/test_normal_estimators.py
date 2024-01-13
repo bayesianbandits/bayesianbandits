@@ -1,5 +1,6 @@
 from typing import Literal
 from unittest import mock
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -11,7 +12,6 @@ from bayesianbandits import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
-
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 
@@ -297,6 +297,52 @@ def test_normal_regressor_manual_decay(
     clf.decay(X_fit, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_regressor_serialization(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+    sparse: bool,
+) -> None:
+    """Test that NormalRegressor can be serialized."""
+    from io import BytesIO
+
+    import joblib
+
+    if sparse:
+        X_fit = sp.csc_array(X)
+    else:
+        X_fit = X
+
+    clf = NormalRegressor(
+        alpha=1, beta=1, learning_rate=1.0, sparse=sparse, random_state=0
+    )
+    clf.fit(X_fit, y)
+
+    pre_dump_cov_inv = clf.cov_inv_
+
+    dumped = BytesIO()
+    joblib.dump(clf, dumped)
+
+    agent = joblib.load(dumped)
+    assert agent is not None
+
+    post_dump_cov_inv = agent.cov_inv_
+
+    assert_almost_equal(pre_dump_cov_inv, post_dump_cov_inv)
+
+    clf.sample(X_fit)
+
+    dumped_after_sample = BytesIO()
+    joblib.dump(clf, dumped_after_sample)
+
+    agent_after_sample = joblib.load(dumped_after_sample)
+    assert agent_after_sample is not None
+
+    post_dump_cov_inv_after_sample = agent_after_sample.cov_inv_
+
+    assert_almost_equal(post_dump_cov_inv, post_dump_cov_inv_after_sample)
 
 
 @pytest.mark.parametrize("obs", [1, 2, 3, 4])
@@ -656,6 +702,50 @@ def test_normal_inverse_gamma_regressor_manual_decay(
     clf.decay(X_fit, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_regressor_serialization(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+    sparse: bool,
+) -> None:
+    """Test that NormalRegressor can be serialized."""
+    from io import BytesIO
+
+    import joblib
+
+    if sparse:
+        X_fit = sp.csc_array(X)
+    else:
+        X_fit = X
+
+    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0, sparse=sparse)
+    clf.fit(X_fit, y)
+
+    pre_dump_cov_inv = clf.cov_inv_
+
+    dumped = BytesIO()
+    joblib.dump(clf, dumped)
+
+    agent = joblib.load(dumped)
+    assert agent is not None
+
+    post_dump_cov_inv = agent.cov_inv_
+
+    assert_almost_equal(pre_dump_cov_inv, post_dump_cov_inv)  # type: ignore
+
+    clf.sample(X_fit)
+
+    dumped_after_sample = BytesIO()
+    joblib.dump(clf, dumped_after_sample)
+
+    agent_after_sample = joblib.load(dumped_after_sample)
+    assert agent_after_sample is not None
+
+    post_dump_cov_inv_after_sample = agent_after_sample.cov_inv_
+
+    assert_almost_equal(post_dump_cov_inv, post_dump_cov_inv_after_sample)
 
 
 @pytest.mark.parametrize("obs", [1, 2, 3, 4])
