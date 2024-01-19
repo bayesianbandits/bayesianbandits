@@ -9,6 +9,7 @@ readme = "README.md"
 python = "^3.9, <3.12"
 scipy = "^1.11.0"
 scikit-learn = ">=1.2.0"
+attrs = ">=21.2.0"
 typing-extensions = ">=4.8.0"
 
 
