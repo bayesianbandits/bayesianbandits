@@ -13,12 +13,12 @@ jobs:
     name: tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3.3.0
-
+      - uses: actions/checkout@v4
       - name: Install Python
-        uses: actions/setup-python@v4.5.0
+        uses: actions/setup-python@v5
         with:
           python-version: 3.9
+          cache: 'pip'
 
       - name: Install Poetry
         run: pip install poetry
@@ -32,7 +32,6 @@ jobs:
         run: |
           sudo apt-get install -y swig libsuitesparse-dev
           poetry install
-        if: steps.cache.outputs.cache-hit != 'true'
 
       - name: Run tests
         run: poetry run pytest --cov=./ --cov-report=xml

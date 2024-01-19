@@ -19,6 +19,10 @@ While the API is still evolving, this library is already being used in productio
 * **Extensible**: `bayesianbandits` provides simple interfaces for creating custom policies and priors.
 * **Well-tested**: `bayesianbandits` is well-tested, with nearly 100% test coverage.
 
+## Compatibility
+
+`bayesianbandits` is tested with Python 3.9, 3.10, and 3.11 with `scikit-learn` 1.2.2, 1.3.2, and 1.4.0.
+
 ## Getting Started
 
 Install this package from PyPI.
