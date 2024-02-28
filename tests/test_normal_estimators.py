@@ -1,3 +1,4 @@
+import sys
 from typing import Literal
 from unittest import mock
 
@@ -14,9 +15,17 @@ from bayesianbandits import (
 )
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
+suitespare_envvar_params = [
+    SparseSolver.SUPERLU,
+    SparseSolver.UMFPACK,
+]
+
+if sys.version_info <= (3, 11):
+    suitespare_envvar_params.append(SparseSolver.CHOLMOD)
+
 
 @pytest.fixture(
-    params=[SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK],
+    params=suitespare_envvar_params,
     autouse=True,
 )
 def suitesparse_envvar(request, monkeypatch):
