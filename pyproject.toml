@@ -30,7 +30,7 @@ pytest-cov = "^4.1.0"
 
 
 [tool.poetry.group.cholmod.dependencies]
-scikit-sparse = "^0.4.12"
+scikit-sparse = { version = "0.4.12", markers = "python_version <= '3.11'" }
 scikit-umfpack = "^0.4.1"
 
 [tool.pytest.ini_options]
