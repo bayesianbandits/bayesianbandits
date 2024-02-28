@@ -1,3 +1,4 @@
+import sys
 from typing import Literal
 from unittest import mock
 
@@ -15,14 +16,19 @@ from bayesianbandits import (
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 
-@pytest.fixture(
-    params=[SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK],
-    autouse=True,
-)
+@pytest.fixture(autouse=True)
 def suitesparse_envvar(request, monkeypatch):
-    """Allows running test suite with and without CHOLMOD."""
-    with mock.patch("bayesianbandits._estimators.solver", request.param):
-        yield
+    """Allows running test suite with and without CHOLMOD, depending on Python version."""
+    solvers = [SparseSolver.SUPERLU, SparseSolver.UMFPACK]
+    if sys.version_info <= (3, 11):
+        solvers.append(SparseSolver.CHOLMOD)  # Add CHOLMOD for Python <= 3.11
+
+    # Dynamically set params for the fixture based on Python version
+    if request.param in solvers:
+        with mock.patch("bayesianbandits._estimators.solver", request.param):
+            yield
+    else:
+        pytest.skip("Skipping unsupported solver for this Python version")
 
 
 @pytest.fixture
