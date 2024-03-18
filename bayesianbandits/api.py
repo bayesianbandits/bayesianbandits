@@ -140,7 +140,7 @@ class ContextualAgent(Generic[L, T]):
     >>> import numpy as np
     >>> X = np.array([[1.0, 15.0]])
     >>> agent.pull(X)
-    [0]
+    [1]
 
     The agent can then be updated with the observed reward. The `update` method
     takes a context matrix and a reward vector as input. By default, the last
@@ -160,7 +160,7 @@ class ContextualAgent(Generic[L, T]):
     >>> agent.arm_to_update is arms[1]
     True
     >>> agent.arm_to_update.learner.predict(X)
-    array([99.55947137])
+    array([99.77924945])
     """
 
     def __repr__(self) -> str:
@@ -202,7 +202,7 @@ class ContextualAgent(Generic[L, T]):
 
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
         for arm in self.arms:
-            arm.learner.random_state = random_seed
+            arm.learner.random_state = self.rng
 
     @property
     def arms(self) -> List[Arm[L, T]]:
@@ -394,7 +394,7 @@ class Agent(Generic[L, T]):
     ... ]
     >>> agent = Agent(arms, ThompsonSampling(), random_seed=0)
     >>> agent.pull()
-    [0]
+    [1]
 
     This is equivalent to calling the `pull` method with a context matrix containing
     only a global intercept. The `update` and `decay` methods work the same way.
