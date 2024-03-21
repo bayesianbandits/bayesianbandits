@@ -27,13 +27,13 @@ jobs:
           - python-version: '3.12'
             sklearn-version: '1.3.2'
           - python-version: '3.9'
-            sklearn-version: '1.4.0'
+            sklearn-version: '1.4.1'
           - python-version: '3.10'
-            sklearn-version: '1.4.0'
+            sklearn-version: '1.4.1'
           - python-version: '3.11'
-            sklearn-version: '1.4.0'
+            sklearn-version: '1.4.1'
           - python-version: '3.12'
-            sklearn-version: '1.4.0'
+            sklearn-version: '1.4.1'
 
     steps:
     - uses: actions/checkout@v4
@@ -47,14 +47,9 @@ jobs:
       run: |
         sudo apt-get install -y swig libsuitesparse-dev
         python -m pip install --upgrade pip pytest
-        pip install scikit-learn==${{ matrix.sklearn-version }} scikit-umfpack
+        pip install scikit-learn==${{ matrix.sklearn-version }} scikit-umfpack scikit-sparse
 
-    - name: Install scikit-sparse and scikit-umfpack on py<3.12
-      if: matrix.python-version != '3.12'
-      run: |
-        pip install scikit-sparse
-
-    - name: Install your package
+    - name: Install bayesianbandits
       run: |
         pip install .
 
