@@ -34,14 +34,6 @@ def test_no_cholmod_yes_umfpack(no_cholmod):
     assert solver == SparseSolver.UMFPACK
 
 
-@pytest.mark.skipif(
-    sys.version_info
-    > (
-        3,
-        11,
-    ),
-    reason="sksparse is not yet compatible with Python 3.12",
-)
 def test_yes_cholmod_no_umfpack(no_umfpack):
     if "bayesianbandits._sparse_bayesian_linear_regression" in sys.modules:
         del sys.modules["bayesianbandits._sparse_bayesian_linear_regression"]
@@ -50,14 +42,6 @@ def test_yes_cholmod_no_umfpack(no_umfpack):
     assert solver == SparseSolver.CHOLMOD
 
 
-@pytest.mark.skipif(
-    sys.version_info
-    > (
-        3,
-        11,
-    ),
-    reason="sksparse is not yet compatible with Python 3.12",
-)
 def test_yes_cholmod_yes_umfpack():
     if "bayesianbandits._sparse_bayesian_linear_regression" in sys.modules:
         del sys.modules["bayesianbandits._sparse_bayesian_linear_regression"]
