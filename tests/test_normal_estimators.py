@@ -18,10 +18,8 @@ from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 suitespare_envvar_params = [
     SparseSolver.SUPERLU,
     SparseSolver.UMFPACK,
+    SparseSolver.CHOLMOD,
 ]
-
-if sys.version_info <= (3, 11):
-    suitespare_envvar_params.append(SparseSolver.CHOLMOD)
 
 
 @pytest.fixture(

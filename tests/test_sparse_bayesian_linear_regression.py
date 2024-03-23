@@ -18,14 +18,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
 )
 
 
-@pytest.mark.skipif(
-    sys.version_info
-    > (
-        3,
-        11,
-    ),
-    reason="sksparse is not yet compatible with Python 3.12",
-)
+
 @pytest.mark.parametrize(
     "solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK]
 )
@@ -47,14 +40,7 @@ def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matri
             assert samples.shape == (sparse_array.shape[0],)
 
 
-@pytest.mark.skipif(
-    sys.version_info
-    > (
-        3,
-        11,
-    ),
-    reason="sksparse is not yet compatible with Python 3.12",
-)
+
 class TestCovViaSparsePrecision:
     @pytest.fixture(scope="class")
     def precision_matrix(self):
