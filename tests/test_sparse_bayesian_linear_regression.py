@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,7 +15,6 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     multivariate_normal_sample_from_sparse_covariance,
     multivariate_t_sample_from_sparse_covariance,
 )
-
 
 
 @pytest.mark.parametrize(
@@ -38,7 +36,6 @@ def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matri
             assert samples.shape == (size, sparse_array.shape[0])
         else:
             assert samples.shape == (sparse_array.shape[0],)
-
 
 
 class TestCovViaSparsePrecision:
@@ -127,7 +124,10 @@ class TestCovViaSparsePrecision:
             mean=None, cov=sparse_cov, size=80000, random_state=0
         )
         scipy_samples = multivariate_normal.rvs(
-            mean=None, cov=scipy_cov, size=80000, random_state=0  # type: ignore
+            mean=None,
+            cov=scipy_cov,
+            size=80000,
+            random_state=0,  # type: ignore
         )
 
         sparse_emp_cov = np.cov(sparse_samples.T)
@@ -146,8 +146,13 @@ class TestCovViaSparsePrecision:
         # in our implementation (as our above tests show that it's correct) and
         # just test the t distribution sampling.
         with patch("bayesianbandits._estimators.multivariate_normal.rvs") as mock_mvn:
-            mock_mvn.side_effect = lambda mean, shape, size, random_state: random_state.multivariate_normal(
-                np.zeros(scipy_cov.shape[0]), shape, size=size
+            mock_mvn.side_effect = (
+                lambda mean,
+                shape,
+                size,
+                random_state: random_state.multivariate_normal(
+                    np.zeros(scipy_cov.shape[0]), shape, size=size
+                )
             )
             sparse_samples = multivariate_t_sample_from_covariance(
                 loc=None, shape=scipy_cov.covariance, size=100, random_state=rs_1, df=3
@@ -172,7 +177,11 @@ class TestCovViaSparsePrecision:
             loc=None, shape=sparse_cov, size=80000, random_state=0, df=300
         )
         scipy_samples = multivariate_t_sample_from_sparse_covariance(
-            loc=None, shape=scipy_cov, size=80000, random_state=0, df=300  # type: ignore
+            loc=None,
+            shape=scipy_cov,
+            size=80000,
+            random_state=0,
+            df=300,  # type: ignore
         )
 
         sparse_emp_cov = np.cov(sparse_samples.T)

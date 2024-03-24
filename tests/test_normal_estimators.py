@@ -1,4 +1,3 @@
-import sys
 from typing import Literal
 from unittest import mock
 
@@ -26,7 +25,7 @@ suitespare_envvar_params = [
     params=suitespare_envvar_params,
     autouse=True,
 )
-def suitesparse_envvar(request, monkeypatch):
+def suitesparse_envvar(request):
     """Allows running test suite with and without CHOLMOD."""
     with mock.patch("bayesianbandits._estimators.solver", request.param):
         yield
