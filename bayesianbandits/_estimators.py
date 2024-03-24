@@ -307,7 +307,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     The `sample` method can be used to sample from the posterior.
 
     >>> model.sample(X)
-    array([0.95909923, 2.06378492, 1.7923389 , 4.36674677, 2.84313527])
+    array([[0.95909923, 2.06378492, 1.7923389 , 4.36674677, 2.84313527]])
 
     """
 
@@ -418,11 +418,9 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
         rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
 
-        return np.squeeze(
-            np.stack(
-                list(rv_gen(alpha, scale=1 / beta) for alpha, beta in shape_params),
-            )
-        )
+        return np.stack(
+            list(rv_gen(alpha, scale=1 / beta) for alpha, beta in shape_params),
+        ).T
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
@@ -439,7 +437,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
 
 def _invalidate_cached_properties(
-    func: Callable[Concatenate[SelfType, Params], ReturnType]  # type: ignore
+    func: Callable[Concatenate[SelfType, Params], ReturnType],  # type: ignore
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
     @wraps(func)
     def wrapper(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:

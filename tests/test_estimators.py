@@ -326,7 +326,7 @@ def test_gamma_regressor_sample(
                 1.5718412,
                 2.0178289,
             ]
-        ),
+        )[np.newaxis, :],
     )
 
 
@@ -352,7 +352,7 @@ def test_gamma_regressor_sample_no_fit(
                 7.5530136e-01,
                 2.8167860e00,
             ]
-        ),
+        )[np.newaxis, :],
     )
 
 
