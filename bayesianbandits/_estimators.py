@@ -111,7 +111,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     This classifier also implements `sample` to sample from the posterior,
     which can be useful for uncertainty estimation and Thompson sampling.
 
-    >>> clf.sample(X)
+    >>> clf.sample(X).squeeze()
     array([[0.52877785, 0.41235606, 0.05886609],
            [0.34152373, 0.28178422, 0.37669205],
            [0.70292861, 0.07890427, 0.21816712],
@@ -225,13 +225,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
             self._initialize_prior()
 
         alphas = list(self.known_alphas_[x.item()] for x in X)
-        return np.squeeze(
-            np.stack(
-                list(
-                    dirichlet.rvs(alpha, size, self.random_state_)  # type: ignore
-                    for alpha in alphas
-                ),
-            )
+        return np.stack(
+            list(
+                dirichlet.rvs(alpha, size, self.random_state_)  # type: ignore
+                for alpha in alphas
+            ),
         )
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:

@@ -76,7 +76,7 @@ def bandit_class(
     if isinstance(learner_class, DirichletClassifier):
 
         def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-            return np.take(x, 0, axis=-1)  # type: ignore
+            return x[..., 0].T
 
     else:
         reward_func = None  # type: ignore
