@@ -80,7 +80,7 @@ def bandit_instance(
     if isinstance(learner_class, DirichletClassifier):
 
         def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
-            return np.take(x, 0, axis=-1)  # type: ignore
+            return x[..., 0].T
 
     else:
         reward_func = None  # type: ignore
@@ -109,6 +109,22 @@ class TestBandits:
             (token,) = bandit_instance.pull(np.array([[2.0]]))
 
         assert bandit_instance.arm_to_update.action_token == token
+
+    def test_batch_pull(
+        self,
+        bandit_instance: Union[
+            Agent[DecayingLearner, int], ContextualAgent[DecayingLearner, int]
+        ],
+    ) -> None:
+        if isinstance(bandit_instance, Agent):
+            pytest.skip("Batch pull is not supported for non-contextual bandits")
+
+        # if isinstance(bandit_instance.arm(0).learner, DirichletClassifier):
+        #     pytest.xfail("DirichletClassifier does not support batch pull")
+
+        (_, _, token3) = bandit_instance.pull(np.array([[2.0], [2.0], [2.0]]))
+
+        assert bandit_instance.arm_to_update.action_token == token3
 
     def test_update(
         self,

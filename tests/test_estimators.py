@@ -154,7 +154,7 @@ def test_dirichletclassifier_sample(
     clf.fit(X, y)
 
     assert_almost_equal(
-        clf.sample(X),
+        clf.sample(X).squeeze(),
         np.array(
             [
                 [0.47438369, 0.43488058, 0.09073572],
@@ -180,7 +180,7 @@ def test_dirichletclassifier_sample_no_fit(
     clf = DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
 
     assert_almost_equal(
-        clf.sample(X),
+        clf.sample(X).squeeze(),
         np.array(
             [
                 [3.95461990e-01, 5.93018059e-01, 1.15199510e-02],
