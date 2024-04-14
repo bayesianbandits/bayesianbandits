@@ -13,7 +13,7 @@ of the type checking, this API makes it much easier to add or remove arms, chang
 the policy function, and serialize/deserialize bandits in live services.
 
 It uses the same estimators and `Arm` class as the original API, but
-defines its own `ContextualAgent` and `Agent` classes, as well as a 
+defines its own `ContextualAgent` and `Agent` classes, as well as a
 `Policy` type alias for the policy functions.
 
 This API splits the `Bandit` class into two classes, `ContextualAgent`
@@ -53,7 +53,6 @@ Policy Functions
     UpperConfidenceBound
 
 """
-
 
 from typing import (
     Any,
@@ -594,6 +593,32 @@ class EpsilonGreedy:
         self.epsilon = epsilon
         self.samples = samples
 
+    def arm_summary(
+        self,
+        arms: List[Arm[L, T]],
+        X: Union[NDArray[np.float_], csc_array],
+        rng: np.random.Generator,
+    ) -> NDArray[np.float_]:
+        """Return a summary of the arms."""
+        means = np.stack(
+            tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
+        )
+
+        return means
+
+    def postprocess(
+        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
+    ) -> NDArray[np.float_]:
+        # Pick random rows to explore
+        choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
+
+        # Within the rows to explore, pick a random column and set to np.inf
+        for idx, explore in enumerate(choice_idx_to_explore):
+            if explore:
+                arm_summary[rng.integers(arm_summary.shape[0]), idx] = np.inf  # type: ignore
+
+        return arm_summary
+
     def __call__(
         self,
         arms: List[Arm[L, T]],
@@ -601,20 +626,12 @@ class EpsilonGreedy:
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
         """Choose an arm using epsilon-greedy."""
-        means = np.stack(
-            tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
-        )
+        means = self.arm_summary(arms, X, rng)
+        means = self.postprocess(means, rng)
 
-        best_arm_indexes = np.atleast_1d(
-            cast(NDArray[np.int_], np.argmax(means, axis=0))
-        )
+        best_arm_indexes = np.atleast_1d(cast(NDArray[np.int_], means.argmax(axis=0)))
 
-        choice_idx_to_explore = rng.random(size=len(best_arm_indexes)) < self.epsilon
-
-        return [
-            arms[cast(int, choice)] if not explore else cast(AT, rng.choice(arms))  # type: ignore
-            for explore, choice in zip(choice_idx_to_explore, best_arm_indexes)
-        ]
+        return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
 
 class ThompsonSampling:
@@ -640,6 +657,22 @@ class ThompsonSampling:
     def __repr__(self) -> str:
         return "ThompsonSampling()"
 
+    def arm_summary(
+        self,
+        arms: List[Arm[L, T]],
+        X: Union[NDArray[np.float_], csc_array],
+        rng: np.random.Generator,
+    ) -> NDArray[np.float_]:
+        """Return a summary of the arms."""
+        samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
+
+        return samples
+
+    def postprocess(
+        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
+    ) -> NDArray[np.float_]:
+        return arm_summary
+
     def __call__(
         self,
         arms: List[Arm[L, T]],
@@ -648,11 +681,10 @@ class ThompsonSampling:
     ) -> List[Arm[L, T]]:
         """Choose an arm using Thompson sampling."""
 
-        samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
+        samples = self.arm_summary(arms, X, rng)
+        samples = self.postprocess(samples, rng)
 
-        best_arm_indexes = np.atleast_1d(
-            cast(NDArray[np.int_], np.argmax(samples, axis=0))
-        )
+        best_arm_indexes = np.atleast_1d(cast(NDArray[np.int_], samples.argmax(axis=0)))
 
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
@@ -690,6 +722,27 @@ class UpperConfidenceBound:
         self.alpha = alpha
         self.samples = samples
 
+    def arm_summary(
+        self,
+        arms: List[Arm[L, T]],
+        X: Union[NDArray[np.float_], csc_array],
+        rng: np.random.Generator,
+    ) -> NDArray[np.float_]:
+        """Return a summary of the arms."""
+        upper_bounds = np.stack(
+            tuple(
+                _compute_arm_upper_bound(arm, X, alpha=self.alpha, samples=self.samples)
+                for arm in arms
+            )
+        )
+
+        return upper_bounds
+
+    def postprocess(
+        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
+    ) -> NDArray[np.float_]:
+        return arm_summary
+
     def __call__(
         self,
         arms: List[Arm[L, T]],
@@ -698,15 +751,11 @@ class UpperConfidenceBound:
     ) -> List[Arm[L, T]]:
         """Choose an arm using upper confidence bound."""
 
-        upper_bounds = np.stack(
-            tuple(
-                _compute_arm_upper_bound(arm, X, alpha=self.alpha, samples=self.samples)
-                for arm in arms
-            )
-        )
+        upper_bounds = self.arm_summary(arms, X, rng)
+        upper_bounds = self.postprocess(upper_bounds, rng)
 
         best_arm_indexes = np.atleast_1d(
-            cast(NDArray[np.int_], np.argmax(upper_bounds, axis=0))
+            cast(NDArray[np.int_], upper_bounds.argmax(axis=0))
         )
 
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
