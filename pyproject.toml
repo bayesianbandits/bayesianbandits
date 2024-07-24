@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bayesianbandits"
-version = "0.6.3"
+version = "0.7.0"
 description = "A Pythonic microframework for Multi-Armed Bandit algorithms."
 authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
 readme = "README.md"
@@ -31,7 +31,6 @@ pytest-cov = "^5.0.0"
 
 [tool.poetry.group.cholmod.dependencies]
 scikit-sparse = "^0.4.13"
-scikit-umfpack = "^0.4.1"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"

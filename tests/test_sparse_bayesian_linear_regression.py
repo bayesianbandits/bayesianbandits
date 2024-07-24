@@ -17,9 +17,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
 )
 
 
-@pytest.mark.parametrize(
-    "solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK]
-)
+@pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
 @pytest.mark.parametrize("size", [1, 10])
 def test_multivariate_normal_sample_from_sparse_covariance_ill_conditioned_matrices(
     size, solver
@@ -77,23 +75,13 @@ class TestCovViaSparsePrecision:
         suitesparse_cov = CovViaSparsePrecision(
             sp.csc_array(matrix), solver=SparseSolver.CHOLMOD
         )
-        umfpack_cov = CovViaSparsePrecision(
-            sp.csc_array(matrix), solver=SparseSolver.UMFPACK
-        )
 
         random_samples = np.random.default_rng(0).normal(size=(1000, matrix.shape[0]))
         scipy_samples = scipy_sparse_cov.colorize(random_samples)
         suitesparse_samples = suitesparse_cov.colorize(random_samples)
-        umfpack_samples = umfpack_cov.colorize(random_samples)
 
         assert_allclose(
             scipy_samples.var(axis=0), suitesparse_samples.var(axis=0), rtol=0.5
-        )
-        assert_allclose(
-            scipy_samples.var(axis=0), umfpack_samples.var(axis=0), rtol=0.5
-        )
-        assert_allclose(
-            suitesparse_samples.var(axis=0), umfpack_samples.var(axis=0), rtol=0.5
         )
 
     def test_umfpack_and_superlu_errors_when_not_symmetric_and_positive_definite(
@@ -102,18 +90,10 @@ class TestCovViaSparsePrecision:
         matrix = np.array([[0.0, 2.0], [1.0, 0.0]])
         with pytest.raises(ValueError):
             CovViaSparsePrecision(sp.csc_array(matrix), solver=SparseSolver.SUPERLU)
-        with pytest.raises(ValueError):
-            CovViaSparsePrecision(sp.csc_array(matrix), solver=SparseSolver.UMFPACK)
 
         symmetric_but_zero_diagonal = np.array([[0.0, 2.0], [2.0, 0.0]])
-        with pytest.raises(ValueError):
-            CovViaSparsePrecision(
-                sp.csc_array(symmetric_but_zero_diagonal), solver=SparseSolver.UMFPACK
-            )
 
-    @pytest.mark.parametrize(
-        "solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK]
-    )
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvn_sampling_against_scipy(self, precision_matrix, solver):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), solver=solver
@@ -164,9 +144,7 @@ class TestCovViaSparsePrecision:
 
         assert_array_almost_equal(sparse_samples, scipy_samples)
 
-    @pytest.mark.parametrize(
-        "solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD, SparseSolver.UMFPACK]
-    )
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvt_sampling_against_scipy(self, precision_matrix, solver):
         sparse_cov = CovViaSparsePrecision(
             sp.csc_array(precision_matrix), solver=solver

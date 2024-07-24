@@ -47,7 +47,7 @@ jobs:
       run: |
         sudo apt-get install -y swig libsuitesparse-dev
         python -m pip install --upgrade pip pytest
-        pip install scikit-learn==${{ matrix.sklearn-version }} scikit-umfpack scikit-sparse
+        pip install scikit-learn==${{ matrix.sklearn-version }} scikit-sparse
 
     - name: Install bayesianbandits
       run: |
