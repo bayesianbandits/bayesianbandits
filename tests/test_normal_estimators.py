@@ -16,7 +16,6 @@ from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 suitespare_envvar_params = [
     SparseSolver.SUPERLU,
-    SparseSolver.UMFPACK,
     SparseSolver.CHOLMOD,
 ]
 

@@ -35,8 +35,6 @@ from ._sparse_bayesian_linear_regression import (
     solver,
 )
 
-use_solver(useUmfpack=False)
-
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor")
@@ -638,13 +636,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
                 coef = cholmod_cholesky(csc_matrix(cov_inv))(
                     prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
                 )
-            elif solver == SparseSolver.UMFPACK:
-                from scikits.umfpack import spsolve as umfpack_solve
 
-                coef = umfpack_solve(
-                    csc_matrix(cov_inv),  # type: ignorw
-                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
-                )
             else:
                 # Calculate the posterior mean
                 lu = splu(
@@ -965,13 +957,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
                 m_n = cholmod_cholesky(csc_matrix(V_n))(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
                 )
-            elif solver == SparseSolver.UMFPACK:
-                from scikits.umfpack import spsolve as umfpack_solve
 
-                m_n = umfpack_solve(
-                    csc_matrix(V_n),  # type: ignore
-                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
-                )
             else:
                 lu = splu(
                     V_n,

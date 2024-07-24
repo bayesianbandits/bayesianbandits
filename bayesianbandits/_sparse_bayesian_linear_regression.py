@@ -20,17 +20,8 @@ try:
 except ImportError:
     use_cholmod = False
 
-try:
-    import scikits.umfpack as um
-
-    use_umfpack = True
-except ImportError:
-    use_umfpack = False
-
-
 if os.environ.get("BB_NO_SUITESPARSE", "0") == "1":
     use_cholmod = False
-    use_umfpack = False
 
 
 class SparseSolver(Enum):
@@ -38,13 +29,10 @@ class SparseSolver(Enum):
 
     SUPERLU = 0
     CHOLMOD = 1
-    UMFPACK = 2
 
 
 if use_cholmod:
     solver = SparseSolver.CHOLMOD
-elif use_umfpack:
-    solver = SparseSolver.UMFPACK
 else:
     solver = SparseSolver.SUPERLU
 
@@ -115,22 +103,6 @@ class CovViaSparsePrecision(Covariance):
         if self.solver == SparseSolver.CHOLMOD:
             self._W = cholmod_cholesky(csc_matrix(prec))
 
-        elif self.solver == SparseSolver.UMFPACK:
-            umc = um.UmfpackContext()
-            # Tells umfpack that we have a symmetric matrix and we only want to pivot on the diagonal
-            umc.control[um.UMFPACK_STRATEGY] = um.UMFPACK_STRATEGY_SYMMETRIC  # type: ignore
-            umc.control[um.UMFPACK_SYM_PIVOT_TOLERANCE] = 0.0  # type: ignore
-            umc.control[um.UMFPACK_SCALE] = um.UMFPACK_SCALE_NONE  # type: ignore
-
-            L, U, P, Q, _, _ = umc.lu(csc_matrix(prec))
-            if not (P == Q).all():
-                raise ValueError("P != Q. Was a diagonal element of prec zero?")
-
-            self._W = LUObject(
-                L=L.dot(diags(np.sqrt(U.diagonal()))),
-                Pr=csc_array((np.ones(L.shape[0]), (P, np.arange(L.shape[0])))),
-            )
-
         else:
             # Tells SuperLU that we have a symmetric matrix and we only want to pivot on the diagonal
             splu_ = splu(
@@ -162,9 +134,6 @@ class CovViaSparsePrecision(Covariance):
             return lambda x: self._W.apply_Pt(  # type: ignore
                 self._W.solve_Lt(x, False)  # type: ignore
             )
-
-        elif self.solver == SparseSolver.UMFPACK:
-            return lambda x: self._W.Pr @ um.spsolve(self._W.L.T, x)
         return lambda x: self._W.Pr.T @ spsolve(csc_array(self._W.L.T), x)
 
     @cached_property
