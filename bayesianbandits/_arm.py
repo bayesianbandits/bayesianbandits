@@ -13,9 +13,9 @@ from ._typing import DecayingLearner
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
 RewardFunction = Union[
-    Callable[..., np.float_],
-    Callable[..., NDArray[np.float_]],
-    Callable[..., Union[np.float_, NDArray[np.float_]]],
+    Callable[..., np.float64],
+    Callable[..., NDArray[np.float64]],
+    Callable[..., Union[np.float64, NDArray[np.float64]]],
 ]
 LT = TypeVar("LT", bound=DecayingLearner)
 A = TypeVar("A", bound="Arm[Any, Any]")
@@ -37,8 +37,8 @@ def requires_learner(
 
 
 def identity(
-    x: Union[np.float_, NDArray[np.float_]],
-) -> Union[np.float_, NDArray[np.float_]]:
+    x: Union[np.float64, NDArray[np.float64]],
+) -> Union[np.float64, NDArray[np.float64]]:
     return x
 
 
@@ -101,15 +101,15 @@ class Arm(Generic[LT, T]):
     @requires_learner
     def sample(
         self,
-        X: Union[csc_array, NDArray[np.float_]],
+        X: Union[csc_array, NDArray[np.float64]],
         size: int = 1,
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         """Sample from learner and compute the reward."""
         return self.reward_function(self.learner.sample(X, size))  # type: ignore
 
     @requires_learner
     def update(
-        self, X: Union[csc_array, NDArray[np.float_]], y: NDArray[np.float_]
+        self, X: Union[csc_array, NDArray[np.float64]], y: NDArray[np.float64]
     ) -> None:
         """Update the learner.
 
@@ -123,7 +123,7 @@ class Arm(Generic[LT, T]):
     @requires_learner
     def decay(
         self,
-        X: Union[csc_array, NDArray[np.float_]],
+        X: Union[csc_array, NDArray[np.float64]],
         *,
         decay_rate: Optional[float] = None,
     ) -> None:

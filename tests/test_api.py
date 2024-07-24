@@ -79,7 +79,9 @@ def bandit_instance(
 ) -> Union[Agent[LT, int], ContextualAgent[LT, int]]:
     if isinstance(learner_class, DirichletClassifier):
 
-        def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
+        def reward_func(
+            x: NDArray[np.float64]
+        ) -> Union[NDArray[np.float64], np.float64]:
             return x[..., 0].T
 
     else:

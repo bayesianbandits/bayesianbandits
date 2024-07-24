@@ -9,7 +9,7 @@ from scipy.sparse import csc_array
 from ._arm import Arm
 
 ArmChoicePolicy = Callable[
-    [Dict[str, Arm], NDArray[np.float_], np.random.Generator],
+    [Dict[str, Arm], NDArray[np.float64], np.random.Generator],
     Union[Arm, List[Arm]],
 ]
 
@@ -31,13 +31,13 @@ def epsilon_greedy(
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
+    Callable[[BanditProtocol, NDArray[np.float64]], Arm]
         Closure that chooses an arm using epsilon-greedy.
     """
 
     def _choose_arm(
         arms: Dict[str, Arm],
-        X: NDArray[np.float_],
+        X: NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Union[Arm, List[Arm]]:
         """Choose an arm using epsilon-greedy."""
@@ -93,7 +93,7 @@ def upper_confidence_bound(
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
+    Callable[[BanditProtocol, NDArray[np.float64]], Arm]
         Closure that chooses an arm using UCB.
 
     Notes
@@ -114,7 +114,7 @@ def upper_confidence_bound(
 
     def _choose_arm(
         arms: Dict[str, Arm],
-        X: NDArray[np.float_],
+        X: NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Union[Arm, List[Arm]]:
         """Choose an arm using UCB1."""
@@ -142,7 +142,7 @@ def thompson_sampling() -> ArmChoicePolicy:
 
     Returns
     -------
-    Callable[[BanditProtocol, NDArray[np.float_]], Arm]
+    Callable[[BanditProtocol, NDArray[np.float64]], Arm]
         Closure that chooses an arm using Thompson sampling.
 
     Notes
@@ -160,7 +160,7 @@ def thompson_sampling() -> ArmChoicePolicy:
 
     def _choose_arm(
         arms: Dict[str, Arm],
-        X: NDArray[np.float_],
+        X: NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Union[Arm, List[Arm]]:
         """Choose an arm using Thompson sampling."""
@@ -179,7 +179,7 @@ def thompson_sampling() -> ArmChoicePolicy:
 
 def _return_based_on_size(
     arm_list: List[Arm],
-    posterior_summaries: NDArray[np.float_],
+    posterior_summaries: NDArray[np.float64],
 ):
     best_arm_indexes = cast(
         NDArray[np.int_], np.atleast_1d(np.argmax(posterior_summaries, axis=0))
@@ -194,19 +194,19 @@ def _return_based_on_size(
 
 def _draw_one_sample(
     arm: Arm,
-    X: Union[NDArray[np.float_], csc_array],
-) -> NDArray[np.float_]:
+    X: Union[NDArray[np.float64], csc_array],
+) -> NDArray[np.float64]:
     """Draw one sample from the posterior distribution for the arm."""
     return arm.sample(X, size=1).squeeze(axis=0)
 
 
 def _compute_arm_upper_bound(
     arm: Arm,
-    X: Union[NDArray[np.float_], csc_array],
+    X: Union[NDArray[np.float64], csc_array],
     *,
     alpha: float = 0.68,
     samples: int = 1000,
-) -> np.float_:
+) -> np.float64:
     """Compute the upper bound of a one-sided credible interval with size
     `alpha` from the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
@@ -216,10 +216,10 @@ def _compute_arm_upper_bound(
 
 def _compute_arm_mean(
     arm: Arm,
-    X: Union[NDArray[np.float_], csc_array],
+    X: Union[NDArray[np.float64], csc_array],
     *,
     samples: int = 1000,
-) -> np.float_:
+) -> np.float64:
     """Compute the mean of the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
     return np.mean(posterior_samples, axis=0)

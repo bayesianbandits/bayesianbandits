@@ -30,7 +30,7 @@ class Learner(Protocol):
         self,
         X: NDArray[Any],
         size: int = 1,
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         ...
 
     def partial_fit(self, X: NDArray[Any], y: NDArray[Any]) -> "Learner":

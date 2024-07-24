@@ -85,7 +85,7 @@ T = TypeVar("T")
 L = TypeVar("L", bound=DecayingLearner)
 
 Policy = Callable[
-    [List[Arm[Any, Any]], Union[NDArray[np.float_], csc_array], np.random.Generator],
+    [List[Arm[Any, Any]], Union[NDArray[np.float64], csc_array], np.random.Generator],
     List[Arm[Any, Any]],
 ]
 
@@ -98,7 +98,7 @@ class ContextualAgent(Generic[L, T]):
     arms : List[Arm]
         List of arms to choose from. All arms must have a learner and a unique
         action token.
-    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
         Function to choose an arm from the list of arms. Takes the list of arms
         and the context as input and returns the chosen arm.
     random_seed : int, default=None
@@ -109,7 +109,7 @@ class ContextualAgent(Generic[L, T]):
     arms : List[Arm]
         List of arms to choose from. All arms must have a learner and a unique
         action token.
-    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
         Function to choose an arm from the list of arms. Takes the list of arms
         and the context as input and returns the chosen arm.
     arm_to_update : Arm
@@ -191,7 +191,7 @@ class ContextualAgent(Generic[L, T]):
         self.policy: Callable[
             [
                 List[Arm[L, T]],
-                Union[NDArray[np.float_], csc_array],
+                Union[NDArray[np.float64], csc_array],
                 np.random.Generator,
             ],
             List[Arm[L, T]],
@@ -295,12 +295,12 @@ class ContextualAgent(Generic[L, T]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    def pull(self, X: Union[NDArray[np.float_], csc_array]) -> List[T]:
+    def pull(self, X: Union[NDArray[np.float64], csc_array]) -> List[T]:
         """Choose an arm and pull it based on the context(s).
 
         Parameters
         ----------
-        X : Union[NDArray[np.float_], csc_array]
+        X : Union[NDArray[np.float64], csc_array]
             Context matrix to use for choosing an arm.
 
         Returns
@@ -314,15 +314,15 @@ class ContextualAgent(Generic[L, T]):
         return [arm.pull() for arm in arms]
 
     def update(
-        self, X: Union[NDArray[np.float_], csc_array], y: NDArray[np.float_]
+        self, X: Union[NDArray[np.float64], csc_array], y: NDArray[np.float64]
     ) -> None:
         """Update the `arm_to_update` with the context(s) and the reward(s).
 
         Parameters
         ----------
-        X : Union[NDArray[np.float_], csc_array]
+        X : Union[NDArray[np.float64], csc_array]
             Context matrix to use for updating the arm.
-        y : NDArray[np.float_]
+        y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
         X_updated, y_update = _validate_arrays(X, y, contextual=True, check_y=True)
@@ -330,14 +330,14 @@ class ContextualAgent(Generic[L, T]):
 
     def decay(
         self,
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         decay_rate: Optional[float] = None,
     ) -> None:
         """Decay all arms of the bandit len(X) times.
 
         Parameters
         ----------
-        X : Union[NDArray[np.float_], csc_array]
+        X : Union[NDArray[np.float64], csc_array]
             Context matrix to use for decaying the arm.
         decay_rate : Optional[float], default=None
             Decay rate to use for decaying the arm. If None, the decay rate
@@ -362,7 +362,7 @@ class Agent(Generic[L, T]):
     arms : List[Arm]
         List of arms to choose from. All arms must have a learner and a unique
         action token.
-    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
         Function to choose an arm from the list of arms. Takes the list of arms
         and the context as input and returns the chosen arm.
     random_seed : int, default=None
@@ -373,7 +373,7 @@ class Agent(Generic[L, T]):
     arms : List[Arm]
         List of arms to choose from. All arms must have a learner and a unique
         action token.
-    policy : Callable[[List[Arm], NDArray[np.float_], Generator], Arm]
+    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
         Function to choose an arm from the list of arms. Takes the list of arms
         and the context as input and returns the chosen arm.
     arm_to_update : Arm
@@ -435,7 +435,7 @@ class Agent(Generic[L, T]):
         policy: Callable[
             [
                 List[Arm[L, T]],
-                Union[NDArray[np.float_], csc_array],
+                Union[NDArray[np.float64], csc_array],
                 np.random.Generator,
             ],
             List[Arm[L, T]],
@@ -537,12 +537,12 @@ class Agent(Generic[L, T]):
         X_pull, _ = _validate_arrays(None, None, contextual=False, check_y=False)
         return self._inner.pull(X_pull)
 
-    def update(self, y: NDArray[np.float_]) -> None:
+    def update(self, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with an observed reward.
 
         Parameters
         ----------
-        y : NDArray[np.float_]
+        y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
         X_update, y_update = _validate_arrays(y, None, contextual=False, check_y=True)
@@ -596,9 +596,9 @@ class EpsilonGreedy:
     def arm_summary(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
         means = np.stack(
             tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
@@ -607,8 +607,8 @@ class EpsilonGreedy:
         return means
 
     def postprocess(
-        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
-    ) -> NDArray[np.float_]:
+        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
+    ) -> NDArray[np.float64]:
         # Pick random rows to explore
         choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
 
@@ -622,7 +622,7 @@ class EpsilonGreedy:
     def __call__(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
         """Choose an arm using epsilon-greedy."""
@@ -660,23 +660,23 @@ class ThompsonSampling:
     def arm_summary(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
         samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
 
         return samples
 
     def postprocess(
-        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
-    ) -> NDArray[np.float_]:
+        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
+    ) -> NDArray[np.float64]:
         return arm_summary
 
     def __call__(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
         """Choose an arm using Thompson sampling."""
@@ -725,9 +725,9 @@ class UpperConfidenceBound:
     def arm_summary(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
-    ) -> NDArray[np.float_]:
+    ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
         upper_bounds = np.stack(
             tuple(
@@ -739,14 +739,14 @@ class UpperConfidenceBound:
         return upper_bounds
 
     def postprocess(
-        self, arm_summary: NDArray[np.float_], rng: np.random.Generator
-    ) -> NDArray[np.float_]:
+        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
+    ) -> NDArray[np.float64]:
         return arm_summary
 
     def __call__(
         self,
         arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float_], csc_array],
+        X: Union[NDArray[np.float64], csc_array],
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]:
         """Choose an arm using upper confidence bound."""

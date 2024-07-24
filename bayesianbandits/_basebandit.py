@@ -321,7 +321,7 @@ class Bandit:
 
         return self._pull_batch(X_pull)
 
-    def _pull_batch(self, X_pull: NDArray[np.float_]) -> Any:
+    def _pull_batch(self, X_pull: NDArray[np.float64]) -> Any:
         """Makes a single decision and pulls one arm.
 
         If given, validates that `X_pull` has only one row, as making several
@@ -330,7 +330,7 @@ class Bandit:
 
         Parameters
         ----------
-        X_pull : NDArray[np.float_]
+        X_pull : NDArray[np.float64]
             Context vector - must have only one row.
 
         Returns
@@ -358,7 +358,7 @@ class Bandit:
         return ret_vals
 
     def _pull_batch_delayed_reward(
-        self, X: NDArray[np.float_], unique_ids: Collection[Any]
+        self, X: NDArray[np.float64], unique_ids: Collection[Any]
     ) -> List[Any]:
         """Makes a batch of decisions and pulls a batch of arms for a delayed
         reward bandit.
@@ -371,7 +371,7 @@ class Bandit:
 
         Parameters
         ----------
-        X : NDArray[np.float_]
+        X : NDArray[np.float64]
             Context array - must have the same number of rows as `unique_ids`.
         unique_ids : Collection[Any]
             Unique identifiers for the pulls.
@@ -518,7 +518,10 @@ class Bandit:
         arm_to_update.update(X_fit, y_fit)
 
     def _update_batch(
-        self, X: NDArray[np.float_], y: NDArray[np.float_], unique_ids: Collection[Any]
+        self,
+        X: NDArray[np.float64],
+        y: NDArray[np.float64],
+        unique_ids: Collection[Any],
     ):
         # fetch the arms names from the cache
         assert self.cache is not None  # for the type checker
@@ -743,7 +746,7 @@ def _validate_arrays(
     /,
     contextual: bool,
     check_y: Literal[True] = True,
-) -> Tuple[NDArray[np.float_], NDArray[np.float_]]:
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
     ...
 
 
@@ -754,7 +757,7 @@ def _validate_arrays(
     /,
     contextual: bool,
     check_y: Literal[False] = False,
-) -> Tuple[NDArray[np.float_], None]:
+) -> Tuple[NDArray[np.float64], None]:
     ...
 
 
@@ -779,7 +782,7 @@ def _validate_arrays(
     /,
     contextual: bool,
     check_y: bool = True,
-) -> Tuple[Union[NDArray[np.float_], csc_array], Optional[NDArray[np.float_]]]:
+) -> Tuple[Union[NDArray[np.float64], csc_array], Optional[NDArray[np.float64]]]:
     """Validate the `X` and `y` arrays.
 
     Parameters
