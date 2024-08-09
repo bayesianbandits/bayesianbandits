@@ -23,7 +23,7 @@ def temp_model_file():
         yield f
 
 
-def reward_func(x: NDArray[np.float_]) -> NDArray[np.float_]:
+def reward_func(x: NDArray[np.float64]) -> NDArray[np.float64]:
     return x
 
 

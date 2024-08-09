@@ -7,7 +7,6 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9, <3.13"
-numpy = "<2.0.0"
 scipy = ">=1.11.0"
 scikit-learn = ">=1.2.0"
 attrs = ">=21.2.0"
@@ -31,7 +30,7 @@ pytest-cov = "^5.0.0"
 
 
 [tool.poetry.group.cholmod.dependencies]
-scikit-sparse = "^0.4.13"
+scikit-sparse = "^0.4.15"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"

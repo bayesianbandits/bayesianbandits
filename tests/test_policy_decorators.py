@@ -48,7 +48,7 @@ def X(request: pytest.FixtureRequest):
     ],
 )
 def test_policies(
-    policy: ArmChoicePolicy, X: NDArray[np.float_], test_arms: Dict[str, Arm]
+    policy: ArmChoicePolicy, X: NDArray[np.float64], test_arms: Dict[str, Arm]
 ):
     """Test that the policies return an arm."""
 

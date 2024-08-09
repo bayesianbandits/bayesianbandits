@@ -143,7 +143,7 @@ class CovViaSparsePrecision(Covariance):
     def _whiten(self, x):
         raise NotImplementedError("Not implemented for sparse matrices")
 
-    def _colorize(self, x: NDArray[np.float_]) -> NDArray[np.float_]:
+    def _colorize(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
         samples = self.colorize_solve(x.T).T
         # csc_arrray and csc_matrix have different behavior, so CHOLMOD doesn't
         # auto-squeeze the output. We do it here.
@@ -153,11 +153,11 @@ class CovViaSparsePrecision(Covariance):
 
 
 def multivariate_normal_sample_from_sparse_covariance(
-    mean: Union[csc_array, NDArray[np.float_], None],
+    mean: Union[csc_array, NDArray[np.float64], None],
     cov: Covariance,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
-) -> NDArray[np.float_]:
+) -> NDArray[np.float64]:
     """
     Sample from a multivariate normal distribution with mean mu (default 0)
     and sparse precision matrix Q.
@@ -196,22 +196,22 @@ def multivariate_normal_sample_from_sparse_covariance(
     Z = rng.standard_normal(gen_size)
 
     # Colorize Z
-    Y = cast(NDArray[np.float_], cov.colorize(Z))
+    Y = cast(NDArray[np.float64], cov.colorize(Z))
 
     # Add the mean vector to each sample if provided
     if mean is not None:
         Y += mean
 
-    return cast(NDArray[np.float_], Y)
+    return cast(NDArray[np.float64], Y)
 
 
 def multivariate_t_sample_from_sparse_covariance(
-    loc: Union[csc_array, NDArray[np.float_], None],
+    loc: Union[csc_array, NDArray[np.float64], None],
     shape: Covariance,
     df: float = 1.0,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
-) -> NDArray[np.float_]:
+) -> NDArray[np.float64]:
     """
     Sample from a multivariate t distribution with mean loc, shape matrix
     shape, and degrees of freedom df.
@@ -257,4 +257,4 @@ def multivariate_t_sample_from_sparse_covariance(
     samples = loc + z / np.sqrt(x)[..., None]
     samples = _squeeze_output(samples)
 
-    return cast(NDArray[np.float_], samples)
+    return cast(NDArray[np.float64], samples)

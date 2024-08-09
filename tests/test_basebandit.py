@@ -75,7 +75,9 @@ def bandit_class(
 ) -> type:
     if isinstance(learner_class, DirichletClassifier):
 
-        def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
+        def reward_func(
+            x: NDArray[np.float64]
+        ) -> Union[NDArray[np.float64], np.float64]:
             return x[..., 0].T
 
     else:
@@ -121,7 +123,7 @@ B = TypeVar("B", bound=Bandit)
 class TestBanditDecorator:
     def test_init(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[type], type]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -163,7 +165,7 @@ class TestBanditDecorator:
 
     def test_no_arms_exception(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[type], type]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -180,7 +182,7 @@ class TestBanditDecorator:
 
     def test_pull(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -216,7 +218,7 @@ class TestBanditDecorator:
     @pytest.mark.parametrize("size", [1, 2])
     def test_sample(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
         size: int,
@@ -241,7 +243,7 @@ class TestBanditDecorator:
 
     def test_update(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -271,7 +273,7 @@ class TestBanditDecorator:
 
     def test_arm(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[Type[Bandit]], Type[Bandit]]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -300,7 +302,7 @@ class TestBanditDecorator:
 
     def test_context_exceptions(
         self,
-        X: Optional[NDArray[np.float_]],
+        X: Optional[NDArray[np.float64]],
         restless_decorator: Optional[Callable[[type], type]],
         bandit_class: Type[Bandit],
     ) -> None:
@@ -344,7 +346,7 @@ class TestBanditDecorator:
 
 
 def test_bandit_arms_with_existing_learners() -> None:
-    def reward_func(x: NDArray[np.float_]) -> Union[NDArray[np.float_], np.float_]:
+    def reward_func(x: NDArray[np.float64]) -> Union[NDArray[np.float64], np.float64]:
         return np.take(x, 0, axis=-1)  # type: ignore
 
     learner_class = GammaRegressor(1, 2)  # set this to a non-Dirichlet learner

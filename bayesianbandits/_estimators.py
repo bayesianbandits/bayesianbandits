@@ -159,13 +159,13 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
 
         self.classes_ = np.array(list(self.alphas.keys()))
         self.n_classes_ = len(self.classes_)
-        self.prior_ = np.array(list(self.alphas.values()), dtype=np.float_)
+        self.prior_ = np.array(list(self.alphas.values()), dtype=np.float64)
 
-        self.known_alphas_: Dict[Any, NDArray[np.float_]] = defaultdict(
+        self.known_alphas_: Dict[Any, NDArray[np.float64]] = defaultdict(
             self._return_prior
         )
 
-    def _return_prior(self) -> NDArray[np.float_]:
+    def _return_prior(self) -> NDArray[np.float64]:
         return self.prior_
 
     def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
@@ -346,11 +346,11 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         else:
             self.random_state_ = self.random_state
 
-        self.prior_ = np.array([self.alpha, self.beta], dtype=np.float_)
+        self.prior_ = np.array([self.alpha, self.beta], dtype=np.float64)
 
-        self.coef_: Dict[Any, NDArray[np.float_]] = defaultdict(self._return_prior)
+        self.coef_: Dict[Any, NDArray[np.float64]] = defaultdict(self._return_prior)
 
-    def _return_prior(self) -> NDArray[np.float_]:
+    def _return_prior(self) -> NDArray[np.float64]:
         return self.prior_
 
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
@@ -474,9 +474,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
     Attributes
     ----------
-    coef_ : NDArray[np.float_]
+    coef_ : NDArray[np.float64]
         The coefficients of the model.
-    cov_inv_ : NDArray[np.float_]
+    cov_inv_ : NDArray[np.float64]
         The inverse of the covariance matrix of the model.
 
     Notes
@@ -566,7 +566,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             y,
             copy=True,
             ensure_2d=True,
-            dtype=np.float_,
+            dtype=np.float64,
             accept_sparse="csc" if self.sparse else False,
         )
 
@@ -673,7 +673,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             y,
             copy=True,
             ensure_2d=True,
-            dtype=np.float_,
+            dtype=np.float64,
             accept_sparse="csc" if self.sparse else False,
         )
 
@@ -790,9 +790,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     Attributes
     ----------
-    coef_ : NDArray[np.float_]
+    coef_ : NDArray[np.float64]
         Posterior mean of the weights.
-    cov_inv_ : NDArray[np.float_]
+    cov_inv_ : NDArray[np.float64]
         Posterior inverse covariance of the weights.
     n_features_ : int
         Number of features in the model.
@@ -891,9 +891,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         self.n_features_ = X.shape[1]
         if np.isscalar(self.mu):
-            self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float_)
-        elif cast(NDArray[np.float_], self.mu).ndim == 1:
-            self.coef_ = cast(NDArray[np.float_], self.mu)
+            self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float64)
+        elif cast(NDArray[np.float64], self.mu).ndim == 1:
+            self.coef_ = cast(NDArray[np.float64], self.mu)
         else:
             raise ValueError("The prior mean must be a scalar or vector.")
 
@@ -902,9 +902,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
                 self.cov_inv_ = (
                     csc_array(eye(self.n_features_, format="csc")) * self.lam
                 )
-            elif cast(NDArray[np.float_], self.lam).ndim == 1:
+            elif cast(NDArray[np.float64], self.lam).ndim == 1:
                 self.cov_inv_ = csc_array(diags(self.lam, format="csc"))
-            elif cast(NDArray[np.float_], self.lam).ndim == 2:
+            elif cast(NDArray[np.float64], self.lam).ndim == 2:
                 self.cov_inv_ = csc_array(self.lam)
             else:
                 raise ValueError(
@@ -913,11 +913,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         else:
             if np.isscalar(self.lam):
-                self.cov_inv_ = cast(np.float_, self.lam) * np.eye(self.n_features_)
-            elif cast(NDArray[np.float_], self.lam).ndim == 1:
+                self.cov_inv_ = cast(np.float64, self.lam) * np.eye(self.n_features_)
+            elif cast(NDArray[np.float64], self.lam).ndim == 1:
                 self.cov_inv_ = np.diag(self.lam)  # type: ignore
-            elif cast(NDArray[np.float_], self.lam).ndim == 2:
-                self.cov_inv_ = cast(NDArray[np.float_], self.lam)
+            elif cast(NDArray[np.float64], self.lam).ndim == 2:
+                self.cov_inv_ = cast(NDArray[np.float64], self.lam)
             else:
                 raise ValueError(
                     "The prior covariance must be a scalar, vector, or matrix."
@@ -942,7 +942,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
             y = y * obs_decays
 
         else:
-            obs_decays = np.array([1.0], dtype=np.float_)
+            obs_decays = np.array([1.0], dtype=np.float64)
 
         prior_decay = self.learning_rate ** X.shape[0]
 
@@ -1084,7 +1084,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
 
 def multivariate_t_sample_from_covariance(
-    loc: Optional[NDArray[np.float_]],
+    loc: Optional[NDArray[np.float64]],
     shape: Covariance,
     df: float = 1,
     size: int = 1,
@@ -1095,7 +1095,7 @@ def multivariate_t_sample_from_covariance(
 
     Parameters
     ----------
-    loc : NDArray[np.float_]
+    loc : NDArray[np.float64]
         Mean of the distribution.
     shape : Covariance
         Covariance of the distribution.
@@ -1108,7 +1108,7 @@ def multivariate_t_sample_from_covariance(
 
     Returns
     -------
-    samples : NDArray[np.float_]
+    samples : NDArray[np.float64]
         Samples from the distribution.
 
     Notes
