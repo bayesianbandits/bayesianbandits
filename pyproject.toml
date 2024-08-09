@@ -30,7 +30,7 @@ pytest-cov = "^5.0.0"
 
 
 [tool.poetry.group.cholmod.dependencies]
-scikit-sparse = "^0.4.14"
+scikit-sparse = "^0.4.15"
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
