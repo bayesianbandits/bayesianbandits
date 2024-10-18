@@ -12,28 +12,33 @@ jobs:
     strategy:
       matrix:
         include:
-          - python-version: '3.9'
-            sklearn-version: '1.3.2'
+
           - python-version: '3.10'
             sklearn-version: '1.3.2'
           - python-version: '3.11'
             sklearn-version: '1.3.2'
           - python-version: '3.12'
             sklearn-version: '1.3.2'
-          - python-version: '3.9'
-            sklearn-version: '1.4.2'
+          - python-version: '3.13'
+            sklearn-version: '1.3.2'
+
           - python-version: '3.10'
             sklearn-version: '1.4.2'
           - python-version: '3.11'
             sklearn-version: '1.4.2'
           - python-version: '3.12'
             sklearn-version: '1.4.2'
+          - python-version: '3.13'
+            sklearn-version: '1.4.2'
+
           - python-version: '3.10'
-            sklearn-version: '1.5.1'
+            sklearn-version: '1.5.2'
           - python-version: '3.11'
-            sklearn-version: '1.5.1'
+            sklearn-version: '1.5.2'
           - python-version: '3.12'
-            sklearn-version: '1.5.1'            
+            sklearn-version: '1.5.2'
+          - python-version: '3.13'
+            sklearn-version: '1.5.2'            
 
     steps:
     - uses: actions/checkout@v4
