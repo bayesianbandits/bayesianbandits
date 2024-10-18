@@ -6,8 +6,8 @@ authors = ["Rishi Kulkarni <rishi@kulkarni.science>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9, <3.13"
-scipy = ">=1.11.0"
+python = ">=3.10"
+scipy = ">=1.14.0"
 scikit-learn = ">=1.2.0"
 attrs = ">=21.2.0"
 typing-extensions = ">=4.8.0"
