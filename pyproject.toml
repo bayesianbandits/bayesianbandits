@@ -27,6 +27,7 @@ numpydoc = "^1.7.0"
 nbsphinx = "^0.9.3"
 line-profiler = "^4.1.1"
 pytest-cov = "^5.0.0"
+optuna = "^4.0.0"
 
 
 [tool.poetry.group.cholmod.dependencies]
