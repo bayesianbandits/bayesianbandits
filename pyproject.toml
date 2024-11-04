@@ -8,6 +8,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = ">=3.10"
 scipy = ">=1.14.0"
+numpy = ">=1.23.5"
 scikit-learn = ">=1.2.0"
 attrs = ">=21.2.0"
 typing-extensions = ">=4.8.0"
