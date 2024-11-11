@@ -610,7 +610,9 @@ class EpsilonGreedy:
         self, arm_summary: NDArray[np.float64], rng: np.random.Generator
     ) -> NDArray[np.float64]:
         # Pick random rows to explore
-        choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
+        choice_idx_to_explore = cast(
+            NDArray[np.bool], rng.random(size=arm_summary.shape[1]) < self.epsilon
+        )
 
         # Within the rows to explore, pick a random column and set to np.inf
         for idx, explore in enumerate(choice_idx_to_explore):
