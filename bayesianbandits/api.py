@@ -56,10 +56,10 @@ Policy Functions
 
 from typing import (
     Any,
-    Callable,
     Generic,
     List,
     Optional,
+    Protocol,
     Set,
     TypeVar,
     Union,
@@ -80,17 +80,23 @@ from ._policy_decorators import (
 )
 from ._typing import DecayingLearner
 
-AT = TypeVar("AT", bound=Arm[Any, Any])
 T = TypeVar("T")
 L = TypeVar("L", bound=DecayingLearner)
 
-Policy = Callable[
-    [List[Arm[Any, Any]], Union[NDArray[np.float64], csc_array], np.random.Generator],
-    List[Arm[Any, Any]],
-]
+
+class PolicyProtocol(Protocol[L, T]):
+    def __call__(
+        self,
+        arms: List[Arm[L, T]],
+        X: Union[NDArray[np.float64], csc_array],
+        rng: np.random.Generator,
+    ) -> List[Arm[L, T]]: ...
 
 
-class ContextualAgent(Generic[L, T]):
+P = TypeVar("P", bound=PolicyProtocol[Any, Any])
+
+
+class ContextualAgent(Generic[L, T, P]):
     """Agent for a contextual multi-armed bandit problem.
 
     Parameters
@@ -176,7 +182,7 @@ class ContextualAgent(Generic[L, T]):
     def __init__(
         self,
         arms: List[Arm[L, T]],
-        policy: Policy,
+        policy: P,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
         self._arms = arms
@@ -188,14 +194,7 @@ class ContextualAgent(Generic[L, T]):
         if not all(arm.learner is not None for arm in arms):  # type: ignore
             raise ValueError("All arms must have a learner.")
 
-        self.policy: Callable[
-            [
-                List[Arm[L, T]],
-                Union[NDArray[np.float64], csc_array],
-                np.random.Generator,
-            ],
-            List[Arm[L, T]],
-        ] = policy
+        self.policy: P = policy
 
         self.arm_to_update = arms[0]
 
@@ -348,7 +347,7 @@ class ContextualAgent(Generic[L, T]):
             arm.decay(X_decay, decay_rate=decay_rate)
 
 
-class Agent(Generic[L, T]):
+class Agent(Generic[L, T, P]):
     """
     Agent for a non-contextual multi-armed bandit problem.
 
@@ -418,28 +417,21 @@ class Agent(Generic[L, T]):
     def __init__(
         self,
         arms: List[Arm[L, T]],
-        policy: Policy,
+        policy: P,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._inner: ContextualAgent[L, T] = ContextualAgent(
+        self._inner: ContextualAgent[L, T, P] = ContextualAgent(
             arms, policy, random_seed=random_seed
         )
 
     @property
-    def policy(self):
+    def policy(self) -> P:
         return self._inner.policy
 
     @policy.setter
     def policy(
         self,
-        policy: Callable[
-            [
-                List[Arm[L, T]],
-                Union[NDArray[np.float64], csc_array],
-                np.random.Generator,
-            ],
-            List[Arm[L, T]],
-        ],
+        policy: P,
     ) -> None:
         self._inner.policy = policy
 
