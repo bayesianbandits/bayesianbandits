@@ -1,7 +1,8 @@
 # `bayesianbandits` 
 [![Downloads](https://static.pepy.tech/badge/bayesianbandits/month)](https://pepy.tech/project/bayesianbandits)
 [![codecov](https://codecov.io/gh/bayesianbandits/bayesianbandits/graph/badge.svg?token=1YG8LBDJ5A)](https://codecov.io/gh/bayesianbandits/bayesianbandits)
-
+[![Documentation Status](https://readthedocs.org/projects/bayesianbandits/badge/?version=stable)](https://bayesianbandits.readthedocs.io/en/stable/?badge=stable)
+      
 ## Bayesian Multi-Armed Bandits for Python
 
 **Problem**: Despite having a conceptually simple interface, putting together a multi-armed bandit in Python is a daunting task. 
