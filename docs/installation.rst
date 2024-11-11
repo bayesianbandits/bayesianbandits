@@ -2,7 +2,7 @@
 Installation
 ============
 
-Python 3.9+ is required.
+Python 3.10+ is required.
 
 Install with pip::
 
