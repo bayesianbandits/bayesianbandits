@@ -154,10 +154,9 @@ class Bandit:
         policy : Callable[..., Arm]
             Policy to use for choosing arms.
         """
-        # Deprecation warning
         warn(
-            "The `Bandit` class is deprecated and will be removed in a future "
-            "release. Please use `Agent` or `ContextualAgent` instead.",
+            "The `Bandit` class is deprecated and will be removed in version 1.0.0. "
+            "Please use `Agent` or `ContextualAgent` instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -234,20 +233,16 @@ class Bandit:
         return matching_arms[0]
 
     @overload
-    def pull(self, X: Union[ArrayLike, csc_array], /) -> Any:
-        ...
+    def pull(self, X: Union[ArrayLike, csc_array], /) -> Any: ...
 
     @overload
-    def pull(self, X: Union[ArrayLike, csc_array], /, *, unique_id: Any) -> Any:
-        ...
+    def pull(self, X: Union[ArrayLike, csc_array], /, *, unique_id: Any) -> Any: ...
 
     @overload
-    def pull(self, /) -> Any:
-        ...
+    def pull(self, /) -> Any: ...
 
     @overload
-    def pull(self, /, *, unique_id: Any) -> Any:
-        ...
+    def pull(self, /, *, unique_id: Any) -> Any: ...
 
     def pull(
         self,
@@ -431,22 +426,18 @@ class Bandit:
         return ret_vals
 
     @overload
-    def update(self, y: ArrayLike, /) -> None:
-        ...
+    def update(self, y: ArrayLike, /) -> None: ...
 
     @overload
-    def update(self, y: ArrayLike, /, *, unique_id: Any) -> None:
-        ...
+    def update(self, y: ArrayLike, /, *, unique_id: Any) -> None: ...
 
     @overload
-    def update(self, X: Union[ArrayLike, csc_array], y: ArrayLike, /) -> None:
-        ...
+    def update(self, X: Union[ArrayLike, csc_array], y: ArrayLike, /) -> None: ...
 
     @overload
     def update(
         self, X: Union[ArrayLike, csc_array], y: ArrayLike, /, *, unique_id: Any
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def update(
         self,
@@ -579,12 +570,12 @@ class Bandit:
             arm_to_update.update(X_part, y_part)
 
     @overload
-    def sample(self, X: Union[ArrayLike, csc_array], /, *, size: int = 1) -> ArrayLike:
-        ...
+    def sample(
+        self, X: Union[ArrayLike, csc_array], /, *, size: int = 1
+    ) -> ArrayLike: ...
 
     @overload
-    def sample(self, /, *, size: int = 1) -> ArrayLike:
-        ...
+    def sample(self, /, *, size: int = 1) -> ArrayLike: ...
 
     def sample(
         self,
@@ -623,8 +614,7 @@ class Bandit:
     @overload
     def decay(
         self, /, *, decay_rate: Optional[float] = None, decay_last_arm: bool = True
-    ) -> None:
-        ...
+    ) -> None: ...
 
     @overload
     def decay(
@@ -634,8 +624,7 @@ class Bandit:
         *,
         decay_rate: Optional[float] = None,
         decay_last_arm: bool = True,
-    ) -> None:
-        ...
+    ) -> None: ...
 
     def decay(
         self,
@@ -746,8 +735,7 @@ def _validate_arrays(
     /,
     contextual: bool,
     check_y: Literal[True] = True,
-) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
-    ...
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 
 
 @overload
@@ -757,8 +745,7 @@ def _validate_arrays(
     /,
     contextual: bool,
     check_y: Literal[False] = False,
-) -> Tuple[NDArray[np.float64], None]:
-    ...
+) -> Tuple[NDArray[np.float64], None]: ...
 
 
 def _validate_unique_id(
