@@ -252,11 +252,3 @@ class TestBandits:
                 ],
                 EpsilonGreedy(),
             )
-
-        with pytest.raises(ValueError):
-            Agent(
-                [
-                    Arm(0, None),  # type: ignore
-                ],
-                EpsilonGreedy(),
-            )

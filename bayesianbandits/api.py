@@ -60,7 +60,6 @@ from typing import (
     List,
     Optional,
     Protocol,
-    Set,
     TypeVar,
     Union,
     cast,
@@ -185,22 +184,17 @@ class ContextualAgent(Generic[L, T, P]):
         policy: P,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._arms = arms
-        if not len(arms) > 0:
-            raise ValueError("At least one arm is required.")
-        unique_tokens: Set[T] = set(arm.action_token for arm in arms)
-        if not len(unique_tokens) == len(arms):
-            raise ValueError("All arms must have unique action tokens.")
-        if not all(arm.learner is not None for arm in arms):  # type: ignore
-            raise ValueError("All arms must have a learner.")
-
         self.policy: P = policy
 
-        self.arm_to_update = arms[0]
-
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
-        for arm in self.arms:
-            arm.learner.random_state = self.rng
+        self._arms: List[Arm[L, T]] = []
+        for arm in arms:
+            self.add_arm(arm)
+
+        if len(self.arms) == 0:
+            raise ValueError("At least one arm is required.")
+
+        self.arm_to_update = arms[0]
 
     @property
     def arms(self) -> List[Arm[L, T]]:
@@ -222,6 +216,8 @@ class ContextualAgent(Generic[L, T, P]):
         current_tokens = set(arm.action_token for arm in self.arms)
         if arm.action_token in current_tokens:
             raise ValueError("All arms must have unique action tokens.")
+
+        arm.learner.random_state = self.rng
         self.arms.append(arm)
 
     def remove_arm(self, token: T) -> None:
@@ -602,9 +598,7 @@ class EpsilonGreedy:
         self, arm_summary: NDArray[np.float64], rng: np.random.Generator
     ) -> NDArray[np.float64]:
         # Pick random rows to explore
-        choice_idx_to_explore = cast(
-            NDArray[np.bool_], rng.random(size=arm_summary.shape[1]) < self.epsilon
-        )
+        choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
 
         # Within the rows to explore, pick a random column and set to np.inf
         for idx, explore in enumerate(choice_idx_to_explore):

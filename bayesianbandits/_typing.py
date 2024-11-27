@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import (
     Any,
-    NewType,
     Optional,
     Protocol,
     Union,
@@ -10,9 +9,6 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
-
-
-ActionToken = NewType("TokenType", Any)
 
 
 class Learner(Protocol):
@@ -30,18 +26,14 @@ class Learner(Protocol):
         self,
         X: NDArray[Any],
         size: int = 1,
-    ) -> NDArray[np.float64]:
-        ...
+    ) -> NDArray[np.float64]: ...
 
-    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]) -> "Learner":
-        ...
+    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]) -> "Learner": ...
 
-    def set_params(self, **params: Any) -> "Learner":
-        ...
+    def set_params(self, **params: Any) -> "Learner": ...
 
 
 class DecayingLearner(Learner, Protocol):
     learning_rate: float
 
-    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
-        ...
+    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None: ...
