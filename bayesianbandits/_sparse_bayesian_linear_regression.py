@@ -1,20 +1,21 @@
 import os
 from enum import Enum
 from functools import cached_property
-from typing import Any, Tuple, Union, cast
+from typing import Any, Tuple, Union, cast, TYPE_CHECKING, Literal
 
 import numpy as np
 from attr import dataclass
 from numpy.typing import NDArray
-from scipy.sparse import csc_array, csc_matrix, csr_matrix, diags, eye, issparse
-from scipy.sparse.linalg import splu, spsolve, use_solver
-from scipy.stats import Covariance
-from scipy.stats._multivariate import _squeeze_output
+from scipy.sparse import csc_array, csc_matrix, csr_matrix, diags, eye, issparse  # type: ignore
+from scipy.sparse.linalg import splu, spsolve, use_solver  # type: ignore
+from scipy.stats import Covariance  # type: ignore
+from scipy.stats._multivariate import _squeeze_output  # type: ignore
+
 
 use_solver(useUmfpack=False)
 
 try:
-    from sksparse.cholmod import cholesky as cholmod_cholesky
+    from sksparse.cholmod import cholesky as cholmod_cholesky  # type: ignore
 
     use_cholmod = True
 except ImportError:
@@ -35,6 +36,11 @@ if use_cholmod:
     solver = SparseSolver.CHOLMOD
 else:
     solver = SparseSolver.SUPERLU
+
+if TYPE_CHECKING:
+    # This helps Pylance understand that solver can be either SparseSolver.SUPERLU or SparseSolver.CHOLMOD.
+    # For some reason, without this cast, it thinks solver is always SparseSolver.SUPERLU.
+    solver = cast(Literal[SparseSolver.SUPERLU, SparseSolver.CHOLMOD], solver)  # type: ignore
 
 
 @dataclass

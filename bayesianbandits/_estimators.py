@@ -186,7 +186,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
         for group, arr in groupby_array(X[:, 0], y, by=X[:, 0]):
             key = group[0].item()
-            vals = np.row_stack((self.known_alphas_[key], arr))
+            vals = np.vstack((self.known_alphas_[key], arr))
 
             decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
 
@@ -204,7 +204,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
 
         X_pred = check_array(X, copy=True, ensure_2d=True)
 
-        alphas = np.row_stack(list(self.known_alphas_[x.item()] for x in X_pred))
+        alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
         return alphas / alphas.sum(axis=1)[:, np.newaxis]  # type: ignore
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
@@ -363,7 +363,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             # where alpha and the counts are stacked together and beta is
             # stacked with ones
             data = np.column_stack((arr, np.ones_like(arr)))
-            vals = np.row_stack((self.coef_[key], data))
+            vals = np.vstack((self.coef_[key], data))
 
             # Calculate the decay index for nonstationary models
             decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
@@ -398,7 +398,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
         X_pred = check_array(X, copy=True, ensure_2d=True)
 
-        shape_params = np.row_stack(list(self.coef_[x.item()] for x in X_pred))
+        shape_params = np.vstack(list(self.coef_[x.item()] for x in X_pred))
         return shape_params[:, 0] / shape_params[:, 1]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
@@ -551,10 +551,10 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self.random_state = random_state
 
     @_invalidate_cached_properties
-    def __getstate__(self):
+    def __getstate__(self) -> Any:
         # Delete the cached covariance matrix, since it likely contains C
         # objects that cannot be pickled
-        return super().__getstate__()
+        return super().__getstate__()  # type: ignore
 
     def fit(self, X_fit: Union[NDArray[Any], csc_array], y: NDArray[Any]) -> Self:
         """
