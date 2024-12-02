@@ -17,3 +17,4 @@ library.
     notebooks/linear-bandits
     notebooks/delayed-reward
     notebooks/persistence
+    notebooks/offline-learning
