@@ -1,16 +1,33 @@
 import os
+from dataclasses import dataclass
 from enum import Enum
 from functools import cached_property
-from typing import Any, Tuple, Union, cast, TYPE_CHECKING, Literal
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Final,
+    Literal,
+    Protocol,
+    Tuple,
+    TypeGuard,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import numpy as np
-from attr import dataclass
 from numpy.typing import NDArray
-from scipy.sparse import csc_array, csc_matrix, csr_matrix, diags, eye, issparse  # type: ignore
+from scipy.sparse import (  # type: ignore  # type: ignore
+    csc_array,
+    csc_matrix,
+    csr_matrix,
+    diags,  # type: ignore
+    eye,  # type: ignore
+    issparse,  # type: ignore
+)
 from scipy.sparse.linalg import splu, spsolve, use_solver  # type: ignore
 from scipy.stats import Covariance  # type: ignore
 from scipy.stats._multivariate import _squeeze_output  # type: ignore
-
 
 use_solver(useUmfpack=False)
 
@@ -38,15 +55,47 @@ else:
     solver = SparseSolver.SUPERLU
 
 if TYPE_CHECKING:
+    from sksparse.cholmod import cholesky as cholmod_cholesky  # type: ignore
+
     # This helps Pylance understand that solver can be either SparseSolver.SUPERLU or SparseSolver.CHOLMOD.
     # For some reason, without this cast, it thinks solver is always SparseSolver.SUPERLU.
-    solver = cast(Literal[SparseSolver.SUPERLU, SparseSolver.CHOLMOD], solver)  # type: ignore
+    solver: Literal[SparseSolver.SUPERLU] | Literal[SparseSolver.CHOLMOD] = cast(
+        Literal[SparseSolver.SUPERLU, SparseSolver.CHOLMOD], solver
+    )  # type: ignore
+
+SM = TypeVar("SM", bound="Union[csc_matrix, csr_matrix]")
+SM_T = TypeVar("SM_T", bound="Union[csc_matrix, csr_matrix]")
+
+
+class SparseMatrixProtocol(Protocol[SM, SM_T]):
+    shape: tuple[int, int]
+    T: SM_T
+
+    def dot(self, other: Union[SM, NDArray[np.float64]]) -> SM: ...
+    def diagonal(self) -> NDArray[np.float64]: ...
+
+
+class SparseCholeskyDecompositionOBject(Protocol):
+    def solve_Lt(
+        self, b: NDArray[np.float64], use_LDLt_decomposition: bool
+    ) -> NDArray[np.float64]: ...
+    def apply_Pt(self, x: NDArray[np.float64]) -> NDArray[np.float64]: ...
+
+
+class SuperLUObject(Protocol):
+    L: SparseMatrixProtocol[csr_matrix, csc_matrix]
+    U: SparseMatrixProtocol[csr_matrix, csc_matrix]
+    perm_r: NDArray[np.int_]
+    perm_c: NDArray[np.int_]
 
 
 @dataclass
 class LUObject:
-    L: csr_matrix
-    Pr: csc_array
+    L: SparseMatrixProtocol[csr_matrix, csc_matrix]
+    Pr: SparseMatrixProtocol[csc_matrix, csr_matrix]
+
+    def solve_system(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
+        return cast(NDArray[np.float64], self.Pr.T @ spsolve(self.L.T, x))
 
 
 class CovViaSparsePrecision(Covariance):
@@ -98,55 +147,71 @@ class CovViaSparsePrecision(Covariance):
     colored with the original precision matrix P.
     """
 
-    def __init__(self, prec: csc_array, solver=solver):
+    def __init__(self, prec: csc_array, solver: SparseSolver = solver):
         if not issparse(prec):
             raise TypeError("prec must be a sparse array")
 
-        self.solver = solver
-
-        self._precision = prec
+        self.solver: Final[SparseSolver] = solver
+        self._precision: Final[csc_array] = prec
 
         if self.solver == SparseSolver.CHOLMOD:
-            self._W = cholmod_cholesky(csc_matrix(prec))
+            self._W: LUObject | SparseCholeskyDecompositionOBject = cast(
+                SparseCholeskyDecompositionOBject, cholmod_cholesky(csc_matrix(prec))
+            )
 
         else:
             # Tells SuperLU that we have a symmetric matrix and we only want to pivot on the diagonal
-            splu_ = splu(
-                prec,
-                diag_pivot_thresh=0,
-                permc_spec="MMD_AT_PLUS_A",
-                options=dict(SymmetricMode=True),
+            splu_ = cast(
+                SuperLUObject,
+                splu(
+                    prec,
+                    diag_pivot_thresh=0,
+                    permc_spec="MMD_AT_PLUS_A",
+                    options=dict(SymmetricMode=True),
+                ),
             )
             if (splu_.perm_r != splu_.perm_c).any():
                 raise ValueError("W must be symmetric")
 
-            self._W = LUObject(
-                L=splu_.L.dot(diags(np.sqrt(splu_.U.diagonal()))),
-                Pr=csc_array(
-                    (
-                        np.ones(splu_.L.shape[0]),
-                        (splu_.perm_r, np.arange(splu_.L.shape[0])),
-                    )
+            self._W = LUObject(  # type: ignore
+                L=cast(
+                    SparseMatrixProtocol[csr_matrix, csc_matrix],
+                    splu_.L.dot(diags(np.sqrt(splu_.U.diagonal()))),  # type: ignore
+                ),
+                Pr=cast(
+                    SparseMatrixProtocol[csc_matrix, csr_matrix],
+                    csc_matrix(
+                        (
+                            np.ones(splu_.L.shape[0]),
+                            (splu_.perm_r, np.arange(splu_.L.shape[0])),
+                        )
+                    ),
                 ),
             )
 
-        self._rank = prec.shape[-1]  # must be full rank for cholesky
+        self._rank = cast(Tuple[int, ...], prec.shape)[
+            -1
+        ]  # must be full rank for cholesky
         self._shape = prec.shape
         self._allow_singular = False
 
     @property
-    def colorize_solve(self) -> Any:
-        if self.solver == SparseSolver.CHOLMOD:
-            return lambda x: self._W.apply_Pt(  # type: ignore
-                self._W.solve_Lt(x, False)  # type: ignore
-            )
-        return lambda x: self._W.Pr.T @ spsolve(csc_array(self._W.L.T), x)
+    def colorize_solve(self) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
+        w: LUObject | SparseCholeskyDecompositionOBject = self._W
+        if self._is_cholmod(w):
+            return lambda x: w.apply_Pt(w.solve_Lt(x, False))
+        else:
+            assert isinstance(w, LUObject)
+            return lambda x: w.solve_system(x)
 
     @cached_property
     def _covariance(self) -> csc_array:
-        return spsolve(self._precision, eye(self._precision.shape[0], format="csc"))
+        prec_shape: Tuple[int, ...] = cast(Tuple[int, ...], self._precision.shape)
+        return cast(
+            csc_array, spsolve(self._precision, eye(prec_shape[0], format="csc"))
+        )
 
-    def _whiten(self, x):
+    def _whiten(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
         raise NotImplementedError("Not implemented for sparse matrices")
 
     def _colorize(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -156,6 +221,11 @@ class CovViaSparsePrecision(Covariance):
         if samples.shape[0] == 1:
             return samples[0]
         return samples
+
+    def _is_cholmod(
+        self, obj: SparseCholeskyDecompositionOBject | LUObject
+    ) -> TypeGuard[SparseCholeskyDecompositionOBject]:
+        return self.solver == SparseSolver.CHOLMOD
 
 
 def multivariate_normal_sample_from_sparse_covariance(
@@ -196,19 +266,19 @@ def multivariate_normal_sample_from_sparse_covariance(
     rng = np.random.default_rng(random_state)
 
     # Compute size from the shape of Q plus the size parameter
-    gen_size = cast(Tuple[int, int], (size,) + (cov.shape[-1],))
+    gen_size = cast(Tuple[int, int], (size,) + (cov.shape[-1],))  # type: ignore
 
     # Sample Z from a standard multivariate normal distribution
-    Z = rng.standard_normal(gen_size)
+    _Z = rng.standard_normal(gen_size)
 
     # Colorize Z
-    Y = cast(NDArray[np.float64], cov.colorize(Z))
+    _y: NDArray[np.float64] = cast(NDArray[np.float64], cov.colorize(_Z))  # type: ignore
 
     # Add the mean vector to each sample if provided
     if mean is not None:
-        Y += mean
+        _y += mean  # type: ignore
 
-    return cast(NDArray[np.float64], Y)
+    return cast(NDArray[np.float64], _y)
 
 
 def multivariate_t_sample_from_sparse_covariance(
@@ -260,7 +330,7 @@ def multivariate_t_sample_from_sparse_covariance(
     )
     if loc is None:
         loc = np.zeros_like(z)
-    samples = loc + z / np.sqrt(x)[..., None]
+    samples = cast(NDArray[np.float64], loc + z / np.sqrt(x)[..., None])
     samples = _squeeze_output(samples)
 
-    return cast(NDArray[np.float64], samples)
+    return samples
