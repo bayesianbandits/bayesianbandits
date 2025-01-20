@@ -91,8 +91,6 @@ class TestCovViaSparsePrecision:
         with pytest.raises(ValueError):
             CovViaSparsePrecision(sp.csc_array(matrix), solver=SparseSolver.SUPERLU)
 
-        symmetric_but_zero_diagonal = np.array([[0.0, 2.0], [2.0, 0.0]])
-
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvn_sampling_against_scipy(self, precision_matrix, solver):
         sparse_cov = CovViaSparsePrecision(
@@ -105,7 +103,7 @@ class TestCovViaSparsePrecision:
         )
         scipy_samples = multivariate_normal.rvs(
             mean=None,
-            cov=scipy_cov,
+            cov=scipy_cov,  # type: ignore
             size=80000,
             random_state=0,  # type: ignore
         )

@@ -58,25 +58,22 @@ from typing import (
     Any,
     Generic,
     List,
+    Literal,
     Optional,
     Protocol,
+    Tuple,
     TypeVar,
     Union,
     cast,
+    overload,
 )
 
 import numpy as np
-from numpy.typing import NDArray
-from scipy.sparse import csc_array  # type: ignore
+from numpy.typing import ArrayLike, NDArray
+from scipy.sparse import csc_array, issparse  # type: ignore
 from typing_extensions import Self
 
 from ._arm import Arm
-from ._basebandit import _validate_arrays  # type: ignore
-from ._policy_decorators import (
-    _compute_arm_mean,  # type: ignore
-    _compute_arm_upper_bound,  # type: ignore
-    _draw_one_sample,  # type: ignore
-)
 from ._typing import DecayingLearner
 
 T = TypeVar("T")
@@ -549,6 +546,83 @@ class Agent(Generic[L, T, P]):
         self._inner.decay(X_decay, decay_rate=decay_rate)
 
 
+@overload
+def _validate_arrays(
+    X: Union[ArrayLike, csc_array],
+    y: Optional[ArrayLike],
+    /,
+    contextual: bool,
+    check_y: Literal[True] = True,
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]: ...
+
+
+@overload
+def _validate_arrays(
+    X: Union[ArrayLike, csc_array, None],
+    y: Literal[None],
+    /,
+    contextual: bool,
+    check_y: Literal[False] = False,
+) -> Tuple[NDArray[np.float64], None]: ...
+
+
+def _validate_arrays(
+    X: Union[ArrayLike, csc_array, None],
+    y: Optional[ArrayLike],
+    /,
+    contextual: bool,
+    check_y: bool = True,
+) -> Tuple[Union[NDArray[np.float64], csc_array], Optional[NDArray[np.float64]]]:
+    """Validate the `X` and `y` arrays.
+
+    Parameters
+    ----------
+    X : ArrayLike
+        Context for the bandit. Only provided when the @contextual
+        decorator is used. Otherwise, this position is used for `y`.
+    y : Optional[ArrayLike]
+        Reward for the bandit. Only provided when the @contextual
+        decorator is used. Otherwise, this position should be None.
+    contextual : bool
+        Whether the bandit is contextual.
+    check_y : bool, default=True
+        Whether to check the `y` array.
+
+    Returns
+    -------
+    Tuple[NDArray, NDArray]
+        Validated `X` and `y` arrays.
+    """
+    if check_y:
+        should_not_be_none_if_contextual = y
+    else:
+        should_not_be_none_if_contextual = X
+
+    if contextual and should_not_be_none_if_contextual is None:
+        raise ValueError("Context must be provided for a contextual bandit.")
+    if not contextual and should_not_be_none_if_contextual is not None:
+        raise ValueError("Context must be None for a non-contextual bandit.")
+
+    if contextual:
+        X = np.atleast_2d(cast(ArrayLike, X)) if not issparse(X) else X
+        y = np.atleast_1d(cast(ArrayLike, y)) if check_y else None
+    else:
+        y = np.atleast_1d(cast(ArrayLike, X)) if check_y else None
+        X = (  # type: ignore
+            np.ones_like(y, dtype=float)[:, np.newaxis]
+            if check_y
+            else np.array([[1]], dtype=float)
+        )
+
+    if check_y:
+        if X.shape[0] != y.shape[0]:  # type: ignore
+            raise ValueError(
+                "The number of rows in `X` must match the number of rows in `y`."
+            )
+    assert isinstance(X, (np.ndarray, csc_array))  # for the type checker
+    return X, y
+
+
 class EpsilonGreedy:
     """
     Policy object for epsilon-greedy.
@@ -748,3 +822,36 @@ class UpperConfidenceBound:
         )
 
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
+
+
+def _draw_one_sample(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+) -> NDArray[np.float64]:
+    """Draw one sample from the posterior distribution for the arm."""
+    return arm.sample(X, size=1).squeeze(axis=0)
+
+
+def _compute_arm_upper_bound(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+    *,
+    alpha: float = 0.68,
+    samples: int = 1000,
+) -> np.float64:
+    """Compute the upper bound of a one-sided credible interval with size
+    `alpha` from the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+
+    return np.quantile(posterior_samples, q=alpha, axis=0)  # type: ignore
+
+
+def _compute_arm_mean(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+    *,
+    samples: int = 1000,
+) -> np.float64:
+    """Compute the mean of the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+    return np.mean(posterior_samples, axis=0)
