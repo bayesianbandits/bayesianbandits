@@ -18,8 +18,8 @@ allows you to use any scikit-learn estimator that supports the `partial_fit`
 and `sample` methods as an arm in a bandit. Restless bandits also require the
 `decay` method.
 
-The Agent API found in `bayesianbandits.api` is reasonably stable and is
-currently used in production.
+The Agent API found in `bayesianbandits.api` is stable and is battle-tested in
+production environments.
 
 Agent API
 =========
@@ -41,46 +41,8 @@ underlying code. Both are available for backwards compatibility.
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
-
-Bandit and Arm Classes
-======================
-
-The `Arm` class is the base class for all arms in a bandit. Its constructor
-takes two arguments, `action_function` and `reward_function`, which represent
-the action taken by the `pull` method of the arm and the mechanism for computing
-the reward from the outcome of the action.
-
-.. autosummary::
-    :toctree: _autosummary
-
-    Bandit
     Arm
 
-
-Bandit Decorators
-=================
-
-These class decorators can be used to specialize `Bandit` subclasses for
-particular problems.
-
-.. autosummary::
-    :toctree: _autosummary
-
-    contextual
-    restless
-
-Policies
-========
-
-These functions can be used to create policy functions for bandits. They should
-be passed to the `policy` argument of the `bandit` decorator.
-
-.. autosummary::
-    :toctree: _autosummary
-
-    epsilon_greedy
-    thompson_sampling
-    upper_confidence_bound
 
 Estimators
 ==========
@@ -114,26 +76,15 @@ These are custom exceptions raised by the bandit classes.
 
 """
 
-
 from ._arm import Arm
-from ._basebandit import (
-    Bandit,
-    DelayedRewardException,
-    DelayedRewardWarning,
-    contextual,
-    restless,
-)
+
 from ._estimators import (
     DirichletClassifier,
     GammaRegressor,
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
-from ._policy_decorators import (
-    epsilon_greedy,
-    thompson_sampling,
-    upper_confidence_bound,
-)
+
 from .api import (
     Agent,
     ContextualAgent,

@@ -71,12 +71,6 @@ from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Self
 
 from ._arm import Arm
-from ._basebandit import _validate_arrays  # type: ignore
-from ._policy_decorators import (
-    _compute_arm_mean,  # type: ignore
-    _compute_arm_upper_bound,  # type: ignore
-    _draw_one_sample,  # type: ignore
-)
 from ._typing import DecayingLearner
 
 T = TypeVar("T")
@@ -303,8 +297,7 @@ class ContextualAgent(Generic[L, T, P]):
         List[ActionToken]
             List of action tokens for the pulled arms.
         """
-        X_pull, _ = _validate_arrays(X, None, contextual=True, check_y=False)
-        arms = self.policy(self.arms, X_pull, self.rng)
+        arms = self.policy(self.arms, X, self.rng)
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms]
 
@@ -320,8 +313,12 @@ class ContextualAgent(Generic[L, T, P]):
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
-        X_updated, y_update = _validate_arrays(X, y, contextual=True, check_y=True)
-        self.arm_to_update.update(X_updated, y_update)
+        assert X.shape is not None, "X must be a 2D array."
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                "The number of rows in `X` must match the number of rows in `y`."
+            )
+        self.arm_to_update.update(X, y)
 
     def decay(
         self,
@@ -338,9 +335,8 @@ class ContextualAgent(Generic[L, T, P]):
             Decay rate to use for decaying the arm. If None, the decay rate
             of the arm's learner is used.
         """
-        X_decay, _ = _validate_arrays(X, None, contextual=True, check_y=False)
         for arm in self.arms:
-            arm.decay(X_decay, decay_rate=decay_rate)
+            arm.decay(X, decay_rate=decay_rate)
 
 
 class Agent(Generic[L, T, P]):
@@ -522,8 +518,7 @@ class Agent(Generic[L, T, P]):
         List[ActionToken]
             List containing the action token for the pulled arm.
         """
-        X_pull, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        return self._inner.pull(X_pull)
+        return self._inner.pull(np.array([[1]], dtype=np.float64))
 
     def update(self, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with an observed reward.
@@ -533,8 +528,8 @@ class Agent(Generic[L, T, P]):
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
-        X_update, y_update = _validate_arrays(y, None, contextual=False, check_y=True)
-        self._inner.update(X_update, y_update)
+        X_update: NDArray[np.float64] = np.ones_like(y, dtype=np.float64)[:, np.newaxis]
+        self._inner.update(X_update, y)
 
     def decay(self, decay_rate: Optional[float] = None) -> None:
         """Decay all arms of the bandit.
@@ -545,8 +540,7 @@ class Agent(Generic[L, T, P]):
             Decay rate to use for decaying the arm. If None, the decay rate
             of the arm's learner is used.
         """
-        X_decay, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        self._inner.decay(X_decay, decay_rate=decay_rate)
+        self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
 class EpsilonGreedy:
@@ -748,3 +742,36 @@ class UpperConfidenceBound:
         )
 
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
+
+
+def _draw_one_sample(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+) -> NDArray[np.float64]:
+    """Draw one sample from the posterior distribution for the arm."""
+    return arm.sample(X, size=1).squeeze(axis=0)
+
+
+def _compute_arm_upper_bound(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+    *,
+    alpha: float = 0.68,
+    samples: int = 1000,
+) -> np.float64:
+    """Compute the upper bound of a one-sided credible interval with size
+    `alpha` from the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+
+    return np.quantile(posterior_samples, q=alpha, axis=0)  # type: ignore
+
+
+def _compute_arm_mean(
+    arm: Arm,
+    X: Union[NDArray[np.float64], csc_array],
+    *,
+    samples: int = 1000,
+) -> np.float64:
+    """Compute the mean of the posterior distribution for the arm."""
+    posterior_samples = arm.sample(X, size=samples)
+    return np.mean(posterior_samples, axis=0)

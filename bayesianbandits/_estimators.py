@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
 from scipy.sparse import csc_array, csc_matrix, diags, eye
-from scipy.sparse.linalg import splu, use_solver
+from scipy.sparse.linalg import splu
 from scipy.stats import (
     Covariance,
     dirichlet,
@@ -580,6 +580,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         else:
             self.random_state_ = self.random_state
 
+        assert X.shape is not None  # for the type checker
         self.n_features_ = X.shape[1]
         self.coef_ = np.zeros(self.n_features_)
         if self.sparse:
@@ -614,6 +615,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         # Apply the learning rate to the new data, if there are multiple observations
         # in the batch. This is done to ensure that one-at-a-time updates are
         # equivalent to batch updates.
+        assert X.shape is not None  # for the type checker
         if X.shape[0] > 1:
             obs_decays = np.flip(
                 np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
@@ -624,6 +626,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         else:
             obs_decays = np.array([1.0])
 
+        assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
 
         # Update the inverse covariance matrix
@@ -746,6 +749,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         if decay_rate is None:
             decay_rate = self.learning_rate
 
+        assert X.shape is not None  # for the type checker
         prior_decay = decay_rate ** X.shape[0]
 
         # Decay the prior without making an update. Because we're only
@@ -889,6 +893,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         else:
             self.random_state_ = self.random_state
 
+        assert X.shape is not None  # for the type checker
         self.n_features_ = X.shape[1]
         if np.isscalar(self.mu):
             self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float64)
@@ -934,6 +939,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Apply the learning rate to the new data, if there are multiple observations
         # in the batch. This is done to ensure that one-at-a-time updates are
         # equivalent to batch updates.
+        assert X.shape is not None  # for the type checker
         if X.shape[0] > 1:
             obs_decays = np.flip(
                 np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
@@ -944,6 +950,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         else:
             obs_decays = np.array([1.0], dtype=np.float64)
 
+        assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
 
         # Update the inverse covariance matrix
@@ -1070,6 +1077,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if decay_rate is None:
             decay_rate = self.learning_rate
 
+        assert X.shape is not None  # for the type checker
         prior_decay = decay_rate ** X.shape[0]
 
         # decay only increases the variance, so we only need to update the
