@@ -10,10 +10,9 @@ build:
   tools:
     python: "3.10"
   jobs:
-    post_create_environment:
-      - python -m pip install poetry
     post_install:
-      - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH python -m poetry install --without cholmod
+      - pip install uv
+      - UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH uv sync --frozen --no-group cholmod
 
 # Build documentation in the docs/ directory with Sphinx
 sphinx:
