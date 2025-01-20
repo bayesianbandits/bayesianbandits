@@ -252,3 +252,18 @@ class TestBandits:
                 ],
                 EpsilonGreedy(),
             )
+
+
+def test_contextual_agent_update_mismatched_shapes() -> None:
+    with pytest.raises(
+        ValueError,
+        match="The number of rows in `X` must match the number of rows in `y`.",
+    ):
+        ContextualAgent(
+            [
+                Arm(0, None, learner=NormalInverseGammaRegressor()),
+                Arm(1, None, learner=NormalInverseGammaRegressor()),
+            ],
+            EpsilonGreedy(),
+            random_seed=0,
+        ).update(np.array([[1.0]]), np.array([1.0, 2.0]))
