@@ -58,19 +58,16 @@ from typing import (
     Any,
     Generic,
     List,
-    Literal,
     Optional,
     Protocol,
-    Tuple,
     TypeVar,
     Union,
     cast,
-    overload,
 )
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
-from scipy.sparse import csc_array, issparse  # type: ignore
+from numpy.typing import NDArray
+from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Self
 
 from ._arm import Arm
@@ -300,8 +297,7 @@ class ContextualAgent(Generic[L, T, P]):
         List[ActionToken]
             List of action tokens for the pulled arms.
         """
-        X_pull, _ = _validate_arrays(X, None, contextual=True, check_y=False)
-        arms = self.policy(self.arms, X_pull, self.rng)
+        arms = self.policy(self.arms, X, self.rng)
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms]
 
@@ -317,8 +313,12 @@ class ContextualAgent(Generic[L, T, P]):
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
-        X_updated, y_update = _validate_arrays(X, y, contextual=True, check_y=True)
-        self.arm_to_update.update(X_updated, y_update)
+        assert X.shape is not None, "X must be a 2D array."
+        if X.shape[0] != y.shape[0]:
+            raise ValueError(
+                "The number of rows in `X` must match the number of rows in `y`."
+            )
+        self.arm_to_update.update(X, y)
 
     def decay(
         self,
@@ -335,9 +335,8 @@ class ContextualAgent(Generic[L, T, P]):
             Decay rate to use for decaying the arm. If None, the decay rate
             of the arm's learner is used.
         """
-        X_decay, _ = _validate_arrays(X, None, contextual=True, check_y=False)
         for arm in self.arms:
-            arm.decay(X_decay, decay_rate=decay_rate)
+            arm.decay(X, decay_rate=decay_rate)
 
 
 class Agent(Generic[L, T, P]):
@@ -519,8 +518,7 @@ class Agent(Generic[L, T, P]):
         List[ActionToken]
             List containing the action token for the pulled arm.
         """
-        X_pull, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        return self._inner.pull(X_pull)
+        return self._inner.pull(np.array([[1]], dtype=np.float64))
 
     def update(self, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with an observed reward.
@@ -530,8 +528,8 @@ class Agent(Generic[L, T, P]):
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
-        X_update, y_update = _validate_arrays(y, None, contextual=False, check_y=True)
-        self._inner.update(X_update, y_update)
+        X_update: NDArray[np.float64] = np.ones_like(y, dtype=np.float64)[:, np.newaxis]
+        self._inner.update(X_update, y)
 
     def decay(self, decay_rate: Optional[float] = None) -> None:
         """Decay all arms of the bandit.
@@ -542,85 +540,7 @@ class Agent(Generic[L, T, P]):
             Decay rate to use for decaying the arm. If None, the decay rate
             of the arm's learner is used.
         """
-        X_decay, _ = _validate_arrays(None, None, contextual=False, check_y=False)
-        self._inner.decay(X_decay, decay_rate=decay_rate)
-
-
-@overload
-def _validate_arrays(
-    X: Union[ArrayLike, csc_array],
-    y: Optional[ArrayLike],
-    /,
-    contextual: bool,
-    check_y: Literal[True] = True,
-) -> Tuple[NDArray[np.float64], NDArray[np.float64]]: ...
-
-
-@overload
-def _validate_arrays(
-    X: Union[ArrayLike, csc_array, None],
-    y: Literal[None],
-    /,
-    contextual: bool,
-    check_y: Literal[False] = False,
-) -> Tuple[NDArray[np.float64], None]: ...
-
-
-def _validate_arrays(
-    X: Union[ArrayLike, csc_array, None],
-    y: Optional[ArrayLike],
-    /,
-    contextual: bool,
-    check_y: bool = True,
-) -> Tuple[Union[NDArray[np.float64], csc_array], Optional[NDArray[np.float64]]]:
-    """Validate the `X` and `y` arrays.
-
-    Parameters
-    ----------
-    X : ArrayLike
-        Context for the bandit. Only provided when the @contextual
-        decorator is used. Otherwise, this position is used for `y`.
-    y : Optional[ArrayLike]
-        Reward for the bandit. Only provided when the @contextual
-        decorator is used. Otherwise, this position should be None.
-    contextual : bool
-        Whether the bandit is contextual.
-    check_y : bool, default=True
-        Whether to check the `y` array.
-
-    Returns
-    -------
-    Tuple[NDArray, NDArray]
-        Validated `X` and `y` arrays.
-    """
-    if check_y:
-        should_not_be_none_if_contextual = y
-    else:
-        should_not_be_none_if_contextual = X
-
-    if contextual and should_not_be_none_if_contextual is None:
-        raise ValueError("Context must be provided for a contextual bandit.")
-    if not contextual and should_not_be_none_if_contextual is not None:
-        raise ValueError("Context must be None for a non-contextual bandit.")
-
-    if contextual:
-        X = np.atleast_2d(cast(ArrayLike, X)) if not issparse(X) else X
-        y = np.atleast_1d(cast(ArrayLike, y)) if check_y else None
-    else:
-        y = np.atleast_1d(cast(ArrayLike, X)) if check_y else None
-        X = (  # type: ignore
-            np.ones_like(y, dtype=float)[:, np.newaxis]
-            if check_y
-            else np.array([[1]], dtype=float)
-        )
-
-    if check_y:
-        if X.shape[0] != y.shape[0]:  # type: ignore
-            raise ValueError(
-                "The number of rows in `X` must match the number of rows in `y`."
-            )
-    assert isinstance(X, (np.ndarray, csc_array))  # for the type checker
-    return X, y
+        self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
 class EpsilonGreedy:
