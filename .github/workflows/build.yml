@@ -11,30 +11,27 @@ jobs:
     steps:
       - uses: actions/checkout@v3.3.0
 
-      - name: Install Python
-        uses: actions/setup-python@v4.5.0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: 3.9
+          enable-cache: true
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
 
-      - name: Install Poetry
-        run: pip install poetry
-
-      - name: Set Poetry config
-        run: |
-          poetry config virtualenvs.in-project false
-          poetry config virtualenvs.path ~/.virtualenvs
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y swig libsuitesparse-dev 
-          poetry install
-        if: steps.cache.outputs.cache-hit != 'true'
+          sudo apt-get install -y swig libsuitesparse-dev
+          uv sync
 
       - name: Run tests
-        run: poetry run pytest
+        run: uv run pytest --cov=./ --cov-report=xml
 
       - name: Build and Publish to PyPI
         env:
-          PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          poetry config pypi-token.pypi $PYPI_TOKEN
-          poetry publish --build
+          uv build
+          uv publish
