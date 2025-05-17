@@ -85,6 +85,15 @@ class PolicyProtocol(Protocol[L, T]):
         rng: np.random.Generator,
     ) -> List[Arm[L, T]]: ...
 
+    def update(
+        self,
+        arm: Arm[L, T],
+        X: Union[NDArray[np.float64], csc_array],
+        y: NDArray[np.float64],
+        all_arms: List[Arm[L, T]],
+        rng: np.random.Generator,
+    ) -> None: ...
+
 
 P = TypeVar("P", bound=PolicyProtocol[Any, Any])
 
@@ -318,7 +327,7 @@ class ContextualAgent(Generic[L, T, P]):
             raise ValueError(
                 "The number of rows in `X` must match the number of rows in `y`."
             )
-        self.arm_to_update.update(X, y)
+        self.policy.update(self.arm_to_update, X, y, self.arms, self.rng)
 
     def decay(
         self,
@@ -543,7 +552,20 @@ class Agent(Generic[L, T, P]):
         self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
-class EpsilonGreedy:
+class PolicyDefaultUpdate:
+    def update(
+        self,
+        arm: Arm[L, T],
+        X: Union[NDArray[np.float64], csc_array],
+        y: NDArray[np.float64],
+        all_arms: List[Arm[L, T]],
+        rng: np.random.Generator,
+    ) -> None:
+        """Default update implementation that simply updates the arm."""
+        arm.update(X, y)
+
+
+class EpsilonGreedy(PolicyDefaultUpdate):
     """
     Policy object for epsilon-greedy.
 
@@ -617,7 +639,7 @@ class EpsilonGreedy:
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
 
-class ThompsonSampling:
+class ThompsonSampling(PolicyDefaultUpdate):
     """
     Policy object for Thompson sampling.
 
@@ -672,7 +694,7 @@ class ThompsonSampling:
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
 
-class UpperConfidenceBound:
+class UpperConfidenceBound(PolicyDefaultUpdate):
     """
     Policy object for upper confidence bound.
 
