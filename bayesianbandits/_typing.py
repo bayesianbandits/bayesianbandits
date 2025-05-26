@@ -28,7 +28,12 @@ class Learner(Protocol):
         size: int = 1,
     ) -> NDArray[np.float64]: ...
 
-    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]) -> "Learner": ...
+    def partial_fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> "Learner": ...
 
     def set_params(self, **params: Any) -> "Learner": ...
 

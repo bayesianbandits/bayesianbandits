@@ -68,7 +68,7 @@ class Arm(Generic[LT, T]):
     ...     def sample(self, X, size=1):
     ...         np.random.seed(0)
     ...         return np.random.normal(size=size)
-    ...     def partial_fit(self, X, y):
+    ...     def partial_fit(self, X, y, sample_weight=None):
     ...         pass
     >>> learner = MyLearner()
     >>> arm = Arm("Action taken.", reward_function, learner)
@@ -109,7 +109,10 @@ class Arm(Generic[LT, T]):
 
     @requires_learner
     def update(
-        self, X: Union[csc_array, NDArray[np.float64]], y: NDArray[np.float64]
+        self,
+        X: Union[csc_array, NDArray[np.float64]],
+        y: NDArray[np.float64],
+        sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None:
         """Update the learner.
 
@@ -118,7 +121,7 @@ class Arm(Generic[LT, T]):
         """
         assert self.learner is not None  # for type checker
         # sparse learners are supported by some, but not all learners
-        self.learner.partial_fit(X, y)  # type: ignore
+        self.learner.partial_fit(X, y, sample_weight)  # type: ignore
 
     @requires_learner
     def decay(

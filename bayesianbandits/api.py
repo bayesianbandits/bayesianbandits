@@ -614,9 +614,8 @@ class EpsilonGreedy(PolicyDefaultUpdate):
         self, arm_summary: NDArray[np.float64], rng: np.random.Generator
     ) -> NDArray[np.float64]:
         # Pick random rows to explore
-        choice_idx_to_explore = cast(
-            NDArray[np.bool_], rng.random(size=arm_summary.shape[1]) < self.epsilon
-        )
+        choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
+
         # Within the rows to explore, pick a random column and set to np.inf
         for idx, explore in enumerate(choice_idx_to_explore):
             if explore:
@@ -767,7 +766,7 @@ class UpperConfidenceBound(PolicyDefaultUpdate):
 
 
 def _draw_one_sample(
-    arm: Arm,
+    arm: Arm[L, T],
     X: Union[NDArray[np.float64], csc_array],
 ) -> NDArray[np.float64]:
     """Draw one sample from the posterior distribution for the arm."""
@@ -775,7 +774,7 @@ def _draw_one_sample(
 
 
 def _compute_arm_upper_bound(
-    arm: Arm,
+    arm: Arm[L, T],
     X: Union[NDArray[np.float64], csc_array],
     *,
     alpha: float = 0.68,
@@ -789,7 +788,7 @@ def _compute_arm_upper_bound(
 
 
 def _compute_arm_mean(
-    arm: Arm,
+    arm: Arm[L, T],
     X: Union[NDArray[np.float64], csc_array],
     *,
     samples: int = 1000,
