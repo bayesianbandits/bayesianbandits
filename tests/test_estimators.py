@@ -646,3 +646,374 @@ def test_gamma_regressor_manual_decay(
     clf.decay(X, decay_rate=0.9)
 
     assert_almost_equal(clf.predict(X), pre_decay)
+
+
+def test_gamma_regressor_fit_with_weights(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test that sample weights affect the posterior correctly."""
+    clf1 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf2 = GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    # Uniform weights (implicit)
+    clf1.fit(X, y)
+
+    # Non-uniform weights
+    weights = np.array([2.0, 1.0, 0.5, 1.0, 2.0, 1.0, 0.5, 1.0, 2.0])
+    clf2.fit(X, y, sample_weight=weights)
+
+    # Posteriors should be different
+    assert not np.allclose(clf1.coef_[1], clf2.coef_[1])
+    assert not np.allclose(clf1.coef_[2], clf2.coef_[2])
+    assert not np.allclose(clf1.coef_[3], clf2.coef_[3])
+
+    # Check specific values for weighted case
+    # For group 1: y=[1,1,2], weights=[2.0, 1.0, 0.5]
+    # Prior: [alpha=1, beta=1]
+    # Update: alpha += 2.0*1 + 1.0*1 + 0.5*2 = 4.0
+    #         beta += 2.0 + 1.0 + 0.5 = 3.5
+    # Result: [5.0, 4.5]
+    assert_almost_equal(clf2.coef_[1], np.array([5.0, 4.5]))
+
+
+def test_gamma_regressor_weight_equals_duplication(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test that weight=2 is equivalent to seeing a sample twice."""
+    # Test with a single sample
+    clf1 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X_double = np.array([1, 1]).reshape(-1, 1)
+    y_double = np.array([3, 3])
+    clf1.fit(X_double, y_double)
+
+    clf2 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X_single = np.array([1]).reshape(-1, 1)
+    y_single = np.array([3])
+    clf2.fit(X_single, y_single, sample_weight=np.array([2.0]))
+
+    assert_almost_equal(clf1.coef_[1], clf2.coef_[1])
+
+    # Test with multiple samples
+    clf3 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X_many = np.array([1, 1, 2, 2, 3, 3]).reshape(-1, 1)
+    y_many = np.array([2, 2, 3, 3, 4, 4])
+    clf3.fit(X_many, y_many)
+
+    clf4 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X_few = np.array([1, 2, 3]).reshape(-1, 1)
+    y_few = np.array([2, 3, 4])
+    clf4.fit(X_few, y_few, sample_weight=np.array([2.0, 2.0, 2.0]))
+
+    assert_almost_equal(clf3.coef_[1], clf4.coef_[1])
+    assert_almost_equal(clf3.coef_[2], clf4.coef_[2])
+    assert_almost_equal(clf3.coef_[3], clf4.coef_[3])
+
+
+def test_gamma_regressor_zero_weights(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test that samples with weight=0 are effectively ignored."""
+    clf1 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    # Only fit on subset
+    X_subset = np.array([1, 1, 2, 2, 3, 3]).reshape(-1, 1)
+    y_subset = np.array([1, 2, 2, 3, 3, 3])
+    clf1.fit(X_subset, y_subset)
+
+    clf2 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    # Fit on full data but with zeros for excluded samples
+    weights = np.array([1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0])
+    clf2.fit(X, y, sample_weight=weights)
+
+    assert_almost_equal(clf1.coef_[1], clf2.coef_[1])
+    assert_almost_equal(clf1.coef_[2], clf2.coef_[2])
+    assert_almost_equal(clf1.coef_[3], clf2.coef_[3])
+
+
+def test_gamma_regressor_all_zero_weights(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test edge case where all weights are zero."""
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    weights = np.zeros(len(y))
+    clf.fit(X, y, sample_weight=weights)
+
+    # Should only have the prior
+    assert_almost_equal(clf.coef_[1], np.array([1.0, 1.0]))
+    assert_almost_equal(clf.coef_[2], np.array([1.0, 1.0]))
+    assert_almost_equal(clf.coef_[3], np.array([1.0, 1.0]))
+
+
+def test_gamma_regressor_partial_fit_with_weights(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test partial_fit with sample weights."""
+    # Test initial partial_fit
+    clf1 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    weights = np.array([2.0, 1.0, 0.5, 1.0, 2.0, 1.0, 0.5, 1.0, 2.0])
+    clf1.partial_fit(X, y, sample_weight=weights)
+
+    # Should be same as fit with weights
+    clf2 = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf2.fit(X, y, sample_weight=weights)
+
+    assert_almost_equal(clf1.coef_[1], clf2.coef_[1])
+    assert_almost_equal(clf1.coef_[2], clf2.coef_[2])
+    assert_almost_equal(clf1.coef_[3], clf2.coef_[3])
+
+    # Test sequential partial_fit with learning_rate=1 (no decay)
+    clf3 = GammaRegressor(
+        alpha=1,
+        beta=1,
+        learning_rate=1.0,  # No decay
+        random_state=0,
+    )
+    # First batch
+    X1 = X[:5]
+    y1 = y[:5]
+    w1 = weights[:5]
+    clf3.partial_fit(X1, y1, sample_weight=w1)
+
+    # Second batch
+    X2 = X[5:]
+    y2 = y[5:]
+    w2 = weights[5:]
+    clf3.partial_fit(X2, y2, sample_weight=w2)
+
+    # With learning_rate=1, sequential partial_fit should equal single fit
+    clf4 = GammaRegressor(alpha=1, beta=1, learning_rate=1.0, random_state=0)
+    clf4.fit(X, y, sample_weight=weights)
+
+    assert_almost_equal(clf3.coef_[1], clf4.coef_[1])
+    assert_almost_equal(clf3.coef_[2], clf4.coef_[2])
+    assert_almost_equal(clf3.coef_[3], clf4.coef_[3])
+
+
+def test_gamma_regressor_weights_learning_rate_interaction() -> None:
+    """Test that sample weights and learning_rate interact correctly."""
+    # Create simple data
+    X = np.array([1, 1, 1]).reshape(-1, 1)
+    y = np.array([2, 4, 6])
+
+    # Test with learning_rate < 1
+    clf1 = GammaRegressor(alpha=1, beta=1, learning_rate=0.5, random_state=0)
+    weights = np.array([2.0, 1.0, 0.5])
+    clf1.fit(X, y, sample_weight=weights)
+
+    # The decay applies to all values including prior
+    # Expected calculation:
+    # Stack: prior [1, 1] + weighted data
+    #        [[2.0*2, 2.0], [1.0*4, 1.0], [0.5*6, 0.5]]
+    #        = [[1, 1], [4, 2], [4, 1], [3, 0.5]]
+    # Decay indices for 4 elements: [3, 2, 1, 0]
+    # Decay factors: [0.5^3, 0.5^2, 0.5^1, 0.5^0] = [0.125, 0.25, 0.5, 1.0]
+    # Result: [1, 1]*0.125 + [4, 2]*0.25 + [4, 1]*0.5 + [3, 0.5]*1.0
+    #       = [0.125, 0.125] + [1, 0.5] + [2, 0.5] + [3, 0.5]
+    #       = [6.125, 1.625]
+    assert_almost_equal(clf1.coef_[1], np.array([6.125, 1.625]))
+
+
+def test_gamma_regressor_importance_sampling_scenario() -> None:
+    """Test a simple importance sampling scenario for count data."""
+    # Simulate biased sampling where low counts are oversampled
+    # True rate: 5.0 (Poisson parameter)
+    # Sampling is biased toward lower counts
+    np.random.seed(42)
+
+    # Generate biased samples
+    n_samples = 100
+    true_rate = 5.0
+
+    # Generate true Poisson samples then apply biased selection
+    true_samples = np.random.poisson(true_rate, n_samples * 3)
+    # Bias: prefer lower counts (inverse probability)
+    selection_probs = 1.0 / (true_samples + 1)
+    selection_probs /= selection_probs.sum()
+    selected_idx = np.random.choice(
+        len(true_samples), size=n_samples, p=selection_probs
+    )
+    y_biased = true_samples[selected_idx]
+    X_biased = np.ones((n_samples, 1))
+
+    # Calculate importance weights (simplified)
+    # Weight higher counts more to correct for bias
+    importance_weights = y_biased / y_biased.mean()
+
+    # Fit with importance weights
+    clf_weighted = GammaRegressor(alpha=0.1, beta=0.1, random_state=0)
+    clf_weighted.fit(X_biased, y_biased, sample_weight=importance_weights)
+
+    # Fit without weights (biased)
+    clf_biased = GammaRegressor(alpha=0.1, beta=0.1, random_state=0)
+    clf_biased.fit(X_biased, y_biased)
+
+    # The weighted estimate should be higher (closer to true rate)
+    weighted_pred = clf_weighted.predict(np.array([[1]]))[0]
+    biased_pred = clf_biased.predict(np.array([[1]]))[0]
+
+    # Biased estimate should underestimate the true rate
+    assert biased_pred < true_rate
+    # Weighted estimate should be closer to true rate
+    assert abs(weighted_pred - true_rate) < abs(biased_pred - true_rate)
+
+
+def test_gamma_regressor_weight_validation() -> None:
+    """Test that weight validation works correctly."""
+    X = np.array([[1], [2], [3]])
+    y = np.array([1, 2, 3])
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    # Wrong shape should raise ValueError
+    with pytest.raises(ValueError, match="sample_weight.shape"):
+        clf.fit(X, y, sample_weight=np.array([1.0, 2.0]))  # Too few weights
+
+    with pytest.raises(ValueError, match="sample_weight.shape"):
+        clf.fit(X, y, sample_weight=np.array([1.0, 2.0, 3.0, 4.0]))  # Too many weights
+
+
+def test_gamma_regressor_fractional_weights() -> None:
+    """Test that fractional weights work correctly."""
+    X = np.array([1, 1, 2, 2]).reshape(-1, 1)
+    y = np.array([3, 5, 2, 4])
+
+    # Use fractional weights
+    weights = np.array([0.7, 1.3, 0.4, 1.6])
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y, sample_weight=weights)
+
+    # Check the math
+    # For X=1: prior [1,1] + [0.7*3, 0.7] + [1.3*5, 1.3]
+    #        = [1,1] + [2.1, 0.7] + [6.5, 1.3] = [9.6, 3.0]
+    # For X=2: prior [1,1] + [0.4*2, 0.4] + [1.6*4, 1.6]
+    #        = [1,1] + [0.8, 0.4] + [6.4, 1.6] = [8.2, 3.0]
+    assert_almost_equal(clf.coef_[1], np.array([9.6, 3.0]))
+    assert_almost_equal(clf.coef_[2], np.array([8.2, 3.0]))
+
+
+def test_gamma_regressor_predict_with_weights() -> None:
+    """Test that predictions are correct with weighted training."""
+    X = np.array([1, 1, 1]).reshape(-1, 1)
+    y = np.array([2, 4, 6])
+    weights = np.array([1.0, 2.0, 1.0])
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    clf.fit(X, y, sample_weight=weights)
+
+    # Prior: [1, 1]
+    # Updates: [1*2, 1] + [2*4, 2] + [1*6, 1] = [2, 1] + [8, 2] + [6, 1]
+    # Total: [17, 5]
+    # Prediction: 17/5 = 3.4
+    assert_almost_equal(clf.predict(X), np.array([3.4, 3.4, 3.4]))
+
+
+def test_gamma_regressor_sample_with_weights() -> None:
+    """Test that sampling works correctly with weighted training."""
+    X = np.array([1]).reshape(-1, 1)
+    y = np.array([10])
+    weights = np.array([5.0])  # Strong weight
+
+    clf1 = GammaRegressor(alpha=1, beta=1, random_state=42)
+    clf1.fit(X, y, sample_weight=weights)
+
+    clf2 = GammaRegressor(alpha=1, beta=1, random_state=42)
+    clf2.fit(X, y)  # No weight
+
+    # Sample from both
+    samples1 = clf1.sample(X, size=1000).flatten()
+    samples2 = clf2.sample(X, size=1000).flatten()
+
+    # The weighted model should have lower variance (more confident)
+    assert np.var(samples1) < np.var(samples2)
+
+    # Both should have reasonable means
+    assert 8 < np.mean(samples1) < 12
+    assert 5 < np.mean(samples2) < 15
+
+
+def test_gamma_regressor_decay_with_weights() -> None:
+    """Test that decay works correctly after weighted training."""
+    X = np.array([1]).reshape(-1, 1)
+    y = np.array([10])
+    weights = np.array([2.0])
+
+    clf = GammaRegressor(alpha=1, beta=1, learning_rate=0.9, random_state=0)
+    clf.fit(X, y, sample_weight=weights)
+
+    # With learning_rate=0.9:
+    # Stack: [[1, 1], [20, 2]]
+    # Decay: [0.9^1, 0.9^0] = [0.9, 1.0]
+    # Result: [1, 1]*0.9 + [20, 2]*1.0 = [0.9, 0.9] + [20, 2] = [20.9, 2.9]
+    assert_almost_equal(clf.coef_[1], np.array([20.9, 2.9]))
+
+    # Predict before decay
+    pred_before = clf.predict(X)[0]
+    assert_almost_equal(pred_before, 20.9 / 2.9)  # ≈ 7.2069
+
+    # Apply decay
+    clf.decay(X, decay_rate=0.5)
+
+    # After decay: [20.9, 2.9] * 0.5 = [10.45, 1.45]
+    assert_almost_equal(clf.coef_[1], np.array([10.45, 1.45]))
+
+    # Prediction should remain the same (decay affects uncertainty, not mean)
+    pred_after = clf.predict(X)[0]
+    assert_almost_equal(pred_after, 10.45 / 1.45)  # ≈ 7.2069
+
+
+def test_gamma_regressor_negative_weights() -> None:
+    """Test behavior with negative weights."""
+    X = np.array([1, 1]).reshape(-1, 1)
+    y = np.array([5, 5])
+
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+
+    # Negative weights could be mathematically valid (like negative observations)
+    # but might not make sense for importance sampling
+    # Test that it at least doesn't crash
+    weights = np.array([1.0, -0.5])
+    clf.fit(X, y, sample_weight=weights)
+
+    # The update would be: [1,1] + [1*5, 1] + [-0.5*5, -0.5]
+    #                    = [1,1] + [5, 1] + [-2.5, -0.5]
+    #                    = [3.5, 1.5]
+    assert_almost_equal(clf.coef_[1], np.array([3.5, 1.5]))
+
+
+def test_gamma_regressor_weight_dtype_conversion() -> None:
+    """Test that integer weights are properly converted to float."""
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X = np.array([[1], [2]])
+    y = np.array([3, 6])
+    weights = np.array([1, 2], dtype=np.int32)  # Integer weights
+
+    # Should work without error
+    clf.fit(X, y, sample_weight=weights)
+
+    # Verify the calculations are correct
+    # X=1: [1,1] + [1*3, 1] = [4, 2]
+    # X=2: [1,1] + [2*6, 2] = [13, 3]
+    assert_almost_equal(clf.coef_[1], np.array([4.0, 2.0]))
+    assert_almost_equal(clf.coef_[2], np.array([13.0, 3.0]))
+
+
+def test_gamma_regressor_extreme_weights() -> None:
+    """Test numerical stability with very large/small weights."""
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
+    X = np.array([[1], [1]])
+    y = np.array([2, 4])
+    weights = np.array([1e-10, 1e10])  # Extreme weight ratio
+
+    # Should not overflow/underflow
+    clf.fit(X, y, sample_weight=weights)
+
+    # The tiny weight should be effectively ignored
+    # Result should be close to: [1,1] + [4e10, 1e10] ≈ [4e10, 1e10]
+    # Mean ≈ 4
+    pred = clf.predict(X)[0]
+    assert 3.9 < pred < 4.1  # Should be close to 4
