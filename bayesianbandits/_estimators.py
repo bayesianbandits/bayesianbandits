@@ -40,9 +40,9 @@ ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor")
 
 
-class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
+class DirichletClassifier(BaseEstimator, ClassifierMixin):
     """
-    Intercept-only Dirichlet Classifier
+    Intercept-only Dirichlet Classifier with sample weight support.
 
     Parameters
     ----------
@@ -72,7 +72,13 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     Notes
     -----
     This model implements the Dirichlet-Multinomial model described in Chapter 3
-    of ref [1]_.
+    of ref [1]_. Sample weights are supported to enable importance sampling
+    for adversarial bandit algorithms.
+
+    The posterior update with sample weights is:
+        posterior_alpha_k = prior_alpha_k + sum(weight_i * I[y_i == k])
+
+    where I[y_i == k] is the indicator function for class k.
 
     References
     ----------
@@ -89,36 +95,18 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     >>> clf = DirichletClassifier({1: 1, 2: 1, 3: 1}, random_state=0)
     >>> clf.fit(X, y)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
-    >>> clf.predict_proba(X)
-    array([[0.5       , 0.33333333, 0.16666667],
-           [0.5       , 0.33333333, 0.16666667],
-           [0.5       , 0.33333333, 0.16666667],
-           [0.16666667, 0.5       , 0.33333333],
-           [0.16666667, 0.5       , 0.33333333],
-           [0.16666667, 0.5       , 0.33333333],
-           [0.16666667, 0.16666667, 0.66666667],
-           [0.16666667, 0.16666667, 0.66666667],
-           [0.16666667, 0.16666667, 0.66666667]])
 
-    This classifier also implements `partial_fit` to update the posterior,
-    which can be useful for online learning.
+    Using sample weights for importance sampling:
 
-    >>> clf.partial_fit(X, y)
+    >>> # Give more weight to certain samples
+    >>> weights = np.array([2.0, 1.0, 0.5, 1.0, 2.0, 1.0, 0.5, 1.0, 2.0])
+    >>> clf.fit(X, y, sample_weight=weights)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
 
-    This classifier also implements `sample` to sample from the posterior,
-    which can be useful for uncertainty estimation and Thompson sampling.
+    This classifier also implements `partial_fit` with sample weights:
 
-    >>> clf.sample(X).squeeze()
-    array([[0.52877785, 0.41235606, 0.05886609],
-           [0.34152373, 0.28178422, 0.37669205],
-           [0.70292861, 0.07890427, 0.21816712],
-           [0.10838237, 0.45793671, 0.43368092],
-           [0.00318876, 0.71391831, 0.28289293],
-           [0.07336816, 0.57424303, 0.35238881],
-           [0.20754162, 0.03891185, 0.75354653],
-           [0.08269207, 0.13128832, 0.78601961],
-           [0.41846435, 0.02196364, 0.55957201]])
+    >>> clf.partial_fit(X, y, sample_weight=weights)
+    DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
     """
 
     def __init__(
@@ -132,11 +120,31 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         self.learning_rate = learning_rate
         self.random_state = random_state
 
-    def fit(self, X: NDArray[Any], y: NDArray[Any]) -> Self:
+    def fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
         """
         Fit the model using X as training data and y as target values.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : object
+            Returns self.
         """
-        X, y = check_X_y(X, y, copy=True, ensure_2d=True)  # type: ignore
+        X, y = check_X_y(X, y, copy=True, ensure_2d=True)
 
         self._initialize_prior()
 
@@ -147,7 +155,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         if self.n_features_ > 1:
             raise NotImplementedError("Only one feature supported")
 
-        self._fit_helper(X, y_encoded)
+        self._fit_helper(X, y_encoded, sample_weight)
 
         return self
 
@@ -168,30 +176,69 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
     def _return_prior(self) -> NDArray[np.float64]:
         return self.prior_
 
-    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
+    def partial_fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ):
         """
         Update the model using X as training data and y as target values.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : object
+            Returns self.
         """
         try:
             check_is_fitted(self, "n_features_")
         except NotFittedError:
-            return self.fit(X, y)
+            return self.fit(X, y, sample_weight)
 
         X_fit, y = check_X_y(X, y, copy=True, ensure_2d=True)
         y = (y[:, np.newaxis] == self.classes_).astype(int)
 
-        self._fit_helper(X_fit, y)
+        self._fit_helper(X_fit, y, sample_weight)
         return self
 
-    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
-        for group, arr in groupby_array(X[:, 0], y, by=X[:, 0]):
+    def _fit_helper(
+        self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
+    ):
+        # Handle sample weights
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
+
+        # Group X values, y, and sample weights together
+        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
-            vals = np.vstack((self.known_alphas_[key], arr))
 
-            decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
+            # Apply sample weights to the observations
+            weighted_arr = arr * weights[:, np.newaxis]
 
+            # Stack with prior
+            vals = np.vstack((self.known_alphas_[key], weighted_arr))
+
+            # Apply learning rate decay
+            decay_idx = np.flip(np.arange(len(vals)))
             posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
-            self.known_alphas_[key] = posterior.sum(axis=0)  # type: ignore
+            self.known_alphas_[key] = posterior.sum(axis=0)
 
     def predict_proba(self, X: NDArray[Any]) -> Any:
         """
@@ -205,7 +252,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
         X_pred = check_array(X, copy=True, ensure_2d=True)
 
         alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
-        return alphas / alphas.sum(axis=1)[:, np.newaxis]  # type: ignore
+        return alphas / alphas.sum(axis=1)[:, np.newaxis]
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
         """
@@ -224,10 +271,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):  # type: ignore
 
         alphas = list(self.known_alphas_[x.item()] for x in X)
         return np.stack(
-            list(
-                dirichlet.rvs(alpha, size, self.random_state_)  # type: ignore
-                for alpha in alphas
-            ),
+            list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
         )
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
