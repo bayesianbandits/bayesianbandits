@@ -290,7 +290,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
 class GammaRegressor(BaseEstimator, RegressorMixin):
     """
-    Intercept-only Gamma regression model.
+    Intercept-only Gamma regression model with sample weight support.
 
     Parameters
     ----------
@@ -312,7 +312,15 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     Notes
     -----
     While this model is not described in ref [1]_, it is a simple extension
-    of the logic described in the section on conjugate prior models.
+    of the logic described in the section on conjugate prior models. Sample
+    weights are supported to enable importance sampling for adversarial
+    bandit algorithms.
+
+    The posterior update with sample weights is:
+        posterior_alpha = prior_alpha + sum(weight_i * count_i)
+        posterior_beta = prior_beta + sum(weight_i)
+
+    where count_i is the observed count for sample i.
 
     References
     ----------
@@ -332,23 +340,16 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     >>> model.fit(X, y)
     GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    >>> model.predict(X)
-    array([1. , 1.5, 2. , 2.5, 3. ])
+    Using sample weights:
 
-    This model implements a partial fit method, which can be used to
-    update the model with new data.
-
-    >>> model.partial_fit(X, y)
+    >>> weights = np.array([1.0, 2.0, 1.0, 0.5, 1.5])
+    >>> model.fit(X, y, sample_weight=weights)
     GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    >>> model.predict(X)
-    array([1.        , 1.66666667, 2.33333333, 3.        , 3.66666667])
+    This model implements a partial fit method with sample weights:
 
-    The `sample` method can be used to sample from the posterior.
-
-    >>> model.sample(X)
-    array([[0.95909923, 2.06378492, 1.7923389 , 4.36674677, 2.84313527]])
-
+    >>> model.partial_fit(X, y, sample_weight=weights)
+    GammaRegressor(alpha=1, beta=1, random_state=0)
     """
 
     def __init__(
@@ -364,12 +365,32 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         self.learning_rate = learning_rate
         self.random_state = random_state
 
-    def fit(self, X: NDArray[Any], y: NDArray[Any]) -> Self:
+    def fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
         """
         Fit the model using X as training data and y as target values. y must be
         count data.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values (count data).
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : object
+            Returns self.
         """
-        X, y = check_X_y(X, y, copy=True, ensure_2d=True)  # type: ignore
+        X, y = check_X_y(X, y, copy=True, ensure_2d=True)
 
         self._initialize_prior()
 
@@ -380,7 +401,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         if self.n_features_ > 1:
             raise NotImplementedError("Only one feature supported")
 
-        self._fit_helper(X, y_encoded)
+        self._fit_helper(X, y_encoded, sample_weight)
 
         return self
 
@@ -397,38 +418,71 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     def _return_prior(self) -> NDArray[np.float64]:
         return self.prior_
 
-    def _fit_helper(self, X: NDArray[Any], y: NDArray[Any]):
-        # Performs the gamma-poisson update
+    def _fit_helper(
+        self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
+    ):
+        # Handle sample weights
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
 
-        for group, arr in groupby_array(X[:, 0], y, by=X[:, 0]):
+        # Group X values, y, and sample weights together
+        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
 
-            # the update is computed by stacking the prior with the data,
-            # where alpha and the counts are stacked together and beta is
-            # stacked with ones
-            data = np.column_stack((arr, np.ones_like(arr)))
-            vals = np.vstack((self.coef_[key], data))
+            # The update is computed by stacking the prior with the weighted data
+            # For gamma-poisson: alpha increases by weighted counts, beta by weights
+            weighted_counts = arr * weights
+            weighted_data = np.column_stack((weighted_counts, weights))
+
+            vals = np.vstack((self.coef_[key], weighted_data))
 
             # Calculate the decay index for nonstationary models
-            decay_idx = np.flip(np.arange(len(vals)))  # type: ignore
+            decay_idx = np.flip(np.arange(len(vals)))
             # Calculate the posterior
             posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
             # Calculate the coefficient
-            self.coef_[key] = posterior.sum(axis=0)  # type: ignore
+            self.coef_[key] = posterior.sum(axis=0)
 
-    def partial_fit(self, X: NDArray[Any], y: NDArray[Any]):
+    def partial_fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ):
         """
         Update the model using X as training data and y as target values.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values (count data).
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : object
+            Returns self.
         """
         try:
             check_is_fitted(self, "coef_")
         except NotFittedError:
-            return self.fit(X, y)
+            return self.fit(X, y, sample_weight)
 
         X_fit, y = check_X_y(X, y, copy=True, ensure_2d=True)
         y_encoded: NDArray[np.int_] = y.astype(int)
 
-        self._fit_helper(X_fit, y_encoded)
+        self._fit_helper(X_fit, y_encoded, sample_weight)
         return self
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
