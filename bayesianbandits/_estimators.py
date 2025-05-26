@@ -654,13 +654,27 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         # objects that cannot be pickled
         return super().__getstate__()  # type: ignore
 
-    def fit(self, X_fit: Union[NDArray[Any], csc_array], y: NDArray[Any]) -> Self:
+    def fit(
+        self,
+        X_fit: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
         """
-        Fit the model using X as training data and y as target values. y must be
-        count data.
+        Fit the model using X as training data and y as target values.
+
+        Parameters
+        ----------
+        X_fit : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
         """
         X_fit, y = check_X_y(
-            X_fit,  # type: ignore (scipy is migrating to numpy-like types)
+            X_fit,  # type: ignore
             y,
             copy=True,
             ensure_2d=True,
@@ -669,7 +683,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         )
 
         self._initialize_prior(X_fit)
-        self._fit_helper(X_fit, y)
+        self._fit_helper(X_fit, y, sample_weight)
         return self
 
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
@@ -703,41 +717,71 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     @_invalidate_cached_properties
-    def _fit_helper(self, X: Union[NDArray[Any], csc_array], y: NDArray[Any]):
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ):
         if self.sparse:
             X = csc_array(X)
 
-        # Apply the learning rate to the new data, if there are multiple observations
-        # in the batch. This is done to ensure that one-at-a-time updates are
-        # equivalent to batch updates.
-        # Apply the learning rate to the new data, if there are multiple observations
-        # in the batch. This is done to ensure that one-at-a-time updates are
-        # equivalent to batch updates.
         assert X.shape is not None  # for the type checker
-        if X.shape[0] > 1:
-            obs_decays = np.flip(
-                np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
-            )
-            X = X * obs_decays[:, np.newaxis]
-            y = y * obs_decays
 
+        # Handle sample weights
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
         else:
-            obs_decays = np.array([1.0])
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
+
+        # Apply the learning rate decay to get effective weights
+        if X.shape[0] > 1:
+            # Compute decay factors. To make sure that multiple partial_fits are equivalent to one
+            # combined fit, we need to apply the decay factors in reverse order.
+            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
+            # Combine with sample weights
+            effective_weights = sample_weight * decay_factors
+        else:
+            effective_weights = sample_weight
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
 
-        # Update the inverse covariance matrix
-        cov_inv = prior_decay * self.cov_inv_ + self.beta * X.T @ X
+        # Apply weights to X and y
+        if self.sparse:
+            # For sparse matrices, create sparse diagonal weight matrix
+            from scipy.sparse import diags
+
+            W_sqrt = diags(np.sqrt(effective_weights), format="csc")
+            X_weighted = W_sqrt @ X
+            # Update the inverse covariance matrix
+            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
+                X_weighted.T @ X_weighted
+            )
+        else:
+            # For dense matrices, use broadcasting for efficiency
+            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
+            # Update the inverse covariance matrix
+            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
+                X_weighted.T @ X_weighted
+            )
+
+        # Apply weights to y for the linear term
+        y_weighted = y * effective_weights
 
         if self.sparse:
             if solver == SparseSolver.CHOLMOD:
                 from sksparse.cholmod import cholesky as cholmod_cholesky
 
                 coef = cholmod_cholesky(csc_matrix(cov_inv))(
-                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
+                    prior_decay * self.cov_inv_ @ self.coef_
+                    + self.beta * X.T @ y_weighted
                 )
-
             else:
                 # Calculate the posterior mean
                 lu = splu(
@@ -746,28 +790,43 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
                     permc_spec="MMD_AT_PLUS_A",
                     options=dict(SymmetricMode=True),
                 )
-                coef = lu.solve(  # type: ignore
-                    prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y
+                coef = lu.solve(
+                    prior_decay * self.cov_inv_ @ self.coef_
+                    + self.beta * X.T @ y_weighted
                 )
-
         else:
             # Calculate the posterior mean
             coef = solve(
                 cov_inv,
-                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y,
+                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted,
             )
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
 
-    def partial_fit(self, X: Union[NDArray[Any], csc_array], y: NDArray[Any]):
+    def partial_fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
         """
         Update the model using X as training data and y as target values.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
         """
         try:
             check_is_fitted(self, "coef_")
         except NotFittedError:
-            return self.fit(X, y)
+            return self.fit(X, y, sample_weight)
 
         X_fit, y = check_X_y(
             X,  # type: ignore (scipy is migrating to numpy-like types)
@@ -778,7 +837,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             accept_sparse="csc" if self.sparse else False,
         )
 
-        self._fit_helper(X_fit, y)
+        self._fit_helper(X_fit, y, sample_weight)
         return self
 
     def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
@@ -1030,39 +1089,62 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.b_ = self.b
 
     @_invalidate_cached_properties
-    def _fit_helper(self, X: Union[NDArray[Any], csc_array], y: NDArray[Any]):
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ):
         if self.sparse:
             X = csc_array(X)
 
-        # Apply the learning rate to the new data, if there are multiple observations
-        # in the batch. This is done to ensure that one-at-a-time updates are
-        # equivalent to batch updates.
         assert X.shape is not None  # for the type checker
-        if X.shape[0] > 1:
-            obs_decays = np.flip(
-                np.power(np.sqrt(self.learning_rate), np.arange(X.shape[0]))
-            )
-            X = X * obs_decays[:, np.newaxis]
-            y = y * obs_decays
 
+        # Handle sample weights
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
         else:
-            obs_decays = np.array([1.0], dtype=np.float64)
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
+
+        # Apply the learning rate decay to get effective weights
+        if X.shape[0] > 1:
+            # Compute decay factors directly (no sqrt since we'll apply sqrt later anyway)
+            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
+            # Combine with sample weights
+            effective_weights = sample_weight * decay_factors
+        else:
+            effective_weights = sample_weight
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
 
-        # Update the inverse covariance matrix
-        V_n = prior_decay * self.cov_inv_ + X.T @ X
+        # Update the inverse covariance matrix with weights
+        if self.sparse:
+            from scipy.sparse import diags
+
+            W_sqrt = diags(np.sqrt(effective_weights), format="csc")
+            X_weighted = W_sqrt @ X
+            V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
+        else:
+            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
+            V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
+
+        # Apply weights to y for the linear term
+        y_weighted = y * effective_weights
 
         if self.sparse:
-            # Update the mean vector.
+            # Update the mean vector
             if solver == SparseSolver.CHOLMOD:
                 from sksparse.cholmod import cholesky as cholmod_cholesky
 
                 m_n = cholmod_cholesky(csc_matrix(V_n))(
-                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y
+                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
                 )
-
             else:
                 lu = splu(
                     V_n,
@@ -1071,24 +1153,25 @@ class NormalInverseGammaRegressor(NormalRegressor):
                     options=dict(SymmetricMode=True),
                 )
                 m_n = lu.solve(
-                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted,
                 )
-
         else:
-            # Update the mean vector. Keeping track of the precision matrix
-            # ensures we only need to do one LAPACK call.
+            # Update the mean vector
             m_n = solve(
                 V_n,
-                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y,
+                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted,
                 check_finite=False,
                 assume_a="pos",
             )
 
         # Update the shape and rate parameters of the variance
-        a_n = prior_decay * self.a_ + 0.5 * (obs_decays**2).sum()
+        # For a_n: sum of effective weights
+        a_n = prior_decay * self.a_ + 0.5 * effective_weights.sum()
 
+        # For b_n: weighted residual sum of squares
+        weighted_y_squared = y.T @ (y * effective_weights)
         b_n = prior_decay * self.b_ + 0.5 * (
-            y.T @ y
+            weighted_y_squared
             + prior_decay * self.coef_.T @ self.cov_inv_ @ self.coef_
             - m_n.T @ V_n @ m_n
         )
