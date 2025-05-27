@@ -29,10 +29,6 @@ designed to maximize your IDE's ability to autocomplete and type-check your
 code. Additionally, it is designed to make it easy to modify the arms and the
 policies of your bandit as your needs change.
 
-The Agent API requires a slightly different interface for choice policies than
-the old `Bandit` API, but these policies and the policy decorators use the same
-underlying code. Both are available for backwards compatibility.
-
 .. autosummary::
     :toctree: _autosummary
 
@@ -41,6 +37,7 @@ underlying code. Both are available for backwards compatibility.
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
+    EXP3A
     Arm
 
 
@@ -63,17 +60,6 @@ is useful for restless bandits.
     NormalRegressor
     NormalInverseGammaRegressor
 
-Exceptions
-==========
-
-These are custom exceptions raised by the bandit classes.
-
-.. autosummary::
-    :toctree: _autosummary
-
-    DelayedRewardException
-    DelayedRewardWarning
-
 """
 
 from ._arm import Arm
@@ -92,3 +78,5 @@ from .api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
+
+from .policies import EXP3A
