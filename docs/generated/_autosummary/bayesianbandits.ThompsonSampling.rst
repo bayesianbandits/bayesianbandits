@@ -1,7 +1,7 @@
-﻿bayesianbandits.api.ThompsonSampling
-====================================
+﻿bayesianbandits.ThompsonSampling
+================================
 
-.. currentmodule:: bayesianbandits.api
+.. currentmodule:: bayesianbandits
 
 .. autoclass:: ThompsonSampling
 

@@ -1,4 +1,4 @@
-bayesianbandits.NormalRegressor
+﻿bayesianbandits.NormalRegressor
 ===============================
 
 .. currentmodule:: bayesianbandits
@@ -24,6 +24,7 @@ bayesianbandits.NormalRegressor
       ~NormalRegressor.score
       ~NormalRegressor.set_fit_request
       ~NormalRegressor.set_params
+      ~NormalRegressor.set_partial_fit_request
       ~NormalRegressor.set_score_request
    
    

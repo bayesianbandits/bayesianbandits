@@ -1,4 +1,4 @@
-bayesianbandits.NormalInverseGammaRegressor
+﻿bayesianbandits.NormalInverseGammaRegressor
 ===========================================
 
 .. currentmodule:: bayesianbandits
@@ -24,6 +24,7 @@ bayesianbandits.NormalInverseGammaRegressor
       ~NormalInverseGammaRegressor.score
       ~NormalInverseGammaRegressor.set_fit_request
       ~NormalInverseGammaRegressor.set_params
+      ~NormalInverseGammaRegressor.set_partial_fit_request
       ~NormalInverseGammaRegressor.set_score_request
    
    

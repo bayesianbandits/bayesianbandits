@@ -20,6 +20,8 @@
       Agent
       ContextualAgent
       EpsilonGreedy
+      PolicyDefaultUpdate
+      PolicyProtocol
       ThompsonSampling
       UpperConfidenceBound
    
