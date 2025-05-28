@@ -410,7 +410,7 @@ class TestEXP3AProperties:
         optimal_mean = max(true_means)
 
         # Use a fixed random seed for reproducible rewards
-        reward_rng = np.random.default_rng()
+        reward_rng = np.random.default_rng(123)
 
         for t in range(2000):
             action = agent.pull(X)
