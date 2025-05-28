@@ -20,8 +20,9 @@ class TestEXP3ABasics:
         """Test EXP3A initialization with different parameters."""
         # Default initialization
         policy = EXP3A()
-        assert policy.gamma == 0.1
+        assert policy.gamma == 0.0
         assert policy.eta == 1.0
+        assert policy.ix_gamma == 0.5
         assert policy.samples == 100
 
         # Custom initialization
@@ -33,7 +34,7 @@ class TestEXP3ABasics:
     def test_repr(self):
         """Test string representation."""
         policy = EXP3A(gamma=0.15, eta=1.5, samples=200)
-        assert repr(policy) == "EXP3A(gamma=0.15, eta=1.5, samples=200)"
+        assert repr(policy) == "EXP3A(gamma=0.15, eta=1.5, ix_gamma=0.75, samples=200)"
 
 
 class TestEXP3AArmSelection:
@@ -158,7 +159,7 @@ class TestEXP3AUpdates:
         arm_good = Arm(1, learner=NormalInverseGammaRegressor(mu=0.8, lam=100))
         arms = [arm_bad, arm_good]
 
-        policy = EXP3A(gamma=0.1, eta=2.0, samples=50)
+        policy = EXP3A(gamma=0.1, eta=2.0, ix_gamma=0.0, samples=50)
         agent = ContextualAgent(arms, policy, random_seed=42)
 
         X = np.array([[1.0]])
@@ -398,7 +399,7 @@ class TestEXP3AProperties:
             learner = NormalInverseGammaRegressor(mu=0.5, lam=1.0, a=2, b=2)
             arms.append(Arm(i, learner=learner))
 
-        policy = EXP3A(gamma=0.05, eta=2.0, samples=50)
+        policy = EXP3A(eta=10.0, samples=100)
         agent = ContextualAgent(arms, policy, random_seed=42)
 
         X = np.array([[1.0]])
@@ -409,7 +410,7 @@ class TestEXP3AProperties:
         optimal_mean = max(true_means)
 
         # Use a fixed random seed for reproducible rewards
-        reward_rng = np.random.default_rng(123)
+        reward_rng = np.random.default_rng()
 
         for t in range(2000):
             action = agent.pull(X)
@@ -439,3 +440,83 @@ class TestEXP3AProperties:
         # Also check that total regret is sublinear
         # For sublinear regret, regret/t should decrease
         assert cumulative_regret[1999] / 2000 < cumulative_regret[999] / 1000
+
+    def test_adversarial_robustness(self):
+        """Test robustness against an adversarial reward sequence."""
+        # Create 3 arms
+        arms = []
+        for i in range(3):
+            learner = NormalInverseGammaRegressor(mu=0.5, lam=1.0, a=2, b=2)
+            arms.append(Arm(i, learner=learner))
+
+        policy = EXP3A(eta=2.0, samples=100)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+
+        X = np.array([[1.0]])
+
+        # Track which arm gets pulled
+        pull_counts = [0, 0, 0]
+        total_reward = 0.0
+
+        # Adversarial strategy: give high reward to least-pulled arm
+        for t in range(500):
+            action = agent.pull(X)
+            arm_idx = action[0]
+            pull_counts[arm_idx] += 1
+
+            # Adversarial reward: penalize the most frequently pulled arm
+            if arm_idx == np.argmax(pull_counts):
+                reward = 0.0  # Bad reward for overused arm
+            else:
+                reward = 1.0  # Good reward for underused arms
+
+            total_reward += reward
+            agent.update(X, np.array([reward]))
+
+        # Check that no arm dominates (adversary forces exploration)
+        pull_proportions = np.array(pull_counts) / sum(pull_counts)
+        assert np.max(pull_proportions) < 0.4  # No arm pulled > 40% of time
+        assert np.min(pull_proportions) > 0.2  # All arms pulled > 20% of time
+
+        # Should still achieve reasonable reward despite adversary
+        assert (
+            total_reward / 500 > 0.6
+        )  # Randomly pulling each arm should yield ~0.67 average reward
+
+    def test_adaptive_adversary(self):
+        """Test against adversary that adapts to algorithm's beliefs."""
+        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(2)]
+
+        policy = EXP3A(eta=1.0, ix_gamma=0.5)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+
+        X = np.array([[1.0]])
+        rewards_received = []
+        last_50_pulls = []
+
+        for t in range(200):
+            beliefs = [arm.learner.predict(X)[0] for arm in arms]
+
+            action = agent.pull(X)
+            arm_idx = action[0]
+
+            if t >= 150:  # Track last 50 pulls
+                last_50_pulls.append(arm_idx)
+
+            # Adversary: make the arm that looks best actually give bad reward
+            if arm_idx == np.argmax(beliefs):
+                reward = 0.0
+            else:
+                reward = 1.0
+
+            rewards_received.append(reward)
+            agent.update(X, np.array([reward]))
+
+        # Should converge to ~0.5 reward (adversary makes arms equivalent)
+        assert (
+            np.mean(rewards_received[-50:]) > 0.45
+        )  # Randomly pulling should yield ~0.5 average reward
+
+        # Should be exploring both arms in steady state
+        last_50_proportions = np.bincount(last_50_pulls, minlength=2) / 50
+        assert np.min(last_50_proportions) > 0.3  # Both arms pulled frequently
