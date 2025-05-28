@@ -30,9 +30,22 @@ class EXP3A:
 
     Core adversarial mechanism:
 
-    - Importance weighting: Uses weight = 1/P(arm) to debias reward estimates
-    - Forced exploration: γ-mixing guarantees P(arm) ≥ γ/K for all arms
+    - Importance weighting: Uses weight = 1/(P(arm) + ix_gamma) to debias reward estimates
+    - Optional forced exploration: γ-mixing guarantees P(arm) ≥ γ/K when gamma > 0
     - No assumptions: Works with arbitrary reward sequences, including adversarial
+
+    Algorithm variants:
+
+    1. **EXP3-IX** (Neu, 2015) [2]_ - Default:
+       - Set `gamma = 0` and `ix_gamma > 0` (default: eta/2)
+       - No forced exploration (pure exponential weights)
+       - Regularized importance weights: 1/(P(arm) + γ_ix)
+       - Better empirical performance and high-probability bounds
+
+    2. **Standard EXP3** (Auer et al., 2002) [1]_:
+       - Set `gamma > 0` and `ix_gamma = 0`
+       - Uses forced exploration via γ-mixing
+       - Unbiased importance weights: 1/P(arm)
 
     Key practical advantages:
 
@@ -63,18 +76,47 @@ class EXP3A:
 
     Parameters
     ----------
-    gamma : float, default=0.1
-        Exploration rate. Each arm pulled with probability at least γ/K.
-        Higher values force more exploration.
+    gamma : float, default=0.0
+        Exploration rate for forced exploration. Each arm pulled with probability
+        at least γ/K when gamma > 0. Default is 0 (no forced exploration).
     eta : float, default=1.0
         Temperature for exponential weights. Higher values create sharper
-        distinctions between arms. Unlike EXP3, doesn't need scaling with
-        horizon since we use averages not sums.
+        distinctions between arms. Unlike standard EXP3, doesn't need scaling
+        with horizon since we use averages not sums.
+
+        Note: The appropriate value of eta depends on the scale of your rewards.
+        Larger reward scales require smaller eta values to avoid numerical issues
+        and maintain meaningful exploration.
+    ix_gamma : float or None, default=None
+        Regularization parameter for importance weights. If None, defaults to
+        eta/2 as recommended by Neu (2015). Use 0 for unbiased weights. IX stands for
+        Implicit eXploration.
+
+        Note: This is unfortunately also called "gamma" in Neu (2015),
+        but it serves a different purpose than the exploration rate gamma. It does
+        serve to encourage exploration, but by regularizing the importance
+        weights (smaller updates, spend more time close to the prior for each arm) rather
+        than by mixing exploration into the arm selection probabilities.
     samples : int, default=100
-        Number of samples to use for computing expected rewards via Monte Carlo.
+        Number of samples to use for computing expected rewards via Monte Carlo. Higher
+        values improve accuracy but increase computational cost. The more parameters
+        your Bayesian learners have, the more samples you may need to get stable estimates.
+
+
+    References
+    ----------
+    .. [1] Auer, P., Cesa-Bianchi, N., Freund, Y., & Schapire, R. E. (2002).
+       "The nonstochastic multiarmed bandit problem." SIAM Journal on Computing,
+       32(1), 48-77.
+
+    .. [2] Neu, G. (2015). "Explore no more: Improved high-probability regret
+       bounds for non-stochastic bandits." Advances in Neural Information
+       Processing Systems, 28.
 
     Examples
     --------
+    EXP3-IX variant (default, recommended):
+
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
     >>> from bayesianbandits import ContextualAgent
     >>>
@@ -85,43 +127,57 @@ class EXP3A:
     ...     for i in range(3)
     ... ]
     >>>
-    >>> # Initialize adversarial policy
-    >>> policy = EXP3A(gamma=0.1, eta=2.0)
+    >>> # Initialize EXP3-IX policy (default)
+    >>> policy = EXP3A(eta=2.0)  # ix_gamma defaults to eta/2 = 1.0
     >>>
     >>> # Create agent
     >>> agent = ContextualAgent(arms, policy)
+
+    Standard EXP3 with forced exploration:
+
+    >>> # Initialize standard EXP3 policy
+    >>> policy = EXP3A(gamma=0.1, eta=2.0, ix_gamma=0.0)
     >>>
-    >>> # Pull arms and update with importance-weighted rewards
-    >>> X = np.array([[1.0, 2.0]])
-    >>> action = agent.pull(X)
-    >>> reward = np.array([0.5])
-    >>> agent.update(X, reward)
+    >>> # Create agent
+    >>> agent = ContextualAgent(arms, policy)
 
     Notes
     -----
-    This algorithm uses the same Bayesian learners as the rest of the library
-    for tracking reward estimates. The "average-based" refers to how rewards
-    are aggregated into a posterior, not to the underlying estimation method.
+    This implementation is inspired by EXP3 (Auer et al., 2002) and EXP3-IX
+    (Neu, 2015) but makes several practical modifications that may affect
+    theoretical guarantees:
 
-    The algorithm excels in practical scenarios such as:
+    - Uses average-based rewards instead of cumulative sums
+    - Integrates with Bayesian learners rather than maintaining explicit weights
+    - Employs Monte Carlo estimation for expected rewards
+    - Supports variance decay for non-stationary environments
 
-    - A/B testing where user preferences shift over time
-    - Recommendation systems facing adversarial users or competitors
-    - Online advertising with strategic bidders
-    - Resource allocation under attack or manipulation
-    - Any setting where both exploration and robustness are critical
-
-    Based on the importance weighting technique from EXP3 (Auer et al., 2002),
-    but uses average rewards instead of cumulative sums for better adaptivity.
+    While these modifications improve practical performance, the theoretical
+    regret bounds from the original papers may not apply. This algorithm
+    should be viewed as a practical variant that maintains the adversarial
+    robustness intuition of EXP3 while adapting to real-world constraints.
     """
 
-    def __init__(self, gamma: float = 0.1, eta: float = 1.0, samples: int = 100):
+    def __init__(
+        self,
+        gamma: float = 0.0,
+        eta: float = 1.0,
+        ix_gamma: Union[float, None] = None,
+        samples: int = 100,
+    ):
+        if gamma < 0:
+            raise ValueError("gamma must be non-negative")
+        if ix_gamma is not None and ix_gamma < 0:
+            raise ValueError("ix_gamma must be non-negative")
+
         self.gamma = gamma
         self.eta = eta
         self.samples = samples
+        # Default to eta/2 as recommended by Neu (2015)
+        self.ix_gamma = eta / 2.0 if ix_gamma is None else ix_gamma
 
     def __repr__(self) -> str:
-        return f"EXP3A(gamma={self.gamma}, eta={self.eta}, samples={self.samples})"
+        return f"EXP3A(gamma={self.gamma}, eta={self.eta}, ix_gamma={self.ix_gamma}, samples={self.samples})"
 
     def __call__(
         self,
@@ -130,7 +186,7 @@ class EXP3A:
         rng: np.random.Generator,
     ) -> List["Arm[LT, T]"]:
         """
-        Select arms according to exponential weights with forced exploration.
+        Select arms according to exponential weights with optional exploration.
 
         Parameters
         ----------
@@ -149,7 +205,6 @@ class EXP3A:
         assert X.shape is not None, "Context matrix X must not be empty"
 
         # Get expected rewards via Monte Carlo estimation
-        # This works for all arm types and uses reward_function automatically
         rewards = np.stack(
             [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
         )
@@ -157,9 +212,10 @@ class EXP3A:
         # Exponential weights with numerical stability
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
 
-        # Mix with uniform exploration - the classic EXP3 probability formula
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0)
-        probs += self.gamma / len(arms)
+        # Compute probabilities (works for both variants)
+        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
+            arms
+        )
 
         # Sample arms according to probabilities
         choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(X.shape[0])]
@@ -198,12 +254,13 @@ class EXP3A:
             [a.sample(X, size=self.samples).mean(axis=0) for a in all_arms]
         )
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0)
-        probs += self.gamma / len(all_arms)
+        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
+            all_arms
+        )
 
         # Importance weighting: the key to adversarial robustness
         # This ensures each learner estimates E[reward | uniform sampling]
         arm_idx = all_arms.index(arm)
-        importance_weights = 1.0 / probs[arm_idx]
+        importance_weights = 1.0 / (probs[arm_idx] + self.ix_gamma)
 
         arm.update(X, y, sample_weight=importance_weights)
