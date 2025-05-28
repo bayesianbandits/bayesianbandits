@@ -3,6 +3,7 @@ Test suite for EXP3.A (Average-based anytime EXP3) algorithm.
 """
 
 import numpy as np
+import pytest
 
 from bayesianbandits import (
     EXP3A,
@@ -30,6 +31,21 @@ class TestEXP3ABasics:
         assert policy.gamma == 0.2
         assert policy.eta == 2.0
         assert policy.samples == 50
+
+    def test_gamma_less_than_zero(self):
+        """Test that gamma cannot be negative."""
+        with pytest.raises(ValueError, match="gamma must be non-negative"):
+            EXP3A(gamma=-0.1)
+
+    def test_eta_less_than_zero(self):
+        """Test that eta cannot be negative."""
+        with pytest.raises(ValueError, match="eta must be positive"):
+            EXP3A(eta=-0.1)
+
+    def test_ix_gamma_less_than_zero(self):
+        """Test that ix_gamma cannot be negative."""
+        with pytest.raises(ValueError, match="ix_gamma must be non-negative"):
+            EXP3A(ix_gamma=-0.1)
 
     def test_repr(self):
         """Test string representation."""

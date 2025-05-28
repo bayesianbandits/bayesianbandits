@@ -167,6 +167,8 @@ class EXP3A:
     ):
         if gamma < 0:
             raise ValueError("gamma must be non-negative")
+        if eta <= 0:
+            raise ValueError("eta must be positive")
         if ix_gamma is not None and ix_gamma < 0:
             raise ValueError("ix_gamma must be non-negative")
 
