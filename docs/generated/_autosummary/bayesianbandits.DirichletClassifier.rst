@@ -1,4 +1,4 @@
-bayesianbandits.DirichletClassifier
+﻿bayesianbandits.DirichletClassifier
 ===================================
 
 .. currentmodule:: bayesianbandits
@@ -23,7 +23,9 @@ bayesianbandits.DirichletClassifier
       ~DirichletClassifier.predict_proba
       ~DirichletClassifier.sample
       ~DirichletClassifier.score
+      ~DirichletClassifier.set_fit_request
       ~DirichletClassifier.set_params
+      ~DirichletClassifier.set_partial_fit_request
       ~DirichletClassifier.set_score_request
    
    

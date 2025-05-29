@@ -1,7 +1,7 @@
-﻿bayesianbandits.api.ContextualAgent
-===================================
+﻿bayesianbandits.ContextualAgent
+===============================
 
-.. currentmodule:: bayesianbandits.api
+.. currentmodule:: bayesianbandits
 
 .. autoclass:: ContextualAgent
 

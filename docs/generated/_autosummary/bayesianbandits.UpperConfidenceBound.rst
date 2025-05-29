@@ -1,7 +1,7 @@
-﻿bayesianbandits.api.UpperConfidenceBound
-========================================
+﻿bayesianbandits.UpperConfidenceBound
+====================================
 
-.. currentmodule:: bayesianbandits.api
+.. currentmodule:: bayesianbandits
 
 .. autoclass:: UpperConfidenceBound
 

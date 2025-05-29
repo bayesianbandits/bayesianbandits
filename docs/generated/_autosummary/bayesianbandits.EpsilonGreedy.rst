@@ -1,7 +1,7 @@
-﻿bayesianbandits.api.EpsilonGreedy
-=================================
+﻿bayesianbandits.EpsilonGreedy
+=============================
 
-.. currentmodule:: bayesianbandits.api
+.. currentmodule:: bayesianbandits
 
 .. autoclass:: EpsilonGreedy
 

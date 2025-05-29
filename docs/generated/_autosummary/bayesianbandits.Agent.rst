@@ -1,7 +1,7 @@
-﻿bayesianbandits.api.Agent
-=========================
+﻿bayesianbandits.Agent
+=====================
 
-.. currentmodule:: bayesianbandits.api
+.. currentmodule:: bayesianbandits
 
 .. autoclass:: Agent
 

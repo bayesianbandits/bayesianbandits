@@ -16,5 +16,6 @@ library.
     notebooks/counts
     notebooks/linear-bandits
     notebooks/delayed-reward
+    notebooks/adversarial
     notebooks/persistence
     notebooks/offline-learning

@@ -1,4 +1,4 @@
-bayesianbandits.GammaRegressor
+﻿bayesianbandits.GammaRegressor
 ==============================
 
 .. currentmodule:: bayesianbandits
@@ -22,7 +22,9 @@ bayesianbandits.GammaRegressor
       ~GammaRegressor.predict
       ~GammaRegressor.sample
       ~GammaRegressor.score
+      ~GammaRegressor.set_fit_request
       ~GammaRegressor.set_params
+      ~GammaRegressor.set_partial_fit_request
       ~GammaRegressor.set_score_request
    
    
