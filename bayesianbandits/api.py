@@ -60,45 +60,37 @@ from typing import (
     List,
     Optional,
     Protocol,
-    TypeVar,
+    Sequence,
     Union,
     cast,
 )
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array  # type: ignore
 from typing_extensions import Self
 
-from ._arm import Arm
-from ._typing import DecayingLearner
-
-T = TypeVar("T")
-L = TypeVar("L", bound=DecayingLearner)
+from ._arm import ContextType, Arm, TokenType
 
 
-class PolicyProtocol(Protocol[L, T]):
+class PolicyProtocol(Protocol[ContextType, TokenType]):
     def __call__(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[L, T]]: ...
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
     def update(
         self,
-        arm: Arm[L, T],
-        X: Union[NDArray[np.float64], csc_array],
+        arm: Arm[ContextType, TokenType],
+        X: ContextType,
         y: NDArray[np.float64],
-        all_arms: List[Arm[L, T]],
+        all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
     ) -> None: ...
 
 
-P = TypeVar("P", bound=PolicyProtocol[Any, Any])
-
-
-class ContextualAgent(Generic[L, T, P]):
+class ContextualAgent(Generic[ContextType, TokenType]):
     """Agent for a contextual multi-armed bandit problem.
 
     Parameters
@@ -183,14 +175,14 @@ class ContextualAgent(Generic[L, T, P]):
 
     def __init__(
         self,
-        arms: List[Arm[L, T]],
-        policy: P,
+        arms: Sequence[Arm[ContextType, TokenType]],
+        policy: PolicyProtocol[ContextType, TokenType],
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self.policy: P = policy
+        self.policy: PolicyProtocol = policy
 
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
-        self._arms: List[Arm[L, T]] = []
+        self._arms: List[Arm[ContextType, TokenType]] = []
         for arm in arms:
             self.add_arm(arm)
 
@@ -200,10 +192,10 @@ class ContextualAgent(Generic[L, T, P]):
         self.arm_to_update = arms[0]
 
     @property
-    def arms(self) -> List[Arm[L, T]]:
+    def arms(self) -> List[Arm[ContextType, TokenType]]:
         return self._arms
 
-    def add_arm(self, arm: Arm[L, T]) -> None:
+    def add_arm(self, arm: Arm[ContextType, TokenType]) -> None:
         """Add an arm to the bandit.
 
         Parameters
@@ -220,15 +212,16 @@ class ContextualAgent(Generic[L, T, P]):
         if arm.action_token in current_tokens:
             raise ValueError("All arms must have unique action tokens.")
 
+        assert arm.learner is not None, "Arm must have a learner."
         arm.learner.random_state = self.rng
         self.arms.append(arm)
 
-    def remove_arm(self, token: T) -> None:
+    def remove_arm(self, token: TokenType) -> None:
         """Remove an arm from the bandit.
 
         Parameters
         ----------
-        token : Any
+        token : TokenType
             Action token of the arm to remove.
 
         Raises
@@ -243,12 +236,12 @@ class ContextualAgent(Generic[L, T, P]):
         else:
             raise KeyError(f"Arm with token {token} not found.")
 
-    def arm(self, token: T) -> Arm[L, T]:
+    def arm(self, token: TokenType) -> Arm[ContextType, TokenType]:
         """Get an arm by its action token.
 
         Parameters
         ----------
-        token : Any
+        token : TokenType
             Action token of the arm to get.
 
         Returns
@@ -266,7 +259,7 @@ class ContextualAgent(Generic[L, T, P]):
                 return arm
         raise KeyError(f"Arm with token {token} not found.")
 
-    def select_for_update(self, token: T) -> Self:
+    def select_for_update(self, token: TokenType) -> Self:
         """Set the `arm_to_update` and return self for chaining.
 
         Parameters
@@ -293,12 +286,12 @@ class ContextualAgent(Generic[L, T, P]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    def pull(self, X: Union[NDArray[np.float64], csc_array]) -> List[T]:
+    def pull(self, X: ContextType) -> List[TokenType]:
         """Choose an arm and pull it based on the context(s).
 
         Parameters
         ----------
-        X : Union[NDArray[np.float64], csc_array]
+        X : ContextType
             Context matrix to use for choosing an arm.
 
         Returns
@@ -310,14 +303,12 @@ class ContextualAgent(Generic[L, T, P]):
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms]
 
-    def update(
-        self, X: Union[NDArray[np.float64], csc_array], y: NDArray[np.float64]
-    ) -> None:
+    def update(self, X: ContextType, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with the context(s) and the reward(s).
 
         Parameters
         ----------
-        X : Union[NDArray[np.float64], csc_array]
+        X : ContextType
             Context matrix to use for updating the arm.
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
@@ -331,14 +322,14 @@ class ContextualAgent(Generic[L, T, P]):
 
     def decay(
         self,
-        X: Union[NDArray[np.float64], csc_array],
+        X: ContextType,
         decay_rate: Optional[float] = None,
     ) -> None:
         """Decay all arms of the bandit len(X) times.
 
         Parameters
         ----------
-        X : Union[NDArray[np.float64], csc_array]
+        X : ContextType
             Context matrix to use for decaying the arm.
         decay_rate : Optional[float], default=None
             Decay rate to use for decaying the arm. If None, the decay rate
@@ -348,7 +339,7 @@ class ContextualAgent(Generic[L, T, P]):
             arm.decay(X, decay_rate=decay_rate)
 
 
-class Agent(Generic[L, T, P]):
+class Agent(Generic[TokenType]):
     """
     Agent for a non-contextual multi-armed bandit problem.
 
@@ -417,22 +408,20 @@ class Agent(Generic[L, T, P]):
 
     def __init__(
         self,
-        arms: List[Arm[L, T]],
-        policy: P,
+        arms: List[Arm[NDArray[np.float64], TokenType]],
+        policy: PolicyProtocol[NDArray[np.float64], TokenType],
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self._inner: ContextualAgent[L, T, P] = ContextualAgent(
-            arms, policy, random_seed=random_seed
-        )
+        self._inner = ContextualAgent(arms, policy, random_seed=random_seed)
 
     @property
-    def policy(self) -> P:
+    def policy(self) -> PolicyProtocol[NDArray[np.float64], TokenType]:
         return self._inner.policy
 
     @policy.setter
     def policy(
         self,
-        policy: P,
+        policy: PolicyProtocol[NDArray[np.float64], TokenType],
     ) -> None:
         self._inner.policy = policy
 
@@ -441,14 +430,14 @@ class Agent(Generic[L, T, P]):
         return self._inner.rng
 
     @property
-    def arm_to_update(self) -> Arm[L, T]:
+    def arm_to_update(self) -> Arm[NDArray[np.float64], TokenType]:
         return self._inner.arm_to_update
 
     @property
-    def arms(self) -> List[Arm[L, T]]:
+    def arms(self) -> List[Arm[NDArray[np.float64], TokenType]]:
         return self._inner.arms
 
-    def add_arm(self, arm: Arm[L, T]) -> None:
+    def add_arm(self, arm: Arm[NDArray[np.float64], TokenType]) -> None:
         """Add an arm to the bandit.
 
         Parameters
@@ -478,7 +467,7 @@ class Agent(Generic[L, T, P]):
         """
         self._inner.remove_arm(token)
 
-    def select_for_update(self, token: T) -> Self:
+    def select_for_update(self, token: TokenType) -> Self:
         """Set the `arm_to_update` and return self for chaining.
 
         Parameters
@@ -499,7 +488,7 @@ class Agent(Generic[L, T, P]):
         self._inner.select_for_update(token)
         return self
 
-    def arm(self, token: T) -> Arm[L, T]:
+    def arm(self, token: TokenType) -> Arm[NDArray[np.float64], TokenType]:
         """Get an arm by its action token.
 
         Parameters
@@ -552,20 +541,20 @@ class Agent(Generic[L, T, P]):
         self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
-class PolicyDefaultUpdate:
+class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
     def update(
         self,
-        arm: Arm[L, T],
-        X: Union[NDArray[np.float64], csc_array],
+        arm: Arm[ContextType, TokenType],
+        X: ContextType,
         y: NDArray[np.float64],
-        all_arms: List[Arm[L, T]],
+        all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
     ) -> None:
         """Default update implementation that simply updates the arm."""
         arm.update(X, y)
 
 
-class EpsilonGreedy(PolicyDefaultUpdate):
+class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
     """
     Policy object for epsilon-greedy.
 
@@ -599,8 +588,8 @@ class EpsilonGreedy(PolicyDefaultUpdate):
 
     def arm_summary(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
@@ -625,10 +614,10 @@ class EpsilonGreedy(PolicyDefaultUpdate):
 
     def __call__(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[L, T]]:
+    ) -> List[Arm[ContextType, TokenType]]:
         """Choose an arm using epsilon-greedy."""
         means = self.arm_summary(arms, X, rng)
         means = self.postprocess(means, rng)
@@ -638,7 +627,7 @@ class EpsilonGreedy(PolicyDefaultUpdate):
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
 
-class ThompsonSampling(PolicyDefaultUpdate):
+class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     """
     Policy object for Thompson sampling.
 
@@ -663,8 +652,8 @@ class ThompsonSampling(PolicyDefaultUpdate):
 
     def arm_summary(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
@@ -679,10 +668,10 @@ class ThompsonSampling(PolicyDefaultUpdate):
 
     def __call__(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[L, T]]:
+    ) -> List[Arm[ContextType, TokenType]]:
         """Choose an arm using Thompson sampling."""
 
         samples = self.arm_summary(arms, X, rng)
@@ -693,7 +682,7 @@ class ThompsonSampling(PolicyDefaultUpdate):
         return [arms[cast(int, choice)] for choice in best_arm_indexes]
 
 
-class UpperConfidenceBound(PolicyDefaultUpdate):
+class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
     """
     Policy object for upper confidence bound.
 
@@ -728,8 +717,8 @@ class UpperConfidenceBound(PolicyDefaultUpdate):
 
     def arm_summary(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
@@ -749,10 +738,10 @@ class UpperConfidenceBound(PolicyDefaultUpdate):
 
     def __call__(
         self,
-        arms: List[Arm[L, T]],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[L, T]]:
+    ) -> List[Arm[ContextType, TokenType]]:
         """Choose an arm using upper confidence bound."""
 
         upper_bounds = self.arm_summary(arms, X, rng)
@@ -766,20 +755,20 @@ class UpperConfidenceBound(PolicyDefaultUpdate):
 
 
 def _draw_one_sample(
-    arm: Arm[L, T],
-    X: Union[NDArray[np.float64], csc_array],
+    arm: Arm[ContextType, TokenType],
+    X: ContextType,
 ) -> NDArray[np.float64]:
     """Draw one sample from the posterior distribution for the arm."""
     return arm.sample(X, size=1).squeeze(axis=0)
 
 
 def _compute_arm_upper_bound(
-    arm: Arm[L, T],
-    X: Union[NDArray[np.float64], csc_array],
+    arm: Arm[ContextType, TokenType],
+    X: ContextType,
     *,
     alpha: float = 0.68,
     samples: int = 1000,
-) -> np.float64:
+) -> NDArray[np.float64]:
     """Compute the upper bound of a one-sided credible interval with size
     `alpha` from the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
@@ -788,11 +777,11 @@ def _compute_arm_upper_bound(
 
 
 def _compute_arm_mean(
-    arm: Arm[L, T],
-    X: Union[NDArray[np.float64], csc_array],
+    arm: Arm[ContextType, TokenType],
+    X: ContextType,
     *,
     samples: int = 1000,
-) -> np.float64:
+) -> NDArray[np.float64]:
     """Compute the mean of the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
     return np.mean(posterior_samples, axis=0)

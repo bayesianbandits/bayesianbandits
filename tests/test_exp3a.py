@@ -182,7 +182,7 @@ class TestEXP3AUpdates:
         y = np.array([1.0])
 
         # Track the actual sample weights used
-        original_update = arm_bad.learner.partial_fit
+        original_update = arm_bad.learner.partial_fit  # type: ignore
         weights_bad = []
 
         def track_weights_bad(X, y, sample_weight=None):
@@ -190,7 +190,7 @@ class TestEXP3AUpdates:
                 weights_bad.append(sample_weight[0])
             return original_update(X, y, sample_weight)
 
-        arm_bad.learner.partial_fit = track_weights_bad
+        arm_bad.learner.partial_fit = track_weights_bad  # type: ignore
 
         # Update the bad arm multiple times
         for _ in range(10):
@@ -200,7 +200,7 @@ class TestEXP3AUpdates:
         assert all(w > 1.0 for w in weights_bad)
 
         # Now track weights for good arm
-        original_update_good = arm_good.learner.partial_fit
+        original_update_good = arm_good.learner.partial_fit  # type: ignore
         weights_good = []
 
         def track_weights_good(X, y, sample_weight=None):
@@ -208,7 +208,7 @@ class TestEXP3AUpdates:
                 weights_good.append(sample_weight[0])
             return original_update_good(X, y, sample_weight)
 
-        arm_good.learner.partial_fit = track_weights_good
+        arm_good.learner.partial_fit = track_weights_good  # type: ignore
 
         # Update the good arm
         for _ in range(10):
@@ -511,7 +511,7 @@ class TestEXP3AProperties:
         last_50_pulls = []
 
         for t in range(200):
-            beliefs = [arm.learner.predict(X)[0] for arm in arms]
+            beliefs = [arm.learner.predict(X)[0] for arm in arms]  # type: ignore
 
             action = agent.pull(X)
             arm_idx = action[0]

@@ -6,19 +6,12 @@ while using average rewards instead of cumulative sums, enabling better adaptivi
 and numerical stability.
 """
 
-from typing import TYPE_CHECKING, List, TypeVar, Union
+from typing import List, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
 
-from bayesianbandits._typing import DecayingLearner
-
-if TYPE_CHECKING:
-    from bayesianbandits import Arm
-
-LT = TypeVar("LT", bound=DecayingLearner)
-T = TypeVar("T")
+from .._arm import ContextType, Arm, TokenType
 
 
 class EXP3A:
@@ -183,10 +176,10 @@ class EXP3A:
 
     def __call__(
         self,
-        arms: List["Arm[LT, T]"],
-        X: Union[NDArray[np.float64], csc_array],
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
         rng: np.random.Generator,
-    ) -> List["Arm[LT, T]"]:
+    ) -> List[Arm[ContextType, TokenType]]:
         """
         Select arms according to exponential weights with optional exploration.
 
@@ -226,10 +219,10 @@ class EXP3A:
 
     def update(
         self,
-        arm: "Arm[LT, T]",
-        X: Union[NDArray[np.float64], csc_array],
+        arm: Arm[ContextType, TokenType],
+        X: ContextType,
         y: NDArray[np.float64],
-        all_arms: List["Arm[LT, T]"],
+        all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
     ) -> None:
         """

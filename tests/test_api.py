@@ -20,7 +20,7 @@ from bayesianbandits import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from bayesianbandits._typing import DecayingLearner
+from bayesianbandits._arm import Learner
 from bayesianbandits.api import PolicyProtocol
 
 
@@ -63,7 +63,7 @@ def choice(
     return request.param
 
 
-LT = TypeVar("LT", bound=DecayingLearner)
+LT = TypeVar("LT", bound=Learner)
 
 
 @pytest.fixture(params=[Agent, ContextualAgent])
@@ -75,10 +75,10 @@ def bandit_instance(
         NormalRegressor,
         NormalInverseGammaRegressor,
     ],
-    choice: PolicyProtocol[LT, int],
+    choice: PolicyProtocol[NDArray[np.float64], int],
 ) -> Union[
-    Agent[LT, int, PolicyProtocol[LT, int]],
-    ContextualAgent[LT, int, PolicyProtocol[LT, int]],
+    Agent[int],
+    ContextualAgent[NDArray[np.float64], int],
 ]:
     if isinstance(learner_class, DirichletClassifier):
 
@@ -104,8 +104,8 @@ class TestBandits:
     def test_pull(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
@@ -119,8 +119,8 @@ class TestBandits:
     def test_batch_pull(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
@@ -136,8 +136,8 @@ class TestBandits:
     def test_update(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
@@ -154,8 +154,8 @@ class TestBandits:
     def test_decay(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
@@ -168,8 +168,8 @@ class TestBandits:
     def test_arm(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         arm = bandit_instance.arm(0)
@@ -181,8 +181,8 @@ class TestBandits:
     def test_select_for_update(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         bandit_instance.select_for_update(1)
@@ -194,8 +194,8 @@ class TestBandits:
     def test_add_arm(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         arm_to_add = Arm(2, None, learner=clone(bandit_instance.arms[0].learner))  # type: ignore
@@ -208,8 +208,8 @@ class TestBandits:
     def test_remove_arm(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         bandit_instance.remove_arm(0)
@@ -221,8 +221,8 @@ class TestBandits:
     def test_change_policy(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         bandit_instance.policy = ThompsonSampling()
@@ -232,8 +232,8 @@ class TestBandits:
     def test_check_rng(
         self,
         bandit_instance: Union[
-            Agent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
-            ContextualAgent[DecayingLearner, int, PolicyProtocol[DecayingLearner, int]],
+            Agent[int],
+            ContextualAgent[NDArray[np.float64], int],
         ],
     ) -> None:
         assert isinstance(bandit_instance.rng, np.random.Generator)
