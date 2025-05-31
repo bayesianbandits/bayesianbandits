@@ -49,7 +49,8 @@ def count_data():
 # Basic functionality tests
 @pytest.mark.parametrize("sparse", [True, False])
 @pytest.mark.parametrize("link", ["logit", "log"])
-def test_bayesian_glm_init(sparse: bool, link: str) -> None:
+@pytest.mark.parametrize("rng", [None, np.random.default_rng(42)])
+def test_bayesian_glm_init(sparse: bool, link: str, rng) -> None:
     """Test BayesianGLM initialization."""
     # Default approximator
     clf = BayesianGLM(
@@ -61,8 +62,45 @@ def test_bayesian_glm_init(sparse: bool, link: str) -> None:
 
     # Custom approximator
     approx = LaplaceApproximator(n_iter=5)
-    clf2 = BayesianGLM(alpha=1.0, link=link, approximator=approx)
+    clf2 = BayesianGLM(
+        alpha=1.0, link=link, approximator=approx, random_state=rng, sparse=sparse
+    )
     assert clf2.approximator is approx
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("rng", [None, np.random.default_rng(42)])
+def test_bayesian_glm_predict_before_fit_uses_prior(sparse: bool, rng) -> None:
+    """Test predict before fit uses prior."""
+    X = np.random.randn(10, 5)
+    clf = BayesianGLM(alpha=0.1, link="logit", sparse=sparse, random_state=rng)
+
+    # Check prior prediction
+    prior_preds = clf.predict(X)
+    assert prior_preds.shape == (X.shape[0],)
+    assert np.all((prior_preds >= 0) & (prior_preds <= 1))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bayesian_glm_sample_before_fit_uses_prior(sparse: bool) -> None:
+    """Test sample before fit uses prior."""
+    X = np.random.randn(10, 5)
+    clf = BayesianGLM(alpha=0.1, link="logit", sparse=sparse)
+
+    # Check prior sampling
+    samples = clf.sample(X, size=5)
+    assert samples.shape == (5, X.shape[0])
+    assert np.all((samples >= 0) & (samples <= 1))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bayesian_glm_decay_before_fit_does_nothing(sparse: bool) -> None:
+    """Test decay before fit does nothing."""
+    X = np.random.randn(10, 5)
+    clf = BayesianGLM(alpha=0.1, link="logit", sparse=sparse)
+
+    # Decay should not raise or change anything
+    clf.decay(X, decay_rate=0.9)
 
 
 @pytest.mark.parametrize("sparse", [True, False])

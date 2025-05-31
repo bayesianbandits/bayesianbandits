@@ -1620,8 +1620,6 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
 
         # Ensure param_samples is always 2D: (size, n_features)
         param_samples = np.atleast_2d(param_samples)
-        if param_samples.shape[0] == 1 and size > 1:
-            param_samples = param_samples.T
 
         # Compute predictions for each parameter sample
         predictions = np.zeros((size, X_sample.shape[0]))
