@@ -9,6 +9,7 @@ from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
 from scipy.sparse import csc_array, csc_matrix, diags, eye
 from scipy.sparse.linalg import splu
+from scipy.special import expit
 from scipy.stats import (
     Covariance,
     dirichlet,
@@ -24,8 +25,15 @@ from sklearn.utils.validation import (
     check_is_fitted,
     check_X_y,  # type: ignore
 )
-from typing_extensions import ParamSpec, Self, Concatenate
+from typing_extensions import Concatenate, ParamSpec, Self
 
+from ._gaussian import (
+    LaplaceApproximator,
+    LinkFunction,
+    PosteriorApproximator,
+    compute_effective_weights,
+    solve_precision_weighted_mean,
+)
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CovViaSparsePrecision,
@@ -37,7 +45,7 @@ from ._sparse_bayesian_linear_regression import (
 
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
-SelfType = TypeVar("SelfType", bound="NormalRegressor")
+SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):
@@ -740,14 +748,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
                 )
 
         # Apply the learning rate decay to get effective weights
-        if X.shape[0] > 1:
-            # Compute decay factors. To make sure that multiple partial_fits are equivalent to one
-            # combined fit, we need to apply the decay factors in reverse order.
-            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
-            # Combine with sample weights
-            effective_weights = sample_weight * decay_factors
-        else:
-            effective_weights = sample_weight
+        effective_weights = compute_effective_weights(
+            X.shape[0], sample_weight, self.learning_rate
+        )
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
@@ -760,8 +763,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             W_sqrt = diags(np.sqrt(effective_weights), format="csc")
             X_weighted = W_sqrt @ X
             # Update the inverse covariance matrix
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
-                X_weighted.T @ X_weighted
+            cov_inv = cast(
+                csc_array,
+                prior_decay * self.cov_inv_ + self.beta * (X_weighted.T @ X_weighted),
             )
         else:
             # For dense matrices, use broadcasting for efficiency
@@ -770,36 +774,15 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             cov_inv = prior_decay * self.cov_inv_ + self.beta * (
                 X_weighted.T @ X_weighted
             )
+            cov_inv = cast(NDArray[np.float64], cov_inv)
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
 
-        if self.sparse:
-            if solver == SparseSolver.CHOLMOD:
-                from sksparse.cholmod import cholesky as cholmod_cholesky
+        eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
+        eta = cast(NDArray[np.float64], eta)
 
-                coef = cholmod_cholesky(csc_matrix(cov_inv))(
-                    prior_decay * self.cov_inv_ @ self.coef_
-                    + self.beta * X.T @ y_weighted
-                )
-            else:
-                # Calculate the posterior mean
-                lu = splu(
-                    cov_inv,
-                    diag_pivot_thresh=0,
-                    permc_spec="MMD_AT_PLUS_A",
-                    options=dict(SymmetricMode=True),
-                )
-                coef = lu.solve(
-                    prior_decay * self.cov_inv_ @ self.coef_
-                    + self.beta * X.T @ y_weighted
-                )
-        else:
-            # Calculate the posterior mean
-            coef = solve(
-                cov_inv,
-                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted,
-            )
+        coef = solve_precision_weighted_mean(cov_inv, eta, self.sparse)
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -1112,13 +1095,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
                 )
 
         # Apply the learning rate decay to get effective weights
-        if X.shape[0] > 1:
-            # Compute decay factors directly (no sqrt since we'll apply sqrt later anyway)
-            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
-            # Combine with sample weights
-            effective_weights = sample_weight * decay_factors
-        else:
-            effective_weights = sample_weight
+        effective_weights = compute_effective_weights(
+            X.shape[0], sample_weight, self.learning_rate
+        )
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
@@ -1319,3 +1298,368 @@ def multivariate_t_sample_from_covariance(
         loc = np.zeros_like(z)
     samples = loc + z / np.sqrt(x)[..., None]
     return _squeeze_output(samples)
+
+
+class BayesianGLM(BaseEstimator, RegressorMixin):
+    """
+    Bayesian Generalized Linear Model using configurable posterior approximation.
+
+    This model extends Bayesian linear regression to non-Gaussian likelihoods
+    using a configurable approximation method (default: Laplace approximation
+    with IRLS).
+
+    Parameters
+    ----------
+    alpha : float, default=1.0
+        Prior precision for the weights. Higher values give stronger
+        regularization (more confident zero prior).
+    link : {'logit', 'log'}, default='logit'
+        Link function:
+        - 'logit': For binary outcomes (Bernoulli likelihood)
+        - 'log': For count outcomes (Poisson likelihood)
+    learning_rate : float, default=1.0
+        Learning rate for sequential updates. Values < 1 decay the prior
+        influence over time (forgetful prior).
+    approximator : PosteriorApproximator, default=LaplaceApproximator()
+        Method for approximating the posterior. Default uses Laplace
+        approximation with 10 Newton iterations.
+    sparse : bool, default=False
+        Whether to use sparse matrix operations. Requires scipy.sparse inputs.
+    random_state : int or RandomState, default=None
+        Random state for reproducible sampling.
+
+    Attributes
+    ----------
+    coef_ : array-like of shape (n_features,)
+        Posterior mean of the coefficients (MAP estimate).
+    cov_inv_ : array-like of shape (n_features, n_features)
+        Posterior precision matrix (inverse covariance).
+    n_features_ : int
+        Number of features seen during fit.
+
+    Examples
+    --------
+    Binary classification with logistic regression:
+
+    >>> from bayesianbandits import BayesianGLM
+    >>> X = np.array([[1], [2], [3], [4]])
+    >>> y = np.array([0, 0, 1, 1])  # Binary outcomes
+    >>> model = BayesianGLM(alpha=1.0, link='logit')
+    >>> model.fit(X, y)
+    BayesianGLM()
+    >>> model.predict(X)  # Returns probabilities
+    array([0.56154064, 0.62124455, 0.67748791, 0.72902237])
+
+    Count regression with Poisson:
+
+    >>> y_counts = np.array([1, 2, 5, 8])  # Count data
+    >>> model = BayesianGLM(alpha=1.0, link='log')
+    >>> model.fit(X, y_counts)
+    BayesianGLM(link='log')
+    >>> model.predict(X)  # Returns expected counts
+    array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
+
+    Online learning with custom approximator:
+
+    >>> from bayesianbandits import LaplaceApproximator
+    >>> approximator = LaplaceApproximator(n_iter=1)  # Fast online updates
+    >>> model = BayesianGLM(alpha=1.0, link='logit', approximator=approximator)
+    >>> stream = [(np.array([[1]]), [0]), (np.array([[2]]), [0]),
+    ...           (np.array([[3]]), [1]), (np.array([[4]]), [1])]
+    >>> for X_batch, y_batch in stream:
+    ...     model = model.partial_fit(X_batch, y_batch)
+    >>> model.predict(np.array([[1], [2], [3], [4]]))
+    array([0.59667319, 0.68637901, 0.76402365, 0.82728258])
+
+    Batch learning with more iterations:
+
+    >>> approximator = LaplaceApproximator(n_iter=500, tol=1e-6)
+    >>> model = BayesianGLM(alpha=0.1, approximator=approximator)
+    >>> model = model.fit(X, y)  # Will iterate until convergence
+    >>> model.predict(X)
+    array([0.57027497, 0.63782727, 0.70034041, 0.75618799])
+    """
+
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        *,
+        link: LinkFunction = "logit",
+        learning_rate: float = 1.0,
+        approximator: Optional[PosteriorApproximator] = None,
+        sparse: bool = False,
+        random_state: Union[int, np.random.Generator, None] = None,
+    ) -> None:
+        self.alpha = alpha
+        self.link: LinkFunction = link
+        self.learning_rate = learning_rate
+        self.approximator = approximator
+        self.sparse = sparse
+        self.random_state = random_state
+
+    def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        """Initialize prior distribution."""
+        if isinstance(self.random_state, int) or self.random_state is None:
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
+
+        assert X.shape is not None
+        self.n_features_ = X.shape[1]
+        self.coef_ = np.zeros(self.n_features_)
+
+        if self.sparse:
+            self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
+        else:
+            self.cov_inv_ = cast(
+                NDArray[np.float64], np.eye(self.n_features_) * self.alpha
+            )
+
+        # Initialize approximator if not provided
+        if self.approximator is None:
+            self.approximator_ = LaplaceApproximator()
+        else:
+            self.approximator_ = self.approximator
+
+    @cached_property
+    def cov_(self) -> Covariance:
+        """Posterior covariance matrix (cached).
+
+        Warning: O(p³) computation and O(p²) memory. For high dimensions,
+        consider using only the diagonal or avoiding this property entirely.
+        """
+        if self.sparse:
+            return CovViaSparsePrecision(self.cov_inv_, solver=solver)  # type: ignore
+        else:
+            cov = solve(
+                self.cov_inv_,
+                np.eye(self.n_features_),
+                check_finite=False,
+                assume_a="pos",
+            )
+            return Covariance.from_cholesky(cholesky(cov, lower=True))
+
+    @_invalidate_cached_properties
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> None:
+        """Update posterior using the configured approximation method."""
+        posterior = self.approximator_.update_posterior(
+            X,
+            y,
+            self.coef_,
+            self.cov_inv_,  # type: ignore
+            link=self.link,
+            sample_weight=sample_weight,
+            learning_rate=self.learning_rate,
+            sparse=self.sparse,
+        )
+        self.coef_ = posterior.mean
+        self.cov_inv_ = posterior.precision
+
+    def fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Fit Bayesian GLM to training data.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : object
+            Fitted estimator.
+        """
+        X, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._initialize_prior(X)
+        self._fit_helper(X, y, sample_weight)
+        return self
+
+    def partial_fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Update model with new data (online learning).
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : object
+            Updated estimator.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            return self.fit(X, y, sample_weight)
+
+        X, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._fit_helper(X, y, sample_weight)
+        return self
+
+    def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
+        """
+        Predict expected values for X.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Samples.
+
+        Returns
+        -------
+        y_pred : array-like of shape (n_samples,)
+            For logit link: probabilities in [0, 1]
+            For log link: expected counts (positive values)
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        X_pred = check_array(
+            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+        )
+
+        eta = X_pred @ self.coef_
+
+        if self.link == "logit":
+            return expit(eta)
+        elif self.link == "log":
+            return np.exp(np.clip(eta, -700, 700))
+        else:
+            raise ValueError(f"Unknown link: {self.link}")
+
+    def sample(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample from the posterior predictive distribution.
+
+        This samples parameters from the posterior N(coef_, cov_),
+        then computes predictions for each parameter sample. This
+        gives samples from the marginal posterior predictive distribution,
+        integrating over parameter uncertainty.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data.
+        size : int, default=1
+            Number of samples to draw.
+
+        Returns
+        -------
+        samples : array-like of shape (size, n_samples)
+            Samples from posterior predictive distribution.
+            For logit: samples of probabilities in [0, 1]
+            For log: samples of expected counts (positive)
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        X_sample = check_array(
+            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+        )
+
+        # Sample parameters from posterior
+        if self.sparse:
+            param_samples = multivariate_normal_sample_from_sparse_covariance(
+                self.coef_, self.cov_, size=size, random_state=self.random_state_
+            )
+        else:
+            from scipy.stats import multivariate_normal
+
+            param_samples = multivariate_normal.rvs(
+                mean=self.coef_,
+                cov=self.cov_,  # type: ignore
+                size=size,
+                random_state=self.random_state_,
+            )
+
+        # Ensure param_samples is always 2D: (size, n_features)
+        param_samples = np.atleast_2d(param_samples)
+
+        # Compute predictions for each parameter sample
+        predictions = np.zeros((size, X_sample.shape[0]))
+        for i in range(size):
+            eta = X_sample @ param_samples[i]
+            if self.link == "logit":
+                predictions[i] = expit(eta)
+            elif self.link == "log":
+                predictions[i] = np.exp(np.clip(eta, -700, 700))
+
+        return predictions
+
+    @_invalidate_cached_properties
+    def decay(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """
+        Decay the posterior precision (increase uncertainty).
+
+        This allows the model to adapt to changing environments by
+        gradually forgetting old information. Only the precision is
+        decayed; the mean remains unchanged.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Not used directly, but shape determines decay amount.
+        decay_rate : float, optional
+            Decay rate. If None, uses the model's learning_rate.
+        """
+        if not hasattr(self, "coef_"):
+            return
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        assert X.shape is not None
+        prior_decay = decay_rate ** X.shape[0]
+
+        self.cov_inv_ = prior_decay * self.cov_inv_

@@ -55,22 +55,33 @@ is useful for restless bandits.
 .. autosummary::
     :toctree: _autosummary
 
+    BayesianGLM
     DirichletClassifier
     GammaRegressor
     NormalRegressor
     NormalInverseGammaRegressor
 
+Utilities
+=========
+These utilities provide additional functionality for the bandit algorithms,
+such as Laplace approximation for Gaussian posteriors.
+
+.. autosummary::
+    :toctree: _autosummary
+
+    LaplaceApproximator
+
 """
 
 from ._arm import Arm
-
 from ._estimators import (
+    BayesianGLM,
     DirichletClassifier,
     GammaRegressor,
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
-
+from ._gaussian import LaplaceApproximator
 from .api import (
     Agent,
     ContextualAgent,
@@ -78,5 +89,4 @@ from .api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
-
 from .policies import EXP3A
