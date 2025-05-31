@@ -26,6 +26,7 @@ from sklearn.utils.validation import (
 )
 from typing_extensions import ParamSpec, Self, Concatenate
 
+from ._gaussian import compute_effective_weights, solve_precision_weighted_mean
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CovViaSparsePrecision,
@@ -740,14 +741,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
                 )
 
         # Apply the learning rate decay to get effective weights
-        if X.shape[0] > 1:
-            # Compute decay factors. To make sure that multiple partial_fits are equivalent to one
-            # combined fit, we need to apply the decay factors in reverse order.
-            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
-            # Combine with sample weights
-            effective_weights = sample_weight * decay_factors
-        else:
-            effective_weights = sample_weight
+        effective_weights = compute_effective_weights(
+            X.shape[0], sample_weight, self.learning_rate
+        )
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
@@ -760,8 +756,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             W_sqrt = diags(np.sqrt(effective_weights), format="csc")
             X_weighted = W_sqrt @ X
             # Update the inverse covariance matrix
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
-                X_weighted.T @ X_weighted
+            cov_inv = cast(
+                csc_array,
+                prior_decay * self.cov_inv_ + self.beta * (X_weighted.T @ X_weighted),
             )
         else:
             # For dense matrices, use broadcasting for efficiency
@@ -770,36 +767,15 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             cov_inv = prior_decay * self.cov_inv_ + self.beta * (
                 X_weighted.T @ X_weighted
             )
+            cov_inv = cast(NDArray[np.float64], cov_inv)
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
 
-        if self.sparse:
-            if solver == SparseSolver.CHOLMOD:
-                from sksparse.cholmod import cholesky as cholmod_cholesky
+        eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
+        eta = cast(NDArray[np.float64], eta)
 
-                coef = cholmod_cholesky(csc_matrix(cov_inv))(
-                    prior_decay * self.cov_inv_ @ self.coef_
-                    + self.beta * X.T @ y_weighted
-                )
-            else:
-                # Calculate the posterior mean
-                lu = splu(
-                    cov_inv,
-                    diag_pivot_thresh=0,
-                    permc_spec="MMD_AT_PLUS_A",
-                    options=dict(SymmetricMode=True),
-                )
-                coef = lu.solve(
-                    prior_decay * self.cov_inv_ @ self.coef_
-                    + self.beta * X.T @ y_weighted
-                )
-        else:
-            # Calculate the posterior mean
-            coef = solve(
-                cov_inv,
-                prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted,
-            )
+        coef = solve_precision_weighted_mean(cov_inv, eta, self.sparse)
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -1112,13 +1088,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
                 )
 
         # Apply the learning rate decay to get effective weights
-        if X.shape[0] > 1:
-            # Compute decay factors directly (no sqrt since we'll apply sqrt later anyway)
-            decay_factors = np.flip(np.power(self.learning_rate, np.arange(X.shape[0])))
-            # Combine with sample weights
-            effective_weights = sample_weight * decay_factors
-        else:
-            effective_weights = sample_weight
+        effective_weights = compute_effective_weights(
+            X.shape[0], sample_weight, self.learning_rate
+        )
 
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
