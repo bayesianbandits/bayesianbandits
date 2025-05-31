@@ -159,7 +159,7 @@ def update_gaussian_posterior_laplace(
     sample_weight: Optional[NDArray[np.float64]] = None,
     learning_rate: float = 1.0,
     sparse: bool = False,
-    n_iter: int = 10,
+    n_iter: int = 3,
     tol: float = 1e-4,
 ) -> GaussianPosterior:
     """
@@ -230,7 +230,7 @@ def update_gaussian_posterior_laplace(
         Decay factor for prior contribution
     sparse : bool
         Whether to use sparse operations
-    n_iter : int, default=1
+    n_iter : int, default=3
         Maximum number of Newton (IRLS) iterations.
         - n_iter=1: Single step update (fast, may not converge)
         - n_iter>1: Iterate until convergence or max iterations
@@ -249,6 +249,9 @@ def update_gaussian_posterior_laplace(
         posterior.mean : MAP estimate
         posterior.precision : Hessian at MAP (approximate posterior precision)
     """
+    if sparse:
+        X_sparse = csc_array(X)
+
     assert X.shape is not None, "X must be a 2D array"
     n_samples = X.shape[0]
 
@@ -257,6 +260,10 @@ def update_gaussian_posterior_laplace(
         n_samples, sample_weight, learning_rate
     )
     prior_decay = learning_rate**n_samples
+
+    # Precompute prior contributions (these don't change in the loop)
+    prior_precision_scaled = prior_decay * prior_precision
+    prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
 
     # Initialize at prior mean
     coef = prior_mean.copy()
@@ -283,27 +290,22 @@ def update_gaussian_posterior_laplace(
             y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
         )
 
-        # Form weighted least squares problem
-        # Prior contribution (in natural parameterization)
-        prior_eta = prior_precision @ prior_mean
-
         # Likelihood contribution
         if sparse:
             from scipy.sparse import diags
 
-            X_sparse = csc_array(X)
             W_sqrt = diags(np.sqrt(glm_weights.W), format="csc")
-            X_weighted = W_sqrt @ X_sparse
+            X_weighted = W_sqrt @ X_sparse  # type: ignore
             likelihood_precision = X_weighted.T @ X_weighted
-            likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)
+            likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)  # type: ignore
         else:
             X_weighted = X * np.sqrt(glm_weights.W)[:, np.newaxis]
             likelihood_precision = X_weighted.T @ X_weighted
             likelihood_eta = X.T @ (glm_weights.W * glm_weights.z)
 
-        # Combine prior and likelihood
-        posterior_precision = prior_decay * prior_precision + likelihood_precision
-        posterior_eta = prior_decay * prior_eta + likelihood_eta
+        # Combine prior and likelihood (using precomputed prior terms)
+        posterior_precision = prior_precision_scaled + likelihood_precision
+        posterior_eta = prior_eta_scaled + likelihood_eta
 
         # Solve for new coefficients
         coef = solve_precision_weighted_mean(posterior_precision, posterior_eta, sparse)  # type: ignore
@@ -339,7 +341,7 @@ class LaplaceApproximator(PosteriorApproximator):
 
     Parameters
     ----------
-    n_iter : int, default=1
+    n_iter : int, default=5
         Number of Newton iterations to perform.
         - 1: Single step update (fast, may not converge)
         - >1: Iterate until convergence or max iterations
@@ -351,7 +353,7 @@ class LaplaceApproximator(PosteriorApproximator):
 
     """
 
-    n_iter: int = 10
+    n_iter: int = 5
     tol: float = 1e-4
 
     def update_posterior(

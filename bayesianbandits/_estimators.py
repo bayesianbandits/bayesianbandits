@@ -1357,7 +1357,7 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
     >>> model.fit(X, y_counts)
     BayesianGLM(link='log')
     >>> model.predict(X)  # Returns expected counts
-    array([1.66212174, 2.76264867, 4.59185842, 7.63222769])
+    array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
 
     Online learning with custom approximator:
 
