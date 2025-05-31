@@ -140,22 +140,13 @@ def compute_glm_weights_and_working_response(
     z : array-like of shape (n_samples,)
         Working response values
     """
-    # Avoid division by zero
-    d_mu_d_eta_safe = np.maximum(d_mu_d_eta, 1e-10)
+    residual = y - mu
+    np.maximum(d_mu_d_eta, 1e-10, out=d_mu_d_eta)  # in-place
+    residual /= d_mu_d_eta  # in-place
+    z = eta + residual
 
-    # Working response: z = eta + (y - mu) / (dmu/deta)
-    # This is the linearized target
-    z = eta + (y - mu) / d_mu_d_eta_safe
-
-    # GLM weights: W = (dmu/deta)^2 / Var(y|mu)
-    # For canonical links: W = dmu/deta
-    W = d_mu_d_eta
-
-    # Apply sample weights if provided
-    if sample_weight is not None:
-        W = W * sample_weight
-
-    return GLMWeights(cast(NDArray[np.float64], W), cast(NDArray[np.float64], z))
+    W = d_mu_d_eta if sample_weight is None else d_mu_d_eta * sample_weight
+    return GLMWeights(W, z)  # type: ignore
 
 
 def update_gaussian_posterior_laplace(
