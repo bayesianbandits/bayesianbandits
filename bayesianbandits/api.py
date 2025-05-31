@@ -179,7 +179,7 @@ class ContextualAgent(Generic[ContextType, TokenType]):
         policy: PolicyProtocol[ContextType, TokenType],
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self.policy: PolicyProtocol = policy
+        self.policy: PolicyProtocol[ContextType, TokenType] = policy
 
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
         self._arms: List[Arm[ContextType, TokenType]] = []
