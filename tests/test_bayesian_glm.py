@@ -18,7 +18,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 )
 def suitesparse_envvar(request):
     """Test with different sparse solvers."""
-    with mock.patch("bayesianbandits._estimators.solver", request.param):
+    with mock.patch("bayesianbandits._gaussian.solver", request.param):
         yield
 
 
@@ -79,6 +79,15 @@ def test_bayesian_glm_predict_before_fit_uses_prior(sparse: bool, rng) -> None:
     prior_preds = clf.predict(X)
     assert prior_preds.shape == (X.shape[0],)
     assert np.all((prior_preds >= 0) & (prior_preds <= 1))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bayesian_glm_coef_before_fit_bad_link_throws(sparse: bool) -> None:
+    """Test coef before fit raises error for bad link."""
+    clf = BayesianGLM(alpha=0.1, link="blah", sparse=sparse)
+
+    with pytest.raises(ValueError, match="Unknown link: blah"):
+        clf.predict(np.random.randn(10, 5))
 
 
 @pytest.mark.parametrize("sparse", [True, False])

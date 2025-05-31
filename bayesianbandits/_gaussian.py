@@ -339,9 +339,7 @@ class PosteriorApproximator(Protocol):
         sample_weight: Optional[NDArray[np.float64]],
         learning_rate: float,
         sparse: bool,
-    ) -> GaussianPosterior:
-        """Update posterior distribution."""
-        ...
+    ) -> GaussianPosterior: ...
 
 
 @dataclass
@@ -367,14 +365,14 @@ class LaplaceApproximator(PosteriorApproximator):
 
     def update_posterior(
         self,
-        X,
-        y,
-        prior_mean,
-        prior_precision,
-        link,
-        sample_weight,
-        learning_rate,
-        sparse,
+        X: ArrayType,
+        y: NDArray[np.float64],
+        prior_mean: ArrayType,
+        prior_precision: ArrayType,
+        link: LinkFunction,
+        sample_weight: Optional[NDArray[np.float64]],
+        learning_rate: float,
+        sparse: bool,
     ) -> GaussianPosterior:
         return update_gaussian_posterior_laplace(
             X,

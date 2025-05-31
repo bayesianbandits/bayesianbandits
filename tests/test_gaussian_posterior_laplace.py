@@ -3,11 +3,20 @@
 import numpy as np
 from numpy.testing import assert_allclose
 from scipy.special import expit
+import pytest
 
 from bayesianbandits._gaussian import (
     logit_link_and_derivative,
     update_gaussian_posterior_laplace,
+    compute_effective_weights,
 )
+
+
+def test_compute_effective_weights_size_mismatch():
+    """Test that compute_effective_weights raises error for size mismatch."""
+    y = np.random.binomial(1, 0.5, 10).astype(float)
+    with pytest.raises(ValueError):
+        compute_effective_weights(5, y, 1.0)
 
 
 class TestLaplaceApproximation:
