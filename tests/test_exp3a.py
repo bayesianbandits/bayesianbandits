@@ -536,3 +536,58 @@ class TestEXP3AProperties:
         # Should be exploring both arms in steady state
         last_50_proportions = np.bincount(last_50_pulls, minlength=2) / 50
         assert np.min(last_50_proportions) > 0.3  # Both arms pulled frequently
+
+    def test_exp3a_top_k_return_type(self) -> None:
+        """Test that EXP3A returns correct types with top_k."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
+        policy = EXP3A(gamma=0.1, eta=1.0)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+        X = np.array([[1.0], [2.0]])
+
+        # Default behavior - returns List[TokenType]
+        result_default = agent.pull(X)
+        assert isinstance(result_default, list)
+        assert len(result_default) == 2  # One per context
+        assert all(isinstance(token, int) for token in result_default)
+
+        # top_k=1 - returns List[List[TokenType]]
+        result_k1 = agent.pull(X, top_k=1)
+        assert isinstance(result_k1, list)
+        assert len(result_k1) == 2  # One list per context
+        assert all(isinstance(sublist, list) for sublist in result_k1)
+        assert all(len(sublist) == 1 for sublist in result_k1)
+
+        # top_k=3 - returns List[List[TokenType]]
+        result_k3 = agent.pull(X, top_k=3)
+        assert isinstance(result_k3, list)
+        assert len(result_k3) == 2  # One list per context
+        assert all(isinstance(sublist, list) for sublist in result_k3)
+        assert all(len(sublist) == 3 for sublist in result_k3)
+
+    def test_exp3a_no_duplicates(self) -> None:
+        """Test that top_k doesn't select the same arm twice."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(10)]
+        policy = EXP3A(gamma=0.1, eta=1.0)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+        X = np.array([[1.0]] * 20)  # 20 contexts
+
+        results = agent.pull(X, top_k=5)
+
+        # Check no duplicates in any selection
+        for result in results:
+            assert len(result) == len(set(result))  # No duplicates
+            assert len(result) == 5  # Correct number selected
+
+    def test_exp3a_top_k_exceeds_arms(self) -> None:
+        """Test behavior when top_k > number of arms."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(3)]
+        policy = EXP3A(gamma=0.1, eta=1.0)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+        X = np.array([[1.0]])
+
+        # Request more arms than available
+        results = agent.pull(X, top_k=5)
+
+        # Should return all 3 arms
+        assert len(results[0]) == 3
+        assert set(results[0]) == {0, 1, 2}
