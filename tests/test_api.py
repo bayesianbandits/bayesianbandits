@@ -256,8 +256,7 @@ class TestBandits:
 
 def test_contextual_agent_update_mismatched_shapes() -> None:
     with pytest.raises(
-        ValueError,
-        match="The number of rows in `X` must match the number of rows in `y`.",
+        ValueError, match="Found input variables with inconsistent numbers of samples: "
     ):
         ContextualAgent(
             [

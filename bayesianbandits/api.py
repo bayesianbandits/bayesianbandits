@@ -313,11 +313,6 @@ class ContextualAgent(Generic[ContextType, TokenType]):
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
         """
-        assert X.shape is not None, "X must be a 2D array."
-        if X.shape[0] != y.shape[0]:
-            raise ValueError(
-                "The number of rows in `X` must match the number of rows in `y`."
-            )
         self.policy.update(self.arm_to_update, X, y, self.arms, self.rng)
 
     def decay(

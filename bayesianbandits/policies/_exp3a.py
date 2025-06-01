@@ -182,27 +182,13 @@ class EXP3A:
     ) -> List[Arm[ContextType, TokenType]]:
         """
         Select arms according to exponential weights with optional exploration.
-
-        Parameters
-        ----------
-        arms : List[Arm]
-            Available arms to choose from
-        X : array-like of shape (n_samples, n_features)
-            Context matrix
-        rng : np.random.Generator
-            Random number generator for sampling
-
-        Returns
-        -------
-        List[Arm]
-            Selected arms, one per context
         """
-        assert X.shape is not None, "Context matrix X must not be empty"
-
         # Get expected rewards via Monte Carlo estimation
         rewards = np.stack(
             [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
         )
+
+        n_contexts = rewards.shape[1]  # rewards is (n_arms, n_contexts)
 
         # Exponential weights with numerical stability
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
@@ -213,7 +199,7 @@ class EXP3A:
         )
 
         # Sample arms according to probabilities
-        choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(X.shape[0])]
+        choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(n_contexts)]
 
         return [arms[i] for i in choices]
 

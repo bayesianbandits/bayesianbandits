@@ -40,6 +40,17 @@ policies of your bandit as your needs change.
     EXP3A
     Arm
 
+Pipeline
+========
+Pipeline enables the use of sklearn transformers with Bayesian learners,
+supporting the standard contextual bandit formulation where multiple arms
+share a single model.
+
+.. autosummary::
+    :toctree: _autosummary
+
+    Pipeline
+
 
 Estimators
 ==========
@@ -89,4 +100,5 @@ from .api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from .pipeline import Pipeline
 from .policies import EXP3A
