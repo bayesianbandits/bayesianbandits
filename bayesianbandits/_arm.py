@@ -5,6 +5,7 @@ from typing import (
     Any,
     Callable,
     Generic,
+    Iterable,
     Optional,
     Protocol,
     TypeVar,
@@ -13,7 +14,6 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
 from typing_extensions import Concatenate, ParamSpec, Self
 
 P = ParamSpec("P")
@@ -26,13 +26,11 @@ RewardFunction = Union[
 TokenType = TypeVar("TokenType")
 X_contra = TypeVar("X_contra", contravariant=True)  # Contravariant for input types
 A = TypeVar("A", bound="Arm[Any, Any]")
-ContextType = TypeVar("ContextType", bound=csc_array | NDArray[np.float64])
+ContextType = TypeVar("ContextType", bound=Iterable[Any])
 
 
 class Learner(Protocol[X_contra]):
     """Protocol defining the learner interface with contravariant X type parameter."""
-
-    random_state: Union[np.random.Generator, int, None]
 
     def sample(self, X: X_contra, size: int = 1) -> NDArray[np.float64]: ...
     def partial_fit(
@@ -43,6 +41,10 @@ class Learner(Protocol[X_contra]):
     ) -> Self: ...
     def decay(self, X: X_contra, *, decay_rate: Optional[float] = None) -> None: ...
     def predict(self, X: X_contra) -> NDArray[np.float64]: ...
+    @property
+    def random_state(self) -> Union[np.random.Generator, int, None]: ...
+    @random_state.setter
+    def random_state(self, value: Union[np.random.Generator, int, None]) -> None: ...
 
 
 def requires_learner(
