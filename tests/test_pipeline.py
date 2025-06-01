@@ -6,7 +6,6 @@ from functools import partial
 from typing import Dict, List
 
 import numpy as np
-import pandas as pd
 import pytest
 from numpy.typing import NDArray
 from scipy.sparse import csc_array
@@ -73,6 +72,9 @@ class TestPipeline:
 
     def test_dataframe_input(self):
         """Test pipeline with DataFrame input."""
+        pytest.importorskip("pandas")
+        import pandas as pd
+
         pipeline = Pipeline(
             [
                 ("select", FunctionTransformer(lambda df: df[["feature"]].values)),
@@ -349,6 +351,9 @@ class TestPipelineInputTypes:
 
     def test_dataframe_features(self) -> None:
         """Test adding features to DataFrames."""
+        pytest.importorskip("pandas")
+        import pandas as pd
+
         item_info = {
             "brand": "BrandA",
             "price": 29.99,
@@ -445,6 +450,8 @@ class TestPipelineInputTypes:
 
     def test_shared_model_different_inputs(self) -> None:
         """Test shared model with pipelines using different input types."""
+        pytest.importorskip("pandas")
+        import pandas as pd
 
         shared_model = NormalRegressor(alpha=1.0, beta=1.0)
 
