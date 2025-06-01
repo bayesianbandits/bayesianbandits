@@ -383,8 +383,6 @@ class TestTopK:
             )
         elif policy_class is ThompsonSampling:
             policy = cast(ThompsonSampling[NDArray[np.float64], int], policy_class())
-        else:
-            raise ValueError(f"Unsupported policy class: {policy_class}")
 
         agent = ContextualAgent(arms, policy, random_seed=42)  # type: ignore
         X = np.array([[1.0], [2.0]])
