@@ -102,3 +102,20 @@ from .api import (
 )
 from .pipeline import Pipeline
 from .policies import EXP3A
+
+__all__ = [
+    "Arm",
+    "BayesianGLM",
+    "DirichletClassifier",
+    "GammaRegressor",
+    "NormalInverseGammaRegressor",
+    "NormalRegressor",
+    "LaplaceApproximator",
+    "Agent",
+    "ContextualAgent",
+    "EpsilonGreedy",
+    "ThompsonSampling",
+    "UpperConfidenceBound",
+    "EXP3A",
+    "Pipeline",
+]

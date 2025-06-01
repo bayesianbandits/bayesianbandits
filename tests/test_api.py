@@ -1,4 +1,4 @@
-from typing import Any, List, TypeVar, Union
+from typing import Any, List, Type, TypeVar, Union, cast
 
 import numpy as np
 import pytest
@@ -7,7 +7,6 @@ from sklearn.base import (
     check_is_fitted,  # type: ignore
     clone,
 )
-from scipy.sparse import csc_array
 
 from bayesianbandits import (
     Agent,
@@ -51,12 +50,15 @@ def learner_class(
     return request.param
 
 
+policies: List[PolicyProtocol[Any, Any]] = [
+    EpsilonGreedy(0.8),
+    ThompsonSampling(),
+    UpperConfidenceBound(0.68),
+]
+
+
 @pytest.fixture(
-    params=[
-        EpsilonGreedy(0.8),
-        ThompsonSampling(),
-        UpperConfidenceBound(0.68),
-    ]
+    params=policies,
 )
 def choice(
     request: pytest.FixtureRequest,
@@ -64,7 +66,7 @@ def choice(
     return request.param
 
 
-LT = TypeVar("LT", bound=Learner)
+LT = TypeVar("LT", bound=Learner[Any])
 
 
 @pytest.fixture(params=[Agent, ContextualAgent])
@@ -326,7 +328,9 @@ class TestTopK:
 
     def test_epsilon_greedy_postprocess_with_top_k(self) -> None:
         """Test that postprocess correctly sets multiple values to inf for exploration."""
-        policy = EpsilonGreedy(epsilon=1.0)  # Always explore
+        policy: PolicyProtocol[NDArray[np.float64], Any] = EpsilonGreedy(
+            epsilon=1.0
+        )  # Always explore
 
         # Mock arm summary (means)
         arm_summary = np.array(
@@ -365,16 +369,22 @@ class TestTopK:
         assert len(result_k3[0]) == 3  # Inner list has 3 items
 
     @pytest.mark.parametrize("policy_class", [ThompsonSampling, UpperConfidenceBound])
-    def test_other_policies_top_k(self, policy_class) -> None:
+    def test_other_policies_top_k(
+        self,
+        policy_class: Type[ThompsonSampling[NDArray[np.float64], int]]
+        | Type[UpperConfidenceBound[NDArray[np.float64], int]],
+    ) -> None:
         """Test that other policies also support top_k."""
         arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
 
-        if policy_class == UpperConfidenceBound:
-            policy = policy_class(alpha=0.68)
-        else:
-            policy = policy_class()
+        if policy_class is UpperConfidenceBound:
+            policy = cast(
+                UpperConfidenceBound[NDArray[np.float64], int], policy_class(alpha=0.68)
+            )
+        elif policy_class is ThompsonSampling:
+            policy = cast(ThompsonSampling[NDArray[np.float64], int], policy_class())
 
-        agent = ContextualAgent(arms, policy, random_seed=42)
+        agent = ContextualAgent(arms, policy, random_seed=42)  # type: ignore
         X = np.array([[1.0], [2.0]])
 
         # Should work without errors
