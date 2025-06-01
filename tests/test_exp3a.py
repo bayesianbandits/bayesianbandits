@@ -2,8 +2,12 @@
 Test suite for EXP3.A (Average-based anytime EXP3) algorithm.
 """
 
+from typing import Any, List
+
 import numpy as np
 import pytest
+from numpy.typing import NDArray
+from scipy.sparse import csc_array  # type: ignore
 
 from bayesianbandits import (
     EXP3A,
@@ -59,7 +63,7 @@ class TestEXP3AArmSelection:
     def test_basic_selection(self):
         """Test basic arm selection favors better arms."""
         # Create arms with different priors to simulate different quality
-        arms = []
+        arms: List[Arm[NDArray[Any], str]] = []
         for i, (mu, precision) in enumerate([(0.2, 10), (0.5, 10), (0.8, 10)]):
             learner = NormalInverseGammaRegressor(mu=mu, lam=precision, a=5, b=1)
             arms.append(Arm(f"arm_{i}", learner=learner))
@@ -70,7 +74,7 @@ class TestEXP3AArmSelection:
         X = np.array([[1.0]])
 
         # Select arms multiple times
-        selections = []
+        selections: List[int] = []
         for _ in range(1000):
             action = agent.pull(X)
             # Map action token back to index
@@ -89,7 +93,7 @@ class TestEXP3AArmSelection:
     def test_forced_exploration(self):
         """Test that gamma parameter enforces minimum exploration."""
         # Create arms with very different priors
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i, mu in enumerate([0.0, 0.0, 1.0]):
             learner = NormalInverseGammaRegressor(mu=mu, lam=100, a=10, b=1)
             arms.append(Arm(i, learner=learner))
@@ -100,7 +104,7 @@ class TestEXP3AArmSelection:
 
         X = np.array([[1.0]])
 
-        selections = []
+        selections: List[int] = []
         for _ in range(1000):
             action = agent.pull(X)
             selections.append(action[0])
@@ -114,7 +118,7 @@ class TestEXP3AArmSelection:
     def test_temperature_effect(self):
         """Test that eta parameter controls selection sharpness."""
         # Arms with similar but different priors
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i, mu in enumerate([0.4, 0.5, 0.6]):
             learner = NormalInverseGammaRegressor(mu=mu, lam=50, a=5, b=1)
             arms.append(Arm(i, learner=learner))
@@ -130,8 +134,8 @@ class TestEXP3AArmSelection:
         X = np.array([[1.0]])
 
         # Collect selections
-        low_temp_selections = []
-        high_temp_selections = []
+        low_temp_selections: List[int] = []
+        high_temp_selections: List[int] = []
         for _ in range(1000):
             low_temp_selections.append(agent_low.pull(X)[0])
             high_temp_selections.append(agent_high.pull(X)[0])
@@ -146,7 +150,7 @@ class TestEXP3AArmSelection:
     def test_multiple_contexts(self):
         """Test selection with multiple contexts at once."""
         # Create arms with context-dependent rewards
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i in range(3):
             learner = NormalRegressor(alpha=1.0, beta=1.0)
             # Initialize with different slopes
@@ -183,9 +187,13 @@ class TestEXP3AUpdates:
 
         # Track the actual sample weights used
         original_update = arm_bad.learner.partial_fit  # type: ignore
-        weights_bad = []
+        weights_bad: List[NDArray[np.float64]] = []
 
-        def track_weights_bad(X, y, sample_weight=None):
+        def track_weights_bad(
+            X: NDArray[Any] | csc_array,
+            y: NDArray[np.float64],
+            sample_weight: NDArray[np.float64] | None = None,
+        ):
             if sample_weight is not None:
                 weights_bad.append(sample_weight[0])
             return original_update(X, y, sample_weight)
@@ -201,9 +209,13 @@ class TestEXP3AUpdates:
 
         # Now track weights for good arm
         original_update_good = arm_good.learner.partial_fit  # type: ignore
-        weights_good = []
+        weights_good: List[NDArray[np.float64]] = []
 
-        def track_weights_good(X, y, sample_weight=None):
+        def track_weights_good(
+            X: NDArray[Any] | csc_array,
+            y: NDArray[np.float64],
+            sample_weight: NDArray[np.float64] | None = None,
+        ):
             if sample_weight is not None:
                 weights_good.append(sample_weight[0])
             return original_update_good(X, y, sample_weight)
@@ -221,9 +233,9 @@ class TestEXP3AUpdates:
         """Test that importance weighting preserves unbiased estimates."""
         # Create arms with true Bernoulli rewards
         true_means = [0.3, 0.5, 0.7]
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
 
-        for i, mean in enumerate(true_means):
+        for i, _ in enumerate(true_means):
             # Start with uninformative prior
             learner = NormalInverseGammaRegressor(mu=0.5, lam=0.1, a=1, b=1)
             arms.append(Arm(i, learner=learner))
@@ -244,6 +256,7 @@ class TestEXP3AUpdates:
 
         # Check that learned means converge to true means
         for i, (arm, true_mean) in enumerate(zip(arms, true_means)):
+            assert arm.learner is not None, f"Arm {i} has no learner"
             learned_mean = arm.learner.predict(X)[0]
             # Should be close to true mean (within statistical error)
             assert abs(learned_mean - true_mean) < 0.1, (
@@ -273,7 +286,7 @@ class TestEXP3AEdgeCases:
 
     def test_extreme_eta(self):
         """Test numerical stability with extreme eta values."""
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i, mu in enumerate([0.1, 0.2, 0.9]):
             learner = NormalInverseGammaRegressor(mu=mu, lam=100)
             arms.append(Arm(i, learner=learner))
@@ -285,7 +298,7 @@ class TestEXP3AEdgeCases:
         X = np.array([[1.0]])
 
         # Should not crash and should heavily favor best arm
-        selections = []
+        selections: List[int] = []
         for _ in range(100):
             action = agent_high.pull(X)
             selections.append(action[0])
@@ -296,7 +309,7 @@ class TestEXP3AEdgeCases:
         policy_low = EXP3A(gamma=0.0, eta=0.001, samples=20)
         agent_low = ContextualAgent(arms, policy_low, random_seed=42)
 
-        selections_low = []
+        selections_low: List[int] = []
         for _ in range(300):
             action = agent_low.pull(X)
             selections_low.append(action[0])
@@ -307,7 +320,7 @@ class TestEXP3AEdgeCases:
 
     def test_zero_gamma(self):
         """Test with gamma=0 (no forced exploration)."""
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i, mu in enumerate([0.1, 0.9]):
             # Need higher 'a' for more concentrated prior (less heavy tails)
             learner = NormalInverseGammaRegressor(mu=mu, lam=100, a=10, b=1)
@@ -319,7 +332,7 @@ class TestEXP3AEdgeCases:
         X = np.array([[1.0]])
 
         # With no exploration, should strongly favor better arm
-        selections = []
+        selections: List[int] = []
         for _ in range(100):
             action = agent.pull(X)
             selections.append(action[0])
@@ -329,7 +342,7 @@ class TestEXP3AEdgeCases:
 
     def test_all_arms_equal(self):
         """Test when all arms have equal expected rewards."""
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i in range(4):
             learner = NormalInverseGammaRegressor(mu=0.5, lam=100)
             arms.append(Arm(i, learner=learner))
@@ -340,7 +353,7 @@ class TestEXP3AEdgeCases:
         X = np.array([[1.0]])
 
         # Should select roughly uniformly
-        selections = []
+        selections: List[int] = []
         for _ in range(400):
             action = agent.pull(X)
             selections.append(action[0])
@@ -376,7 +389,7 @@ class TestEXP3ANonStationarity:
             agent.update(X, np.array([reward]))
 
         # Check arm 1 is preferred
-        phase1_selections = []
+        phase1_selections: List[int] = []
         for _ in range(50):
             action = agent.pull(X)
             phase1_selections.append(action[0])
@@ -392,7 +405,7 @@ class TestEXP3ANonStationarity:
             agent.update(X, np.array([reward]))
 
         # Check that algorithm adapted
-        phase2_selections = []
+        phase2_selections: List[int] = []
         for _ in range(50):
             action = agent.pull(X)
             phase2_selections.append(action[0])
@@ -410,7 +423,7 @@ class TestEXP3AProperties:
         true_means = [0.3, 0.7]
 
         # Create arms with uninformative but not too diffuse priors
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i in range(2):
             learner = NormalInverseGammaRegressor(mu=0.5, lam=1.0, a=2, b=2)
             arms.append(Arm(i, learner=learner))
@@ -421,14 +434,14 @@ class TestEXP3AProperties:
         X = np.array([[1.0]])
 
         # Track regret
-        cumulative_regret = []
+        cumulative_regret: List[float] = []
         total_regret = 0.0
         optimal_mean = max(true_means)
 
         # Use a fixed random seed for reproducible rewards
         reward_rng = np.random.default_rng(123)
 
-        for t in range(2000):
+        for _ in range(2000):
             action = agent.pull(X)
             arm_idx = action[0]
 
@@ -460,7 +473,7 @@ class TestEXP3AProperties:
     def test_adversarial_robustness(self):
         """Test robustness against an adversarial reward sequence."""
         # Create 3 arms
-        arms = []
+        arms: List[Arm[NDArray[Any], int]] = []
         for i in range(3):
             learner = NormalInverseGammaRegressor(mu=0.5, lam=1.0, a=2, b=2)
             arms.append(Arm(i, learner=learner))
@@ -475,7 +488,7 @@ class TestEXP3AProperties:
         total_reward = 0.0
 
         # Adversarial strategy: give high reward to least-pulled arm
-        for t in range(500):
+        for _ in range(500):
             action = agent.pull(X)
             arm_idx = action[0]
             pull_counts[arm_idx] += 1
@@ -507,8 +520,8 @@ class TestEXP3AProperties:
         agent = ContextualAgent(arms, policy, random_seed=42)
 
         X = np.array([[1.0]])
-        rewards_received = []
-        last_50_pulls = []
+        rewards_received: List[float] = []
+        last_50_pulls: List[int] = []
 
         for t in range(200):
             beliefs = [arm.learner.predict(X)[0] for arm in arms]  # type: ignore

@@ -1,4 +1,4 @@
-from typing import Any, List, TypeVar, Union
+from typing import Any, TypeVar, Union
 
 import numpy as np
 import pytest
@@ -7,7 +7,6 @@ from sklearn.base import (
     check_is_fitted,  # type: ignore
     clone,
 )
-from scipy.sparse import csc_array
 
 from bayesianbandits import (
     Agent,

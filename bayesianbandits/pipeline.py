@@ -246,11 +246,11 @@ class Pipeline(Generic[ContextType]):
 
         if not self._is_fitted or fit:
             # First time or explicit fit request
-            result = self._transformers.fit_transform(X)
+            result = self._transformers.fit_transform(X)  # type: ignore
             self._is_fitted = True
-            return result
+            return result  # type: ignore
         else:
-            return self._transformers.transform(X)
+            return self._transformers.transform(X)  # type: ignore
 
     def sample(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
         """Sample from the posterior predictive distribution.
@@ -335,7 +335,7 @@ class Pipeline(Generic[ContextType]):
 
     def get_steps(self) -> List[Tuple[str, Any]]:
         """Get all steps including transformers and final estimator."""
-        steps = []
+        steps: List[Tuple[str, Any]] = []
         if self._transformers is not None:
             steps.extend(self._transformers.steps)
         steps.append((self._final_name, self._final_estimator))
