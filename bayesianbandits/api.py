@@ -453,11 +453,16 @@ class Agent(Generic[TokenType]):
 
     def __init__(
         self,
-        arms: List[Arm[NDArray[np.float64], TokenType]],
-        policy: PolicyProtocol[NDArray[np.float64], TokenType],
+        arms: Sequence[Arm[ContextType, TokenType]],
+        policy: PolicyProtocol[ContextType, TokenType],
         random_seed: Union[int, None, np.random.Generator] = None,
-    ):
-        self._inner = ContextualAgent(arms, policy, random_seed=random_seed)
+    ) -> None:
+        # Type constraint: ContextType must be compatible with NDArray[np.float64]
+        self._inner: ContextualAgent[NDArray[np.float64], TokenType] = ContextualAgent(
+            arms,
+            policy,
+            random_seed=random_seed,  # type: ignore[arg-type]
+        )
 
     @property
     def policy(self) -> PolicyProtocol[NDArray[np.float64], TokenType]:
