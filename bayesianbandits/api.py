@@ -109,6 +109,7 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         y: NDArray[np.float64],
         all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
+        sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None: ...
 
 
@@ -353,7 +354,12 @@ class ContextualAgent(Generic[ContextType, TokenType]):
             # Don't update arm_to_update - ambiguous which to choose
             return [[arm.pull() for arm in arms_list] for arms_list in arms_lists]
 
-    def update(self, X: ContextType, y: NDArray[np.float64]) -> None:
+    def update(
+        self,
+        X: ContextType,
+        y: NDArray[np.float64],
+        sample_weight: Optional[NDArray[np.float64]] = None,
+    ) -> None:
         """Update the `arm_to_update` with the context(s) and the reward(s).
 
         Parameters
@@ -362,8 +368,13 @@ class ContextualAgent(Generic[ContextType, TokenType]):
             Context matrix to use for updating the arm.
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
+        sample_weight : Optional[NDArray[np.float64]], default=None
+            Sample weights to use for updating the arm. If None, all samples
+            are weighted equally.
         """
-        self.policy.update(self.arm_to_update, X, y, self.arms, self.rng)
+        self.policy.update(
+            self.arm_to_update, X, y, self.arms, self.rng, sample_weight=sample_weight
+        )
 
     def decay(
         self,
@@ -593,16 +604,23 @@ class Agent(Generic[TokenType]):
             return self._inner.pull(X_dummy)
         return self._inner.pull(X_dummy, top_k=top_k)
 
-    def update(self, y: NDArray[np.float64]) -> None:
+    def update(
+        self,
+        y: NDArray[np.float64],
+        sample_weight: Optional[NDArray[np.float64]] = None,
+    ) -> None:
         """Update the `arm_to_update` with an observed reward.
 
         Parameters
         ----------
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
+        sample_weight : Optional[NDArray[np.float64]], default=None
+            Sample weights to use for updating the arm. If None, all samples
+            are weighted equally.
         """
         X_update: NDArray[np.float64] = np.ones_like(y, dtype=np.float64)[:, np.newaxis]
-        self._inner.update(X_update, y)
+        self._inner.update(X_update, y, sample_weight=sample_weight)
 
     def decay(self, decay_rate: Optional[float] = None) -> None:
         """Decay all arms of the bandit.
@@ -624,9 +642,10 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         y: NDArray[np.float64],
         all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
+        sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None:
         """Default update implementation that simply updates the arm."""
-        arm.update(X, y)
+        arm.update(X, y, sample_weight=sample_weight)
 
 
 class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):

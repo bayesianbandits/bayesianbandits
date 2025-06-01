@@ -604,3 +604,55 @@ class TestEXP3AProperties:
         # Should return all 3 arms
         assert len(results[0]) == 3
         assert set(results[0]) == {0, 1, 2}
+
+
+class TestEXP3ASampleWeight:
+    """Test EXP3A correctly handles sample_weight parameter."""
+
+    def test_exp3a_multiplies_sample_weights(self):
+        """Test that EXP3A multiplies importance weights with provided sample_weight."""
+        arms = [
+            Arm(0, learner=NormalInverseGammaRegressor(mu=0.2, lam=100)),
+            Arm(1, learner=NormalInverseGammaRegressor(mu=0.8, lam=100)),
+        ]
+
+        policy = EXP3A(gamma=0.1, eta=2.0, ix_gamma=0.1)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+
+        X = np.array([[1.0]])
+        y = np.array([1.0])
+        sample_weight = np.array([10_000.0])
+
+        # Track the actual weights passed to learner
+        weights_seen: List[float] = []
+        original_update = arms[0].learner.partial_fit  # type: ignore
+
+        def track_weights(
+            X: NDArray[Any] | csc_array,
+            y: NDArray[np.float64],
+            sample_weight: NDArray[np.float64] | None = None,
+        ):
+            if sample_weight is not None:
+                weights_seen.append(sample_weight[0])
+            return original_update(X, y, sample_weight)
+
+        arms[0].learner.partial_fit = track_weights  # type: ignore
+
+        # Update with sample_weight
+        agent.select_for_update(0).update(X, y, sample_weight=sample_weight)
+
+        # Should have seen a weight
+        assert len(weights_seen) == 1
+
+        # The weight should be importance_weight * sample_weight
+        # We don't know exact importance weight, but we multiplied it by a big number
+        # so we can check it is greater than 1
+        assert 1.0 < weights_seen[0]
+
+        # Update without sample_weight
+        weights_seen.clear()
+        agent.select_for_update(0).update(X, y, sample_weight=None)
+
+        # Should still see importance weight only
+        assert len(weights_seen) == 1
+        assert weights_seen[0] > 0  # Just importance weight

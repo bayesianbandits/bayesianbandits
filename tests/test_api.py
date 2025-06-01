@@ -392,3 +392,69 @@ class TestTopK:
         assert len(result) == 2  # One per context
         assert all(len(sublist) == 3 for sublist in result)
         assert all(len(set(sublist)) == 3 for sublist in result)  # No duplicates
+
+
+class TestSampleWeight:
+    """Test sample_weight parameter is correctly passed through the API."""
+
+    def test_contextual_agent_sample_weight_passthrough(self) -> None:
+        """Test that ContextualAgent passes sample_weight to policy.update()."""
+        arms = [
+            Arm(0, None, learner=NormalInverseGammaRegressor()),
+            Arm(1, None, learner=NormalInverseGammaRegressor()),
+        ]
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+
+        X = np.array([[1.0], [2.0]])
+        y = np.array([1.0, 2.0])
+        weights = np.array([0.5, 2.0])
+
+        # Should not raise any errors
+        agent.pull(X)
+        agent.update(X, y, sample_weight=weights)
+
+        # Also test with None (default)
+        agent.update(X, y, sample_weight=None)
+        agent.update(X, y)  # No sample_weight parameter
+
+    def test_agent_sample_weight_passthrough(self) -> None:
+        """Test that Agent passes sample_weight through to ContextualAgent."""
+        arms = [
+            Arm(0, None, learner=NormalInverseGammaRegressor()),
+            Arm(1, None, learner=NormalInverseGammaRegressor()),
+        ]
+        agent = Agent(arms, EpsilonGreedy(epsilon=0.1), random_seed=42)
+
+        y = np.array([1.0])
+        weights = np.array([0.5])
+
+        # Should not raise any errors
+        agent.pull()
+        agent.update(y, sample_weight=weights)
+
+        # Also test with None (default)
+        agent.update(y, sample_weight=None)
+        agent.update(y)  # No sample_weight parameter
+
+    def test_sample_weight_with_select_for_update_chain(self) -> None:
+        """Test the position-biased feedback example from the issue."""
+        arms = [
+            Arm("job_1", None, learner=NormalInverseGammaRegressor()),
+            Arm("job_2", None, learner=NormalInverseGammaRegressor()),
+            Arm("job_3", None, learner=NormalInverseGammaRegressor()),
+        ]
+        agent = ContextualAgent(arms, EpsilonGreedy(epsilon=0.2), random_seed=42)
+
+        X = np.array([[1.0, 2.0]])
+        recommendations = agent.pull(X, top_k=3)
+        clicked_jobs = {recommendations[0][0]}
+
+        # This pattern from the issue should now work
+        for rank, job_id in enumerate(recommendations[0]):
+            weight = 1.0 if job_id in clicked_jobs else 0.1 / (1 + rank)
+
+            agent.select_for_update(job_id).update(
+                X,
+                np.array([float(job_id in clicked_jobs)]),
+                sample_weight=np.array([weight]),
+            )
