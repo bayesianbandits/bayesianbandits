@@ -258,6 +258,7 @@ class EXP3A:
         y: NDArray[np.float64],
         all_arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
+        sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None:
         """
         Update arm with importance-weighted reward.
@@ -277,6 +278,9 @@ class EXP3A:
             All available arms (needed to recompute probabilities)
         rng : np.random.Generator
             Random number generator (unused but part of interface)
+        sample_weight : Optional[NDArray[np.float64]], default=None
+            Sample weights for each observation. If provided, these are
+            multiplied with the importance weights.
         """
         # Recompute probabilities (stateless design)
         rewards = np.stack(
@@ -297,5 +301,8 @@ class EXP3A:
         # This ensures each learner estimates E[reward | uniform sampling]
         arm_idx = all_arms.index(arm)
         importance_weights = 1.0 / (probs[arm_idx] + self.ix_gamma)
+
+        if sample_weight is not None:
+            importance_weights *= sample_weight
 
         arm.update(X, y, sample_weight=importance_weights)
