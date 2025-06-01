@@ -1,4 +1,4 @@
-from typing import Any, TypeVar, Union
+from typing import Any, List, TypeVar, Union
 
 import numpy as np
 import pytest
@@ -7,6 +7,7 @@ from sklearn.base import (
     check_is_fitted,  # type: ignore
     clone,
 )
+from scipy.sparse import csc_array
 
 from bayesianbandits import (
     Agent,
@@ -266,3 +267,118 @@ def test_contextual_agent_update_mismatched_shapes() -> None:
             EpsilonGreedy(),
             random_seed=0,
         ).update(np.array([[1.0]]), np.array([1.0, 2.0]))
+
+
+class TestTopK:
+    """Test top_k functionality for policies."""
+
+    def test_epsilon_greedy_top_k_return_type(self) -> None:
+        """Test that EpsilonGreedy returns correct types with top_k."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
+        agent = ContextualAgent(arms, EpsilonGreedy(epsilon=0.5), random_seed=42)
+        X = np.array([[1.0], [2.0]])
+
+        # Default behavior - returns List[TokenType]
+        result_default = agent.pull(X)
+        assert isinstance(result_default, list)
+        assert len(result_default) == 2  # One per context
+        assert all(isinstance(token, int) for token in result_default)
+
+        # top_k=1 - returns List[List[TokenType]]
+        result_k1 = agent.pull(X, top_k=1)
+        assert isinstance(result_k1, list)
+        assert len(result_k1) == 2  # One list per context
+        assert all(isinstance(sublist, list) for sublist in result_k1)
+        assert all(len(sublist) == 1 for sublist in result_k1)
+
+        # top_k=3 - returns List[List[TokenType]]
+        result_k3 = agent.pull(X, top_k=3)
+        assert isinstance(result_k3, list)
+        assert len(result_k3) == 2  # One list per context
+        assert all(isinstance(sublist, list) for sublist in result_k3)
+        assert all(len(sublist) == 3 for sublist in result_k3)
+
+    def test_epsilon_greedy_no_duplicates(self) -> None:
+        """Test that top_k doesn't select the same arm twice."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(10)]
+        agent = ContextualAgent(arms, EpsilonGreedy(epsilon=0.5), random_seed=42)
+        X = np.array([[1.0]] * 20)  # 20 contexts
+
+        results = agent.pull(X, top_k=5)
+
+        # Check no duplicates in any selection
+        for result in results:
+            assert len(result) == len(set(result))  # No duplicates
+            assert len(result) == 5  # Correct number selected
+
+    def test_epsilon_greedy_top_k_exceeds_arms(self) -> None:
+        """Test behavior when top_k > number of arms."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(3)]
+        agent = ContextualAgent(arms, EpsilonGreedy(epsilon=0.5), random_seed=42)
+        X = np.array([[1.0]])
+
+        # Request more arms than available
+        results = agent.pull(X, top_k=5)
+
+        # Should return all 3 arms
+        assert len(results[0]) == 3
+        assert set(results[0]) == {0, 1, 2}
+
+    def test_epsilon_greedy_postprocess_with_top_k(self) -> None:
+        """Test that postprocess correctly sets multiple values to inf for exploration."""
+        policy = EpsilonGreedy(epsilon=1.0)  # Always explore
+
+        # Mock arm summary (means)
+        arm_summary = np.array(
+            [
+                [1.0, 2.0, 3.0],  # Arm 0 means across 3 contexts
+                [4.0, 5.0, 6.0],  # Arm 1
+                [7.0, 8.0, 9.0],  # Arm 2
+                [10.0, 11.0, 12.0],  # Arm 3
+            ]
+        )
+
+        rng = np.random.default_rng(42)
+        processed = policy.postprocess(arm_summary.copy(), rng, top_k=2)
+
+        # With epsilon=1.0, all contexts should explore
+        # Check that exactly 2 values per column are set to inf
+        for col in range(processed.shape[1]):
+            inf_count = np.sum(np.isinf(processed[:, col]))
+            assert inf_count == 2
+
+    def test_agent_top_k(self) -> None:
+        """Test top_k functionality for non-contextual Agent."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
+        agent = Agent(arms, EpsilonGreedy(epsilon=0.5), random_seed=42)
+
+        # Default behavior
+        result_default = agent.pull()
+        assert isinstance(result_default, list)
+        assert len(result_default) == 1
+
+        # top_k behavior
+        result_k3 = agent.pull(top_k=3)
+        assert isinstance(result_k3, list)
+        assert len(result_k3) == 1  # Still wrapped in outer list
+        assert isinstance(result_k3[0], list)
+        assert len(result_k3[0]) == 3  # Inner list has 3 items
+
+    @pytest.mark.parametrize("policy_class", [ThompsonSampling, UpperConfidenceBound])
+    def test_other_policies_top_k(self, policy_class) -> None:
+        """Test that other policies also support top_k."""
+        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
+
+        if policy_class == UpperConfidenceBound:
+            policy = policy_class(alpha=0.68)
+        else:
+            policy = policy_class()
+
+        agent = ContextualAgent(arms, policy, random_seed=42)
+        X = np.array([[1.0], [2.0]])
+
+        # Should work without errors
+        result = agent.pull(X, top_k=3)
+        assert len(result) == 2  # One per context
+        assert all(len(sublist) == 3 for sublist in result)
+        assert all(len(set(sublist)) == 3 for sublist in result)  # No duplicates

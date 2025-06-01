@@ -63,22 +63,44 @@ from typing import (
     Sequence,
     Union,
     cast,
+    overload,
 )
 
 import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from ._arm import ContextType, Arm, TokenType
+from ._arm import Arm, ContextType, TokenType
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
+    @overload
     def __call__(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
+        top_k: None = None,
     ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]: ...
 
     def update(
         self,
@@ -286,22 +308,50 @@ class ContextualAgent(Generic[ContextType, TokenType]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    def pull(self, X: ContextType) -> List[TokenType]:
-        """Choose an arm and pull it based on the context(s).
+    @overload
+    def pull(self, X: ContextType) -> List[TokenType]: ...
+
+    @overload
+    def pull(self, X: ContextType, *, top_k: int) -> List[List[TokenType]]: ...
+
+    def pull(
+        self, X: ContextType, *, top_k: int | None = None
+    ) -> List[TokenType] | List[List[TokenType]]:
+        """Choose arm(s) and pull based on the context(s).
 
         Parameters
         ----------
         X : ContextType
-            Context matrix to use for choosing an arm.
+            Context matrix to use for choosing arms.
+        top_k : int, optional
+            Number of arms to select per context. If None (default),
+            selects single best arm per context. If specified, selects
+            top k arms per context.
 
         Returns
         -------
-        List[ActionToken]
-            List of action tokens for the pulled arms.
+        List[TokenType] or List[List[TokenType]]
+            If top_k is None: List of action tokens (one per context)
+            If top_k is int: List of lists of action tokens
+
+        Notes
+        -----
+        When top_k is None, arm_to_update is set to the last selected arm.
+        When top_k is specified, arm_to_update is NOT updated - you must
+        explicitly call select_for_update() before update() to specify
+        which arm's feedback you're providing.
         """
-        arms = self.policy(self.arms, X, self.rng)
-        self.arm_to_update = arms[-1]
-        return [arm.pull() for arm in arms]
+
+        if top_k is None:
+            arms = self.policy(self.arms, X, self.rng)
+
+            self.arm_to_update = arms[-1]
+            return [arm.pull() for arm in arms]
+        else:
+            arms_lists = self.policy(self.arms, X, self.rng, top_k=top_k)
+
+            # Don't update arm_to_update - ambiguous which to choose
+            return [[arm.pull() for arm in arms_list] for arms_list in arms_lists]
 
     def update(self, X: ContextType, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with the context(s) and the reward(s).
@@ -503,15 +553,40 @@ class Agent(Generic[TokenType]):
         """
         return self._inner.arm(token)
 
-    def pull(self):
-        """Choose an arm and pull it.
+    @overload
+    def pull(self) -> List[TokenType]: ...
+
+    @overload
+    def pull(self, *, top_k: int) -> List[List[TokenType]]: ...
+
+    def pull(
+        self, *, top_k: int | None = None
+    ) -> List[TokenType] | List[List[TokenType]]:
+        """Choose arm(s) and pull.
+
+        Parameters
+        ----------
+        top_k : int, optional
+            Number of arms to select. If None (default), selects single
+            best arm. If specified, selects top k arms.
 
         Returns
         -------
-        List[ActionToken]
-            List containing the action token for the pulled arm.
+        List[TokenType] or List[List[TokenType]]
+            If top_k is None: List containing single action token [token]
+            If top_k is int: List containing a list of k action tokens [[token1, token2, ...]]
+
+        Notes
+        -----
+        When top_k is None, arm_to_update is set to the selected arm.
+        When top_k is specified, arm_to_update is NOT updated - you must
+        explicitly call select_for_update() before update() to specify
+        which arm's feedback you're providing.
         """
-        return self._inner.pull(np.array([[1]], dtype=np.float64))
+        X_dummy = np.array([[1]], dtype=np.float64)
+        if top_k is None:
+            return self._inner.pull(X_dummy)
+        return self._inner.pull(X_dummy, top_k=top_k)
 
     def update(self, y: NDArray[np.float64]) -> None:
         """Update the `arm_to_update` with an observed reward.
@@ -595,31 +670,71 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         return means
 
     def postprocess(
-        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
+        self,
+        arm_summary: NDArray[np.float64],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
     ) -> NDArray[np.float64]:
-        # Pick random rows to explore
+        """Apply epsilon-greedy exploration by setting random arms to np.inf."""
+        # Decide which contexts explore
         choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
 
-        # Within the rows to explore, pick a random column and set to np.inf
+        # How many arms to mark as infinite
+        k = 1 if top_k is None else top_k
+
+        # For each exploring context, set k random arms to np.inf
         for idx, explore in enumerate(choice_idx_to_explore):
             if explore:
-                arm_summary[rng.integers(arm_summary.shape[0]), idx] = np.inf  # type: ignore
+                random_arms = rng.choice(
+                    arm_summary.shape[0],
+                    size=min(k, arm_summary.shape[0]),
+                    replace=False,
+                )
+                arm_summary[random_arms, idx] = np.inf
 
         return arm_summary
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
 
     def __call__(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[ContextType, TokenType]]:
-        """Choose an arm using epsilon-greedy."""
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Choose arm(s) using epsilon-greedy."""
         means = self.arm_summary(arms, X, rng)
-        means = self.postprocess(means, rng)
+        means = self.postprocess(means, rng, top_k)
 
-        best_arm_indexes = np.atleast_1d(cast(NDArray[np.int_], means.argmax(axis=0)))
-
-        return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        if top_k is None:
+            best_arm_indexes = np.atleast_1d(
+                cast(NDArray[np.int_], means.argmax(axis=0))
+            )
+            return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        else:
+            indices = _select_top_k_indices(means, k=top_k)
+            return [
+                [arms[idx] for idx in context_indices] for context_indices in indices
+            ]
 
 
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -661,20 +776,47 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     ) -> NDArray[np.float64]:
         return arm_summary
 
+    @overload
     def __call__(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[ContextType, TokenType]]:
-        """Choose an arm using Thompson sampling."""
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Choose arm(s) using Thompson sampling."""
         samples = self.arm_summary(arms, X, rng)
         samples = self.postprocess(samples, rng)
 
-        best_arm_indexes = np.atleast_1d(cast(NDArray[np.int_], samples.argmax(axis=0)))
-
-        return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        if top_k is None:
+            best_arm_indexes = np.atleast_1d(
+                cast(NDArray[np.int_], samples.argmax(axis=0))
+            )
+            return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        else:
+            indices = _select_top_k_indices(samples, k=top_k)
+            return [
+                [arms[idx] for idx in context_indices] for context_indices in indices
+            ]
 
 
 class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -731,22 +873,47 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
     ) -> NDArray[np.float64]:
         return arm_summary
 
+    @overload
     def __call__(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[ContextType, TokenType]]:
-        """Choose an arm using upper confidence bound."""
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Choose arm(s) using upper confidence bound."""
         upper_bounds = self.arm_summary(arms, X, rng)
         upper_bounds = self.postprocess(upper_bounds, rng)
 
-        best_arm_indexes = np.atleast_1d(
-            cast(NDArray[np.int_], upper_bounds.argmax(axis=0))
-        )
-
-        return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        if top_k is None:
+            best_arm_indexes = np.atleast_1d(
+                cast(NDArray[np.int_], upper_bounds.argmax(axis=0))
+            )
+            return [arms[cast(int, choice)] for choice in best_arm_indexes]
+        else:
+            indices = _select_top_k_indices(upper_bounds, k=top_k)
+            return [
+                [arms[idx] for idx in context_indices] for context_indices in indices
+            ]
 
 
 def _draw_one_sample(
@@ -780,3 +947,16 @@ def _compute_arm_mean(
     """Compute the mean of the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
     return np.mean(posterior_samples, axis=0)
+
+
+def _select_top_k_indices(scores: NDArray[np.float64], k: int) -> NDArray[np.int_]:
+    # Get indices that would sort each column (context)
+    # Shape: (n_arms, n_contexts)
+    sorted_indices = scores.argsort(axis=0)
+
+    # Take the last k indices (highest scores) and reverse
+    # Shape: (k, n_contexts)
+    top_k = sorted_indices[-k:][::-1]
+
+    # Transpose to get (n_contexts, k)
+    return top_k.T

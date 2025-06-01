@@ -6,12 +6,12 @@ while using average rewards instead of cumulative sums, enabling better adaptivi
 and numerical stability.
 """
 
-from typing import List, Union
+from typing import List, Optional, Union, overload
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import ContextType, Arm, TokenType
+from .._arm import Arm, ContextType, TokenType
 
 
 class EXP3A:
@@ -174,21 +174,60 @@ class EXP3A:
     def __repr__(self) -> str:
         return f"EXP3A(gamma={self.gamma}, eta={self.eta}, ix_gamma={self.ix_gamma}, samples={self.samples})"
 
+    @overload
     def __call__(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
-    ) -> List[Arm[ContextType, TokenType]]:
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
         """
         Select arms according to exponential weights with optional exploration.
+
+        Parameters
+        ----------
+        arms : List[Arm]
+            Available arms to choose from
+        X : ContextType
+            Context (any iterable)
+        rng : np.random.Generator
+            Random number generator for sampling
+        top_k : int, optional
+            Number of arms to select per context. If None, selects single arm.
+
+        Returns
+        -------
+        List[Arm] or List[List[Arm]]
+            Selected arms, one per context if top_k is None,
+            or k arms per context if top_k is specified.
         """
         # Get expected rewards via Monte Carlo estimation
         rewards = np.stack(
             [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
         )
 
-        n_contexts = rewards.shape[1]  # rewards is (n_arms, n_contexts)
+        # Get number of contexts from rewards shape
+        n_contexts = rewards.shape[1]
 
         # Exponential weights with numerical stability
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
@@ -198,10 +237,19 @@ class EXP3A:
             arms
         )
 
-        # Sample arms according to probabilities
-        choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(n_contexts)]
-
-        return [arms[i] for i in choices]
+        if top_k is None:
+            # Original single-arm selection
+            choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(n_contexts)]
+            return [arms[i] for i in choices]
+        else:
+            # Sample k arms without replacement according to probabilities
+            results: List[List[Arm[ContextType, TokenType]]] = []
+            for i in range(n_contexts):
+                # Sample without replacement
+                k = min(top_k, len(arms))
+                indices = rng.choice(len(arms), size=k, replace=False, p=probs[:, i])
+                results.append([arms[idx] for idx in indices])
+            return results
 
     def update(
         self,
@@ -235,6 +283,12 @@ class EXP3A:
             [a.sample(X, size=self.samples).mean(axis=0) for a in all_arms]
         )
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
+
+        # TODO: This is not actually correct if top_k is used, but top_k is currently
+        # stateless, so we have no idea what it was at the time of selection.
+        # However, ix_gamma regularization bounds the error: even if the true selection
+        # probability is much higher than the marginal probability (e.g., when k is large),
+        # the importance weight is capped at 1/ix_gamma, preventing catastrophic updates.
         probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
             all_arms
         )
