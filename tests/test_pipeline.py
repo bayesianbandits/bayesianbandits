@@ -166,6 +166,9 @@ class TestPipeline:
 
     def test_integration_with_bandit(self):
         """Test pipeline integration with ContextualAgent."""
+        import joblib
+        from io import BytesIO
+
         shared_model = NormalInverseGammaRegressor()
 
         # Create arms with different preprocessing
@@ -175,11 +178,7 @@ class TestPipeline:
                 [
                     (
                         "add_bias",
-                        FunctionTransformer(
-                            lambda x, bias=i: np.column_stack(
-                                [x, np.full(len(x), bias)]
-                            )
-                        ),
+                        FunctionTransformer(partial(add_bias_column, i=i)),
                     ),
                     ("model", shared_model),
                 ]
@@ -196,6 +195,18 @@ class TestPipeline:
 
         y = np.array([1.0, 2.0])
         agent.update(X, y)
+
+        # Agent should be dumpable with joblib
+        bytes_io = BytesIO()
+        joblib.dump(agent, bytes_io)
+
+        loaded_agent = joblib.load(bytes_io)
+
+        # Check loaded agent can be pulled and updated
+        loaded_actions = loaded_agent.pull(X)
+        assert len(loaded_actions) == 2
+
+        loaded_agent.update(X, y)
 
     def test_decay(self):
         """Test decay propagation."""
@@ -491,3 +502,7 @@ class TestPipelineInputTypes:
 
         assert pred_a.shape == (2,)
         assert pred_b.shape == (2,)
+
+
+def add_bias_column(x, i):
+    return np.column_stack([x, np.full(len(x), i)])
