@@ -25,6 +25,9 @@ from bayesianbandits import (
     NormalInverseGammaRegressor,
     NormalRegressor,
     ThompsonSampling,
+    UpperConfidenceBound,
+    EpsilonGreedy,
+    EXP3A,
 )
 from bayesianbandits.pipeline import Pipeline
 
@@ -519,7 +522,8 @@ class TestIntegrationScenarios:
         predictions = pipeline.predict(X)
         assert predictions.shape == (3,)
 
-    def test_multi_armed_bandit_scenario(self):
+    @pytest.mark.parametrize("policy", ["thompson", "epsilon_greedy", "ucb", "exp3a"])
+    def test_multi_armed_bandit_scenario(self, policy):
         """Test realistic bandit scenario with shared model."""
         # Pre-fit shared scaler
         scaler = StandardScaler()
@@ -565,7 +569,13 @@ class TestIntegrationScenarios:
             arms.append(Arm(product_id, learner=pipeline))
 
         # Create agent
-        agent = ContextualAgent(arms, ThompsonSampling())
+        policy = {
+            "thompson": ThompsonSampling(),
+            "epsilon_greedy": EpsilonGreedy(),
+            "ucb": UpperConfidenceBound(),
+            "exp3a": EXP3A(),
+        }[policy]
+        agent = ContextualAgent(arms, policy=policy)
 
         # Simulate interactions
         user_contexts = np.random.randn(10, 3)
