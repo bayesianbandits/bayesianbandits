@@ -6,6 +6,7 @@ from typing import (
     Callable,
     Generic,
     Iterable,
+    List,
     Optional,
     Protocol,
     TypeVar,
@@ -14,7 +15,16 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import vstack as sparse_vstack
 from typing_extensions import Concatenate, ParamSpec, Self
+
+try:
+    import pandas as pd
+
+    HAS_PANDAS = True
+except ImportError:
+    HAS_PANDAS = False
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
@@ -122,3 +132,144 @@ class Arm(Generic[ContextType, TokenType]):
             f"Arm(action_token={self.action_token},"
             f" reward_function={self.reward_function})"
         )
+
+
+def can_batch_arms(arms: List[Arm[Any, Any]]) -> bool:
+    """Check if arms can be batched (all share the same model)."""
+    if not arms:
+        return False
+
+    # Fast path: check first arm has required interface
+    first_arm = arms[0]
+    if not (
+        hasattr(first_arm.learner, "transform")
+        and hasattr(first_arm.learner, "final_estimator")
+    ):
+        return False
+
+    # Check all share the same model instance
+    first_model = first_arm.learner.final_estimator  # type: ignore
+    return all(
+        arm.learner.final_estimator is first_model  # type: ignore
+        for arm in arms[1:]
+    )
+
+
+def stack_features(feature_list: List[Any]) -> Any:
+    """Stack feature arrays, handling DataFrames, dense and sparse arrays."""
+    if not feature_list:
+        raise ValueError("Empty feature list")
+
+    if len(feature_list) == 1:
+        return feature_list[0]
+
+    first = feature_list[0]
+
+    # Case 1: Pandas DataFrames (if pandas available)
+    if HAS_PANDAS and isinstance(first, pd.DataFrame):  # type: ignore[has-type]
+        if not all(isinstance(x, pd.DataFrame) for x in feature_list):  # type: ignore[has-type]
+            raise ValueError("Cannot stack mixed DataFrame and non-DataFrame objects")
+        return pd.concat(feature_list, ignore_index=True, sort=False, copy=False)  # type: ignore[has-type]
+
+    # Case 2: Sparse arrays
+    if issparse(first):
+        if not all(issparse(x) for x in feature_list):
+            raise ValueError("Cannot stack mixed sparse and dense arrays")
+        # Convert to CSR for efficient row operations
+        return sparse_vstack([csr_matrix(x) for x in feature_list], format="csr")
+
+    # Case 3: Dense arrays - numpy is always available
+    arrays = [np.asarray(x) for x in feature_list]
+
+    # Check shapes are compatible
+    first_shape = arrays[0].shape[1:] if arrays[0].ndim > 1 else ()
+    for arr in arrays[1:]:
+        if (arr.shape[1:] if arr.ndim > 1 else ()) != first_shape:
+            raise ValueError("Incompatible shapes for stacking")
+
+    return np.vstack(arrays)
+
+
+def batch_sample_arms(
+    arms: List[Arm[ContextType, TokenType]], X: ContextType, size: int = 1
+) -> Optional[NDArray[np.float64]]:
+    """
+    Batch sample from arms that share the same model.
+
+    This is optimized for the common case where all arms share a single model
+    (e.g., recommendation systems with one model and many items).
+
+    Parameters
+    ----------
+    arms : List[Arm]
+        Arms to sample from. Must all share the same final_estimator.
+    X : ContextType
+        Context data
+    size : int, default=1
+        Number of samples to draw from each arm
+
+    Returns
+    -------
+    samples : NDArray or None
+        If batching is possible, returns array of shape (n_arms, n_contexts).
+        If batching is not possible, returns None.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from bayesianbandits import Arm, BayesianGLM, Pipeline
+    >>> # All arms must share the same model
+    >>> shared_model = BayesianGLM(alpha=1.0)
+    >>> arms = []
+    >>> for i in range(100):
+    ...     pipeline = Pipeline([
+    ...         ('model', shared_model)  # Same instance!
+    ...     ])
+    ...     arms.append(Arm(i, learner=pipeline))
+    >>>
+    >>> # Fast batched sampling
+    >>> samples = batch_sample_arms(arms, X=np.random.rand(10, 5), size=5)
+    """
+    if not can_batch_arms(arms):
+        return None
+
+    # Transform features for each arm
+    n_arms = len(arms)
+    feature_list = []
+
+    # Pre-check context length for memory allocation
+    n_contexts = len(X) if hasattr(X, "__len__") else 1  # type: ignore[has-type]
+
+    # Transform all features
+    for arm in arms:
+        X_transformed = arm.learner.transform(X)  # type: ignore[return-value]
+        feature_list.append(X_transformed)
+
+    # Stack features
+    try:
+        X_stacked = stack_features(feature_list)
+    except ValueError:
+        return None
+
+    # Single batched sample
+    model = arms[0].learner.final_estimator  # type: ignore[attr-defined]
+    samples = model.sample(X_stacked, size=size)
+
+    # Reshape based on size
+    if size == 1:
+        samples = samples.reshape(n_arms, n_contexts)
+    else:
+        samples = samples.reshape(size, n_arms, n_contexts).transpose(1, 2, 0)
+
+    # Apply reward functions if non-identity
+    # Check using function identity rather than name comparison
+    identity_func = arms[0].reward_function if arms else None
+    if identity_func and all(arm.reward_function is identity_func for arm in arms):
+        return samples
+
+    # Pre-allocate result array
+    results = np.empty_like(samples)
+    for i, arm in enumerate(arms):
+        results[i] = arm.reward_function(samples[i])
+
+    return results
