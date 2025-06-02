@@ -70,7 +70,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from ._arm import Arm, ContextType, TokenType
+from ._arm import Arm, ContextType, TokenType, batch_sample_arms
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
@@ -687,6 +687,10 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
+
+        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
+            return samples.mean(axis=-1)
+
         means = np.stack(
             tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
         )
@@ -791,6 +795,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
+
+        if (samples := batch_sample_arms(arms, X, size=1)) is not None:
+            return samples
+
         samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
 
         return samples
@@ -883,6 +891,10 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         rng: np.random.Generator,
     ) -> NDArray[np.float64]:
         """Return a summary of the arms."""
+
+        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
+            return np.quantile(samples, q=self.alpha, axis=-1)
+
         upper_bounds = np.stack(
             tuple(
                 _compute_arm_upper_bound(arm, X, alpha=self.alpha, samples=self.samples)
