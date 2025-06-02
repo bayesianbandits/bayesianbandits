@@ -1322,7 +1322,7 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         influence over time (forgetful prior).
     approximator : PosteriorApproximator, default=LaplaceApproximator()
         Method for approximating the posterior. Default uses Laplace
-        approximation with 10 Newton iterations.
+        approximation with 5 iterations of IRLS.
     sparse : bool, default=False
         Whether to use sparse matrix operations. Requires scipy.sparse inputs.
     random_state : int or RandomState, default=None

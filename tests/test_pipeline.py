@@ -1,20 +1,27 @@
-"""Tests for Pipeline implementation."""
+"""Tests for simplified Pipeline implementation."""
 
 from __future__ import annotations
 
 from functools import partial
-from typing import Dict, List
 
 import numpy as np
 import pytest
-from numpy.typing import NDArray
-from scipy.sparse import csc_array
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.preprocessing import FunctionTransformer, StandardScaler
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction import DictVectorizer, FeatureHasher
+from sklearn.pipeline import FeatureUnion
+from sklearn.pipeline import Pipeline as SklearnPipeline
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    PolynomialFeatures,
+    StandardScaler,
+)
 
 from bayesianbandits import (
     Arm,
+    BayesianGLM,
     ContextualAgent,
+    GammaRegressor,
     NormalInverseGammaRegressor,
     NormalRegressor,
     ThompsonSampling,
@@ -22,487 +29,681 @@ from bayesianbandits import (
 from bayesianbandits.pipeline import Pipeline
 
 
-class TestPipeline:
-    """Test Pipeline functionality."""
+class MockTransformer(BaseEstimator, TransformerMixin):
+    """Mock transformer for testing."""
 
-    def test_basic_pipeline(self):
-        """Test basic pipeline with array input."""
+    def __init__(self, fitted=False):
+        self.fitted = fitted
+
+    def fit(self, X, y=None): ...
+
+    def transform(self, X):
+        if not self.fitted:
+            raise RuntimeError("Transformer not fitted")
+
+
+class TestPipelineConstruction:
+    """Test Pipeline construction and validation."""
+
+    def test_basic_construction(self):
+        """Test basic pipeline construction."""
         pipeline = Pipeline(
             [
-                ("scaler", StandardScaler()),
+                ("double", FunctionTransformer(lambda x: x * 2)),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        assert len(pipeline) == 2
+        assert hasattr(pipeline, "_learner")
+        assert hasattr(pipeline, "_transformers")
+        assert len(pipeline._transformers) == 1
+
+    def test_single_step_pipeline(self):
+        """Test pipeline with only a learner."""
+        pipeline = Pipeline([("model", NormalRegressor(alpha=1.0, beta=1.0))])
+
+        assert len(pipeline) == 1
+        assert len(pipeline._transformers) == 0
+        assert pipeline._learner is not None
+
+    def test_empty_pipeline_error(self):
+        """Test empty pipeline raises error."""
+        with pytest.raises(ValueError, match="Pipeline cannot be empty"):
+            Pipeline([])
+
+    def test_invalid_final_step_error(self):
+        """Test invalid final step raises error."""
+        with pytest.raises(ValueError, match="must be a bayesianbandits learner"):
+            Pipeline(
+                [("transform", FunctionTransformer()), ("invalid", StandardScaler())]
+            )
+
+    def test_duplicate_names_error(self):
+        """Test duplicate step names raise error."""
+        with pytest.raises(ValueError, match="Step names must be unique"):
+            Pipeline(
+                [
+                    ("transform", FunctionTransformer()),
+                    ("transform", FunctionTransformer()),  # Duplicate!
+                    ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+                ]
+            )
+
+    def test_named_steps_access(self):
+        """Test accessing steps by name."""
+        transform1 = FunctionTransformer(lambda x: x * 2)
+        transform2 = FunctionTransformer(lambda x: x + 1)
+        model = NormalRegressor(alpha=1.0, beta=1.0)
+
+        pipeline = Pipeline(
+            [("double", transform1), ("add_one", transform2), ("model", model)]
+        )
+
+        # Test named_steps property
+        assert pipeline.named_steps["double"] is transform1
+        assert pipeline.named_steps["add_one"] is transform2
+        assert pipeline.named_steps["model"] is model
+
+        # Test __getitem__ with string
+        assert pipeline["double"] is transform1
+        assert pipeline["model"] is model
+
+        # Test __getitem__ with int
+        assert pipeline[0] == ("double", transform1)
+        assert pipeline[2] == ("model", model)
+
+        # Test invalid access
+        with pytest.raises(KeyError):
+            _ = pipeline["invalid"]
+
+        with pytest.raises(IndexError):
+            _ = pipeline[10]
+
+
+class TestTransformers:
+    """Test transformer behavior."""
+
+    def test_stateless_transformers(self):
+        """Test pipeline with stateless transformers."""
+        pipeline = Pipeline(
+            [
+                ("double", FunctionTransformer(lambda x: x * 2)),
+                ("square", FunctionTransformer(lambda x: x**2)),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0)),
             ]
         )
 
         X = np.array([[1.0], [2.0], [3.0]])
-        y = np.array([1.0, 2.0, 3.0])
+        y = np.array([1.0, 4.0, 9.0])
 
-        # Test partial_fit
+        # Should work without any pre-fitting
         pipeline.partial_fit(X, y)
-
-        # Test predict
         predictions = pipeline.predict(X)
         assert predictions.shape == (3,)
 
-        # Test sample
-        samples = pipeline.sample(X, size=10)
-        assert samples.shape == (10, 3)
+        # Check transformations were applied
+        # X -> X*2 -> (X*2)^2 = 4*X^2
+        # So for X=2, transformed should be 16
+        assert hasattr(pipeline._learner, "coef_")
 
-    def test_get_steps(self):
-        """Test getting steps from the pipeline."""
+    def test_pre_fitted_transformers(self):
+        """Test pipeline with pre-fitted transformers."""
+        # Pre-fit scaler
+        scaler = StandardScaler()
+        historical_data = np.random.randn(100, 2)
+        scaler.fit(historical_data)
+
+        # Pre-fit polynomial features
+        poly = PolynomialFeatures(degree=2, include_bias=False)
+        poly.fit(scaler.transform(historical_data))
+
         pipeline = Pipeline(
             [
-                ("scaler", StandardScaler()),
+                ("scale", scaler),
+                ("poly", poly),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0)),
             ]
         )
 
-        steps = pipeline.get_steps()
-        assert len(steps) == 2
-        assert steps[0][0] == "scaler"
-        assert steps[1][0] == "model"
-
-    def test_get_steps_no_transformers(self):
-        """Test getting steps when no transformers are present."""
-        pipeline = Pipeline([("model", NormalRegressor(alpha=1.0, beta=1.0))])
-
-        steps = pipeline.get_steps()
-        assert len(steps) == 1
-        assert steps[0][0] == "model"
-
-    def test_dataframe_input(self):
-        """Test pipeline with DataFrame input."""
-        pytest.importorskip("pandas")
-        import pandas as pd
-
-        pipeline = Pipeline(
-            [
-                ("select", FunctionTransformer(lambda df: df[["feature"]].values)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        df = pd.DataFrame({"feature": [1.0, 2.0, 3.0], "other": ["a", "b", "c"]})
+        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
         y = np.array([1.0, 2.0, 3.0])
 
-        pipeline.partial_fit(df, y)
-        predictions = pipeline.predict(df)
+        pipeline.partial_fit(X, y)
+        predictions = pipeline.predict(X)
         assert predictions.shape == (3,)
 
-    def test_dict_input(self):
-        """Test pipeline with dict input."""
+    def test_not_fitted_transformer_error(self):
+        """Test helpful error when transformer not fitted."""
         pipeline = Pipeline(
             [
-                ("vectorizer", DictVectorizer()),
+                ("scale", StandardScaler()),  # Not fitted!
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        X = np.array([[1.0], [2.0]])
+        y = np.array([1.0, 2.0])
+
+        with pytest.raises(RuntimeError) as exc_info:
+            pipeline.partial_fit(X, y)
+
+        assert "not fitted" in str(exc_info.value)
+        assert "StandardScaler" in str(exc_info.value)
+        assert "FunctionTransformer" in str(exc_info.value)
+
+    def test_custom_transformer_error(self):
+        """Test error handling with custom transformer."""
+        pipeline = Pipeline(
+            [
+                ("mock", MockTransformer(fitted=False)),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        X = np.array([[1.0], [2.0]])
+
+        with pytest.raises(RuntimeError) as exc_info:
+            pipeline.predict(X)
+
+        assert "not fitted" in str(exc_info.value)
+
+    def test_feature_hasher_stateless(self):
+        """Test FeatureHasher works without fitting."""
+        pipeline = Pipeline(
+            [
+                ("hash", FeatureHasher(n_features=100, input_type="dict")),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
             ]
         )
 
-        X = [
-            {"user": "A", "item": "X"},
-            {"user": "B", "item": "Y"},
-            {"user": "A", "item": "Y"},
-        ]
-        y = np.array([1.0, 2.0, 1.5])
+        X = [{"user": "A", "item": 1}, {"user": "B", "item": 2}]
+        y = np.array([1.0, 2.0])
 
+        # Should work without fitting
         pipeline.partial_fit(X, y)
         predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
+        assert predictions.shape == (2,)
 
-    def test_shared_model(self):
-        """Test multiple pipelines sharing the same model."""
-        shared_model = NormalRegressor(alpha=1.0, beta=1.0)
 
-        # Create two pipelines with different preprocessing but same model
-        pipeline1 = Pipeline([("scale", StandardScaler()), ("model", shared_model)])
+class TestLearnerProtocol:
+    """Test implementation of Learner protocol."""
 
-        pipeline2 = Pipeline(
-            [("scale", StandardScaler(with_mean=False)), ("model", shared_model)]
+    def test_partial_fit(self):
+        """Test partial_fit updates the model."""
+        pipeline = Pipeline(
+            [
+                ("identity", FunctionTransformer()),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
         )
 
-        X = np.array([[1.0], [2.0], [3.0]])
+        # First batch
+        X1 = np.array([[1.0], [2.0]])
+        y1 = np.array([1.0, 2.0])
+        pipeline.partial_fit(X1, y1)
+        pred1 = pipeline.predict(X1)
+
+        # Second batch
+        X2 = np.array([[3.0], [4.0]])
+        y2 = np.array([3.0, 4.0])
+        pipeline.partial_fit(X2, y2)
+        pred2 = pipeline.predict(X1)
+
+        # Predictions should change
+        assert not np.allclose(pred1, pred2)
+
+    def test_sample_method(self):
+        """Test posterior sampling."""
+        pipeline = Pipeline(
+            [
+                ("scale", FunctionTransformer(lambda x: x / 10)),
+                ("model", NormalInverseGammaRegressor()),
+            ]
+        )
+
+        X = np.array([[10.0], [20.0], [30.0]])
         y = np.array([1.0, 2.0, 3.0])
 
-        # Train through first pipeline
-        pipeline1.partial_fit(X, y)
+        pipeline.partial_fit(X, y)
 
-        # Model should be updated
-        assert hasattr(shared_model, "coef_")
-        initial_coef = shared_model.coef_.copy()
+        # Test different sample sizes
+        samples1 = pipeline.sample(X, size=1)
+        assert samples1.shape == (1, 3)
 
-        # Train through second pipeline
-        pipeline2.partial_fit(X * 2, y * 2)  # type: ignore
+        samples10 = pipeline.sample(X, size=10)
+        assert samples10.shape == (10, 3)
 
-        # Shared model should be updated
-        assert not np.allclose(shared_model.coef_, initial_coef)
+        # Samples should be stochastic
+        samples_a = pipeline.sample(X, size=5)
+        samples_b = pipeline.sample(X, size=5)
+        assert not np.allclose(samples_a, samples_b)
 
-    def test_random_state_propagation(self):
-        """Test that random_state is properly propagated."""
-        model = NormalRegressor(alpha=1.0, beta=1.0, random_state=42)
-        pipeline = Pipeline([("scaler", StandardScaler()), ("model", model)])
+    def test_sample_weight_propagation(self):
+        """Test sample weights are propagated."""
+        pipeline = Pipeline(
+            [
+                ("identity", FunctionTransformer()),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
 
-        # Check getter
-        assert pipeline.random_state == 42
+        X = np.array([[1.0], [2.0], [10.0]])  # Outlier
+        y = np.array([1.0, 2.0, 1.0])
 
-        # Check setter
-        pipeline.random_state = 123
-        assert model.random_state == 123
-        assert pipeline.random_state == 123
+        # Fit with low weight on outlier
+        weights = np.array([1.0, 1.0, 0.0001])
+        pipeline.partial_fit(X, y, sample_weight=weights)
 
-    def test_validation_errors(self):
-        """Test validation of pipeline steps."""
-        # Empty pipeline
-        with pytest.raises(ValueError, match="Pipeline cannot be empty"):
-            Pipeline([])
+        # Prediction should be closer to linear trend
+        pred = pipeline.predict(np.array([[5.0]]))
+        assert 3.0 < pred[0] < 6.0  # Not pulled toward outlier
 
-        # Invalid final step
-        with pytest.raises(ValueError, match="must be a bayesianbandits learner"):
-            Pipeline(
-                [
-                    ("scaler", StandardScaler()),
-                    ("invalid", StandardScaler()),  # Not a learner
-                ]
-            )
-
-    def test_integration_with_bandit(self):
-        """Test pipeline integration with ContextualAgent."""
-        import joblib
-        from io import BytesIO
-
-        shared_model = NormalInverseGammaRegressor()
-
-        # Create arms with different preprocessing
-        arms: List[Arm[NDArray[np.float64], str]] = []
-        for i in range(3):
-            pipeline: Pipeline[NDArray[np.float64]] = Pipeline(
-                [
-                    (
-                        "add_bias",
-                        FunctionTransformer(partial(add_bias_column, i=i)),
-                    ),
-                    ("model", shared_model),
-                ]
-            )
-            arms.append(Arm(f"arm_{i}", learner=pipeline))
-
-        # Create agent
-        agent = ContextualAgent(arms, ThompsonSampling())
-
-        # Pull and update
-        X = np.array([[1.0], [2.0]])
-        actions = agent.pull(X)
-        assert len(actions) == 2
-
-        y = np.array([1.0, 2.0])
-        agent.update(X, y)
-
-        # Agent should be dumpable with joblib
-        bytes_io = BytesIO()
-        joblib.dump(agent, bytes_io)
-
-        loaded_agent = joblib.load(bytes_io)
-
-        # Check loaded agent can be pulled and updated
-        loaded_actions = loaded_agent.pull(X)
-        assert len(loaded_actions) == 2
-
-        loaded_agent.update(X, y)
-
-    def test_decay(self):
+    def test_decay_method(self):
         """Test decay propagation."""
         model = NormalRegressor(alpha=1.0, beta=1.0, learning_rate=0.9)
-        pipeline = Pipeline([("scaler", StandardScaler()), ("model", model)])
+        pipeline = Pipeline([("identity", FunctionTransformer()), ("model", model)])
 
         X = np.array([[1.0], [2.0]])
         y = np.array([1.0, 2.0])
 
-        # Fit first
         pipeline.partial_fit(X, y)
-        initial_cov_inv = model.cov_inv_.copy()
+        initial_precision = model.cov_inv_.copy()
 
-        # Decay
+        # Apply decay
         pipeline.decay(X, decay_rate=0.5)
 
-        # Precision should decrease (variance increase)
-        assert np.all(model.cov_inv_ < initial_cov_inv)
+        # Precision should decrease
+        assert np.all(model.cov_inv_ < initial_precision)
 
-    def test_no_transformer_pipeline(self):
-        """Test pipeline with only a final estimator."""
-        pipeline = Pipeline([("model", NormalRegressor(alpha=1.0, beta=1.0))])
+    def test_random_state_property(self):
+        """Test random_state getter and setter."""
+        model = NormalRegressor(alpha=1.0, beta=1.0, random_state=42)
+        pipeline = Pipeline([("transform", FunctionTransformer()), ("model", model)])
 
-        X = np.array([[1.0], [2.0]])
+        # Test getter
+        assert pipeline.random_state == 42
+
+        # Test setter
+        pipeline.random_state = 123
+        assert pipeline.random_state == 123
+        assert model.random_state == 123
+
+        # Test with Generator
+        rng = np.random.default_rng(456)
+        pipeline.random_state = rng
+        assert pipeline.random_state is rng
+        assert model.random_state is rng
+
+
+class TestComplexInputTypes:
+    """Test Pipeline with various input types."""
+
+    def test_dict_input(self):
+        """Test pipeline with dict input."""
+        # Pre-fit vectorizer
+        vectorizer = DictVectorizer()
+        historical_dicts = [
+            {"user": "A", "item": "X"},
+            {"user": "A", "item": "Y"},
+            {"user": "B", "item": "X"},
+            {"user": "B", "item": "Y"},
+        ]
+        vectorizer.fit(historical_dicts)
+
+        pipeline = Pipeline(
+            [
+                ("vectorize", vectorizer),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
+            ]
+        )
+
+        X = [{"user": "A", "item": "X"}, {"user": "B", "item": "Y"}]
         y = np.array([1.0, 2.0])
 
         pipeline.partial_fit(X, y)
         predictions = pipeline.predict(X)
         assert predictions.shape == (2,)
 
-    def test_sample_weight_propagation(self):
-        """Test that sample weights are properly propagated."""
-        model = NormalRegressor(alpha=1.0, beta=1.0)
-        pipeline = Pipeline([("scaler", StandardScaler()), ("model", model)])
+    def test_dataframe_input(self):
+        """Test pipeline with DataFrame input."""
+        pd = pytest.importorskip("pandas")
 
-        X = np.array([[1.0], [2.0], [3.0]])
-        y = np.array([1.0, 2.0, 10.0])
-        weights = np.array([1.0, 1.0, 0.1])  # Downweight outlier
+        def extract_features(df):
+            """Extract numeric columns as array."""
+            return df[["num1", "num2"]].values
 
-        pipeline.partial_fit(X, y, sample_weight=weights)
-
-        # With low weight on outlier, prediction should be closer to 1-2 range
-        pred = pipeline.predict(np.array([[2.5]]))
-        assert pred[0] < 5.0  # Would be ~5.5 without weights
-
-
-class TestPipelineInputTypes:
-    """Test Pipeline with different input types and FunctionTransformer."""
-
-    def test_array_with_static_features(self) -> None:
-        """Test adding static features to numpy arrays."""
-        # Define item features
-        item_price: float = 9.99
-        item_category: int = 2
-
-        def add_item_features(X: NDArray[np.float64]) -> NDArray[np.float64]:
-            """Add item price and category to each row."""
-            n_samples = len(X)
-            price_col = np.full((n_samples, 1), item_price)
-            category_col = np.full((n_samples, 1), item_category)
-            return np.column_stack([X, price_col, category_col])
-
-        pipeline: Pipeline[NDArray[np.float64]] = Pipeline(
+        pipeline = Pipeline(
             [
-                ("add_features", FunctionTransformer(add_item_features)),
+                ("extract", FunctionTransformer(extract_features)),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0)),
             ]
         )
 
-        X: NDArray[np.float64] = np.array([[0.5], [1.0], [1.5]])
-        y: NDArray[np.float64] = np.array([10.0, 15.0, 20.0])
+        df = pd.DataFrame(
+            {
+                "num1": [1.0, 2.0, 3.0],
+                "num2": [4.0, 5.0, 6.0],
+                "text": ["a", "b", "c"],  # Ignored
+            }
+        )
+        y = np.array([1.0, 2.0, 3.0])
 
-        pipeline.partial_fit(X, y)
-        predictions: NDArray[np.float64] = pipeline.predict(X)
-
+        pipeline.partial_fit(df, y)
+        predictions = pipeline.predict(df)
         assert predictions.shape == (3,)
-        assert isinstance(predictions, np.ndarray)
 
-    def test_array_with_interactions(self) -> None:
-        """Test computing interaction features."""
-        item_features = {"price": 10.0, "discount": 0.2}
+    def test_sparse_input(self):
+        """Test pipeline with sparse matrices."""
+        from scipy.sparse import csr_matrix
 
-        def add_interactions(
-            X: NDArray[np.float64], features: Dict[str, float]
-        ) -> NDArray[np.float64]:
-            """Add features and compute price-sensitive interaction."""
-            # X has columns: [user_income, days_since_purchase]
-            user_income = X[:, 0]
-            days_since = X[:, 1]
+        # Convert sparse to CSC format (required by our models)
+        def to_csc(X):
+            return X.tocsc() if hasattr(X, "tocsc") else X
 
-            # Compute interactions
-            price_sensitivity = user_income / features["price"]
-            urgency_discount = np.where(days_since > 30, features["discount"], 0)
-
-            return np.column_stack(  # type:ignore[return]
-                [
-                    X,
-                    price_sensitivity,
-                    urgency_discount,
-                    np.full(len(X), features["price"]),
-                    np.full(len(X), features["discount"]),
-                ]
-            )
-
-        pipeline: Pipeline[NDArray[np.float64]] = Pipeline(
+        pipeline = Pipeline(
             [
-                (
-                    "add_features",
-                    FunctionTransformer(
-                        partial(add_interactions, features=item_features)
-                    ),
-                ),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        X: NDArray[np.float64] = np.array(
-            [
-                [50000, 45],  # Low income, long time
-                [150000, 5],  # High income, recent
-            ]
-        )
-        y: NDArray[np.float64] = np.array([1.0, 0.0])  # First bought, second didn't
-
-        pipeline.partial_fit(X, y)
-        assert pipeline.predict(X).shape == (2,)
-
-    def test_sparse_array_features(self) -> None:
-        """Test adding features to sparse arrays."""
-        from scipy.sparse import hstack
-
-        item_one_hot = csc_array([[0, 0, 1, 0, 0]])  # Item category 3
-
-        def add_sparse_features(X: csc_array) -> csc_array:
-            """Add sparse item features to each row."""
-            n_samples = X.shape[0]  # type: ignore
-            item_features = csc_array(np.tile(item_one_hot.toarray(), (n_samples, 1)))
-            return hstack([X, item_features], format="csc")
-
-        pipeline: Pipeline[csc_array] = Pipeline(
-            [
-                ("add_features", FunctionTransformer(add_sparse_features)),
+                ("to_csc", FunctionTransformer(to_csc)),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
             ]
         )
 
-        X = csc_array([[1, 0], [0, 1], [1, 1]])
+        X = csr_matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         y = np.array([1.0, 2.0, 3.0])
 
         pipeline.partial_fit(X, y)
         predictions = pipeline.predict(X)
         assert predictions.shape == (3,)
 
-    def test_dataframe_features(self) -> None:
-        """Test adding features to DataFrames."""
-        pytest.importorskip("pandas")
-        import pandas as pd
 
-        item_info = {
-            "brand": "BrandA",
-            "price": 29.99,
-            "in_stock": True,
-            "avg_rating": 4.5,
-        }
+class TestIntegrationScenarios:
+    """Test real-world integration scenarios."""
 
-        def add_item_to_df(df: pd.DataFrame) -> pd.DataFrame:
-            """Add item features and compute interactions."""
-            df = df.copy()
+    def test_sklearn_pipeline_as_transformer(self):
+        """Test using sklearn.Pipeline as a transformer."""
+        # Pre-fit transformers
+        scaler = StandardScaler()
+        poly = PolynomialFeatures(degree=2, include_bias=False)
 
-            # Add static features
-            for key, value in item_info.items():
-                df[f"item_{key}"] = value
+        historical = np.random.randn(100, 2)
+        scaler.fit(historical)
+        poly.fit(scaler.transform(historical))
 
-            # Add interactions
-            df["can_afford"] = df["user_balance"] >= item_info["price"]
-            df["brand_loyalty"] = df["preferred_brand"] == item_info["brand"]
+        # Create sklearn pipeline
+        sklearn_pipe = SklearnPipeline([("scale", scaler), ("poly", poly)])
 
-            return df
-
-        pipeline: Pipeline[pd.DataFrame] = Pipeline(
+        # Use in our pipeline
+        pipeline = Pipeline(
             [
-                ("add_features", FunctionTransformer(add_item_to_df)),
-                (
-                    "vectorize",
-                    FunctionTransformer(
-                        lambda df: df.select_dtypes(include=[np.number]).values
-                    ),
-                ),
+                ("preprocess", sklearn_pipe),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0)),
             ]
         )
 
-        users = pd.DataFrame(
-            {
-                "user_balance": [100.0, 20.0, 50.0],
-                "preferred_brand": ["BrandA", "BrandB", "BrandA"],
-            }
-        )
-        y = np.array([1.0, 0.0, 1.0])  # Who bought
+        X = np.random.randn(10, 2)
+        y = np.random.randn(10)
 
-        pipeline.partial_fit(users, y)
-        predictions = pipeline.predict(users)
+        pipeline.partial_fit(X, y)
+        predictions = pipeline.predict(X)
+        assert predictions.shape == (10,)
 
-        assert predictions.shape == (3,)
+    def test_column_transformer_integration(self):
+        """Test integration with ColumnTransformer."""
+        # Pre-fit transformers
+        num_scaler = StandardScaler()
+        num_scaler.fit(np.random.randn(100, 2))
 
-    def test_dict_list_features(self) -> None:
-        """Test adding features to list of dicts."""
-        from sklearn.feature_extraction import DictVectorizer
-
-        product = {"sku": "ABC123", "category": "electronics", "price_tier": "premium"}
-
-        def enrich_user_dict(
-            users: List[Dict[str, str]], product_info: Dict[str, str]
-        ) -> List[Dict[str, str]]:
-            """Add product info to each user dict."""
-            enriched = []
-            for user in users:
-                user_copy = user.copy()
-                # Add product features
-                for key, value in product_info.items():
-                    user_copy[f"product_{key}"] = value
-                # Add interaction
-                user_copy["matches_interest"] = (  # type: ignore
-                    user.get("interest") == product_info["category"]
-                )
-                enriched.append(user_copy)
-            return enriched
-
-        pipeline: Pipeline[List[Dict[str, str]]] = Pipeline(
+        # Create preprocessing with sklearn
+        preprocessor = ColumnTransformer(
             [
-                (
-                    "add_features",
-                    FunctionTransformer(
-                        partial(enrich_user_dict, product_info=product)
-                    ),
-                ),
-                ("vectorize", DictVectorizer()),
+                ("num", num_scaler, [0, 1]),
+                ("cat", FeatureHasher(n_features=10, input_type="string"), [2]),
+            ]
+        )
+
+        # Fit on historical data
+        historical = [[1.0, 2.0, "cat"], [3.0, 4.0, "dog"], [5.0, 6.0, "cat"]]
+        preprocessor.fit(historical)  # type: ignore
+
+        # Our pipeline uses pre-fitted preprocessor
+        pipeline = Pipeline(
+            [
+                ("preprocess", preprocessor),
                 ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
             ]
         )
 
-        users: List[Dict[str, str]] = [
-            {"user_id": "U1", "interest": "electronics"},
-            {"user_id": "U2", "interest": "sports"},
-            {"user_id": "U3", "interest": "electronics"},
-        ]
-        y = np.array([1.0, 0.0, 1.0])
-
-        pipeline.partial_fit(users, y)
-        predictions = pipeline.predict(users)
-        assert predictions.shape == (3,)
-
-    def test_shared_model_different_inputs(self) -> None:
-        """Test shared model with pipelines using different input types."""
-        pytest.importorskip("pandas")
+        # Test with mixed data
         import pandas as pd
 
-        shared_model = NormalRegressor(alpha=1.0, beta=1.0)
+        df = pd.DataFrame(
+            {
+                "num1": [1.0, 2.0, 3.0],
+                "num2": [4.0, 5.0, 6.0],
+                "cat": ["cat", "dog", "bird"],
+            }
+        )
+        y = np.array([1.0, 2.0, 3.0])
 
-        # Pipeline 1: DataFrame input for product A
-        def add_product_a(df: pd.DataFrame) -> NDArray[np.float64]:
-            df = df.copy()
-            df["product_price"] = 19.99
-            df["product_type"] = 1
-            return df[["user_age", "product_price", "product_type"]].values
+        pipeline.partial_fit(df.values, y)
+        predictions = pipeline.predict(df.values)
+        assert predictions.shape == (3,)
 
-        pipeline_a: Pipeline[pd.DataFrame] = Pipeline(
-            [("transform", FunctionTransformer(add_product_a)), ("model", shared_model)]
+    def test_feature_union_integration(self):
+        """Test integration with FeatureUnion."""
+        # Create feature extractors
+        log_transform = FunctionTransformer(np.log1p)
+        sqrt_transform = FunctionTransformer(np.sqrt)
+
+        # Pre-fit polynomial
+        poly = PolynomialFeatures(degree=2, include_bias=False)
+        poly.fit(np.random.rand(100, 1))
+
+        # Combine with FeatureUnion
+        features = FeatureUnion(
+            [("log", log_transform), ("sqrt", sqrt_transform), ("poly", poly)]
         )
 
-        # Pipeline 2: Dict input for product B
-        def add_product_b(users: List[Dict[str, float]]) -> NDArray[np.float64]:
-            result = []
-            for user in users:
-                result.append([user["age"], 29.99, 2])  # price=29.99, type=2
-            return np.array(result)
+        # Fit on historical data
+        features.fit(np.random.rand(100, 1))
 
-        pipeline_b: Pipeline[List[Dict[str, float]]] = Pipeline(
-            [("transform", FunctionTransformer(add_product_b)), ("model", shared_model)]
+        # Use in pipeline
+        pipeline = Pipeline(
+            [("features", features), ("model", NormalRegressor(alpha=1.0, beta=1.0))]
         )
 
-        # Train through pipeline A
-        df_users = pd.DataFrame({"user_age": [25.0, 35.0]})
-        pipeline_a.partial_fit(df_users, np.array([1.0, 0.0]))
+        X = np.array([[1.0], [4.0], [9.0]])
+        y = np.array([1.0, 2.0, 3.0])
 
-        # Train through pipeline B (updates shared model)
-        dict_users: List[Dict[str, float]] = [{"age": 45.0}, {"age": 55.0}]
-        pipeline_b.partial_fit(dict_users, np.array([1.0, 1.0]))
+        pipeline.partial_fit(X, y)
+        predictions = pipeline.predict(X)
+        assert predictions.shape == (3,)
 
-        # Both pipelines should work for prediction
-        pred_a = pipeline_a.predict(df_users)
-        pred_b = pipeline_b.predict(dict_users)
+    def test_multi_armed_bandit_scenario(self):
+        """Test realistic bandit scenario with shared model."""
+        # Pre-fit shared scaler
+        scaler = StandardScaler()
+        scaler.fit(np.random.randn(1000, 5))
 
-        assert pred_a.shape == (2,)
-        assert pred_b.shape == (2,)
+        # Shared model
+        shared_model = BayesianGLM(alpha=1.0, link="logit")
+
+        # Products with features
+        products = {
+            "A": {"price": 10.0, "quality": 0.8},
+            "B": {"price": 15.0, "quality": 0.9},
+            "C": {"price": 5.0, "quality": 0.6},
+        }
+
+        # Create arms
+        arms = []
+        for product_id, features in products.items():
+
+            def add_product_context(X, prod_features):
+                n_users = len(X)
+                product_array = np.array(
+                    [
+                        prod_features["price"] / 20.0,  # Normalize
+                        prod_features["quality"],
+                    ]
+                )
+                return np.c_[X, np.tile(product_array, (n_users, 1))]
+
+            pipeline = Pipeline(
+                [
+                    (
+                        "add_product",
+                        FunctionTransformer(
+                            partial(add_product_context, prod_features=features)
+                        ),
+                    ),
+                    ("scale", scaler),
+                    ("model", shared_model),
+                ]
+            )
+
+            arms.append(Arm(product_id, learner=pipeline))
+
+        # Create agent
+        agent = ContextualAgent(arms, ThompsonSampling())
+
+        # Simulate interactions
+        user_contexts = np.random.randn(10, 3)
+        actions = agent.pull(user_contexts)
+        assert len(actions) == 10
+
+        # Update with binary rewards
+        rewards = np.random.binomial(1, 0.7, size=10).astype(float)
+        agent.update(user_contexts, rewards)
+
+        # Shared model should be updated
+        assert hasattr(shared_model, "coef_")
+
+    def test_custom_transformer_chain(self):
+        """Test complex custom transformation chain."""
+
+        # Chain of transformations
+        def add_interactions(X):
+            """Add interaction features."""
+            # X has shape (n, 2)
+            return np.c_[X, X[:, 0] * X[:, 1]]
+
+        def add_ratios(X):
+            """Add ratio features."""
+            # X now has shape (n, 3)
+            return np.c_[X, X[:, 0] / (X[:, 1] + 1e-8)]
+
+        def add_logs(X):
+            """Add log features."""
+            # X now has shape (n, 4)
+            return np.c_[X, np.log1p(np.abs(X))]
+
+        pipeline = Pipeline(
+            [
+                ("interactions", FunctionTransformer(add_interactions)),
+                ("ratios", FunctionTransformer(add_ratios)),
+                ("logs", FunctionTransformer(add_logs)),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+        y = np.array([1.0, 2.0, 3.0])
+
+        pipeline.partial_fit(X, y)
+        predictions = pipeline.predict(X)
+        assert predictions.shape == (3,)
 
 
-def add_bias_column(x, i):
-    return np.column_stack([x, np.full(len(x), i)])
+class TestAllEstimators:
+    """Test all bayesianbandits estimators work as final step."""
+
+    def test_all_estimators(self):
+        """Test each estimator type."""
+        estimators = [
+            (
+                NormalRegressor(alpha=1.0, beta=1.0),
+                np.array([[1.0], [2.0]]),
+                np.array([1.0, 2.0]),
+            ),
+            (
+                NormalInverseGammaRegressor(),
+                np.array([[1.0], [2.0]]),
+                np.array([1.0, 2.0]),
+            ),
+            (
+                BayesianGLM(alpha=1.0, link="logit"),
+                np.array([[1.0], [2.0]]),
+                np.array([0.0, 1.0]),
+            ),
+            (
+                BayesianGLM(alpha=1.0, link="log"),
+                np.array([[1.0], [2.0]]),
+                np.array([1.0, 2.0]),
+            ),
+            (
+                GammaRegressor(alpha=1.0, beta=1.0),
+                np.array([[1], [1], [1]]),
+                np.array([1, 2, 3]),
+            ),
+        ]
+
+        for estimator, X, y in estimators:
+            pipeline = Pipeline(
+                [("identity", FunctionTransformer()), ("model", estimator)]
+            )
+
+            # Test all methods
+            pipeline.partial_fit(X, y)
+            predictions = pipeline.predict(X)
+            assert predictions.shape == (len(X),)
+
+            samples = pipeline.sample(X, size=5)
+            assert samples.shape == (5, len(X))
+
+            pipeline.decay(X, decay_rate=0.9)
+
+
+class TestErrorHandling:
+    """Test error handling and edge cases."""
+
+    def test_transform_error_propagation(self):
+        """Test that transformer errors are propagated."""
+
+        def failing_transform(X):
+            raise ValueError("Custom error message")
+
+        pipeline = Pipeline(
+            [
+                ("fail", FunctionTransformer(failing_transform)),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        with pytest.raises(ValueError, match="Custom error message"):
+            pipeline.predict(np.array([[1.0]]))
+
+    def test_repr(self):
+        """Test string representation."""
+        pipeline = Pipeline(
+            [
+                ("transform", FunctionTransformer()),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+
+        repr_str = repr(pipeline)
+        assert "Pipeline" in repr_str
+        assert "FunctionTransformer" in repr_str
+        assert "NormalRegressor" in repr_str
+
+    def test_len(self):
+        """Test __len__ method."""
+        pipeline = Pipeline(
+            [
+                ("a", FunctionTransformer()),
+                ("b", FunctionTransformer()),
+                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
+            ]
+        )
+        assert len(pipeline) == 3
