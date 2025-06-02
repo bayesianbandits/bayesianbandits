@@ -4,253 +4,237 @@ Enables sklearn transformers to work with Bayesian learners,
 supporting workflows with DataFrames, dicts, and other input types.
 """
 
-from typing import Any, Generic, List, Optional, Tuple, Union
+from typing import Any, Dict, Generic, List, Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from sklearn.pipeline import Pipeline as SklearnPipeline
 from typing_extensions import Self
 
-from ._arm import ContextType
+from ._arm import ContextType, Learner
 
 
 class Pipeline(Generic[ContextType]):
-    """Pipeline that bridges sklearn transformers with Bayesian learners.
+    """Pipeline for composing pre-fitted transformers with Bayesian learners.
 
     Implements the Learner protocol, allowing arbitrary input types to be
     transformed through sklearn transformers before reaching the final
-    Bayesian learner. This enables the standard contextual bandit formulation
-    where multiple arms share a single model with arm-specific features.
+    Bayesian learner. All transformers must be either stateless or pre-fitted
+    before use to ensure consistent feature transformations during online learning.
 
     Parameters
     ----------
     steps : list of tuples
         List of (name, transform/estimator) tuples. All steps except the
-        last must be sklearn transformers. The last step must be a
-        bayesianbandits learner (implementing partial_fit and sample).
+        last must be sklearn transformers that are either stateless or
+        pre-fitted. The last step must be a bayesianbandits learner.
+
+    Raises
+    ------
+    ValueError
+        If pipeline is empty or final step doesn't implement required methods
+    RuntimeError
+        If a stateful transformer is not fitted when first used
 
     Examples
     --------
-    **Standard Contextual Bandit with Shared Model** (most common pattern):
+    **Standard Usage with Pre-fitted Transformers**:
+
+    >>> from sklearn.preprocessing import StandardScaler
+    >>> from sklearn.feature_extraction import FeatureHasher
+    >>> from bayesianbandits import Pipeline, NormalRegressor
+    >>>
+    >>> # Pre-fit transformers on historical data
+    >>> historical_data = np.array([[1.0, 2.0], [3.0, 4.0]])
+    >>> scaler = StandardScaler()
+    >>> scaler.fit(historical_data)
+    StandardScaler()
+    >>>
+    >>> pipeline = Pipeline([
+    ...     ('scale', scaler),  # Pre-fitted
+    ...     ('model', NormalRegressor(alpha=1.0, beta=1.0))
+    ... ])
+    >>>
+    >>> # Use for online learning
+    >>> X = np.array([[1.0, 2.0], [3.0, 4.0]])
+    >>> y = np.array([1.0, 2.0])
+    >>> pipeline.partial_fit(X, y)
+    Pipeline([('scale', StandardScaler), ('model', NormalRegressor)])
+    >>> predictions = pipeline.predict(X)
+
+    **Complex Feature Engineering with Shared Model**:
 
     >>> from functools import partial
-    >>> from sklearn.preprocessing import FunctionTransformer, StandardScaler
-    >>> from bayesianbandits import (
-    ...     Arm, ContextualAgent, ThompsonSampling, NormalRegressor, Pipeline
-    ... )
+    >>> from sklearn.preprocessing import FunctionTransformer
     >>>
-    >>> # Single shared model for all arms (like LinUCB, Li et al. 2010)
+    >>> # Shared model across different products
     >>> shared_model = NormalRegressor(alpha=1.0, beta=1.0)
     >>>
-    >>> # Product catalog with features
-    >>> products = {
-    ...     'iPhone': {'price': 999, 'category': 'electronics', 'brand_tier': 3},
-    ...     'Shoes': {'price': 89, 'category': 'fashion', 'brand_tier': 2},
-    ...     'Book': {'price': 15, 'category': 'media', 'brand_tier': 1},
-    ... }
+    >>> # Create product-specific pipelines
+    >>> def add_product_features(X, product_id, price):
+    ...     n_samples = len(X)
+    ...     return np.c_[X,
+    ...                   np.full(n_samples, product_id),
+    ...                   np.full(n_samples, price)]
     >>>
-    >>> # Create arms with product-specific features
-    >>> arms = []
-    >>> for product_id, features in products.items():
-    ...     # Each arm augments context with its specific features
-    ...     def add_product_features(X, prod_features):
-    ...         # X shape: (n_users, n_user_features)
-    ...         n_samples = len(X)
-    ...         product_array = np.array([
-    ...             prod_features['price'] / 1000,  # Normalize price
-    ...             prod_features['brand_tier'] / 3,  # Normalize tier
-    ...         ])
-    ...         # Concatenate: [user_features, product_features]
-    ...         return np.c_[X, np.tile(product_array, (n_samples, 1))]
-    ...
-    ...     pipeline = Pipeline([
-    ...         ('add_product', FunctionTransformer(
-    ...             partial(add_product_features, prod_features=features)
-    ...         )),
-    ...         ('scale', StandardScaler()),
-    ...         ('model', shared_model)  # Shared across all products!
-    ...     ])
-    ...     arms.append(Arm(product_id, learner=pipeline))
-    >>>
-    >>> # The agent learns user preferences across all products jointly
-    >>> agent = ContextualAgent(arms, ThompsonSampling())
-    >>>
-    >>> # User context: [age, income, days_since_last_purchase]
-    >>> users = np.array([
-    ...     [25, 50000, 7],
-    ...     [45, 120000, 30],
+    >>> pipeline_a = Pipeline([
+    ...     ('add_features', FunctionTransformer(
+    ...         partial(add_product_features, product_id=1, price=9.99)
+    ...     )),
+    ...     ('model', shared_model)  # Shared!
     ... ])
-    >>> recommendations = agent.pull(users)  # Personalized for each user
+    >>>
+    >>> pipeline_b = Pipeline([
+    ...     ('add_features', FunctionTransformer(
+    ...         partial(add_product_features, product_id=2, price=14.99)
+    ...     )),
+    ...     ('model', shared_model)  # Same model!
+    ... ])
 
-    **DataFrame Input with Feature Engineering**:
+    **Working with DataFrames and Dicts**:
 
     >>> import pandas as pd
-    >>> from sklearn.feature_extraction import FeatureHasher
-    >>>
-    >>> def enrich_user_context(df, item_features):
-    ...     \"\"\"Add item features and compute interactions.\"\"\"
-    ...     df = df.copy()
-    ...
-    ...     # Add item features
-    ...     for key, value in item_features.items():
-    ...         df[f'item_{key}'] = value
-    ...
-    ...     # Compute interactions
-    ...     df['price_to_income_ratio'] = item_features['price'] / df['income']
-    ...     df['is_premium_user_and_item'] = (
-    ...         (df['user_tier'] == 'premium') & item_features['is_premium']
-    ...     )
-    ...     df['category_match'] = df['preferred_category'] == item_features['category']
-    ...
-    ...     return df
-    >>>
-    >>> # Shared model learns what features matter across all items
-    >>> shared_model = NormalRegressor(alpha=0.1, beta=1.0)
-    >>>
-    >>> # Create item-specific pipelines
-    >>> item_features = {'price': 49.99, 'category': 'electronics', 'is_premium': True}
-    >>>
-    >>> pipeline = Pipeline([
-    ...     ('enrich', FunctionTransformer(
-    ...         partial(enrich_user_context, item_features=item_features)
-    ...     )),
-    ...     ('hash', FeatureHasher(n_features=128, input_type='dict')),
-    ...     ('model', shared_model)
-    ... ])
-
-    **Dict Input for A/B Testing Variants**:
-
     >>> from sklearn.feature_extraction import DictVectorizer
     >>>
-    >>> # Testing different website layouts with shared learning
-    >>> shared_model = NormalRegressor(alpha=1.0, beta=1.0)
+    >>> # Pre-fit vectorizer on all possible feature combinations
+    >>> vectorizer = DictVectorizer()
+    >>> vectorizer.fit([{'user': 'A', 'item': 'X'},
+    ...                 {'user': 'B', 'item': 'Y'}])
+    DictVectorizer()
     >>>
-    >>> layouts = {
-    ...     'layout_A': {'button_color': 'blue', 'header_size': 'large'},
-    ...     'layout_B': {'button_color': 'green', 'header_size': 'medium'},
-    ...     'layout_C': {'button_color': 'blue', 'header_size': 'medium'},
-    ... }
+    >>> # Pipeline for dict input
+    >>> dict_pipeline = Pipeline([
+    ...     ('vectorize', vectorizer),
+    ...     ('model', NormalRegressor(alpha=1.0, beta=1.0, sparse=True))
+    ... ])
     >>>
-    >>> arms = []
-    >>> for layout_id, layout_features in layouts.items():
-    ...     def combine_context(user_dicts, layout):
-    ...         \"\"\"Combine user and layout features.\"\"\"
-    ...         combined = []
-    ...         for user in user_dicts:
-    ...             combined_dict = user.copy()
-    ...             combined_dict.update({f'layout_{k}': v for k, v in layout.items()})
-    ...             combined.append(combined_dict)
-    ...         return combined
-    ...
-    ...     pipeline = Pipeline([
-    ...         ('combine', FunctionTransformer(
-    ...             partial(combine_context, layout=layout_features)
-    ...         )),
-    ...         ('vectorize', DictVectorizer()),
-    ...         ('model', shared_model)  # Learn user preferences across layouts
-    ...     ])
-    ...     arms.append(Arm(layout_id, learner=pipeline))
+    >>> # Pipeline for DataFrame input
+    >>> def df_to_dict(df):
+    ...     return df.to_dict('records')
+    >>>
+    >>> df_pipeline = Pipeline([
+    ...     ('to_dict', FunctionTransformer(df_to_dict)),
+    ...     ('vectorize', vectorizer),
+    ...     ('model', NormalRegressor(alpha=1.0, beta=1.0, sparse=True))
+    ... ])
 
-    **Non-stationary Environments with Sparse Features**:
+    **Integration with sklearn.pipeline.Pipeline**:
 
-    >>> from scipy.sparse import csc_array, hstack
+    >>> from sklearn.pipeline import Pipeline as SklearnPipeline
+    >>> from sklearn.compose import ColumnTransformer
+    >>> from bayesianbandits import BayesianGLM
     >>>
-    >>> # E-commerce with changing user preferences
-    >>> shared_model = NormalRegressor(
-    ...     alpha=1.0,
-    ...     beta=1.0,
-    ...     learning_rate=0.99,  # Gradual forgetting
-    ...     sparse=True  # Efficient for high-dimensional features
-    ... )
+    >>> # Define numeric and categorical columns
+    >>> numeric_columns = ['age', 'income']
+    >>> categorical_columns = ['category_a', 'category_b']
     >>>
-    >>> def add_sparse_product_features(X, product_one_hot):
-    ...     \"\"\"Add sparse product indicators to user features.\"\"\"
-    ...     n_users = X.shape[0]
-    ...     product_features = csc_array(
-    ...         np.tile(product_one_hot.toarray(), (n_users, 1))
-    ...     )
-    ...     return hstack([X, product_features], format='csc')
+    >>> # Use sklearn.Pipeline for complex transformations
+    >>> preprocessor = ColumnTransformer([
+    ...     ('num', SklearnPipeline([...]), numeric_columns),
+    ...     ('cat', SklearnPipeline([...]), categorical_columns)
+    ... ])
     >>>
-    >>> # Product one-hot encoding (e.g., 10000 products)
-    >>> product_idx = 42
-    >>> product_one_hot = csc_array(([1], ([0], [product_idx])), shape=(1, 10000))
-    >>>
-    >>> pipeline = Pipeline([
-    ...     ('add_product', FunctionTransformer(
-    ...         partial(add_sparse_product_features, product_one_hot=product_one_hot)
-    ...     )),
-    ...     ('model', shared_model)
+    >>> # Our Pipeline for the bandit learner
+    >>> bandit_pipeline = Pipeline([
+    ...     ('preprocess', preprocessor),
+    ...     ('model', BayesianGLM(alpha=1.0, link='logit'))
     ... ])
 
     Notes
     -----
-    The Pipeline class is essential for implementing standard contextual
-    bandit algorithms from the literature, where a single model learns
-    jointly across all arms. This provides several benefits:
+    This Pipeline is specifically designed for online learning with bandits:
 
-    1. **Better cold-start**: New arms benefit from patterns learned on others
-    2. **Parameter efficiency**: One model instead of K independent models
-    3. **Standard formulation**: Matches papers like LinUCB, LinTS, etc.
-    4. **Flexible features**: Easy to add arm-specific or interaction features
+    1. **No transformer fitting**: Transformers are never fitted during pipeline
+       execution, ensuring consistent features across all updates.
+
+    2. **Learner protocol**: Implements only the methods needed for bandits:
+       partial_fit, predict, sample, decay, and random_state.
+
+    3. **Type preservation**: Maintains input type through generic typing,
+       supporting DataFrames, dicts, arrays, and custom types.
+
+    4. **Composition friendly**: Can wrap sklearn.pipeline.Pipeline or other
+       meta-estimators as transformers.
+
+    For pure transformation pipelines without a learner, use sklearn.pipeline.Pipeline.
+    This implementation is optimized specifically for the bandit learning use case.
 
     See Also
     --------
-    sklearn.pipeline.Pipeline : The underlying sklearn Pipeline
-    sklearn.preprocessing.FunctionTransformer : For custom transformations
-    bayesianbandits.Arm : Arms that use these pipelines as learners
+    sklearn.pipeline.Pipeline : For general transformation pipelines
+    sklearn.preprocessing.FunctionTransformer : For custom stateless transforms
+    bayesianbandits.Arm : Arms that use pipelines as learners
     """
 
     def __init__(self, steps: List[Tuple[str, Any]]) -> None:
-        if not steps:
+        self.steps = steps
+        self._validate_steps()
+
+    def _validate_steps(self) -> None:
+        """Validate the pipeline steps."""
+        if not self.steps:
             raise ValueError("Pipeline cannot be empty")
 
-        *transformer_steps, (final_name, final_estimator) = steps
+        names, _ = zip(*self.steps)
 
-        # Validate final step has required methods
-        if not (
-            hasattr(final_estimator, "partial_fit")
-            and hasattr(final_estimator, "sample")
-            and hasattr(final_estimator, "predict")
-            and hasattr(final_estimator, "decay")
-        ):
+        # Validate names
+        if len(set(names)) != len(names):
+            raise ValueError("Step names must be unique")
+
+        # Validate final step is a learner
+        final_name, final_estimator = self.steps[-1]
+        required_methods = {"partial_fit", "sample", "predict", "decay"}
+        missing = required_methods - set(dir(final_estimator))
+        if missing:
             raise ValueError(
                 f"Final step '{final_name}' must be a bayesianbandits learner "
-                f"implementing partial_fit, sample, predict, and decay methods"
+                f"implementing {', '.join(sorted(missing))}"
             )
 
-        # Create sklearn pipeline for transformers
-        if transformer_steps:
-            self._transformers = SklearnPipeline(transformer_steps)
-        else:
-            self._transformers = None
-
-        self._final_estimator = final_estimator
-        self._final_name = final_name
-        self._is_fitted = False
+        # Store transformers and learner separately
+        self._transformers = self.steps[:-1]
+        self._learner: Learner[Any] = final_estimator
 
     @property
+    def named_steps(self) -> Dict[str, Any]:
+        """Access pipeline steps by name."""
+        return dict(self.steps)
+
+    def _transform(self, X: ContextType) -> Any:
+        """Apply all transformers to input data.
+
+        Transformers must be either stateless or pre-fitted.
+        No fitting occurs during transformation.
+        """
+        result = X
+
+        for name, transformer in self._transformers:
+            try:
+                result = transformer.transform(result)
+            except Exception as e:
+                # Provide helpful error for common case
+                if hasattr(e, "args") and "not fitted" in str(e).lower():
+                    raise RuntimeError(
+                        f"Transformer '{name}' is not fitted. In online learning, "
+                        f"all transformers must be either stateless or pre-fitted "
+                        f"before use. Common stateless transformers include "
+                        f"FunctionTransformer, FeatureHasher, and HashingVectorizer. "
+                        f"Stateful transformers like StandardScaler must be fit on "
+                        f"historical data before creating the pipeline."
+                    ) from e
+                raise
+
+        return result
+
+    # Learner protocol implementation
+    @property
     def random_state(self) -> Union[np.random.Generator, int, None]:
-        """Get random state from final estimator."""
-        return getattr(self._final_estimator, "random_state", None)
+        """Get random state from the learner."""
+        return self._learner.random_state
 
     @random_state.setter
     def random_state(self, value: Union[np.random.Generator, int, None]) -> None:
-        """Propagate random state to final estimator."""
-        if hasattr(self._final_estimator, "random_state"):
-            self._final_estimator.random_state = value
-
-    def _apply_transformers(self, X: ContextType, fit: bool = False) -> Any:
-        """Apply transformers to input data."""
-        if self._transformers is None:
-            return X
-
-        if not self._is_fitted or fit:
-            # First time or explicit fit request
-            result = self._transformers.fit_transform(X)  # type: ignore
-            self._is_fitted = True
-            return result  # type: ignore
-        else:
-            return self._transformers.transform(X)  # type: ignore
+        """Set random state on the learner."""
+        self._learner.random_state = value
 
     def sample(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
         """Sample from the posterior predictive distribution.
@@ -267,8 +251,8 @@ class Pipeline(Generic[ContextType]):
         samples : NDArray[np.float64]
             Samples from the posterior
         """
-        X_transformed = self._apply_transformers(X, fit=False)
-        return self._final_estimator.sample(X_transformed, size)
+        X_transformed = self._transform(X)
+        return self._learner.sample(X_transformed, size)
 
     def partial_fit(
         self,
@@ -277,6 +261,8 @@ class Pipeline(Generic[ContextType]):
         sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> Self:
         """Update the learner with new data.
+
+        Note: Only the learner is updated. Transformers remain unchanged.
 
         Parameters
         ----------
@@ -292,8 +278,8 @@ class Pipeline(Generic[ContextType]):
         self : Pipeline
             Returns self for method chaining
         """
-        X_transformed = self._apply_transformers(X, fit=True)
-        self._final_estimator.partial_fit(X_transformed, y, sample_weight)
+        X_transformed = self._transform(X)
+        self._learner.partial_fit(X_transformed, y, sample_weight)
         return self
 
     def decay(self, X: ContextType, *, decay_rate: Optional[float] = None) -> None:
@@ -304,10 +290,10 @@ class Pipeline(Generic[ContextType]):
         X : ContextType
             Input data (DataFrame, dict, array, etc.)
         decay_rate : float, optional
-            Rate of decay
+            Rate of decay. If None, uses the learner's default.
         """
-        X_transformed = self._apply_transformers(X, fit=False)
-        self._final_estimator.decay(X_transformed, decay_rate=decay_rate)
+        X_transformed = self._transform(X)
+        self._learner.decay(X_transformed, decay_rate=decay_rate)
 
     def predict(self, X: ContextType) -> NDArray[np.float64]:
         """Predict expected values.
@@ -322,21 +308,42 @@ class Pipeline(Generic[ContextType]):
         predictions : NDArray[np.float64]
             Expected values
         """
-        X_transformed = self._apply_transformers(X, fit=False)
-        return self._final_estimator.predict(X_transformed)
+        X_transformed = self._transform(X)
+        return self._learner.predict(X_transformed)
 
     def __repr__(self) -> str:
         """String representation."""
         steps_repr = [
             f"('{name}', {estimator.__class__.__name__})"
-            for name, estimator in self.get_steps()
+            for name, estimator in self.steps
         ]
-        return f"Pipeline({', '.join(steps_repr)})"
+        return f"Pipeline([{', '.join(steps_repr)}])"
 
-    def get_steps(self) -> List[Tuple[str, Any]]:
-        """Get all steps including transformers and final estimator."""
-        steps: List[Tuple[str, Any]] = []
-        if self._transformers is not None:
-            steps.extend(self._transformers.steps)
-        steps.append((self._final_name, self._final_estimator))
-        return steps
+    def __len__(self) -> int:
+        """Number of steps in the pipeline."""
+        return len(self.steps)
+
+    def __getitem__(self, ind: Union[int, str]) -> Any:
+        """Get a step by index or name.
+
+        Parameters
+        ----------
+        ind : int or str
+            If int, returns the (name, estimator) tuple at that position.
+            If str, returns the estimator with that name.
+
+        Returns
+        -------
+        step : tuple or estimator
+            The requested step
+
+        Raises
+        ------
+        IndexError
+            If integer index is out of range
+        KeyError
+            If string name is not found
+        """
+        if isinstance(ind, str):
+            return self.named_steps[ind]
+        return self.steps[ind]
