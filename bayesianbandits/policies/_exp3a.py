@@ -11,7 +11,7 @@ from typing import List, Optional, Union, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType
+from .._arm import Arm, ContextType, TokenType, batch_sample_arms
 
 
 class EXP3A:
@@ -221,11 +221,16 @@ class EXP3A:
             Selected arms, one per context if top_k is None,
             or k arms per context if top_k is specified.
         """
-        # Get expected rewards via Monte Carlo estimation
-        rewards = np.stack(
-            [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
-        )
-
+        # Try batching first for massive speedup
+        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
+            # samples shape: (n_arms, n_contexts, n_samples)
+            # Take mean over samples axis
+            rewards = samples.mean(axis=-1)
+        else:
+            # Fall back to standard sampling
+            rewards = np.stack(
+                [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
+            )
         # Get number of contexts from rewards shape
         n_contexts = rewards.shape[1]
 

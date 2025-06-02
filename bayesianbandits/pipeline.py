@@ -21,6 +21,10 @@ class Pipeline(Generic[ContextType]):
     Bayesian learner. All transformers must be either stateless or pre-fitted
     before use to ensure consistent feature transformations during online learning.
 
+    As a performance optimization, policies will recognize if the final
+    estimator in a Pipeline is shared across multiple arms, and will sample
+    from them in a batched manner to reduce overhead.
+
     Parameters
     ----------
     steps : list of tuples
@@ -224,6 +228,24 @@ class Pipeline(Generic[ContextType]):
                 raise
 
         return result
+
+    def transform(self, X: ContextType) -> Any:
+        """Apply all transformers, returning transformed data without final prediction.
+
+        This enables batched prediction when multiple pipelines share the same
+        final model.
+
+        Returns
+        -------
+        X_transformed : Any
+            The result of applying all transformers in sequence
+        """
+        return self._transform(X)
+
+    @property
+    def final_estimator(self) -> Learner[Any]:
+        """Get the final estimator in the pipeline."""
+        return self._learner
 
     # Learner protocol implementation
     @property
