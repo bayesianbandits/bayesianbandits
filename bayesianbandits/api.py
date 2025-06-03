@@ -464,15 +464,17 @@ class Agent(Generic[TokenType]):
 
     def __init__(
         self,
-        arms: Sequence[Arm[ContextType, TokenType]],
-        policy: PolicyProtocol[ContextType, TokenType],
+        arms: Sequence[Arm[Any, TokenType]],
+        policy: PolicyProtocol[Any, TokenType],
         random_seed: Union[int, None, np.random.Generator] = None,
     ) -> None:
         # Type constraint: ContextType must be compatible with NDArray[np.float64]
+        # We use Any here because we can't express the constraint that ContextType
+        # must be a supertype of NDArray[np.float64] in Python's type system
         self._inner: ContextualAgent[NDArray[np.float64], TokenType] = ContextualAgent(
-            arms,
-            policy,
-            random_seed=random_seed,  # type: ignore[arg-type]
+            cast(Sequence[Arm[NDArray[np.float64], TokenType]], arms),
+            cast(PolicyProtocol[NDArray[np.float64], TokenType], policy),
+            random_seed=random_seed,
         )
 
     @property
@@ -971,7 +973,7 @@ def _compute_arm_upper_bound(
     `alpha` from the posterior distribution for the arm."""
     posterior_samples = arm.sample(X, size=samples)
 
-    return np.quantile(posterior_samples, q=alpha, axis=0)  # type: ignore
+    return cast(NDArray[np.float64], np.quantile(posterior_samples, q=alpha, axis=0))
 
 
 def _compute_arm_mean(
