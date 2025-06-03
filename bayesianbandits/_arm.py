@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
 from functools import wraps
 from typing import (
     Any,
     Callable,
     Generic,
-    Iterable,
     List,
     Optional,
     Protocol,
+    Sized,
     TypeVar,
     Union,
+    cast,
 )
 
 import numpy as np
@@ -19,24 +21,18 @@ from scipy.sparse import csr_matrix, issparse
 from scipy.sparse import vstack as sparse_vstack
 from typing_extensions import Concatenate, ParamSpec, Self
 
-try:
-    import pandas as pd
-
-    HAS_PANDAS = True
-except ImportError:
-    HAS_PANDAS = False
+HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
-RewardFunction = Union[
-    Callable[..., np.float64],
-    Callable[..., NDArray[np.float64]],
-    Callable[..., Union[np.float64, NDArray[np.float64]]],
-]
+# Reward function must return NDArray to match sample method's return type
+RewardFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
 TokenType = TypeVar("TokenType")
 X_contra = TypeVar("X_contra", contravariant=True)  # Contravariant for input types
 A = TypeVar("A", bound="Arm[Any, Any]")
-ContextType = TypeVar("ContextType", bound=Iterable[Any])
+
+# ContextType must be both iterable and have a length
+ContextType = TypeVar("ContextType", bound=Sized)
 
 
 class Learner(Protocol[X_contra]):
@@ -57,6 +53,14 @@ class Learner(Protocol[X_contra]):
     def random_state(self, value: Union[np.random.Generator, int, None]) -> None: ...
 
 
+class LearnerWithTransform(Learner[X_contra], Protocol[X_contra]):
+    """Protocol for learners that support transformation (e.g., Pipeline)."""
+
+    def transform(self, X: X_contra) -> Any: ...
+    @property
+    def final_estimator(self) -> Learner[Any]: ...
+
+
 def requires_learner(
     func: Callable[Concatenate[A, P], R],
 ) -> Callable[Concatenate[A, P], R]:
@@ -71,9 +75,7 @@ def requires_learner(
     return wrapper
 
 
-def identity(
-    x: Union[np.float64, NDArray[np.float64]],
-) -> Union[np.float64, NDArray[np.float64]]:
+def identity(x: NDArray[np.float64]) -> NDArray[np.float64]:
     return x
 
 
@@ -108,7 +110,7 @@ class Arm(Generic[ContextType, TokenType]):
     def sample(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
         """Sample from learner and compute the reward."""
         assert self.learner is not None
-        return self.reward_function(self.learner.sample(X, size))  # type: ignore[return-value]
+        return self.reward_function(self.learner.sample(X, size))
 
     @requires_learner
     def update(
@@ -141,16 +143,21 @@ def can_batch_arms(arms: List[Arm[Any, Any]]) -> bool:
 
     # Fast path: check first arm has required interface
     first_arm = arms[0]
+    first_learner = first_arm.learner
     if not (
-        hasattr(first_arm.learner, "transform")
-        and hasattr(first_arm.learner, "final_estimator")
+        first_learner is not None
+        and hasattr(first_learner, "transform")
+        and hasattr(first_learner, "final_estimator")
     ):
         return False
 
+    # Type guard via hasattr checks
     # Check all share the same model instance
-    first_model = first_arm.learner.final_estimator  # type: ignore
+    first_model = getattr(first_learner, "final_estimator")
     return all(
-        arm.learner.final_estimator is first_model  # type: ignore
+        arm.learner is not None
+        and hasattr(arm.learner, "final_estimator")
+        and getattr(arm.learner, "final_estimator") is first_model
         for arm in arms[1:]
     )
 
@@ -166,10 +173,15 @@ def stack_features(feature_list: List[Any]) -> Any:
     first = feature_list[0]
 
     # Case 1: Pandas DataFrames (if pandas available)
-    if HAS_PANDAS and isinstance(first, pd.DataFrame):  # type: ignore[has-type]
-        if not all(isinstance(x, pd.DataFrame) for x in feature_list):  # type: ignore[has-type]
-            raise ValueError("Cannot stack mixed DataFrame and non-DataFrame objects")
-        return pd.concat(feature_list, ignore_index=True, sort=False, copy=False)  # type: ignore[has-type]
+    if HAS_PANDAS:
+        import pandas as pd  # Re-import for type narrowing
+
+        if isinstance(first, pd.DataFrame):
+            if not all(isinstance(x, pd.DataFrame) for x in feature_list):
+                raise ValueError(
+                    "Cannot stack mixed DataFrame and non-DataFrame objects"
+                )
+            return pd.concat(feature_list, ignore_index=True, sort=False, copy=False)
 
     # Case 2: Sparse arrays
     if issparse(first):
@@ -238,11 +250,13 @@ def batch_sample_arms(
     feature_list = []
 
     # Pre-check context length for memory allocation
-    n_contexts = len(X) if hasattr(X, "__len__") else 1  # type: ignore[has-type]
+    n_contexts = len(X)
 
     # Transform all features
     for arm in arms:
-        X_transformed = arm.learner.transform(X)  # type: ignore[return-value]
+        # We know from can_batch_arms that all learners are LearnerWithTransform
+        learner = cast(LearnerWithTransform[Any], arm.learner)
+        X_transformed = learner.transform(X)
         feature_list.append(X_transformed)
 
     # Stack features
@@ -252,7 +266,9 @@ def batch_sample_arms(
         return None
 
     # Single batched sample
-    model = arms[0].learner.final_estimator  # type: ignore[attr-defined]
+    # We know from can_batch_arms that first learner is LearnerWithTransform
+    first_learner = cast(LearnerWithTransform[Any], arms[0].learner)
+    model = first_learner.final_estimator
     samples = model.sample(X_stacked, size=size)
 
     # Reshape based on size
