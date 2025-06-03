@@ -289,10 +289,14 @@ class TestBatchSampleArms:
         assert result is not None
 
     def test_single_context(self, mock_arm_class, mock_model):
-        # Test with single context (no len attribute)
+        # Test with single context (needs len attribute for new code)
         class SingleContext:
             def __init__(self, data):
                 self.data = data
+
+            def __len__(self):
+                # Return 1 to indicate single context
+                return 1
 
         arms = []
         for i in range(3):
@@ -322,21 +326,48 @@ class TestBatchSampleArms:
 class TestIntegration:
     """Integration tests with mocked pandas/scipy"""
 
-    def test_with_mocked_pandas(self, monkeypatch, mock_arm_class, mock_model):
+    def test_with_mocked_pandas(self, monkeypatch):
         # Mock pandas availability
         mock_pd = MockPandasModule()
-        monkeypatch.setattr("sys.modules", {"pandas": mock_pd, **sys.modules})
-        monkeypatch.setattr("bayesianbandits._arm.pd", mock_pd)
-        monkeypatch.setattr("bayesianbandits._arm.HAS_PANDAS", True)
 
-        # Create DataFrames
-        dfs = [mock_pd.DataFrame([[1, 2], [3, 4]]), mock_pd.DataFrame([[5, 6], [7, 8]])]
+        # Mock importlib.util.find_spec to indicate pandas is available
+        mock_spec = Mock()
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda name: mock_spec if name == "pandas" else None,
+        )
 
-        result = stack_features(dfs)
-        assert hasattr(result, "data")
-        assert result.data.shape == (4, 2)
+        # Mock the pandas import inside stack_features
+        # We need to patch the module in sys.modules before the import happens
+        original_modules = sys.modules.copy()
+        sys.modules["pandas"] = mock_pd  # type: ignore[assignment]
+        monkeypatch.setattr("sys.modules", sys.modules)
 
-    def test_with_mocked_scipy(self, monkeypatch, mock_arm_class, mock_model):
+        # Force re-evaluation of HAS_PANDAS by reimporting the module
+        import bayesianbandits._arm
+        from importlib import reload
+
+        reload(bayesianbandits._arm)
+        from bayesianbandits._arm import stack_features
+
+        try:
+            # Create DataFrames
+            dfs = [
+                mock_pd.DataFrame([[1, 2], [3, 4]]),
+                mock_pd.DataFrame([[5, 6], [7, 8]]),
+            ]
+
+            result = stack_features(dfs)
+            assert hasattr(result, "data")
+            assert result.data.shape == (4, 2)
+        finally:
+            # Restore original modules
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+            # Reload to restore original state
+            reload(bayesianbandits._arm)
+
+    def test_with_mocked_scipy(self, monkeypatch):
         # Mock scipy availability
         monkeypatch.setattr("bayesianbandits._arm.issparse", mock_issparse)
         monkeypatch.setattr("bayesianbandits._arm.csr_matrix", mock_csr_matrix)
