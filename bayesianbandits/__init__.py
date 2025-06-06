@@ -42,9 +42,8 @@ policies of your bandit as your needs change.
 
 Pipeline
 ========
-Pipeline enables the use of sklearn transformers with Bayesian learners,
-supporting the standard contextual bandit formulation where multiple arms
-share a single model.
+Pipeline enables the use of sklearn transformers with Bayesian agents,
+providing efficient preprocessing at the agent level rather than per-arm.
 
 .. autosummary::
     :toctree: _autosummary
@@ -100,7 +99,7 @@ from .api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from .pipeline import Pipeline
+from ._agent_pipeline import Pipeline
 from .policies import EXP3A
 
 __all__ = [

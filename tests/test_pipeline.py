@@ -1,35 +1,36 @@
-"""Tests for simplified Pipeline implementation."""
+"""Tests for agent-wrapping Pipeline implementation."""
 
 from __future__ import annotations
-
-from functools import partial
 
 import numpy as np
 import pytest
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.compose import ColumnTransformer
-from sklearn.feature_extraction import DictVectorizer, FeatureHasher
-from sklearn.pipeline import FeatureUnion
-from sklearn.pipeline import Pipeline as SklearnPipeline
-from sklearn.preprocessing import (
-    FunctionTransformer,
-    PolynomialFeatures,
-    StandardScaler,
-)
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from bayesianbandits import (
+    Agent,
     Arm,
-    BayesianGLM,
     ContextualAgent,
-    GammaRegressor,
-    NormalInverseGammaRegressor,
+    EpsilonGreedy,
     NormalRegressor,
+    Pipeline,
     ThompsonSampling,
     UpperConfidenceBound,
-    EpsilonGreedy,
-    EXP3A,
 )
-from bayesianbandits.pipeline import Pipeline
+from bayesianbandits._agent_pipeline import (
+    ContextualPipeline,
+    NonContextualPipeline,
+    _transform_data,
+    _validate_steps,
+)
+
+
+def make_arms(tokens, learner_args=None):
+    """Helper to create arms with proper learner args."""
+    if learner_args is None:
+        learner_args = {"alpha": 1.0, "beta": 1.0}
+    return [Arm(token, learner=NormalRegressor(**learner_args)) for token in tokens]  # type: ignore
 
 
 class MockTransformer(BaseEstimator, TransformerMixin):
@@ -38,83 +39,240 @@ class MockTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, fitted=False):
         self.fitted = fitted
 
-    def fit(self, X, y=None): ...
+    def fit(self, X, y=None):
+        return self
 
     def transform(self, X):
         if not self.fitted:
             raise RuntimeError("Transformer not fitted")
+        return X * 2
 
 
-class TestPipelineConstruction:
-    """Test Pipeline construction and validation."""
+class TestValidateSteps:
+    """Test step validation utilities."""
+
+    def test_validate_empty_steps(self):
+        """Test validation with empty steps."""
+        with pytest.raises(ValueError, match="Pipeline steps cannot be empty"):
+            _validate_steps([])
+
+    def test_validate_duplicate_names(self):
+        """Test validation with duplicate step names."""
+        steps = [
+            ("transform", FunctionTransformer()),
+            ("transform", FunctionTransformer()),  # Duplicate
+        ]
+        with pytest.raises(ValueError, match="Step names must be unique"):
+            _validate_steps(steps)
+
+    def test_validate_valid_steps(self):
+        """Test validation with valid steps."""
+        steps = [
+            ("step1", FunctionTransformer()),
+            ("step2", StandardScaler()),
+        ]
+        # Should not raise
+        _validate_steps(steps)
+
+
+class TestTransformData:
+    """Test data transformation utilities."""
+
+    def test_transform_single_step(self):
+        """Test transformation with single step."""
+        steps = [("double", FunctionTransformer(lambda x: x * 2))]
+        X = np.array([[1], [2], [3]])
+        result = _transform_data(X, steps)
+        expected = np.array([[2], [4], [6]])
+        np.testing.assert_array_equal(result, expected)
+
+    def test_transform_multiple_steps(self):
+        """Test transformation with multiple steps."""
+        steps = [
+            ("double", FunctionTransformer(lambda x: x * 2)),
+            ("add_one", FunctionTransformer(lambda x: x + 1)),
+        ]
+        X = np.array([[1], [2]])
+        result = _transform_data(X, steps)
+        expected = np.array([[3], [5]])  # (x * 2) + 1
+        np.testing.assert_array_equal(result, expected)
+
+    def test_transform_not_fitted_error(self):
+        """Test helpful error when transformer not fitted."""
+        steps = [("mock", MockTransformer(fitted=False))]
+        X = np.array([[1], [2]])
+
+        with pytest.raises(RuntimeError) as exc_info:
+            _transform_data(X, steps)
+
+        assert "not fitted" in str(exc_info.value)
+        assert "mock" in str(exc_info.value)
+        assert "FunctionTransformer" in str(exc_info.value)
+
+
+class TestContextualPipeline:
+    """Test ContextualPipeline class."""
 
     def test_basic_construction(self):
-        """Test basic pipeline construction."""
-        pipeline = Pipeline(
-            [
-                ("double", FunctionTransformer(lambda x: x * 2)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
+        """Test basic contextual pipeline construction."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        steps = [("double", FunctionTransformer(lambda x: x * 2))]
 
-        assert len(pipeline) == 2
-        assert hasattr(pipeline, "_learner")
-        assert hasattr(pipeline, "_transformers")
-        assert len(pipeline._transformers) == 1
-
-    def test_single_step_pipeline(self):
-        """Test pipeline with only a learner."""
-        pipeline = Pipeline([("model", NormalRegressor(alpha=1.0, beta=1.0))])
+        pipeline = ContextualPipeline(steps, agent)
 
         assert len(pipeline) == 1
-        assert len(pipeline._transformers) == 0
-        assert pipeline._learner is not None
+        assert pipeline.named_steps["double"] is not None
+        assert pipeline._agent is agent
 
-    def test_empty_pipeline_error(self):
-        """Test empty pipeline raises error."""
-        with pytest.raises(ValueError, match="Pipeline cannot be empty"):
-            Pipeline([])
+    def test_empty_steps_error(self):
+        """Test empty steps raise error."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
 
-    def test_invalid_final_step_error(self):
-        """Test invalid final step raises error."""
-        with pytest.raises(ValueError, match="must be a bayesianbandits learner"):
-            Pipeline(
-                [("transform", FunctionTransformer()), ("invalid", StandardScaler())]
-            )
+        with pytest.raises(ValueError, match="Pipeline steps cannot be empty"):
+            ContextualPipeline([], agent)
 
-    def test_duplicate_names_error(self):
-        """Test duplicate step names raise error."""
-        with pytest.raises(ValueError, match="Step names must be unique"):
-            Pipeline(
-                [
-                    ("transform", FunctionTransformer()),
-                    ("transform", FunctionTransformer()),  # Duplicate!
-                    ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-                ]
-            )
+    def test_pull_without_top_k(self):
+        """Test pull method without top_k."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("identity", FunctionTransformer())]
 
-    def test_named_steps_access(self):
-        """Test accessing steps by name."""
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0, 2.0], [3.0, 4.0]])
+        actions = pipeline.pull(X)
+
+        assert len(actions) == 2
+        assert all(isinstance(action, int) for action in actions)
+
+    def test_pull_with_top_k(self):
+        """Test pull method with top_k."""
+        arms = make_arms(range(5))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0, 2.0], [3.0, 4.0]])
+        action_lists = pipeline.pull(X, top_k=3)
+
+        assert len(action_lists) == 2
+        assert all(len(actions) == 3 for actions in action_lists)
+
+    def test_update(self):
+        """Test update method."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("scale", FunctionTransformer(lambda x: x / 10))]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[10.0, 20.0]])
+        y = np.array([1.0])
+
+        # Pull to set arm_to_update
+        pipeline.pull(X)
+
+        # Update should transform X before passing to agent
+        pipeline.update(X, y)
+
+        # Verify the learner was updated with transformed data
+        arm_learner = pipeline.arm_to_update.learner
+        assert hasattr(arm_learner, "coef_")
+
+    def test_update_with_sample_weight(self):
+        """Test update method with sample weights."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0], [2.0]])
+        y = np.array([1.0, 2.0])
+        sample_weight = np.array([1.0, 0.1])
+
+        # Pull to set arm_to_update
+        pipeline.pull(X)
+
+        # Should not raise
+        pipeline.update(X, y, sample_weight=sample_weight)
+
+    def test_decay(self):
+        """Test decay method."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0]])
+
+        # Should not raise
+        pipeline.decay(X, decay_rate=0.5)
+
+    def test_transform(self):
+        """Test direct transform method."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        steps = [("double", FunctionTransformer(lambda x: x * 2))]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1], [2]])
+        result = pipeline.transform(X)
+        expected = np.array([[2], [4]])
+        np.testing.assert_array_equal(result, expected)
+
+    def test_delegation_methods(self):
+        """Test that agent methods are properly delegated."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        # Test property access
+        assert pipeline.arms is agent.arms
+        assert pipeline.policy is agent.policy
+        assert pipeline.rng is agent.rng
+
+        # Test arm access
+        assert pipeline.arm(0) is agent.arm(0)
+
+        # Test select_for_update
+        result = pipeline.select_for_update(1)
+        assert result is pipeline
+        assert pipeline.arm_to_update is agent.arm_to_update
+
+        # Test add_arm
+        new_arm = Arm(99, learner=NormalRegressor(alpha=1.0, beta=1.0))
+        pipeline.add_arm(new_arm)
+        assert new_arm in agent.arms
+
+        # Test remove_arm
+        pipeline.remove_arm(99)
+        assert new_arm not in agent.arms
+
+    def test_indexing(self):
+        """Test step indexing."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
         transform1 = FunctionTransformer(lambda x: x * 2)
-        transform2 = FunctionTransformer(lambda x: x + 1)
-        model = NormalRegressor(alpha=1.0, beta=1.0)
+        transform2 = StandardScaler()
+        steps = [("double", transform1), ("scale", transform2)]
 
-        pipeline = Pipeline(
-            [("double", transform1), ("add_one", transform2), ("model", model)]
-        )
+        pipeline = ContextualPipeline(steps, agent)
 
-        # Test named_steps property
-        assert pipeline.named_steps["double"] is transform1
-        assert pipeline.named_steps["add_one"] is transform2
-        assert pipeline.named_steps["model"] is model
-
-        # Test __getitem__ with string
+        # Test string indexing
         assert pipeline["double"] is transform1
-        assert pipeline["model"] is model
+        assert pipeline["scale"] is transform2
 
-        # Test __getitem__ with int
+        # Test integer indexing
         assert pipeline[0] == ("double", transform1)
-        assert pipeline[2] == ("model", model)
+        assert pipeline[1] == ("scale", transform2)
 
         # Test invalid access
         with pytest.raises(KeyError):
@@ -123,597 +281,563 @@ class TestPipelineConstruction:
         with pytest.raises(IndexError):
             _ = pipeline[10]
 
+    def test_repr(self):
+        """Test string representation."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        steps = [("transform", FunctionTransformer())]
 
-class TestTransformers:
-    """Test transformer behavior."""
+        pipeline = ContextualPipeline(steps, agent)
+        repr_str = repr(pipeline)
 
-    def test_stateless_transformers(self):
-        """Test pipeline with stateless transformers."""
-        pipeline = Pipeline(
-            [
-                ("double", FunctionTransformer(lambda x: x * 2)),
-                ("square", FunctionTransformer(lambda x: x**2)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
+        assert "ContextualPipeline" in repr_str
+        assert "FunctionTransformer" in repr_str
+
+
+class TestNonContextualPipeline:
+    """Test NonContextualPipeline class."""
+
+    def test_basic_construction(self):
+        """Test basic non-contextual pipeline construction."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        assert len(pipeline) == 1
+        assert pipeline._agent is agent
+
+    def test_empty_steps_allowed(self):
+        """Test empty steps are allowed for non-contextual."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+
+        # Should not raise
+        pipeline = NonContextualPipeline([], agent)
+        assert len(pipeline) == 0
+
+    def test_pull_without_top_k(self):
+        """Test pull method without top_k."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        actions = pipeline.pull()
+
+        assert len(actions) == 1
+        assert isinstance(actions[0], int)
+
+    def test_pull_with_top_k(self):
+        """Test pull method with top_k."""
+        arms = make_arms(range(5))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        action_lists = pipeline.pull(top_k=3)
+
+        assert len(action_lists) == 1
+        assert len(action_lists[0]) == 3
+
+    def test_update(self):
+        """Test update method."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        y = np.array([1.0, 2.0])
+
+        # Pull to set arm_to_update
+        pipeline.pull()
+
+        # Should not raise
+        pipeline.update(y)
+
+    def test_update_with_sample_weight(self):
+        """Test update method with sample weights."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        y = np.array([1.0, 2.0])
+        sample_weight = np.array([1.0, 0.1])
+
+        # Pull to set arm_to_update
+        pipeline.pull()
+
+        # Should not raise
+        pipeline.update(y, sample_weight=sample_weight)
+
+    def test_decay(self):
+        """Test decay method."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        # Should not raise
+        pipeline.decay(decay_rate=0.5)
+
+    def test_delegation_methods(self):
+        """Test that agent methods are properly delegated."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+
+        # Test property access
+        assert pipeline.arms is agent.arms
+        assert pipeline.policy is agent.policy
+        assert pipeline.rng is agent.rng
+
+        # Test arm access
+        assert pipeline.arm(0) is agent.arm(0)
+
+        # Test select_for_update
+        result = pipeline.select_for_update(1)
+        assert result is pipeline
+        assert pipeline.arm_to_update is agent.arm_to_update
+
+    def test_repr(self):
+        """Test string representation."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        steps = []
+
+        pipeline = NonContextualPipeline(steps, agent)
+        repr_str = repr(pipeline)
+
+        assert "NonContextualPipeline" in repr_str
+
+
+class TestPipelineFactory:
+    """Test Pipeline factory function."""
+
+    def test_contextual_agent_dispatch(self):
+        """Test factory dispatches to ContextualPipeline for ContextualAgent."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = Pipeline(steps, agent)
+
+        assert isinstance(pipeline, ContextualPipeline)
+        assert pipeline._agent is agent
+
+    def test_agent_dispatch(self):
+        """Test factory dispatches to NonContextualPipeline for Agent."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        steps = [("identity", FunctionTransformer())]
+
+        pipeline = Pipeline(steps, agent)
+
+        assert isinstance(pipeline, NonContextualPipeline)
+        assert pipeline._agent is agent
+
+    def test_factory_preserves_functionality(self):
+        """Test factory-created pipelines work correctly."""
+        # Test contextual
+        arms = make_arms(range(3))
+        contextual_agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("scale", FunctionTransformer(lambda x: x / 10))]
+
+        contextual_pipeline = Pipeline(steps, contextual_agent)
+
+        X = np.array([[10.0, 20.0]])
+        actions = contextual_pipeline.pull(X)
+        assert len(actions) == 1
+
+        # Test non-contextual
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+
+        noncontextual_pipeline = Pipeline([], agent)
+
+        actions = noncontextual_pipeline.pull()
+        assert len(actions) == 1
+
+    def test_factory_isinstance_check(self):
+        """Test factory function's isinstance logic for dispatch."""
+        arms = make_arms(range(3))
+
+        # Test that Agent gets NonContextualPipeline
+        agent = Agent(arms, ThompsonSampling())
+        pipeline = Pipeline([("identity", FunctionTransformer())], agent)
+        assert isinstance(pipeline, NonContextualPipeline)
+
+        # Test that ContextualAgent gets ContextualPipeline
+        contextual_agent = ContextualAgent(arms, ThompsonSampling())
+        contextual_pipeline = Pipeline(
+            [("identity", FunctionTransformer())], contextual_agent
         )
+        assert isinstance(contextual_pipeline, ContextualPipeline)
 
-        X = np.array([[1.0], [2.0], [3.0]])
-        y = np.array([1.0, 4.0, 9.0])
 
-        # Should work without any pre-fitting
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
+class TestTransformationFlow:
+    """Test transformation pipeline flow."""
 
-        # Check transformations were applied
-        # X -> X*2 -> (X*2)^2 = 4*X^2
-        # So for X=2, transformed should be 16
-        assert hasattr(pipeline._learner, "coef_")
+    def test_complex_transformation_chain(self):
+        """Test complex sequence of transformations."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, EpsilonGreedy(epsilon=0.1), random_seed=42)
 
-    def test_pre_fitted_transformers(self):
-        """Test pipeline with pre-fitted transformers."""
+        steps = [
+            ("double", FunctionTransformer(lambda x: x * 2)),
+            ("add_one", FunctionTransformer(lambda x: x + 1)),
+            ("square", FunctionTransformer(lambda x: x**2)),
+        ]
+
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0], [2.0]])
+        # Transform: x -> 2x -> 2x+1 -> (2x+1)^2
+        # For x=1: 1 -> 2 -> 3 -> 9
+        # For x=2: 2 -> 4 -> 5 -> 25
+
+        result = pipeline.transform(X)
+        expected = np.array([[9.0], [25.0]])
+        np.testing.assert_array_equal(result, expected)
+
+        # Test full pipeline
+        actions = pipeline.pull(X)
+        assert len(actions) == 2
+
+    def test_sklearn_transformer_integration(self):
+        """Test integration with sklearn transformers."""
         # Pre-fit scaler
         scaler = StandardScaler()
-        historical_data = np.random.randn(100, 2)
+        historical_data = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
         scaler.fit(historical_data)
 
-        # Pre-fit polynomial features
-        poly = PolynomialFeatures(degree=2, include_bias=False)
-        poly.fit(scaler.transform(historical_data))
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
 
-        pipeline = Pipeline(
-            [
-                ("scale", scaler),
-                ("poly", poly),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
+        steps = [("scale", scaler)]
+        pipeline = ContextualPipeline(steps, agent)
 
-        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        y = np.array([1.0, 2.0, 3.0])
+        X = np.array([[2.0, 3.0], [4.0, 5.0]])
 
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
+        # Should work with pre-fitted transformer
+        actions = pipeline.pull(X)
+        assert len(actions) == 2
 
-    def test_not_fitted_transformer_error(self):
-        """Test helpful error when transformer not fitted."""
-        pipeline = Pipeline(
-            [
-                ("scale", StandardScaler()),  # Not fitted!
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        X = np.array([[1.0], [2.0]])
         y = np.array([1.0, 2.0])
+        pipeline.update(X, y)
 
-        with pytest.raises(RuntimeError) as exc_info:
-            pipeline.partial_fit(X, y)
-
-        assert "not fitted" in str(exc_info.value)
-        assert "StandardScaler" in str(exc_info.value)
-        assert "FunctionTransformer" in str(exc_info.value)
-
-    def test_custom_transformer_error(self):
-        """Test error handling with custom transformer."""
-        pipeline = Pipeline(
-            [
-                ("mock", MockTransformer(fitted=False)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        X = np.array([[1.0], [2.0]])
-
-        with pytest.raises(RuntimeError) as exc_info:
-            pipeline.predict(X)
-
-        assert "not fitted" in str(exc_info.value)
-
-    def test_feature_hasher_stateless(self):
-        """Test FeatureHasher works without fitting."""
-        pipeline = Pipeline(
-            [
-                ("hash", FeatureHasher(n_features=100, input_type="dict")),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
-            ]
-        )
-
-        X = [{"user": "A", "item": 1}, {"user": "B", "item": 2}]
-        y = np.array([1.0, 2.0])
-
-        # Should work without fitting
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (2,)
-
-
-class TestLearnerProtocol:
-    """Test implementation of Learner protocol."""
-
-    def test_partial_fit(self):
-        """Test partial_fit updates the model."""
-        pipeline = Pipeline(
-            [
-                ("identity", FunctionTransformer()),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        # First batch
-        X1 = np.array([[1.0], [2.0]])
-        y1 = np.array([1.0, 2.0])
-        pipeline.partial_fit(X1, y1)
-        pred1 = pipeline.predict(X1)
-
-        # Second batch
-        X2 = np.array([[3.0], [4.0]])
-        y2 = np.array([3.0, 4.0])
-        pipeline.partial_fit(X2, y2)
-        pred2 = pipeline.predict(X1)
-
-        # Predictions should change
-        assert not np.allclose(pred1, pred2)
-
-    def test_sample_method(self):
-        """Test posterior sampling."""
-        pipeline = Pipeline(
-            [
-                ("scale", FunctionTransformer(lambda x: x / 10)),
-                ("model", NormalInverseGammaRegressor()),
-            ]
-        )
-
-        X = np.array([[10.0], [20.0], [30.0]])
-        y = np.array([1.0, 2.0, 3.0])
-
-        pipeline.partial_fit(X, y)
-
-        # Test different sample sizes
-        samples1 = pipeline.sample(X, size=1)
-        assert samples1.shape == (1, 3)
-
-        samples10 = pipeline.sample(X, size=10)
-        assert samples10.shape == (10, 3)
-
-        # Samples should be stochastic
-        samples_a = pipeline.sample(X, size=5)
-        samples_b = pipeline.sample(X, size=5)
-        assert not np.allclose(samples_a, samples_b)
-
-    def test_sample_weight_propagation(self):
-        """Test sample weights are propagated."""
-        pipeline = Pipeline(
-            [
-                ("identity", FunctionTransformer()),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        X = np.array([[1.0], [2.0], [10.0]])  # Outlier
-        y = np.array([1.0, 2.0, 1.0])
-
-        # Fit with low weight on outlier
-        weights = np.array([1.0, 1.0, 0.0001])
-        pipeline.partial_fit(X, y, sample_weight=weights)
-
-        # Prediction should be closer to linear trend
-        pred = pipeline.predict(np.array([[5.0]]))
-        assert 3.0 < pred[0] < 6.0  # Not pulled toward outlier
-
-    def test_decay_method(self):
-        """Test decay propagation."""
-        model = NormalRegressor(alpha=1.0, beta=1.0, learning_rate=0.9)
-        pipeline = Pipeline([("identity", FunctionTransformer()), ("model", model)])
-
-        X = np.array([[1.0], [2.0]])
-        y = np.array([1.0, 2.0])
-
-        pipeline.partial_fit(X, y)
-        initial_precision = model.cov_inv_.copy()
-
-        # Apply decay
-        pipeline.decay(X, decay_rate=0.5)
-
-        # Precision should decrease
-        assert np.all(model.cov_inv_ < initial_precision)
-
-    def test_random_state_property(self):
-        """Test random_state getter and setter."""
-        model = NormalRegressor(alpha=1.0, beta=1.0, random_state=42)
-        pipeline = Pipeline([("transform", FunctionTransformer()), ("model", model)])
-
-        # Test getter
-        assert pipeline.random_state == 42
-
-        # Test setter
-        pipeline.random_state = 123
-        assert pipeline.random_state == 123
-        assert model.random_state == 123
-
-        # Test with Generator
-        rng = np.random.default_rng(456)
-        pipeline.random_state = rng
-        assert pipeline.random_state is rng
-        assert model.random_state is rng
-
-
-class TestComplexInputTypes:
-    """Test Pipeline with various input types."""
-
-    def test_dict_input(self):
-        """Test pipeline with dict input."""
+    def test_dict_vectorizer_integration(self):
+        """Test integration with DictVectorizer."""
         # Pre-fit vectorizer
         vectorizer = DictVectorizer()
         historical_dicts = [
             {"user": "A", "item": "X"},
-            {"user": "A", "item": "Y"},
-            {"user": "B", "item": "X"},
             {"user": "B", "item": "Y"},
         ]
         vectorizer.fit(historical_dicts)
 
-        pipeline = Pipeline(
-            [
-                ("vectorize", vectorizer),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
-            ]
-        )
+        arms = [
+            Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0, sparse=True))
+            for i in range(3)
+        ]
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+
+        steps = [("vectorize", vectorizer)]
+        pipeline = ContextualPipeline(steps, agent)
 
         X = [{"user": "A", "item": "X"}, {"user": "B", "item": "Y"}]
+
+        actions = pipeline.pull(X)
+        assert len(actions) == 2
+
         y = np.array([1.0, 2.0])
-
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (2,)
-
-    def test_dataframe_input(self):
-        """Test pipeline with DataFrame input."""
-        pd = pytest.importorskip("pandas")
-
-        def extract_features(df):
-            """Extract numeric columns as array."""
-            return df[["num1", "num2"]].values
-
-        pipeline = Pipeline(
-            [
-                ("extract", FunctionTransformer(extract_features)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        df = pd.DataFrame(
-            {
-                "num1": [1.0, 2.0, 3.0],
-                "num2": [4.0, 5.0, 6.0],
-                "text": ["a", "b", "c"],  # Ignored
-            }
-        )
-        y = np.array([1.0, 2.0, 3.0])
-
-        pipeline.partial_fit(df, y)
-        predictions = pipeline.predict(df)
-        assert predictions.shape == (3,)
-
-    def test_sparse_input(self):
-        """Test pipeline with sparse matrices."""
-        from scipy.sparse import csr_matrix
-
-        # Convert sparse to CSC format (required by our models)
-        def to_csc(X):
-            return X.tocsc() if hasattr(X, "tocsc") else X
-
-        pipeline = Pipeline(
-            [
-                ("to_csc", FunctionTransformer(to_csc)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
-            ]
-        )
-
-        X = csr_matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        y = np.array([1.0, 2.0, 3.0])
-
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
+        pipeline.update(X, y)
 
 
 class TestIntegrationScenarios:
-    """Test real-world integration scenarios."""
+    """Test realistic integration scenarios."""
 
-    def test_sklearn_pipeline_as_transformer(self):
-        """Test using sklearn.Pipeline as a transformer."""
-        # Pre-fit transformers
+    @pytest.mark.parametrize(
+        "policy_class", [ThompsonSampling, EpsilonGreedy, UpperConfidenceBound]
+    )
+    def test_recommendation_system_scenario(self, policy_class):
+        """Test realistic recommendation system scenario."""
+        # Create product arms
+        product_arms = make_arms([f"product_{i}" for i in range(5)])
+
+        # Create agent with preprocessing
+        agent = ContextualAgent(product_arms, policy_class(), random_seed=42)
+
+        # Pre-fit scaler on historical user data
         scaler = StandardScaler()
-        poly = PolynomialFeatures(degree=2, include_bias=False)
+        historical_users = np.random.randn(1000, 3)  # user features
+        scaler.fit(historical_users)
 
-        historical = np.random.randn(100, 2)
-        scaler.fit(historical)
-        poly.fit(scaler.transform(historical))
+        # Create pipeline with preprocessing
+        steps = [("user_scaler", scaler)]
+        pipeline = Pipeline(steps, agent)
 
-        # Create sklearn pipeline
-        sklearn_pipe = SklearnPipeline([("scale", scaler), ("poly", poly)])
+        # Simulate user interactions
+        n_users = 20
+        user_contexts = np.random.randn(n_users, 3)
 
-        # Use in our pipeline
-        pipeline = Pipeline(
-            [
-                ("preprocess", sklearn_pipe),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
+        # Pull recommendations
+        recommendations = pipeline.pull(user_contexts)
+        assert len(recommendations) == n_users
+        assert all(rec.startswith("product_") for rec in recommendations)
 
-        X = np.random.randn(10, 2)
-        y = np.random.randn(10)
+        # Simulate rewards and update
+        rewards = np.random.beta(2, 5, size=n_users)  # Realistic reward distribution
+        pipeline.update(user_contexts, rewards)
 
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (10,)
+        # Verify models were updated
+        for arm in pipeline.arms:
+            assert hasattr(arm.learner, "coef_")
 
-    def test_column_transformer_integration(self):
-        """Test integration with ColumnTransformer."""
-        # Pre-fit transformers
-        num_scaler = StandardScaler()
-        num_scaler.fit(np.random.randn(100, 2))
+    def test_ab_testing_scenario(self):
+        """Test A/B testing scenario with preprocessing."""
+        # Create treatment arms
+        arms = make_arms(["control", "treatment"])
+        agent = Agent(arms, EpsilonGreedy(epsilon=0.1), random_seed=42)
 
-        # Create preprocessing with sklearn
-        preprocessor = ColumnTransformer(
-            [
-                ("num", num_scaler, [0, 1]),
-                ("cat", FeatureHasher(n_features=10, input_type="string"), [2]),
-            ]
-        )
+        # No preprocessing needed for A/B test
+        pipeline = Pipeline([], agent)
 
-        # Fit on historical data
-        historical = [[1.0, 2.0, "cat"], [3.0, 4.0, "dog"], [5.0, 6.0, "cat"]]
-        preprocessor.fit(historical)  # type: ignore
+        # Run A/B test
+        n_experiments = 100
+        rewards = []
 
-        # Our pipeline uses pre-fitted preprocessor
-        pipeline = Pipeline(
-            [
-                ("preprocess", preprocessor),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0, sparse=True)),
-            ]
-        )
+        for _ in range(n_experiments):
+            assignment = pipeline.pull()[0]
 
-        # Test with mixed data
-        import pandas as pd
+            # Simulate reward based on assignment
+            if assignment == "treatment":
+                reward = np.random.normal(0.12, 0.1)  # Better performance
+            else:
+                reward = np.random.normal(0.10, 0.1)  # Baseline
 
-        df = pd.DataFrame(
-            {
-                "num1": [1.0, 2.0, 3.0],
-                "num2": [4.0, 5.0, 6.0],
-                "cat": ["cat", "dog", "bird"],
-            }
-        )
-        y = np.array([1.0, 2.0, 3.0])
+            rewards.append(reward)
+            pipeline.update(np.array([reward]))
 
-        pipeline.partial_fit(df.values, y)
-        predictions = pipeline.predict(df.values)
-        assert predictions.shape == (3,)
+        # Check that we collected data
+        assert len(rewards) == n_experiments
 
-    def test_feature_union_integration(self):
-        """Test integration with FeatureUnion."""
-        # Create feature extractors
-        log_transform = FunctionTransformer(np.log1p)
-        sqrt_transform = FunctionTransformer(np.sqrt)
+    def test_feature_engineering_pipeline(self):
+        """Test complex feature engineering pipeline."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
 
-        # Pre-fit polynomial
-        poly = PolynomialFeatures(degree=2, include_bias=False)
-        poly.fit(np.random.rand(100, 1))
-
-        # Combine with FeatureUnion
-        features = FeatureUnion(
-            [("log", log_transform), ("sqrt", sqrt_transform), ("poly", poly)]
-        )
-
-        # Fit on historical data
-        features.fit(np.random.rand(100, 1))
-
-        # Use in pipeline
-        pipeline = Pipeline(
-            [("features", features), ("model", NormalRegressor(alpha=1.0, beta=1.0))]
-        )
-
-        X = np.array([[1.0], [4.0], [9.0]])
-        y = np.array([1.0, 2.0, 3.0])
-
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
-
-    @pytest.mark.parametrize("policy", ["thompson", "epsilon_greedy", "ucb", "exp3a"])
-    def test_multi_armed_bandit_scenario(self, policy):
-        """Test realistic bandit scenario with shared model."""
-        # Pre-fit shared scaler
-        scaler = StandardScaler()
-        scaler.fit(np.random.randn(1000, 5))
-
-        # Shared model
-        shared_model = BayesianGLM(alpha=1.0, link="logit")
-
-        # Products with features
-        products = {
-            "A": {"price": 10.0, "quality": 0.8},
-            "B": {"price": 15.0, "quality": 0.9},
-            "C": {"price": 5.0, "quality": 0.6},
-        }
-
-        # Create arms
-        arms = []
-        for product_id, features in products.items():
-
-            def add_product_context(X, prod_features):
-                n_users = len(X)
-                product_array = np.array(
-                    [
-                        prod_features["price"] / 20.0,  # Normalize
-                        prod_features["quality"],
-                    ]
-                )
-                return np.c_[X, np.tile(product_array, (n_users, 1))]
-
-            pipeline = Pipeline(
-                [
-                    (
-                        "add_product",
-                        FunctionTransformer(
-                            partial(add_product_context, prod_features=features)
-                        ),
-                    ),
-                    ("scale", scaler),
-                    ("model", shared_model),
-                ]
-            )
-
-            arms.append(Arm(product_id, learner=pipeline))
-
-        # Create agent
-        policy = {
-            "thompson": ThompsonSampling(),
-            "epsilon_greedy": EpsilonGreedy(),
-            "ucb": UpperConfidenceBound(),
-            "exp3a": EXP3A(),
-        }[policy]
-        agent = ContextualAgent(arms, policy=policy)
-
-        # Simulate interactions
-        user_contexts = np.random.randn(10, 3)
-        actions = agent.pull(user_contexts)
-        assert len(actions) == 10
-
-        # Update with binary rewards
-        rewards = np.random.binomial(1, 0.7, size=10).astype(float)
-        agent.update(user_contexts, rewards)
-
-        # Shared model should be updated
-        assert hasattr(shared_model, "coef_")
-
-    def test_custom_transformer_chain(self):
-        """Test complex custom transformation chain."""
-
-        # Chain of transformations
+        # Complex feature engineering
         def add_interactions(X):
-            """Add interaction features."""
-            # X has shape (n, 2)
-            return np.c_[X, X[:, 0] * X[:, 1]]
+            """Add interaction terms."""
+            # X shape: (n_samples, 2)
+            interactions = X[:, 0:1] * X[:, 1:2]  # x1 * x2
+            return np.c_[X, interactions]
 
-        def add_ratios(X):
-            """Add ratio features."""
-            # X now has shape (n, 3)
-            return np.c_[X, X[:, 0] / (X[:, 1] + 1e-8)]
+        def add_polynomials(X):
+            """Add polynomial features."""
+            # X shape: (n_samples, 3) after interactions
+            squared = X**2
+            return np.c_[X, squared]
 
-        def add_logs(X):
-            """Add log features."""
-            # X now has shape (n, 4)
-            return np.c_[X, np.log1p(np.abs(X))]
+        def normalize_features(X):
+            """Simple normalization."""
+            return X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-8)
 
-        pipeline = Pipeline(
-            [
-                ("interactions", FunctionTransformer(add_interactions)),
-                ("ratios", FunctionTransformer(add_ratios)),
-                ("logs", FunctionTransformer(add_logs)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-
-        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        y = np.array([1.0, 2.0, 3.0])
-
-        pipeline.partial_fit(X, y)
-        predictions = pipeline.predict(X)
-        assert predictions.shape == (3,)
-
-
-class TestAllEstimators:
-    """Test all bayesianbandits estimators work as final step."""
-
-    def test_all_estimators(self):
-        """Test each estimator type."""
-        estimators = [
-            (
-                NormalRegressor(alpha=1.0, beta=1.0),
-                np.array([[1.0], [2.0]]),
-                np.array([1.0, 2.0]),
-            ),
-            (
-                NormalInverseGammaRegressor(),
-                np.array([[1.0], [2.0]]),
-                np.array([1.0, 2.0]),
-            ),
-            (
-                BayesianGLM(alpha=1.0, link="logit"),
-                np.array([[1.0], [2.0]]),
-                np.array([0.0, 1.0]),
-            ),
-            (
-                BayesianGLM(alpha=1.0, link="log"),
-                np.array([[1.0], [2.0]]),
-                np.array([1.0, 2.0]),
-            ),
-            (
-                GammaRegressor(alpha=1.0, beta=1.0),
-                np.array([[1], [1], [1]]),
-                np.array([1, 2, 3]),
-            ),
+        steps = [
+            ("interactions", FunctionTransformer(add_interactions)),
+            ("polynomials", FunctionTransformer(add_polynomials)),
+            ("normalize", FunctionTransformer(normalize_features)),
         ]
 
-        for estimator, X, y in estimators:
-            pipeline = Pipeline(
-                [("identity", FunctionTransformer()), ("model", estimator)]
-            )
+        pipeline = ContextualPipeline(steps, agent)
 
-            # Test all methods
-            pipeline.partial_fit(X, y)
-            predictions = pipeline.predict(X)
-            assert predictions.shape == (len(X),)
+        # Test with raw features
+        X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
-            samples = pipeline.sample(X, size=5)
-            assert samples.shape == (5, len(X))
+        # Check transformation
+        transformed = pipeline.transform(X)
+        assert transformed.shape[1] == 6  # 2 original + 1 interaction + 3 squared
 
-            pipeline.decay(X, decay_rate=0.9)
+        # Test full pipeline
+        actions = pipeline.pull(X)
+        assert len(actions) == 3
+
+        y = np.array([1.0, 2.0, 3.0])
+        pipeline.update(X, y)
 
 
 class TestErrorHandling:
     """Test error handling and edge cases."""
 
-    def test_transform_error_propagation(self):
-        """Test that transformer errors are propagated."""
+    def test_transformer_error_propagation(self):
+        """Test that transformer errors are properly propagated."""
 
         def failing_transform(X):
-            raise ValueError("Custom error message")
+            raise ValueError("Custom transformation error")
 
-        pipeline = Pipeline(
-            [
-                ("fail", FunctionTransformer(failing_transform)),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
 
-        with pytest.raises(ValueError, match="Custom error message"):
-            pipeline.predict(np.array([[1.0]]))
+        steps = [("fail", FunctionTransformer(failing_transform))]
+        pipeline = ContextualPipeline(steps, agent)
 
-    def test_repr(self):
-        """Test string representation."""
-        pipeline = Pipeline(
-            [
-                ("transform", FunctionTransformer()),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
+        X = np.array([[1.0]])
 
-        repr_str = repr(pipeline)
-        assert "Pipeline" in repr_str
-        assert "FunctionTransformer" in repr_str
-        assert "NormalRegressor" in repr_str
+        with pytest.raises(ValueError, match="Custom transformation error"):
+            pipeline.pull(X)
 
-    def test_len(self):
-        """Test __len__ method."""
-        pipeline = Pipeline(
-            [
-                ("a", FunctionTransformer()),
-                ("b", FunctionTransformer()),
-                ("model", NormalRegressor(alpha=1.0, beta=1.0)),
-            ]
-        )
-        assert len(pipeline) == 3
+    def test_not_fitted_transformer_helpful_error(self):
+        """Test helpful error message for not fitted transformers."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+
+        steps = [("scaler", StandardScaler())]  # Not fitted!
+        pipeline = ContextualPipeline(steps, agent)
+
+        X = np.array([[1.0], [2.0]])
+
+        with pytest.raises(RuntimeError) as exc_info:
+            pipeline.pull(X)
+
+        error_msg = str(exc_info.value)
+        assert "not fitted" in error_msg
+        assert "scaler" in error_msg
+        assert "FunctionTransformer" in error_msg
+
+    def test_invalid_agent_type(self):
+        """Test error handling for invalid agent types."""
+        # This would be caught by type checker, but test runtime behavior
+        steps = [("identity", FunctionTransformer())]
+
+        # Mock object that doesn't have the expected interface
+        class MockAgent:
+            pass
+
+        mock_agent = MockAgent()
+
+        # The factory function should handle invalid agent types
+        # In practice, this would be a type error at development time
+        # Since isinstance check won't match, it will try to create ContextualPipeline
+        # which will fail on first attribute access
+        pipeline = Pipeline(steps, mock_agent)  # type: ignore
+        # The error will happen when trying to use the agent
+        with pytest.raises(AttributeError):
+            _ = pipeline.arms
+
+
+class TestCoverage:
+    """Test edge cases for complete coverage."""
+
+    def test_contextual_pipeline_policy_setter(self):
+        """Test policy setter on contextual pipeline."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+
+        new_policy = EpsilonGreedy(epsilon=0.2)
+        pipeline.policy = new_policy
+        assert pipeline.policy is new_policy
+        assert agent.policy is new_policy
+
+    def test_noncontextual_pipeline_policy_setter(self):
+        """Test policy setter on non-contextual pipeline."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        pipeline = NonContextualPipeline([], agent)
+
+        new_policy = EpsilonGreedy(epsilon=0.2)
+        pipeline.policy = new_policy
+        assert pipeline.policy is new_policy
+
+    def test_contextual_pipeline_with_sample_weights(self):
+        """Test contextual pipeline update with sample weights."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
+        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+
+        X = np.array([[1.0], [2.0], [3.0]])
+        y = np.array([1.0, 2.0, 3.0])
+        sample_weight = np.array([1.0, 0.5, 0.1])
+
+        pipeline.pull(X)
+        pipeline.update(X, y, sample_weight=sample_weight)
+
+    def test_contextual_pipeline_decay_with_rate(self):
+        """Test contextual pipeline decay with explicit rate."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+
+        X = np.array([[1.0]])
+        pipeline.decay(X, decay_rate=0.7)
+
+    def test_noncontextual_pipeline_decay_with_rate(self):
+        """Test non-contextual pipeline decay with explicit rate."""
+        arms = make_arms(range(3))
+        agent = Agent(arms, ThompsonSampling())
+        pipeline = NonContextualPipeline([], agent)
+
+        pipeline.decay(decay_rate=0.7)
+
+    def test_pipeline_len_and_getitem_edge_cases(self):
+        """Test pipeline length and indexing edge cases."""
+        arms = make_arms(range(3))
+        agent = ContextualAgent(arms, ThompsonSampling())
+
+        # Empty pipeline (though not allowed by validation)
+        # We'll test NonContextualPipeline which allows empty steps
+        arms2 = make_arms(range(3))
+        agent2 = Agent(arms2, ThompsonSampling())
+        empty_pipeline = NonContextualPipeline([], agent2)
+
+        assert len(empty_pipeline) == 0
+        assert empty_pipeline.named_steps == {}
+
+        # Test negative indexing
+        steps = [("a", FunctionTransformer()), ("b", FunctionTransformer())]
+        pipeline = ContextualPipeline(steps, agent)
+
+        assert pipeline[-1] == steps[-1]
+        assert pipeline[-2] == steps[-2]
+
+    def test_uncovered_functionality(self):
+        """Test functionality to improve code coverage."""
+        arms = make_arms(range(3))
+
+        # Test NonContextualPipeline with non-empty steps (edge case)
+        agent = Agent(arms, ThompsonSampling(), random_seed=42)
+        steps = [("identity", FunctionTransformer())]
+        pipeline = NonContextualPipeline(steps, agent)
+
+        # Test all delegation methods on NonContextualPipeline
+        assert len(pipeline.arms) == 3
+        assert pipeline.arm(0) is not None
+        pipeline.select_for_update(1)
+        assert pipeline.arm_to_update is not None
+
+        # Test add/remove arm
+        new_arm = Arm(99, learner=NormalRegressor(alpha=1.0, beta=1.0))
+        pipeline.add_arm(new_arm)
+        pipeline.remove_arm(99)
+
+        # Test indexing on NonContextualPipeline
+        assert pipeline["identity"] is not None
+        assert pipeline[0] == ("identity", steps[0][1])
+
+        # Test with invalid string key
+        with pytest.raises(KeyError):
+            _ = pipeline["nonexistent"]
+
+        # Test with invalid index
+        with pytest.raises(IndexError):
+            _ = pipeline[10]
