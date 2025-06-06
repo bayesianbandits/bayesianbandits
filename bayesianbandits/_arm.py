@@ -229,18 +229,15 @@ def batch_sample_arms(
     Examples
     --------
     >>> import numpy as np
-    >>> from bayesianbandits import Arm, BayesianGLM, Pipeline
-    >>> # All arms must share the same model
-    >>> shared_model = BayesianGLM(alpha=1.0)
-    >>> arms = []
-    >>> for i in range(100):
-    ...     pipeline = Pipeline([
-    ...         ('model', shared_model)  # Same instance!
-    ...     ])
-    ...     arms.append(Arm(i, learner=pipeline))
-    >>>
-    >>> # Fast batched sampling
-    >>> samples = batch_sample_arms(arms, X=np.random.rand(10, 5), size=5)
+    >>> from bayesianbandits import Arm, NormalRegressor
+    >>> # Create arms with the same model instance
+    >>> shared_model = NormalRegressor(alpha=1.0, beta=1.0)
+    >>> arms = [Arm(i, learner=shared_model) for i in range(3)]
+    >>> X = np.array([[1.0, 2.0], [3.0, 4.0]])
+    >>> # Batched sampling returns None if models are different
+    >>> samples = batch_sample_arms(arms, X, size=1)
+    >>> samples is None  # Same model for all arms, but no Pipeline
+    True
     """
     if not can_batch_arms(arms):
         return None
