@@ -50,6 +50,20 @@ providing efficient preprocessing at the agent level rather than per-arm.
 
     Pipeline
 
+Arm Featurizers
+===============
+Arm featurizers enable shared model bandits by transforming context features
+based on action tokens. They support vectorized operations for efficient
+multi-arm processing.
+
+.. autosummary::
+    :toctree: _autosummary
+
+    ArmFeaturizer
+    FunctionArmFeaturizer
+    ContinuousArmFeaturizer
+    OneHotArmFeaturizer
+
 
 Estimators
 ==========
@@ -84,6 +98,7 @@ such as Laplace approximation for Gaussian posteriors.
 """
 
 from ._arm import Arm
+from ._arm_featurizer import ArmFeaturizer, FunctionArmFeaturizer
 from ._estimators import (
     BayesianGLM,
     DirichletClassifier,
@@ -101,9 +116,12 @@ from .api import (
 )
 from ._agent_pipeline import Pipeline
 from .policies import EXP3A
+from .featurizers import ContinuousArmFeaturizer, OneHotArmFeaturizer
 
 __all__ = [
     "Arm",
+    "ArmFeaturizer",
+    "FunctionArmFeaturizer",
     "BayesianGLM",
     "DirichletClassifier",
     "GammaRegressor",
@@ -117,4 +135,6 @@ __all__ = [
     "UpperConfidenceBound",
     "EXP3A",
     "Pipeline",
+    "ContinuousArmFeaturizer",
+    "OneHotArmFeaturizer",
 ]
