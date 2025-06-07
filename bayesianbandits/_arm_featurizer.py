@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from typing import Any, Generic, Iterable, Sequence
 
 import numpy as np
-from numpy.typing import NDArray
 
 from ._arm import TokenType
 
@@ -30,9 +29,7 @@ class ArmFeaturizer(ABC, Generic[TokenType]):
     """
 
     @abstractmethod
-    def transform(
-        self, X: Iterable[Any], *, action_tokens: Sequence[TokenType]
-    ) -> NDArray[np.floating]:
+    def transform(self, X: Iterable[Any], *, action_tokens: Sequence[TokenType]) -> Any:
         """Transform features for all arms in a single vectorized call.
 
         Parameters
@@ -46,11 +43,13 @@ class ArmFeaturizer(ABC, Generic[TokenType]):
 
         Returns
         -------
-        X_transformed : ndarray of shape (n_contexts * n_arms, n_features_out)
+        X_transformed : array-like of shape (n_contexts * n_arms, n_features_out)
             Stacked features where rows are ordered as:
             - Rows 0:n_contexts are for action_tokens[0]
             - Rows n_contexts:2*n_contexts are for action_tokens[1]
             - etc.
+
+            The specific type depends on the implementation and input type.
 
         Notes
         -----
