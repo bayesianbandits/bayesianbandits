@@ -68,5 +68,3 @@ class ArmFeaturizer(ABC, Generic[TokenType]):
         >>> # Rows 2-3: context features + arm 1 features
         >>> # Rows 4-5: context features + arm 2 features
         """
-
-
