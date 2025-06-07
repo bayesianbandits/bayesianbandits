@@ -98,7 +98,7 @@ such as Laplace approximation for Gaussian posteriors.
 """
 
 from ._arm import Arm
-from ._arm_featurizer import ArmFeaturizer, FunctionArmFeaturizer
+from ._arm_featurizer import ArmFeaturizer
 from ._estimators import (
     BayesianGLM,
     DirichletClassifier,
@@ -116,7 +116,7 @@ from .api import (
 )
 from ._agent_pipeline import Pipeline
 from .policies import EXP3A
-from .featurizers import ContinuousArmFeaturizer, OneHotArmFeaturizer
+from .featurizers import ContinuousArmFeaturizer, FunctionArmFeaturizer, OneHotArmFeaturizer
 
 __all__ = [
     "Arm",
