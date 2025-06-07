@@ -60,9 +60,8 @@ multi-arm processing.
     :toctree: _autosummary
 
     ArmFeaturizer
+    ArmColumnFeaturizer
     FunctionArmFeaturizer
-    ContinuousArmFeaturizer
-    OneHotArmFeaturizer
 
 
 Estimators
@@ -116,11 +115,12 @@ from .api import (
 )
 from ._agent_pipeline import Pipeline
 from .policies import EXP3A
-from .featurizers import ContinuousArmFeaturizer, FunctionArmFeaturizer, OneHotArmFeaturizer
+from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 
 __all__ = [
     "Arm",
     "ArmFeaturizer",
+    "ArmColumnFeaturizer",
     "FunctionArmFeaturizer",
     "BayesianGLM",
     "DirichletClassifier",
@@ -135,6 +135,4 @@ __all__ = [
     "UpperConfidenceBound",
     "EXP3A",
     "Pipeline",
-    "ContinuousArmFeaturizer",
-    "OneHotArmFeaturizer",
 ]
