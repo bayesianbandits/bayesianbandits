@@ -25,6 +25,11 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
     The output can be used with sklearn's ColumnTransformer to apply different
     transformations to context features vs. the arm column.
 
+    Parameters
+    ----------
+    column_name : str, default="arm_token"
+        Name of the column to add containing the arm tokens.
+
     Examples
     --------
     >>> import numpy as np
@@ -71,7 +76,23 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
     >>> list(df_with_arms.columns)
     ['feature1', 'feature2', 'arm_token']
     
+    >>> # Example 4: Using custom column name
+    >>> featurizer = ArmColumnFeaturizer(column_name='product_id')
+    >>> df_with_arms = featurizer.transform(df, action_tokens=['A', 'B', 'C'])
+    >>> list(df_with_arms.columns)
+    ['feature1', 'feature2', 'product_id']
+    
     """
+
+    def __init__(self, column_name: str = "arm_token"):
+        """Initialize the ArmColumnFeaturizer.
+
+        Parameters
+        ----------
+        column_name : str, default="arm_token"
+            Name of the column to add containing the arm tokens.
+        """
+        self.column_name = column_name
 
     def transform(self, X: Iterable[Any], *, action_tokens: Sequence[T]) -> Any:
         """Append arm tokens as a column to context features.
@@ -102,7 +123,7 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
 
                 if n_arms == 0:
                     # Return empty DataFrame with arm column
-                    result = pd.DataFrame(columns=list(X.columns) + ["arm_token"])
+                    result = pd.DataFrame(columns=list(X.columns) + [self.column_name])
                     # Preserve dtypes from original DataFrame
                     for col in X.columns:
                         result[col] = result[col].astype(X[col].dtype)
@@ -116,7 +137,7 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
                 arm_column = np.repeat(np.array(action_tokens), n_contexts)
 
                 # Add arm column to DataFrame
-                X_tiled["arm_token"] = arm_column
+                X_tiled[self.column_name] = arm_column
 
                 return X_tiled
 
