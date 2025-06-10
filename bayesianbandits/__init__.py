@@ -34,6 +34,7 @@ policies of your bandit as your needs change.
 
     Agent
     ContextualAgent
+    LipschitzContextualAgent
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
@@ -109,6 +110,7 @@ from ._gaussian import LaplaceApproximator
 from .api import (
     Agent,
     ContextualAgent,
+    LipschitzContextualAgent,
     EpsilonGreedy,
     ThompsonSampling,
     UpperConfidenceBound,
@@ -130,6 +132,7 @@ __all__ = [
     "LaplaceApproximator",
     "Agent",
     "ContextualAgent",
+    "LipschitzContextualAgent",
     "EpsilonGreedy",
     "ThompsonSampling",
     "UpperConfidenceBound",
