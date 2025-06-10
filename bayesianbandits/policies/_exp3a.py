@@ -174,6 +174,79 @@ class EXP3A:
     def __repr__(self) -> str:
         return f"EXP3A(gamma={self.gamma}, eta={self.eta}, ix_gamma={self.ix_gamma}, samples={self.samples})"
 
+    @property
+    def samples_needed(self) -> int:
+        """Number of samples per arm per context needed for decision making."""
+        return self.samples
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Select arms based on pre-generated samples using EXP3A."""
+        # samples shape: (n_arms, n_contexts, samples_needed)
+        # Take mean over samples axis - exactly what __call__ does
+        rewards = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
+        
+        # Exponential weights with numerical stability
+        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
+        
+        # Compute probabilities
+        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(arms)
+        
+        # Selection logic from current __call__
+        if top_k is None:
+            choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])]
+            return [arms[i] for i in choices]
+        else:
+            # Sample k arms without replacement according to probabilities
+            results: List[List[Arm[ContextType, TokenType]]] = []
+            for i in range(probs.shape[1]):
+                k = min(top_k, len(arms))
+                context_probs = probs[:, i]
+                
+                # Check if we have enough non-zero probabilities for sampling without replacement
+                non_zero_count = np.count_nonzero(context_probs)
+                
+                if non_zero_count >= k:
+                    # Normal case: we can sample k arms according to probabilities
+                    indices = rng.choice(len(arms), size=k, replace=False, p=context_probs)
+                else:
+                    # Edge case: not enough non-zero probabilities
+                    # Take all non-zero probability arms, then add random arms to reach k
+                    non_zero_indices = np.where(context_probs > 0)[0]
+                    zero_indices = np.where(context_probs == 0)[0]
+                    remaining_needed = k - len(non_zero_indices)
+                    additional_indices = rng.choice(zero_indices, size=remaining_needed, replace=False)
+                    indices = np.concatenate([non_zero_indices, additional_indices])
+                    rng.shuffle(indices)  # Shuffle to avoid bias in ordering
+                
+                results.append([arms[idx] for idx in indices])
+            return results
+
     @overload
     def __call__(
         self,
@@ -221,40 +294,12 @@ class EXP3A:
             Selected arms, one per context if top_k is None,
             or k arms per context if top_k is specified.
         """
-        # Try batching first for massive speedup
-        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
-            # samples shape: (n_arms, n_contexts, n_samples)
-            # Take mean over samples axis
-            rewards = samples.mean(axis=-1)
-        else:
-            # Fall back to standard sampling
-            rewards = np.stack(
-                [arm.sample(X, size=self.samples).mean(axis=0) for arm in arms]
-            )
-        # Get number of contexts from rewards shape
-        n_contexts = rewards.shape[1]
-
-        # Exponential weights with numerical stability
-        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-
-        # Compute probabilities (works for both variants)
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
-            arms
-        )
-
-        if top_k is None:
-            # Original single-arm selection
-            choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(n_contexts)]
-            return [arms[i] for i in choices]
-        else:
-            # Sample k arms without replacement according to probabilities
-            results: List[List[Arm[ContextType, TokenType]]] = []
-            for i in range(n_contexts):
-                # Sample without replacement
-                k = min(top_k, len(arms))
-                indices = rng.choice(len(arms), size=k, replace=False, p=probs[:, i])
-                results.append([arms[idx] for idx in indices])
-            return results
+        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        if samples is None:
+            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
+            samples = samples.transpose(0, 2, 1)
+        return self.select(samples, arms, rng, top_k)
 
     def update(
         self,
