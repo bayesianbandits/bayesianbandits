@@ -89,7 +89,7 @@ def bandit_instance(
         def reward_func(
             x: NDArray[np.float64],
         ) -> NDArray[np.float64]:
-            return x[..., 0].T
+            return x[..., 0]
 
     else:
         reward_func = None  # type: ignore
