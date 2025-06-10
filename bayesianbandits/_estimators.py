@@ -280,7 +280,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         alphas = list(self.known_alphas_[x.item()] for x in X)
         return np.stack(
             list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
-        )
+        ).transpose(1, 0, 2)
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
