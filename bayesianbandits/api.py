@@ -112,6 +112,37 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None: ...
 
+    @property
+    def samples_needed(self) -> int: ...
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]: ...
+
 
 class ContextualAgent(Generic[ContextType, TokenType]):
     """Agent for a contextual multi-armed bandit problem.
@@ -682,47 +713,74 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         self.epsilon = epsilon
         self.samples = samples
 
-    def arm_summary(
+    @property
+    def samples_needed(self) -> int:
+        """Number of samples per arm per context needed for decision making."""
+        return self.samples
+
+    @overload
+    def select(
         self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
         rng: np.random.Generator,
-    ) -> NDArray[np.float64]:
-        """Return a summary of the arms."""
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
-        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
-            return samples.mean(axis=-1)
-
-        means = np.stack(
-            tuple(_compute_arm_mean(arm, X, samples=self.samples) for arm in arms)
-        )
-
-        return means
-
-    def postprocess(
+    @overload
+    def select(
         self,
-        arm_summary: NDArray[np.float64],
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
         top_k: Optional[int] = None,
-    ) -> NDArray[np.float64]:
-        """Apply epsilon-greedy exploration by setting random arms to np.inf."""
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Select arms based on pre-generated samples using epsilon-greedy."""
+        # Compute means across samples dimension
+        means = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
+
+        # Apply epsilon-greedy exploration per context
         # Decide which contexts explore
-        choice_idx_to_explore = rng.random(size=arm_summary.shape[1]) < self.epsilon
+        choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon
 
         # How many arms to mark as infinite
         k = 1 if top_k is None else top_k
 
         # For each exploring context, set k random arms to np.inf
+        values = means.copy()
         for idx, explore in enumerate(choice_idx_to_explore):
             if explore:
                 random_arms = rng.choice(
-                    arm_summary.shape[0],
-                    size=min(k, arm_summary.shape[0]),
+                    means.shape[0],
+                    size=min(k, means.shape[0]),
                     replace=False,
                 )
-                arm_summary[random_arms, idx] = np.inf
+                values[random_arms, idx] = np.inf
 
-        return arm_summary
+        if top_k is None:
+            best_indices = values.argmax(axis=0)
+            return [arms[idx] for idx in best_indices]
+        else:
+            # Use argpartition for efficiency, but handle case where top_k >= n_arms
+            return [
+                [
+                    arms[idx]
+                    for idx in np.argpartition(
+                        -values[:, i], min(top_k, len(arms) - 1)
+                    )[:top_k]
+                ]
+                for i in range(values.shape[1])
+            ]
 
     @overload
     def __call__(
@@ -752,19 +810,12 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using epsilon-greedy."""
-        means = self.arm_summary(arms, X, rng)
-        means = self.postprocess(means, rng, top_k)
-
-        if top_k is None:
-            best_arm_indexes = np.atleast_1d(
-                cast(NDArray[np.int_], means.argmax(axis=0))
-            )
-            return [arms[cast(int, choice)] for choice in best_arm_indexes]
-        else:
-            indices = _select_top_k_indices(means, k=top_k)
-            return [
-                [arms[idx] for idx in context_indices] for context_indices in indices
-            ]
+        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        if samples is None:
+            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
+            samples = samples.transpose(0, 2, 1)
+        return self.select(samples, arms, rng, top_k)
 
 
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -790,25 +841,56 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     def __repr__(self) -> str:
         return "ThompsonSampling()"
 
-    def arm_summary(
+    @property
+    def samples_needed(self) -> int:
+        """Number of samples per arm per context needed for decision making."""
+        return 1
+
+    @overload
+    def select(
         self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
         rng: np.random.Generator,
-    ) -> NDArray[np.float64]:
-        """Return a summary of the arms."""
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
-        if (samples := batch_sample_arms(arms, X, size=1)) is not None:
-            return samples
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
 
-        samples = np.stack(tuple(_draw_one_sample(arm, X) for arm in arms))
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Select arms based on pre-generated samples."""
+        # samples shape: (n_arms, n_contexts, 1)
+        values = samples[..., 0]  # Shape: (n_arms, n_contexts)
 
-        return samples
-
-    def postprocess(
-        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
-    ) -> NDArray[np.float64]:
-        return arm_summary
+        if top_k is None:
+            best_indices = values.argmax(axis=0)
+            return [arms[idx] for idx in best_indices]
+        else:
+            # Use argpartition for efficiency, but handle case where top_k >= n_arms
+            return [
+                [
+                    arms[idx]
+                    for idx in np.argpartition(
+                        -values[:, i], min(top_k, len(arms) - 1)
+                    )[:top_k]
+                ]
+                for i in range(values.shape[1])
+            ]
 
     @overload
     def __call__(
@@ -838,19 +920,12 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using Thompson sampling."""
-        samples = self.arm_summary(arms, X, rng)
-        samples = self.postprocess(samples, rng)
-
-        if top_k is None:
-            best_arm_indexes = np.atleast_1d(
-                cast(NDArray[np.int_], samples.argmax(axis=0))
-            )
-            return [arms[cast(int, choice)] for choice in best_arm_indexes]
-        else:
-            indices = _select_top_k_indices(samples, k=top_k)
-            return [
-                [arms[idx] for idx in context_indices] for context_indices in indices
-            ]
+        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        if samples is None:
+            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
+            samples = samples.transpose(0, 2, 1)
+        return self.select(samples, arms, rng, top_k)
 
 
 class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -886,30 +961,57 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         self.alpha = alpha
         self.samples = samples
 
-    def arm_summary(
+    @property
+    def samples_needed(self) -> int:
+        """Number of samples per arm per context needed for decision making."""
+        return self.samples
+
+    @overload
+    def select(
         self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
         rng: np.random.Generator,
-    ) -> NDArray[np.float64]:
-        """Return a summary of the arms."""
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
 
-        if (samples := batch_sample_arms(arms, X, size=self.samples)) is not None:
-            return np.quantile(samples, q=self.alpha, axis=-1)
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
 
-        upper_bounds = np.stack(
-            tuple(
-                _compute_arm_upper_bound(arm, X, alpha=self.alpha, samples=self.samples)
-                for arm in arms
-            )
-        )
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Select arms based on pre-generated samples using upper confidence bounds."""
+        # Compute upper confidence bounds using quantiles
+        # samples shape: (n_arms, n_contexts, samples_needed)
+        ucb_values = np.quantile(samples, self.alpha, axis=-1)
 
-        return upper_bounds
-
-    def postprocess(
-        self, arm_summary: NDArray[np.float64], rng: np.random.Generator
-    ) -> NDArray[np.float64]:
-        return arm_summary
+        if top_k is None:
+            best_indices = ucb_values.argmax(axis=0)
+            return [arms[idx] for idx in best_indices]
+        else:
+            # Use argpartition for efficiency, but handle case where top_k >= n_arms
+            return [
+                [
+                    arms[idx]
+                    for idx in np.argpartition(
+                        -ucb_values[:, i], min(top_k, len(arms) - 1)
+                    )[:top_k]
+                ]
+                for i in range(ucb_values.shape[1])
+            ]
 
     @overload
     def __call__(
@@ -939,62 +1041,9 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using upper confidence bound."""
-        upper_bounds = self.arm_summary(arms, X, rng)
-        upper_bounds = self.postprocess(upper_bounds, rng)
-
-        if top_k is None:
-            best_arm_indexes = np.atleast_1d(
-                cast(NDArray[np.int_], upper_bounds.argmax(axis=0))
-            )
-            return [arms[cast(int, choice)] for choice in best_arm_indexes]
-        else:
-            indices = _select_top_k_indices(upper_bounds, k=top_k)
-            return [
-                [arms[idx] for idx in context_indices] for context_indices in indices
-            ]
-
-
-def _draw_one_sample(
-    arm: Arm[ContextType, TokenType],
-    X: ContextType,
-) -> NDArray[np.float64]:
-    """Draw one sample from the posterior distribution for the arm."""
-    return arm.sample(X, size=1).squeeze(axis=0)
-
-
-def _compute_arm_upper_bound(
-    arm: Arm[ContextType, TokenType],
-    X: ContextType,
-    *,
-    alpha: float = 0.68,
-    samples: int = 1000,
-) -> NDArray[np.float64]:
-    """Compute the upper bound of a one-sided credible interval with size
-    `alpha` from the posterior distribution for the arm."""
-    posterior_samples = arm.sample(X, size=samples)
-
-    return cast(NDArray[np.float64], np.quantile(posterior_samples, q=alpha, axis=0))
-
-
-def _compute_arm_mean(
-    arm: Arm[ContextType, TokenType],
-    X: ContextType,
-    *,
-    samples: int = 1000,
-) -> NDArray[np.float64]:
-    """Compute the mean of the posterior distribution for the arm."""
-    posterior_samples = arm.sample(X, size=samples)
-    return np.mean(posterior_samples, axis=0)
-
-
-def _select_top_k_indices(scores: NDArray[np.float64], k: int) -> NDArray[np.int_]:
-    # Get indices that would sort each column (context)
-    # Shape: (n_arms, n_contexts)
-    sorted_indices = scores.argsort(axis=0)
-
-    # Take the last k indices (highest scores) and reverse
-    # Shape: (k, n_contexts)
-    top_k = sorted_indices[-k:][::-1]
-
-    # Transpose to get (n_contexts, k)
-    return top_k.T
+        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        if samples is None:
+            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
+            samples = samples.transpose(0, 2, 1)
+        return self.select(samples, arms, rng, top_k)

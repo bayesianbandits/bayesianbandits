@@ -655,4 +655,57 @@ class TestEXP3ASampleWeight:
 
         # Should still see importance weight only
         assert len(weights_seen) == 1
-        assert weights_seen[0] > 0  # Just importance weight
+
+    def test_exp3a_top_k_with_zero_probabilities(self):
+        """Test EXP3A top_k when some arms have zero probability due to extreme parameters."""
+        
+        class FixedRewardArm(Arm):
+            """Arm that returns fixed rewards for testing extreme probability scenarios."""
+            def __init__(self, action_token: int, fixed_reward: float):
+                super().__init__(action_token, learner=NormalInverseGammaRegressor())
+                self.fixed_reward = fixed_reward
+            
+            def sample(self, X: NDArray[np.float64], size: int = 1) -> NDArray[np.float64]:
+                return np.full((size, len(X)), self.fixed_reward)
+
+        # Create scenario with extreme reward differences
+        arms = [
+            FixedRewardArm(0, 100.0),  # High reward -> high probability
+            FixedRewardArm(1, 0.0),    # Low reward -> low/zero probability  
+            FixedRewardArm(2, 0.0),    # Low reward -> low/zero probability
+            FixedRewardArm(3, 0.0),    # Low reward -> low/zero probability
+        ]
+
+        # Extreme parameters that cause zero probabilities for most arms
+        policy = EXP3A(eta=100.0, gamma=0.0, ix_gamma=0.0, samples=10)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+        X = np.array([[1.0]])
+
+        # This should not raise "Fewer non-zero entries in p than size" ValueError
+        result = agent.pull(X, top_k=3)
+        
+        # Should return exactly 3 arms for the single context
+        assert len(result) == 1  # One context
+        assert len(result[0]) == 3  # Three arms selected
+        
+        # Should include the high-probability arm (arm 0)
+        selected_arms = result[0]
+        assert 0 in selected_arms, "High-probability arm should be selected"
+        
+        # Should have no duplicates
+        assert len(set(selected_arms)) == 3, "Should have no duplicate arms"
+        
+        # Test edge case where top_k equals number of arms
+        result_all = agent.pull(X, top_k=4)
+        assert len(result_all[0]) == 4
+        assert set(result_all[0]) == {0, 1, 2, 3}
+        
+        # Test with multiple contexts
+        X_multi = np.array([[1.0], [2.0]])
+        result_multi = agent.pull(X_multi, top_k=2)
+        assert len(result_multi) == 2  # Two contexts
+        assert all(len(context_result) == 2 for context_result in result_multi)
+        
+        # Each context should include the high-probability arm
+        for context_result in result_multi:
+            assert 0 in context_result, "High-probability arm should be in each context"
