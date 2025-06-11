@@ -41,15 +41,16 @@ policies of your bandit as your needs change.
     EXP3A
     Arm
 
-Pipeline
-========
-Pipeline enables the use of sklearn transformers with Bayesian agents,
-providing efficient preprocessing at the agent level rather than per-arm.
+Pipelines
+=========
+Pipelines enable the use of sklearn transformers with Bayesian bandits,
+providing preprocessing capabilities at different levels.
 
 .. autosummary::
     :toctree: _autosummary
 
-    Pipeline
+    AgentPipeline
+    LearnerPipeline
 
 Arm Featurizers
 ===============
@@ -115,7 +116,7 @@ from .api import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from ._agent_pipeline import Pipeline
+from .pipelines import AgentPipeline, LearnerPipeline
 from .policies import EXP3A
 from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 
@@ -137,5 +138,6 @@ __all__ = [
     "ThompsonSampling",
     "UpperConfidenceBound",
     "EXP3A",
-    "Pipeline",
+    "AgentPipeline",
+    "LearnerPipeline",
 ]
