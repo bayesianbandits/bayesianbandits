@@ -1,6 +1,6 @@
 [project]
 name = "bayesianbandits"
-version = "1.0.0"
+version = "1.1.0"
 description = "A Pythonic microframework for Multi-Armed Bandit algorithms."
 authors = [{ name = "Rishi Kulkarni", email = "rishi@kulkarni.science" }]
 requires-python = ">=3.10"
