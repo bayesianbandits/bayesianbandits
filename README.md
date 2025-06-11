@@ -14,15 +14,17 @@ While the API is still evolving, this library is already being used in productio
 ## Features
 
 * **Simple API**: `bayesianbandits` provides a simple interface - most users will only need to call `pull` and `update` to get started.
+* **Hybrid bandits with cross-arm learning**: Share knowledge across similar arms for faster learning and better sample efficiency.
 * **Fast**: `bayesianbandits` is built on top of already fast scientific Python libraries, but, if installed, will also use SuiteSparse to further speed up matrix operations on sparse matrices. Handling tens or even hundreds of thousands of features in a sparse model is no problem.
-* **scikit-learn compatible**: Use sklearn pipelines and transformers to preprocess data before feeding it into your bandit.
+* **sklearn pipeline integration**: Use sklearn pipelines and transformers to preprocess data before feeding it into your bandit.
+* **Adversarial bandits (EXP3A)**: Robust performance in non-stationary and adversarial environments.
 * **Flexible**: Pick from a variety of policy algorithms, including Thompson sampling, upper confidence bound, and epsilon-greedy. Pick from a variety of prior distributions, including beta, gamma, normal, and normal-inverse-gamma.
 * **Extensible**: `bayesianbandits` provides simple interfaces for creating custom policies and priors.
 * **Well-tested**: `bayesianbandits` is well-tested, with nearly 100% test coverage.
 
 ## Compatibility
 
-`bayesianbandits` is tested with Python 3.10, 3.11, 3.12 and 3.13 with `scikit-learn` 1.3.2, 1.4.2, 1.5.2, 1.6.1.
+`bayesianbandits` is tested with Python 3.10, 3.11, 3.12 and 3.13 with `scikit-learn` 1.4.2, 1.5.2, 1.6.1, 1.7.0.
 
 ## Getting Started
 
@@ -71,6 +73,20 @@ Update the bandit with the reward.
 
 ```python
 agent.update(context, np.array([15.0]))
+```
+
+For shared learning across arms with hybrid bandits:
+
+```python
+from bayesianbandits import LipschitzContextualAgent, ArmColumnFeaturizer, NormalRegressor
+
+# Single shared learner across all arms
+agent = LipschitzContextualAgent(
+    arms=[Arm(i) for i in range(100)],  # 100 arms sharing knowledge
+    learner=NormalRegressor(),
+    arm_featurizer=ArmColumnFeaturizer(column_name='article_id'),
+    policy=ThompsonSampling()
+)
 ```
 
 That's it! Check out the [documentation](https://bayesianbandits.readthedocs.io/en/latest/) for more examples.
