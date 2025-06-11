@@ -86,14 +86,14 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
 
         # Apply epsilon-greedy exploration per context
         # Decide which contexts explore
-        choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon
+        choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon  # type: ignore[misc]
 
         # How many arms to mark as infinite
         k = 1 if top_k is None else top_k
 
         # For each exploring context, set k random arms to np.inf
         values = means.copy()
-        for idx, explore in enumerate(choice_idx_to_explore):
+        for idx, explore in enumerate(choice_idx_to_explore):  # type: ignore[misc]
             if explore:
                 random_arms = rng.choice(
                     means.shape[0],

@@ -1,7 +1,7 @@
 """Arm column featurizer that appends arm tokens as a column."""
 
 import importlib.util
-from typing import Any, Iterable, Sequence, TypeVar
+from typing import Any, Sequence, Sized, TypeVar
 
 import numpy as np
 
@@ -75,13 +75,13 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
     >>> # Returns DataFrame with 'arm_token' column added
     >>> list(df_with_arms.columns)
     ['feature1', 'feature2', 'arm_token']
-    
+
     >>> # Example 4: Using custom column name
     >>> featurizer = ArmColumnFeaturizer(column_name='product_id')
     >>> df_with_arms = featurizer.transform(df, action_tokens=['A', 'B', 'C'])
     >>> list(df_with_arms.columns)
     ['feature1', 'feature2', 'product_id']
-    
+
     """
 
     def __init__(self, column_name: str = "arm_token"):
@@ -94,12 +94,12 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
         """
         self.column_name = column_name
 
-    def transform(self, X: Iterable[Any], *, action_tokens: Sequence[T]) -> Any:
+    def transform(self, X: Sized, *, action_tokens: Sequence[T]) -> Any:
         """Append arm tokens as a column to context features.
 
         Parameters
         ----------
-        X : Iterable[Any]
+        X : Sized
             Input context features. Can be a pandas DataFrame, numpy array,
             or other array-like structure of shape (n_contexts, n_features).
         action_tokens : sequence of T
@@ -116,17 +116,17 @@ class ArmColumnFeaturizer(ArmFeaturizer[T]):
 
         # Handle pandas DataFrames
         if HAS_PANDAS:
-            import pandas as pd
+            import pandas as pd  # type: ignore[import]
 
             if isinstance(X, pd.DataFrame):
                 n_contexts = len(X)
 
                 if n_arms == 0:
                     # Return empty DataFrame with arm column
-                    result = pd.DataFrame(columns=list(X.columns) + [self.column_name])
+                    result = pd.DataFrame(columns=list(X.columns) + [self.column_name])  # type: ignore[misc]
                     # Preserve dtypes from original DataFrame
                     for col in X.columns:
-                        result[col] = result[col].astype(X[col].dtype)
+                        result[col] = result[col].astype(X[col].dtype)  # type: ignore[misc]
                     return result
 
                 # Tile the DataFrame for each arm

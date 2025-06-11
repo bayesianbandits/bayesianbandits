@@ -5,14 +5,15 @@ before delegating to wrapped Agent/ContextualAgent instances. This enables
 efficient preprocessing at the agent level rather than per-arm.
 """
 
+
 from typing import Any, Dict, Generic, List, Optional, Tuple, Union, overload
 
 import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from .._arm import ContextType, TokenType
-from ..api import Agent, ContextualAgent
+from .._arm import Arm, ContextType, TokenType
+from ..api import Agent, ContextualAgent, PolicyProtocol
 
 
 def _validate_steps(steps: List[Tuple[str, Any]]) -> None:
@@ -184,7 +185,7 @@ class ContextualAgentPipeline(Generic[ContextType, TokenType]):
         self._agent.decay(X_transformed, decay_rate=decay_rate)
 
     # Delegation methods
-    def add_arm(self, arm) -> None:
+    def add_arm(self, arm: Arm[Any, TokenType]) -> None:
         """Add an arm to the wrapped agent."""
         self._agent.add_arm(arm)
 
@@ -192,7 +193,7 @@ class ContextualAgentPipeline(Generic[ContextType, TokenType]):
         """Remove an arm from the wrapped agent."""
         self._agent.remove_arm(token)
 
-    def arm(self, token: TokenType):
+    def arm(self, token: TokenType) -> Arm[Any, TokenType]:
         """Get an arm by its action token."""
         return self._agent.arm(token)
 
@@ -202,27 +203,27 @@ class ContextualAgentPipeline(Generic[ContextType, TokenType]):
         return self
 
     @property
-    def arms(self):
+    def arms(self) -> List[Arm[ContextType, TokenType]]:
         """Get the arms from the wrapped agent."""
         return self._agent.arms
 
     @property
-    def arm_to_update(self):
+    def arm_to_update(self) -> Arm[ContextType, TokenType]:
         """Get the arm to update from the wrapped agent."""
         return self._agent.arm_to_update
 
     @property
-    def policy(self):
+    def policy(self) -> PolicyProtocol[ContextType, TokenType]:
         """Get the policy from the wrapped agent."""
         return self._agent.policy
 
     @policy.setter
-    def policy(self, value):
+    def policy(self, value: PolicyProtocol[ContextType, TokenType]) -> None:
         """Set the policy on the wrapped agent."""
         self._agent.policy = value
 
     @property
-    def rng(self):
+    def rng(self) -> np.random.Generator:
         """Get the random generator from the wrapped agent."""
         return self._agent.rng
 
@@ -349,7 +350,7 @@ class NonContextualAgentPipeline(Generic[TokenType]):
         self._agent.decay(decay_rate=decay_rate)
 
     # Delegation methods
-    def add_arm(self, arm) -> None:
+    def add_arm(self, arm: Arm[NDArray[np.float64], TokenType]) -> None:
         """Add an arm to the wrapped agent."""
         self._agent.add_arm(arm)
 
@@ -357,7 +358,7 @@ class NonContextualAgentPipeline(Generic[TokenType]):
         """Remove an arm from the wrapped agent."""
         self._agent.remove_arm(token)
 
-    def arm(self, token: TokenType):
+    def arm(self, token: TokenType) -> Arm[NDArray[np.float64], TokenType]:
         """Get an arm by its action token."""
         return self._agent.arm(token)
 
@@ -367,27 +368,27 @@ class NonContextualAgentPipeline(Generic[TokenType]):
         return self
 
     @property
-    def arms(self):
+    def arms(self) -> List[Arm[NDArray[np.float64], TokenType]]:
         """Get the arms from the wrapped agent."""
         return self._agent.arms
 
     @property
-    def arm_to_update(self):
+    def arm_to_update(self) -> Arm[NDArray[np.float64], TokenType]:
         """Get the arm to update from the wrapped agent."""
         return self._agent.arm_to_update
 
     @property
-    def policy(self):
+    def policy(self) -> PolicyProtocol[NDArray[np.float64], TokenType]:
         """Get the policy from the wrapped agent."""
         return self._agent.policy
 
     @policy.setter
-    def policy(self, value):
+    def policy(self, value: PolicyProtocol[NDArray[np.float64], TokenType]) -> None:
         """Set the policy on the wrapped agent."""
         self._agent.policy = value
 
     @property
-    def rng(self):
+    def rng(self) -> np.random.Generator:
         """Get the random generator from the wrapped agent."""
         return self._agent.rng
 

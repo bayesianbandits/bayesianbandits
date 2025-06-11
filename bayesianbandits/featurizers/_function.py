@@ -1,6 +1,6 @@
 """Function-based arm featurizer wrapper."""
 
-from typing import Any, Callable, Iterable, Sequence
+from typing import Callable, Sequence, Sized
 
 import numpy as np
 from numpy.typing import NDArray
@@ -73,7 +73,7 @@ class FunctionArmFeaturizer(ArmFeaturizer[TokenType]):
     """
 
     def __init__(
-        self, func: Callable[[Iterable[Any], Sequence[TokenType]], NDArray[np.floating]]
+        self, func: Callable[[Sized, Sequence[TokenType]], NDArray[np.floating]]
     ):
         """Initialize the function-based arm featurizer.
 
@@ -85,13 +85,13 @@ class FunctionArmFeaturizer(ArmFeaturizer[TokenType]):
         self.func = func
 
     def transform(
-        self, X: Iterable[Any], *, action_tokens: Sequence[TokenType]
+        self, X: Sized, *, action_tokens: Sequence[TokenType]
     ) -> NDArray[np.floating]:
         """Transform features using the provided function.
 
         Parameters
         ----------
-        X : Iterable[Any]
+        X : Sized
             Input context features.
         action_tokens : sequence of TokenType
             Action tokens for each arm.
