@@ -1,8 +1,8 @@
-"""Agent-wrapping Pipeline implementation for Bayesian bandits.
+"""Agent-wrapping pipeline implementation for Bayesian bandits.
 
-This module implements the new Pipeline architecture that wraps Agent/ContextualAgent
-instead of implementing the Learner protocol. This enables efficient preprocessing
-at the agent level rather than per-arm.
+This module implements agent-wrapping pipelines that apply preprocessing steps
+before delegating to wrapped Agent/ContextualAgent instances. This enables
+efficient preprocessing at the agent level rather than per-arm.
 """
 
 from typing import Any, Dict, Generic, List, Optional, Tuple, Union, overload
@@ -11,8 +11,8 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from ._arm import ContextType, TokenType
-from .api import Agent, ContextualAgent
+from .._arm import ContextType, TokenType
+from ..api import Agent, ContextualAgent
 
 
 def _validate_steps(steps: List[Tuple[str, Any]]) -> None:
@@ -54,7 +54,7 @@ def _transform_data(X: Any, steps: List[Tuple[str, Any]]) -> Any:
     return result
 
 
-class ContextualPipeline(Generic[ContextType, TokenType]):
+class ContextualAgentPipeline(Generic[ContextType, TokenType]):
     """Pipeline that wraps a ContextualAgent.
 
     Transforms input data through preprocessing steps before delegating
@@ -83,7 +83,7 @@ class ContextualPipeline(Generic[ContextType, TokenType]):
     >>> # Pipeline can accept dict input and transform to sparse
     >>> vectorizer = DictVectorizer(sparse=True)
     >>> _ = vectorizer.fit([{'user': 'A', 'item': 1}, {'user': 'B', 'item': 2}])
-    >>> pipeline = ContextualPipeline(
+    >>> pipeline = ContextualAgentPipeline(
     ...     steps=[('vectorize', vectorizer)],
     ...     final_agent=agent
     ... )
@@ -232,7 +232,7 @@ class ContextualPipeline(Generic[ContextType, TokenType]):
             f"('{name}', {transformer.__class__.__name__})"
             for name, transformer in self.steps
         ]
-        return f"ContextualPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
+        return f"ContextualAgentPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
 
     def __len__(self) -> int:
         """Number of steps in the pipeline."""
@@ -245,7 +245,7 @@ class ContextualPipeline(Generic[ContextType, TokenType]):
         return self.steps[ind]
 
 
-class NonContextualPipeline(Generic[TokenType]):
+class NonContextualAgentPipeline(Generic[TokenType]):
     """Pipeline that wraps an Agent.
 
     For non-contextual agents, preprocessing steps are not applied since
@@ -270,7 +270,7 @@ class NonContextualPipeline(Generic[TokenType]):
     >>> agent = Agent(arms, ThompsonSampling())
     >>>
     >>> # Create pipeline (steps are unused for non-contextual)
-    >>> pipeline = NonContextualPipeline(
+    >>> pipeline = NonContextualAgentPipeline(
     ...     steps=[],  # No preprocessing needed
     ...     final_agent=agent
     ... )
@@ -397,7 +397,7 @@ class NonContextualPipeline(Generic[TokenType]):
             f"('{name}', {transformer.__class__.__name__})"
             for name, transformer in self.steps
         ]
-        return f"NonContextualPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
+        return f"NonContextualAgentPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
 
     def __len__(self) -> int:
         """Number of steps in the pipeline."""
@@ -412,22 +412,23 @@ class NonContextualPipeline(Generic[TokenType]):
 
 # Factory function with overloads
 @overload
-def Pipeline(
+def AgentPipeline(
     steps: List[Tuple[str, Any]], final_agent: ContextualAgent[ContextType, TokenType]
-) -> ContextualPipeline[ContextType, TokenType]: ...
+) -> ContextualAgentPipeline[ContextType, TokenType]: ...
 
 
 @overload
-def Pipeline(
+def AgentPipeline(
     steps: List[Tuple[str, Any]], final_agent: Agent[TokenType]
-) -> NonContextualPipeline[TokenType]: ...
+) -> NonContextualAgentPipeline[TokenType]: ...
 
 
-def Pipeline(
+def AgentPipeline(
     steps: List[Tuple[str, Any]],
     final_agent: Union[ContextualAgent[ContextType, TokenType], Agent[TokenType]],
 ) -> Union[
-    ContextualPipeline[ContextType, TokenType], NonContextualPipeline[TokenType]
+    ContextualAgentPipeline[ContextType, TokenType],
+    NonContextualAgentPipeline[TokenType],
 ]:
     """Create a Pipeline that wraps an Agent or ContextualAgent.
 
@@ -449,7 +450,7 @@ def Pipeline(
 
     Returns
     -------
-    ContextualPipeline or NonContextualPipeline
+    ContextualAgentPipeline or NonContextualAgentPipeline
         The appropriate pipeline type based on the final_agent type.
 
     Examples
@@ -463,7 +464,7 @@ def Pipeline(
     >>> vectorizer = DictVectorizer()
     >>> _ = vectorizer.fit([{'user': 'A'}, {'user': 'B'}])
     >>>
-    >>> pipeline = Pipeline(
+    >>> pipeline = AgentPipeline(
     ...     steps=[('vectorize', vectorizer)],
     ...     final_agent=agent
     ... )
@@ -471,5 +472,5 @@ def Pipeline(
     >>> # Transforms to sparse matrix for agent
     """
     if isinstance(final_agent, Agent):
-        return NonContextualPipeline(steps, final_agent)
-    return ContextualPipeline(steps, final_agent)
+        return NonContextualAgentPipeline(steps, final_agent)
+    return ContextualAgentPipeline(steps, final_agent)
