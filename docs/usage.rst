@@ -15,6 +15,7 @@ library.
     notebooks/demo
     notebooks/counts
     notebooks/linear-bandits
+    notebooks/hybrid-bandits
     notebooks/delayed-reward
     notebooks/adversarial
     notebooks/persistence
