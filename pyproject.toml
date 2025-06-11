@@ -31,7 +31,7 @@ dev = [
     "optuna>=4.0.0,<5",
     "ipywidgets>=8.1.5,<9",
     "pandas>=2.2.3",
-    "pyright>=1.1.401",
+    "pyright==1.1.402",
 ]
 cholmod = ["scikit-sparse>=0.4.15,<0.5"]
 
@@ -40,6 +40,13 @@ default-groups = [
     "dev",
     "cholmod",
 ]
+
+[tool.pyright]
+include = [
+    "bayesianbandits",
+    "tests",
+]
+typeCheckingMode = "standard"
 
 [build-system]
 requires = ["hatchling"]
