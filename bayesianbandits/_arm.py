@@ -17,8 +17,8 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csr_matrix, issparse
-from scipy.sparse import vstack as sparse_vstack
+from scipy.sparse import csr_matrix, issparse  # type: ignore[import]
+from scipy.sparse import vstack as sparse_vstack  # type: ignore[import]
 from typing_extensions import Concatenate, ParamSpec, Self
 
 HAS_PANDAS = importlib.util.find_spec("pandas") is not None
@@ -174,7 +174,7 @@ def stack_features(feature_list: List[Any]) -> Any:
 
     # Case 1: Pandas DataFrames (if pandas available)
     if HAS_PANDAS:
-        import pandas as pd  # Re-import for type narrowing
+        import pandas as pd  # type: ignore[import] # Re-import for type narrowing
 
         if isinstance(first, pd.DataFrame):
             if not all(isinstance(x, pd.DataFrame) for x in feature_list):
@@ -188,7 +188,7 @@ def stack_features(feature_list: List[Any]) -> Any:
         if not all(issparse(x) for x in feature_list):
             raise ValueError("Cannot stack mixed sparse and dense arrays")
         # Convert to CSR for efficient row operations
-        return sparse_vstack([csr_matrix(x) for x in feature_list], format="csr")
+        return sparse_vstack([csr_matrix(x) for x in feature_list], format="csr")  # type: ignore[return-value]
 
     # Case 3: Dense arrays - numpy is always available
     arrays = [np.asarray(x) for x in feature_list]
@@ -244,7 +244,7 @@ def batch_sample_arms(
 
     # Transform features for each arm
     n_arms = len(arms)
-    feature_list = []
+    feature_list: List[Any] = []
 
     # Pre-check context length for memory allocation
     n_contexts = len(X)

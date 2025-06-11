@@ -62,6 +62,7 @@ from typing import (
     Optional,
     Protocol,
     Sequence,
+    Sized,
     Union,
     cast,
     overload,
@@ -674,7 +675,7 @@ class Agent(Generic[TokenType]):
         self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
-class LipschitzContextualAgent(Generic[ContextType, TokenType]):
+class LipschitzContextualAgent(Generic[TokenType]):
     """
     Agent for Lipschitz/continuous contextual bandits with shared learner.
 
@@ -921,20 +922,20 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
         return self
 
     @overload
-    def pull(self, X: ContextType) -> List[TokenType]: ...
+    def pull(self, X: Sized) -> List[TokenType]: ...
 
     @overload
-    def pull(self, X: ContextType, *, top_k: int) -> List[List[TokenType]]: ...
+    def pull(self, X: Sized, *, top_k: int) -> List[List[TokenType]]: ...
 
     def pull(
-        self, X: ContextType, *, top_k: int | None = None
+        self, X: Sized, *, top_k: int | None = None
     ) -> List[TokenType] | List[List[TokenType]]:
         """
         Choose arm(s) and pull based on the context(s).
 
         Parameters
         ----------
-        X : ContextType
+        X : Sized
             Context matrix to use for choosing arms.
         top_k : int, optional
             Number of arms to select per context. If None (default),
@@ -965,7 +966,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
         # 2. Enrich context with arm features (VECTORIZED - 1 call for N arms)
         X_enriched = self.arm_featurizer.transform(
-            cast(Any, X), action_tokens=action_tokens
+            X, action_tokens=action_tokens
         )
         # Shape: (n_contexts * n_arms, n_features_enriched)
 
@@ -978,7 +979,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
         # Shape: (n_arms, n_contexts, size, ...)
 
         # 5. Apply reward functions (handles multi-output -> single reward)
-        processed_samples = []
+        processed_samples: List[NDArray[np.float64]] = []
         for i, arm in enumerate(self.arms):
             arm_samples = arm.reward_function(samples[i])
             processed_samples.append(arm_samples)
@@ -1003,7 +1004,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
     def update(
         self,
-        X: ContextType,
+        X: Sized,
         y: NDArray[np.float64],
         sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None:
@@ -1012,7 +1013,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
         Parameters
         ----------
-        X : ContextType
+        X : Sized
             Context matrix to use for updating the arm.
         y : NDArray[np.float64]
             Reward(s) to use for updating the arm.
@@ -1028,7 +1029,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
         """
         # Enrich context with ONLY the selected arm's features
         X_enriched = self.arm_featurizer.transform(
-            cast(Any, X), action_tokens=[self.arm_to_update.action_token]
+            X, action_tokens=[self.arm_to_update.action_token]
         )
 
         # Let the policy handle the update
@@ -1039,7 +1040,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
     def decay(
         self,
-        X: ContextType,
+        X: Sized,
         decay_rate: Optional[float] = None,
     ) -> None:
         """
@@ -1047,7 +1048,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
         Parameters
         ----------
-        X : ContextType
+        X : Sized
             Context matrix to use for decaying.
         decay_rate : Optional[float], default=None
             Decay rate to use. If None, the learner's default decay rate is used.
@@ -1063,7 +1064,7 @@ class LipschitzContextualAgent(Generic[ContextType, TokenType]):
 
         # Enrich context with all arm features
         X_enriched = self.arm_featurizer.transform(
-            cast(Any, X), action_tokens=action_tokens
+            X, action_tokens=action_tokens
         )
 
         # Decay the shared learner once

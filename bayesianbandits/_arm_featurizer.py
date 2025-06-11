@@ -5,11 +5,10 @@ transforming context features based on action tokens in shared model bandits.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Generic, Iterable, Sequence
-
-import numpy as np
+from typing import Any, Generic, Sequence, Sized
 
 from ._arm import TokenType
+
 
 __all__ = [
     "ArmFeaturizer",
@@ -22,22 +21,21 @@ class ArmFeaturizer(ABC, Generic[TokenType]):
     Transforms features for multiple arms in a single call to enable
     efficient batched processing in shared model bandits.
 
-    Parameters
-    ----------
+    Type Parameters
+    ---------------
     TokenType : type
         The type of action tokens this featurizer accepts.
     """
 
     @abstractmethod
-    def transform(self, X: Iterable[Any], *, action_tokens: Sequence[TokenType]) -> Any:
+    def transform(self, X: Sized, *, action_tokens: Sequence[TokenType]) -> Any:
         """Transform features for all arms in a single vectorized call.
 
         Parameters
         ----------
-        X : Iterable[Any]
-            Input context features. While this accepts any iterable,
-            implementations typically expect array-like of shape
-            (n_contexts, n_features).
+        X : Sized
+            Input context features. Implementations typically expect array-like
+            of shape (n_contexts, n_features).
         action_tokens : sequence of TokenType, length n_arms
             Action tokens for each arm to featurize.
 
@@ -59,6 +57,7 @@ class ArmFeaturizer(ABC, Generic[TokenType]):
 
         Examples
         --------
+        >>> import numpy as np
         >>> # Discrete action tokens
         >>> X = np.array([[1, 2], [3, 4]])  # 2 contexts, 2 features
         >>> action_tokens = [0, 1, 2]  # 3 arms
