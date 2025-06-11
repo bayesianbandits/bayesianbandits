@@ -1,4 +1,4 @@
-﻿bayesianbandits.api.EpsilonGreedy
+bayesianbandits.api.EpsilonGreedy
 =================================
 
 .. currentmodule:: bayesianbandits.api
@@ -14,12 +14,17 @@
    .. autosummary::
    
       ~EpsilonGreedy.__init__
-      ~EpsilonGreedy.arm_summary
-      ~EpsilonGreedy.postprocess
+      ~EpsilonGreedy.select
       ~EpsilonGreedy.update
    
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~EpsilonGreedy.samples_needed
    
    

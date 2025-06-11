@@ -1,4 +1,4 @@
-﻿bayesianbandits.NormalInverseGammaRegressor
+bayesianbandits.NormalInverseGammaRegressor
 ===========================================
 
 .. currentmodule:: bayesianbandits

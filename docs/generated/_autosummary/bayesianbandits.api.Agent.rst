@@ -1,4 +1,4 @@
-﻿bayesianbandits.api.Agent
+bayesianbandits.api.Agent
 =========================
 
 .. currentmodule:: bayesianbandits.api

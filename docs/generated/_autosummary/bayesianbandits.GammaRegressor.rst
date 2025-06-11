@@ -1,4 +1,4 @@
-﻿bayesianbandits.GammaRegressor
+bayesianbandits.GammaRegressor
 ==============================
 
 .. currentmodule:: bayesianbandits

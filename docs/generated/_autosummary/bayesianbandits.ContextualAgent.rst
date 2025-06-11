@@ -1,4 +1,4 @@
-﻿bayesianbandits.ContextualAgent
+bayesianbandits.ContextualAgent
 ===============================
 
 .. currentmodule:: bayesianbandits
