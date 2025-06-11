@@ -1,4 +1,4 @@
-"""Tests for agent-wrapping Pipeline implementation."""
+"""Tests for agent-wrapping AgentPipeline implementation."""
 
 from __future__ import annotations
 
@@ -14,13 +14,15 @@ from bayesianbandits import (
     ContextualAgent,
     EpsilonGreedy,
     NormalRegressor,
-    Pipeline,
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from bayesianbandits._agent_pipeline import (
-    ContextualPipeline,
-    NonContextualPipeline,
+from bayesianbandits.pipelines import (
+    AgentPipeline,
+    ContextualAgentPipeline,
+    NonContextualAgentPipeline,
+)
+from bayesianbandits.pipelines._agent import (
     _transform_data,
     _validate_steps,
 )
@@ -110,8 +112,8 @@ class TestTransformData:
         assert "FunctionTransformer" in str(exc_info.value)
 
 
-class TestContextualPipeline:
-    """Test ContextualPipeline class."""
+class TestContextualAgentPipeline:
+    """Test ContextualAgentPipeline class."""
 
     def test_basic_construction(self):
         """Test basic contextual pipeline construction."""
@@ -119,7 +121,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling())
         steps = [("double", FunctionTransformer(lambda x: x * 2))]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         assert len(pipeline) == 1
         assert pipeline.named_steps["double"] is not None
@@ -131,7 +133,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling())
 
         with pytest.raises(ValueError, match="Pipeline steps cannot be empty"):
-            ContextualPipeline([], agent)
+            ContextualAgentPipeline([], agent)
 
     def test_pull_without_top_k(self):
         """Test pull method without top_k."""
@@ -139,7 +141,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0, 2.0], [3.0, 4.0]])
         actions = pipeline.pull(X)
@@ -153,7 +155,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0, 2.0], [3.0, 4.0]])
         action_lists = pipeline.pull(X, top_k=3)
@@ -167,7 +169,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("scale", FunctionTransformer(lambda x: x / 10))]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[10.0, 20.0]])
         y = np.array([1.0])
@@ -188,7 +190,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0], [2.0]])
         y = np.array([1.0, 2.0])
@@ -206,7 +208,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling())
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0]])
 
@@ -219,7 +221,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling())
         steps = [("double", FunctionTransformer(lambda x: x * 2))]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1], [2]])
         result = pipeline.transform(X)
@@ -232,7 +234,7 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         # Test property access
         assert pipeline.arms is agent.arms
@@ -264,7 +266,7 @@ class TestContextualPipeline:
         transform2 = StandardScaler()
         steps = [("double", transform1), ("scale", transform2)]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         # Test string indexing
         assert pipeline["double"] is transform1
@@ -287,15 +289,15 @@ class TestContextualPipeline:
         agent = ContextualAgent(arms, ThompsonSampling())
         steps = [("transform", FunctionTransformer())]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
         repr_str = repr(pipeline)
 
-        assert "ContextualPipeline" in repr_str
+        assert "ContextualAgentPipeline" in repr_str
         assert "FunctionTransformer" in repr_str
 
 
-class TestNonContextualPipeline:
-    """Test NonContextualPipeline class."""
+class TestNonContextualAgentPipeline:
+    """Test NonContextualAgentPipeline class."""
 
     def test_basic_construction(self):
         """Test basic non-contextual pipeline construction."""
@@ -303,7 +305,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling())
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         assert len(pipeline) == 1
         assert pipeline._agent is agent
@@ -314,7 +316,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling())
 
         # Should not raise
-        pipeline = NonContextualPipeline([], agent)
+        pipeline = NonContextualAgentPipeline([], agent)
         assert len(pipeline) == 0
 
     def test_pull_without_top_k(self):
@@ -323,7 +325,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         actions = pipeline.pull()
 
@@ -336,7 +338,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         action_lists = pipeline.pull(top_k=3)
 
@@ -349,7 +351,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         y = np.array([1.0, 2.0])
 
@@ -365,7 +367,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         y = np.array([1.0, 2.0])
         sample_weight = np.array([1.0, 0.1])
@@ -382,7 +384,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling())
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         # Should not raise
         pipeline.decay(decay_rate=0.5)
@@ -393,7 +395,7 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
         # Test property access
         assert pipeline.arms is agent.arms
@@ -414,35 +416,35 @@ class TestNonContextualPipeline:
         agent = Agent(arms, ThompsonSampling())
         steps = []
 
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
         repr_str = repr(pipeline)
 
-        assert "NonContextualPipeline" in repr_str
+        assert "NonContextualAgentPipeline" in repr_str
 
 
-class TestPipelineFactory:
-    """Test Pipeline factory function."""
+class TestAgentPipelineFactory:
+    """Test AgentPipeline factory function."""
 
     def test_contextual_agent_dispatch(self):
-        """Test factory dispatches to ContextualPipeline for ContextualAgent."""
+        """Test factory dispatches to ContextualAgentPipeline for ContextualAgent."""
         arms = make_arms(range(3))
         agent = ContextualAgent(arms, ThompsonSampling())
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = Pipeline(steps, agent)
+        pipeline = AgentPipeline(steps, agent)
 
-        assert isinstance(pipeline, ContextualPipeline)
+        assert isinstance(pipeline, ContextualAgentPipeline)
         assert pipeline._agent is agent
 
     def test_agent_dispatch(self):
-        """Test factory dispatches to NonContextualPipeline for Agent."""
+        """Test factory dispatches to NonContextualAgentPipeline for Agent."""
         arms = make_arms(range(3))
         agent = Agent(arms, ThompsonSampling())
         steps = [("identity", FunctionTransformer())]
 
-        pipeline = Pipeline(steps, agent)
+        pipeline = AgentPipeline(steps, agent)
 
-        assert isinstance(pipeline, NonContextualPipeline)
+        assert isinstance(pipeline, NonContextualAgentPipeline)
         assert pipeline._agent is agent
 
     def test_factory_preserves_functionality(self):
@@ -452,7 +454,7 @@ class TestPipelineFactory:
         contextual_agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
         steps = [("scale", FunctionTransformer(lambda x: x / 10))]
 
-        contextual_pipeline = Pipeline(steps, contextual_agent)
+        contextual_pipeline = AgentPipeline(steps, contextual_agent)
 
         X = np.array([[10.0, 20.0]])
         actions = contextual_pipeline.pull(X)
@@ -462,7 +464,7 @@ class TestPipelineFactory:
         arms = make_arms(range(3))
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
 
-        noncontextual_pipeline = Pipeline([], agent)
+        noncontextual_pipeline = AgentPipeline([], agent)
 
         actions = noncontextual_pipeline.pull()
         assert len(actions) == 1
@@ -471,17 +473,17 @@ class TestPipelineFactory:
         """Test factory function's isinstance logic for dispatch."""
         arms = make_arms(range(3))
 
-        # Test that Agent gets NonContextualPipeline
+        # Test that Agent gets NonContextualAgentPipeline
         agent = Agent(arms, ThompsonSampling())
-        pipeline = Pipeline([("identity", FunctionTransformer())], agent)
-        assert isinstance(pipeline, NonContextualPipeline)
+        pipeline = AgentPipeline([("identity", FunctionTransformer())], agent)
+        assert isinstance(pipeline, NonContextualAgentPipeline)
 
-        # Test that ContextualAgent gets ContextualPipeline
+        # Test that ContextualAgent gets ContextualAgentPipeline
         contextual_agent = ContextualAgent(arms, ThompsonSampling())
-        contextual_pipeline = Pipeline(
+        contextual_pipeline = AgentPipeline(
             [("identity", FunctionTransformer())], contextual_agent
         )
-        assert isinstance(contextual_pipeline, ContextualPipeline)
+        assert isinstance(contextual_pipeline, ContextualAgentPipeline)
 
 
 class TestTransformationFlow:
@@ -498,7 +500,7 @@ class TestTransformationFlow:
             ("square", FunctionTransformer(lambda x: x**2)),
         ]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0], [2.0]])
         # Transform: x -> 2x -> 2x+1 -> (2x+1)^2
@@ -524,7 +526,7 @@ class TestTransformationFlow:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
 
         steps = [("scale", scaler)]
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[2.0, 3.0], [4.0, 5.0]])
 
@@ -552,7 +554,7 @@ class TestTransformationFlow:
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
 
         steps = [("vectorize", vectorizer)]
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = [{"user": "A", "item": "X"}, {"user": "B", "item": "Y"}]
 
@@ -584,7 +586,7 @@ class TestIntegrationScenarios:
 
         # Create pipeline with preprocessing
         steps = [("user_scaler", scaler)]
-        pipeline = Pipeline(steps, agent)
+        pipeline = AgentPipeline(steps, agent)
 
         # Simulate user interactions
         n_users = 20
@@ -610,7 +612,7 @@ class TestIntegrationScenarios:
         agent = Agent(arms, EpsilonGreedy(epsilon=0.1), random_seed=42)
 
         # No preprocessing needed for A/B test
-        pipeline = Pipeline([], agent)
+        pipeline = AgentPipeline([], agent)
 
         # Run A/B test
         n_experiments = 100
@@ -659,7 +661,7 @@ class TestIntegrationScenarios:
             ("normalize", FunctionTransformer(normalize_features)),
         ]
 
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         # Test with raw features
         X = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
@@ -689,7 +691,7 @@ class TestErrorHandling:
         agent = ContextualAgent(arms, ThompsonSampling())
 
         steps = [("fail", FunctionTransformer(failing_transform))]
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0]])
 
@@ -702,7 +704,7 @@ class TestErrorHandling:
         agent = ContextualAgent(arms, ThompsonSampling())
 
         steps = [("scaler", StandardScaler())]  # Not fitted!
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         X = np.array([[1.0], [2.0]])
 
@@ -727,9 +729,9 @@ class TestErrorHandling:
 
         # The factory function should handle invalid agent types
         # In practice, this would be a type error at development time
-        # Since isinstance check won't match, it will try to create ContextualPipeline
+        # Since isinstance check won't match, it will try to create ContextualAgentPipeline
         # which will fail on first attribute access
-        pipeline = Pipeline(steps, mock_agent)  # type: ignore
+        pipeline = AgentPipeline(steps, mock_agent)  # type: ignore
         # The error will happen when trying to use the agent
         with pytest.raises(AttributeError):
             _ = pipeline.arms
@@ -742,7 +744,7 @@ class TestCoverage:
         """Test policy setter on contextual pipeline."""
         arms = make_arms(range(3))
         agent = ContextualAgent(arms, ThompsonSampling())
-        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+        pipeline = ContextualAgentPipeline([("identity", FunctionTransformer())], agent)
 
         new_policy = EpsilonGreedy(epsilon=0.2)
         pipeline.policy = new_policy
@@ -753,7 +755,7 @@ class TestCoverage:
         """Test policy setter on non-contextual pipeline."""
         arms = make_arms(range(3))
         agent = Agent(arms, ThompsonSampling())
-        pipeline = NonContextualPipeline([], agent)
+        pipeline = NonContextualAgentPipeline([], agent)
 
         new_policy = EpsilonGreedy(epsilon=0.2)
         pipeline.policy = new_policy
@@ -763,7 +765,7 @@ class TestCoverage:
         """Test contextual pipeline update with sample weights."""
         arms = make_arms(range(3))
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=42)
-        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+        pipeline = ContextualAgentPipeline([("identity", FunctionTransformer())], agent)
 
         X = np.array([[1.0], [2.0], [3.0]])
         y = np.array([1.0, 2.0, 3.0])
@@ -776,7 +778,7 @@ class TestCoverage:
         """Test contextual pipeline decay with explicit rate."""
         arms = make_arms(range(3))
         agent = ContextualAgent(arms, ThompsonSampling())
-        pipeline = ContextualPipeline([("identity", FunctionTransformer())], agent)
+        pipeline = ContextualAgentPipeline([("identity", FunctionTransformer())], agent)
 
         X = np.array([[1.0]])
         pipeline.decay(X, decay_rate=0.7)
@@ -785,7 +787,7 @@ class TestCoverage:
         """Test non-contextual pipeline decay with explicit rate."""
         arms = make_arms(range(3))
         agent = Agent(arms, ThompsonSampling())
-        pipeline = NonContextualPipeline([], agent)
+        pipeline = NonContextualAgentPipeline([], agent)
 
         pipeline.decay(decay_rate=0.7)
 
@@ -795,17 +797,17 @@ class TestCoverage:
         agent = ContextualAgent(arms, ThompsonSampling())
 
         # Empty pipeline (though not allowed by validation)
-        # We'll test NonContextualPipeline which allows empty steps
+        # We'll test NonContextualAgentPipeline which allows empty steps
         arms2 = make_arms(range(3))
         agent2 = Agent(arms2, ThompsonSampling())
-        empty_pipeline = NonContextualPipeline([], agent2)
+        empty_pipeline = NonContextualAgentPipeline([], agent2)
 
         assert len(empty_pipeline) == 0
         assert empty_pipeline.named_steps == {}
 
         # Test negative indexing
         steps = [("a", FunctionTransformer()), ("b", FunctionTransformer())]
-        pipeline = ContextualPipeline(steps, agent)
+        pipeline = ContextualAgentPipeline(steps, agent)
 
         assert pipeline[-1] == steps[-1]
         assert pipeline[-2] == steps[-2]
@@ -814,12 +816,12 @@ class TestCoverage:
         """Test functionality to improve code coverage."""
         arms = make_arms(range(3))
 
-        # Test NonContextualPipeline with non-empty steps (edge case)
+        # Test NonContextualAgentPipeline with non-empty steps (edge case)
         agent = Agent(arms, ThompsonSampling(), random_seed=42)
         steps = [("identity", FunctionTransformer())]
-        pipeline = NonContextualPipeline(steps, agent)
+        pipeline = NonContextualAgentPipeline(steps, agent)
 
-        # Test all delegation methods on NonContextualPipeline
+        # Test all delegation methods on NonContextualAgentPipeline
         assert len(pipeline.arms) == 3
         assert pipeline.arm(0) is not None
         pipeline.select_for_update(1)
@@ -830,7 +832,7 @@ class TestCoverage:
         pipeline.add_arm(new_arm)
         pipeline.remove_arm(99)
 
-        # Test indexing on NonContextualPipeline
+        # Test indexing on NonContextualAgentPipeline
         assert pipeline["identity"] is not None
         assert pipeline[0] == ("identity", steps[0][1])
 
