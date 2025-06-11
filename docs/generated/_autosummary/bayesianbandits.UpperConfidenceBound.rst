@@ -1,4 +1,4 @@
-﻿bayesianbandits.UpperConfidenceBound
+bayesianbandits.UpperConfidenceBound
 ====================================
 
 .. currentmodule:: bayesianbandits
@@ -14,12 +14,17 @@
    .. autosummary::
    
       ~UpperConfidenceBound.__init__
-      ~UpperConfidenceBound.arm_summary
-      ~UpperConfidenceBound.postprocess
+      ~UpperConfidenceBound.select
       ~UpperConfidenceBound.update
    
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~UpperConfidenceBound.samples_needed
    
    

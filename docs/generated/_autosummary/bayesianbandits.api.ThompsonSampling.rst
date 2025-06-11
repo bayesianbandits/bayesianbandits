@@ -1,4 +1,4 @@
-﻿bayesianbandits.api.ThompsonSampling
+bayesianbandits.api.ThompsonSampling
 ====================================
 
 .. currentmodule:: bayesianbandits.api
@@ -14,12 +14,17 @@
    .. autosummary::
    
       ~ThompsonSampling.__init__
-      ~ThompsonSampling.arm_summary
-      ~ThompsonSampling.postprocess
+      ~ThompsonSampling.select
       ~ThompsonSampling.update
    
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~ThompsonSampling.samples_needed
    
    

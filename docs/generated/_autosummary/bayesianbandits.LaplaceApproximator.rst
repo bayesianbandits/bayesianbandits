@@ -1,4 +1,4 @@
-﻿bayesianbandits.LaplaceApproximator
+bayesianbandits.LaplaceApproximator
 ===================================
 
 .. currentmodule:: bayesianbandits

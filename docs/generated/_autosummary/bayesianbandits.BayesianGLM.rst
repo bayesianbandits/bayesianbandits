@@ -1,4 +1,4 @@
-﻿bayesianbandits.BayesianGLM
+bayesianbandits.BayesianGLM
 ===========================
 
 .. currentmodule:: bayesianbandits

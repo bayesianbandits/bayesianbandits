@@ -1,4 +1,4 @@
-﻿bayesianbandits.EXP3A
+bayesianbandits.EXP3A
 =====================
 
 .. currentmodule:: bayesianbandits
@@ -14,10 +14,17 @@
    .. autosummary::
    
       ~EXP3A.__init__
+      ~EXP3A.select
       ~EXP3A.update
    
    
 
    
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+   
+      ~EXP3A.samples_needed
    
    

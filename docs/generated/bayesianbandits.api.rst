@@ -20,6 +20,7 @@
       Agent
       ContextualAgent
       EpsilonGreedy
+      LipschitzContextualAgent
       PolicyDefaultUpdate
       PolicyProtocol
       ThompsonSampling
