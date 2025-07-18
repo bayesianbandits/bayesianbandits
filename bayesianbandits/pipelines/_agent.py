@@ -5,7 +5,6 @@ before delegating to wrapped Agent/ContextualAgent instances. This enables
 efficient preprocessing at the agent level rather than per-arm.
 """
 
-
 from typing import Any, Dict, Generic, List, Optional, Tuple, Union, overload
 
 import numpy as np
@@ -284,9 +283,9 @@ class NonContextualAgentPipeline(Generic[TokenType]):
     def __init__(
         self, steps: List[Tuple[str, Any]], final_agent: Agent[TokenType]
     ) -> None:
-        _validate_steps(
-            steps
-        ) if steps else None  # Allow empty steps for non-contextual
+        (
+            _validate_steps(steps) if steps else None
+        )  # Allow empty steps for non-contextual
         self.steps = steps
         self._agent = final_agent
 

@@ -5,7 +5,7 @@ from ._upper_confidence_bound import UpperConfidenceBound
 
 __all__ = [
     "EXP3A",
-    "EpsilonGreedy", 
+    "EpsilonGreedy",
     "ThompsonSampling",
     "UpperConfidenceBound",
 ]
