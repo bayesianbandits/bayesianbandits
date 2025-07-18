@@ -78,8 +78,13 @@ from ._arm import (
     Learner,
     TokenType,
     _accepts_context,
+    _accepts_context_batch,
     ContextAwareRewardFunction,
     TraditionalRewardFunction,
+    BatchRewardFunction,
+    ContextAwareBatchRewardFunction,
+    batch_identity,
+    is_identity_function,
 )
 from ._arm_featurizer import ArmFeaturizer
 from .policies import (  # noqa: F401
@@ -704,6 +709,12 @@ class LipschitzContextualAgent(Generic[TokenType]):
         Featurizer to transform contexts with arm features in vectorized batches.
     learner : Learner
         Shared learner instance that will be set on all arms.
+    batch_reward_function : Optional[Union[BatchRewardFunction, ContextAwareBatchRewardFunction]], default=None
+        Optional batch reward function that processes all arms at once.
+        If provided, it replaces individual arm reward functions during pull().
+        Must accept (samples, action_tokens) or (samples, action_tokens, X)
+        and return array with shape matching input samples[:3].
+        If None and all arms use identity reward function, automatically optimizes.
     random_seed : Union[int, None, np.random.Generator], default=None
         Seed for the random number generator. If None, a random seed is used.
 
@@ -785,25 +796,63 @@ class LipschitzContextualAgent(Generic[TokenType]):
         policy: PolicyProtocol[Any, TokenType],
         arm_featurizer: ArmFeaturizer[TokenType],
         learner: Learner[Any],
+        batch_reward_function: Optional[
+            Union[BatchRewardFunction, ContextAwareBatchRewardFunction]
+        ] = None,
         random_seed: Union[int, None, np.random.Generator] = None,
     ):
-        self.arms: List[Arm[Any, TokenType]] = list(arms)
         self.policy: PolicyProtocol[Any, TokenType] = policy
         self.arm_featurizer: ArmFeaturizer[TokenType] = arm_featurizer
         self.learner: Learner[Any] = learner
         self.rng: np.random.Generator = np.random.default_rng(random_seed)
+        self.batch_reward_function = batch_reward_function
 
         # Set random state on learner
         self.learner.random_state = self.rng
 
-        # Set the shared learner on all arms
-        for arm in self.arms:
-            arm.learner = self.learner
+        # Initialize arms and set shared learner
+        self.arms: List[Arm[Any, TokenType]] = []
+        for arm in arms:
+            self.add_arm(arm)
 
         if len(self.arms) == 0:
             raise ValueError("At least one arm is required.")
 
+        # Check identity optimization after all arms are added
+        self._check_identity_optimization()
+
+        # Warn if individual functions will be ignored
+        # Only warn if user provided a batch function (not auto-optimized)
+        if batch_reward_function is not None:
+            # Check if any arm has a non-identity reward function
+            if any(not is_identity_function(arm.reward_function) for arm in self.arms):
+                import warnings
+
+                warnings.warn(
+                    "batch_reward_function provided; individual arm reward_functions "
+                    "will be ignored during pull()",
+                    UserWarning,
+                )
+
         self.arm_to_update: Arm[Any, TokenType] = self.arms[0]
+
+    def _check_identity_optimization(self) -> None:
+        """Update batch_reward_function based on current arms."""
+        # Only optimize if batch_reward_function is None (can set to batch_identity)
+        # or is batch_identity (can set to None)
+        if self.batch_reward_function is None:
+            # Check if all arms use the identity function
+            if self.arms and all(
+                is_identity_function(arm.reward_function) for arm in self.arms
+            ):
+                self.batch_reward_function = batch_identity
+        elif self.batch_reward_function is batch_identity:
+            # Check if we should disable optimization
+            if not (
+                self.arms
+                and all(is_identity_function(arm.reward_function) for arm in self.arms)
+            ):
+                self.batch_reward_function = None
 
     def _reshape_samples(
         self, samples: NDArray[np.float64], n_arms: int, n_contexts: int
@@ -857,6 +906,9 @@ class LipschitzContextualAgent(Generic[TokenType]):
         arm.learner = self.learner
         self.arms.append(arm)
 
+        # Recheck identity optimization
+        self._check_identity_optimization()
+
     def remove_arm(self, token: TokenType) -> None:
         """
         Remove an arm from the agent.
@@ -877,6 +929,9 @@ class LipschitzContextualAgent(Generic[TokenType]):
                 break
         else:
             raise KeyError(f"Arm with token {token} not found.")
+
+        # Recheck identity optimization
+        self._check_identity_optimization()
 
     def arm(self, token: TokenType) -> Arm[Any, TokenType]:
         """
@@ -984,21 +1039,45 @@ class LipschitzContextualAgent(Generic[TokenType]):
         samples = self._reshape_samples(samples, len(self.arms), len(X))
         # Shape: (n_arms, n_contexts, size, ...)
 
-        # 5. Apply reward functions (handles multi-output -> single reward)
-        processed_samples: List[NDArray[np.float64]] = []
-        for i, arm in enumerate(self.arms):
-            if _accepts_context(arm.reward_function):
-                # Cast to context-aware function since we verified it accepts context
-                context_func = cast(
-                    ContextAwareRewardFunction[Any], arm.reward_function
+        # 5. Apply reward functions
+        if self.batch_reward_function is not None:
+            # Use efficient batch function
+            expected_shape = samples.shape[:3]  # (n_arms, n_contexts, size)
+
+            if _accepts_context_batch(self.batch_reward_function):
+                # Context-aware batch function
+                context_aware_func = cast(
+                    ContextAwareBatchRewardFunction, self.batch_reward_function
                 )
-                arm_samples = context_func(samples[i], X)
+                result = context_aware_func(samples, action_tokens, X)
             else:
-                # Cast to traditional function
-                traditional_func = cast(TraditionalRewardFunction, arm.reward_function)
-                arm_samples = traditional_func(samples[i])
-            processed_samples.append(arm_samples)
-        samples = np.array(processed_samples)
+                # Traditional batch function
+                traditional_func = cast(BatchRewardFunction, self.batch_reward_function)
+                result = traditional_func(samples, action_tokens)
+
+            # Validate output shape
+            if result.shape[:3] != expected_shape:
+                raise ValueError(
+                    f"batch_reward_function returned wrong shape. "
+                    f"Expected shape[:3]={expected_shape}, got shape={result.shape}"
+                )
+            samples = result
+        else:
+            # Fall back to individual arm functions (existing code)
+            processed_samples: List[NDArray[np.float64]] = []
+            for i, arm in enumerate(self.arms):
+                if _accepts_context(arm.reward_function):
+                    context_func = cast(
+                        ContextAwareRewardFunction[Any], arm.reward_function
+                    )
+                    arm_samples = context_func(samples[i], X)
+                else:
+                    traditional_func = cast(
+                        TraditionalRewardFunction, arm.reward_function
+                    )
+                    arm_samples = traditional_func(samples[i])
+                processed_samples.append(arm_samples)
+            samples = np.array(processed_samples)
         # Final shape: (n_arms, n_contexts, size)
 
         # 6. Let policy select arms
