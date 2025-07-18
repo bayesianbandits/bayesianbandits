@@ -72,7 +72,15 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from ._arm import Arm, ContextType, Learner, TokenType
+from ._arm import (
+    Arm,
+    ContextType,
+    Learner,
+    TokenType,
+    _accepts_context,
+    ContextAwareRewardFunction,
+    TraditionalRewardFunction,
+)
 from ._arm_featurizer import ArmFeaturizer
 from .policies import (  # noqa: F401
     EpsilonGreedy,
@@ -965,9 +973,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
         action_tokens = [arm.action_token for arm in self.arms]
 
         # 2. Enrich context with arm features (VECTORIZED - 1 call for N arms)
-        X_enriched = self.arm_featurizer.transform(
-            X, action_tokens=action_tokens
-        )
+        X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
         # Shape: (n_contexts * n_arms, n_features_enriched)
 
         # 3. Get samples from learner (SINGLE MODEL CALL)
@@ -981,7 +987,16 @@ class LipschitzContextualAgent(Generic[TokenType]):
         # 5. Apply reward functions (handles multi-output -> single reward)
         processed_samples: List[NDArray[np.float64]] = []
         for i, arm in enumerate(self.arms):
-            arm_samples = arm.reward_function(samples[i])
+            if _accepts_context(arm.reward_function):
+                # Cast to context-aware function since we verified it accepts context
+                context_func = cast(
+                    ContextAwareRewardFunction[Any], arm.reward_function
+                )
+                arm_samples = context_func(samples[i], X)
+            else:
+                # Cast to traditional function
+                traditional_func = cast(TraditionalRewardFunction, arm.reward_function)
+                arm_samples = traditional_func(samples[i])
             processed_samples.append(arm_samples)
         samples = np.array(processed_samples)
         # Final shape: (n_arms, n_contexts, size)
@@ -1063,9 +1078,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
         action_tokens = [arm.action_token for arm in self.arms]
 
         # Enrich context with all arm features
-        X_enriched = self.arm_featurizer.transform(
-            X, action_tokens=action_tokens
-        )
+        X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
 
         # Decay the shared learner once
         self.learner.decay(X_enriched, decay_rate=decay_rate)
