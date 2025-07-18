@@ -61,9 +61,11 @@ def mock_model():
     """Create a mock model with sample method"""
     model = Mock()
     model.sample = Mock(
-        side_effect=lambda X, size=1: np.random.randn(size, X.shape[0])
-        if size > 1
-        else np.random.randn(X.shape[0])
+        side_effect=lambda X, size=1: (
+            np.random.randn(size, X.shape[0])
+            if size > 1
+            else np.random.randn(X.shape[0])
+        )
     )
     return model
 

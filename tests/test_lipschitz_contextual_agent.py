@@ -891,3 +891,139 @@ def test_lipschitz_shared_learner_efficiency():
     assert all(
         len(set(context_top_k)) == 10 for context_top_k in top_k_results
     )  # No duplicates
+
+
+def test_context_aware_reward_in_lipschitz_agent() -> None:
+    """Test context-aware reward functions in LipschitzContextualAgent."""
+
+    def age_based_reward(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
+        """Higher rewards for older users."""
+        age_multiplier = X[:, 0] / 50.0  # Assume age is first column
+        return samples * age_multiplier.reshape(-1, 1)
+
+    arms = [
+        Arm(0, reward_function=age_based_reward, learner=None),
+        Arm(1, reward_function=age_based_reward, learner=None),
+    ]
+
+    agent = LipschitzContextualAgent(
+        arms=arms,
+        policy=ThompsonSampling(),
+        arm_featurizer=ArmColumnFeaturizer(),
+        learner=NormalRegressor(alpha=1, beta=1),
+    )
+
+    # Young vs old contexts
+    X = np.array([[25, 50000], [55, 80000]])  # [age, income]
+
+    result = agent.pull(X)
+    assert len(result) == 2
+    assert all(token in [0, 1] for token in result)
+
+
+def test_mixed_reward_functions() -> None:
+    """Test mixing traditional and context-aware reward functions."""
+    identity = lambda samples: samples
+    context_aware = lambda samples, X: samples * 2
+
+    arms = [
+        Arm(0, reward_function=identity, learner=None),
+        Arm(1, reward_function=context_aware, learner=None),
+    ]
+
+    agent = LipschitzContextualAgent(
+        arms=arms,
+        policy=ThompsonSampling(),
+        arm_featurizer=ArmColumnFeaturizer(),
+        learner=NormalRegressor(alpha=1, beta=1),
+    )
+
+    X = np.array([[1.0, 2.0]])
+    result = agent.pull(X)
+    assert len(result) == 1
+    assert result[0] in [0, 1]
+
+
+def test_context_aware_business_rules() -> None:
+    """Test context-aware reward functions with business rules."""
+
+    def business_rule_reward(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
+        """Apply business rules based on user context."""
+        # Assume features are: [age, income, is_premium, location_id]
+        age, income, is_premium, location = X[0, 0], X[0, 1], X[0, 2], X[0, 3]
+
+        # Premium users get higher rewards
+        if is_premium:
+            multiplier = 1.5
+        elif income > 75000:
+            multiplier = 1.2
+        else:
+            multiplier = 1.0
+
+        # Location-based adjustment
+        if location == 1:  # High-value location
+            multiplier *= 1.1
+
+        return samples * multiplier
+
+    arms = [
+        Arm(0, reward_function=business_rule_reward, learner=None),
+        Arm(1, reward_function=business_rule_reward, learner=None),
+        Arm(2, reward_function=lambda samples: samples, learner=None),  # Traditional
+    ]
+
+    agent = LipschitzContextualAgent(
+        arms=arms,
+        policy=ThompsonSampling(),
+        arm_featurizer=ArmColumnFeaturizer(),
+        learner=NormalRegressor(alpha=1, beta=1),
+    )
+
+    # Test different user contexts
+    contexts = [
+        [35, 50000, 0, 0],  # Regular user, low income, regular location
+        [45, 100000, 1, 1],  # Premium user, high income, high-value location
+        [25, 80000, 0, 1],  # Regular user, high income, high-value location
+    ]
+
+    for context in contexts:
+        X = np.array([context])
+        result = agent.pull(X)
+        assert len(result) == 1
+        assert result[0] in [0, 1, 2]
+
+
+def test_context_aware_with_updates() -> None:
+    """Test context-aware reward functions with learning updates."""
+
+    def context_multiplier(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
+        """Simple context-based multiplier."""
+        return samples * X[:, 0].reshape(-1, 1)  # Multiply by first feature
+
+    arms = [
+        Arm(0, reward_function=context_multiplier, learner=None),
+        Arm(1, reward_function=context_multiplier, learner=None),
+    ]
+
+    agent = LipschitzContextualAgent(
+        arms=arms,
+        policy=ThompsonSampling(),
+        arm_featurizer=ArmColumnFeaturizer(),
+        learner=NormalRegressor(alpha=1, beta=1),
+    )
+
+    # Multiple pull-update cycles
+    contexts = np.array([[2.0, 1.0], [3.0, 2.0], [1.5, 0.5]])
+
+    for i, context in enumerate(contexts):
+        X = context.reshape(1, -1)
+        selected_arms = agent.pull(X)
+
+        # Simulate rewards based on the selected arms
+        rewards = np.array([float(i + 1)])  # Increasing rewards
+
+        agent.update(X, selected_arms, rewards)
+
+        # Verify the update was successful
+        assert len(selected_arms) == 1
+        assert selected_arms[0] in [0, 1]

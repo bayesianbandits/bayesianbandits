@@ -378,8 +378,10 @@ class TestTopK:
     @pytest.mark.parametrize("policy_class", [ThompsonSampling, UpperConfidenceBound])
     def test_other_policies_top_k(
         self,
-        policy_class: Type[ThompsonSampling[NDArray[np.float64], int]]
-        | Type[UpperConfidenceBound[NDArray[np.float64], int]],
+        policy_class: (
+            Type[ThompsonSampling[NDArray[np.float64], int]]
+            | Type[UpperConfidenceBound[NDArray[np.float64], int]]
+        ),
     ) -> None:
         """Test that other policies also support top_k."""
         arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]

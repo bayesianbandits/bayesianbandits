@@ -52,15 +52,14 @@ class TestLearnerPipelineInit:
         with pytest.raises(ValueError, match="Step names must be unique"):
             LearnerPipeline(
                 steps=[("dup", StandardScaler()), ("dup", StandardScaler())],
-                learner=mock_learner
+                learner=mock_learner,
             )
 
     def test_valid_initialization_with_transformers(self):
         """Test initialization with transformers."""
         mock_learner = MockLearner()
         pipeline = LearnerPipeline(
-            steps=[("scale", StandardScaler())],
-            learner=mock_learner
+            steps=[("scale", StandardScaler())], learner=mock_learner
         )
 
         assert len(pipeline.steps) == 1
@@ -84,8 +83,7 @@ class TestLearnerPipelineInit:
         """Test valid initialization."""
         mock_learner = MockLearner()
         pipeline = LearnerPipeline(
-            steps=[("scale", StandardScaler())],
-            learner=mock_learner
+            steps=[("scale", StandardScaler())], learner=mock_learner
         )
 
         assert len(pipeline.steps) == 1
@@ -102,7 +100,10 @@ class TestLearnerPipelineTransformers:
             return X * 2
 
         mock_learner = MockLearner()
-        pipeline = LearnerPipeline(steps=[("double", FunctionTransformer(double_transform))], learner=mock_learner)
+        pipeline = LearnerPipeline(
+            steps=[("double", FunctionTransformer(double_transform))],
+            learner=mock_learner,
+        )
 
         X = np.array([[1, 2], [3, 4]])
         y = np.array([1, 2])
@@ -144,7 +145,13 @@ class TestLearnerPipelineTransformers:
             return X * 2
 
         mock_learner = MockLearner()
-        pipeline = LearnerPipeline(steps=[("add", FunctionTransformer(add_one)), ("multiply", FunctionTransformer(multiply_two))], learner=mock_learner)
+        pipeline = LearnerPipeline(
+            steps=[
+                ("add", FunctionTransformer(add_one)),
+                ("multiply", FunctionTransformer(multiply_two)),
+            ],
+            learner=mock_learner,
+        )
 
         X = np.array([[1, 2]])
         y = np.array([1])
@@ -190,10 +197,12 @@ class TestLearnerPipelineTransformers:
     def test_transformer_not_fitted_error(self):
         """Test helpful error message when transformer is not fitted."""
         from sklearn.preprocessing import StandardScaler
-        
+
         mock_learner = MockLearner()
         # Create pipeline with unfitted transformer
-        pipeline = LearnerPipeline(steps=[("unfitted_scaler", StandardScaler())], learner=mock_learner)
+        pipeline = LearnerPipeline(
+            steps=[("unfitted_scaler", StandardScaler())], learner=mock_learner
+        )
 
         X = np.array([[1, 2], [3, 4]])
         y = np.array([1, 2])
@@ -218,7 +227,9 @@ class TestLearnerPipelineInterface:
         # Pre-fit the scaler for testing
         scaler = StandardScaler()
         scaler.fit(np.random.randn(100, 2))  # Fit on dummy data
-        self.pipeline = LearnerPipeline(steps=[("scale", scaler)], learner=self.mock_learner)
+        self.pipeline = LearnerPipeline(
+            steps=[("scale", scaler)], learner=self.mock_learner
+        )
 
     def test_sample_method(self):
         """Test sample method delegates correctly."""
@@ -286,8 +297,7 @@ class TestLearnerPipelineIntegration:
         scaler.fit(np.random.randn(50, 3))  # Fit on dummy data
 
         pipeline = LearnerPipeline(
-            steps=[("scale", scaler)],
-            learner=NormalRegressor(alpha=1.0, beta=1.0)
+            steps=[("scale", scaler)], learner=NormalRegressor(alpha=1.0, beta=1.0)
         )
 
         # Generate training data
@@ -335,7 +345,7 @@ class TestLearnerPipelineIntegration:
 
         shared_learner: LearnerPipeline[NDArray[np.float64]] = LearnerPipeline(
             steps=[("scale", scaler)],  # Pre-fitted scaler
-            learner=NormalRegressor(alpha=1.0, beta=1.0)
+            learner=NormalRegressor(alpha=1.0, beta=1.0),
         )
 
         # Create arms that all share this learner
@@ -375,7 +385,7 @@ class TestLearnerPipelineIntegration:
 
         pipeline = LearnerPipeline(
             steps=[("scale", scaler), ("pca", pca)],
-            learner=NormalRegressor(alpha=0.1, beta=1.0)
+            learner=NormalRegressor(alpha=0.1, beta=1.0),
         )
 
         # High-dimensional data
@@ -419,7 +429,9 @@ class TestLearnerPipelineProperties:
 
     def test_len_method(self):
         """Test __len__ method."""
-        pipeline = LearnerPipeline(steps=[("scale", StandardScaler())], learner=MockLearner())
+        pipeline = LearnerPipeline(
+            steps=[("scale", StandardScaler())], learner=MockLearner()
+        )
         assert len(pipeline) == 1  # Only transformer steps
 
     def test_getitem_method(self):
@@ -436,7 +448,9 @@ class TestLearnerPipelineProperties:
 
     def test_repr_method(self):
         """Test __repr__ method."""
-        pipeline = LearnerPipeline(steps=[("scale", StandardScaler())], learner=MockLearner())
+        pipeline = LearnerPipeline(
+            steps=[("scale", StandardScaler())], learner=MockLearner()
+        )
 
         repr_str = repr(pipeline)
         assert "LearnerPipeline" in repr_str
