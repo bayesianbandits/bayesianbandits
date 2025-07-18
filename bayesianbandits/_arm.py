@@ -41,9 +41,29 @@ ContextAwareRewardFunction = Callable[
 RewardFunction = Union[
     TraditionalRewardFunction, ContextAwareRewardFunction[ContextType]
 ]
+
 TokenType = TypeVar("TokenType")
 X_contra = TypeVar("X_contra", contravariant=True)  # Contravariant for input types
 A = TypeVar("A", bound="Arm[Any, Any]")
+
+# Batch reward function types for LipschitzContextualAgent
+BatchRewardFunction = Callable[
+    [
+        NDArray[np.float64],  # samples: shape (n_arms, n_contexts, size, ...)
+        List[Any],  # action_tokens: length n_arms
+    ],
+    NDArray[np.float64],  # returns: shape (n_arms, n_contexts, size)
+]
+
+# Context-aware batch reward function
+ContextAwareBatchRewardFunction = Callable[
+    [
+        NDArray[np.float64],  # samples: shape (n_arms, n_contexts, size, ...)
+        List[Any],  # action_tokens: length n_arms
+        Sized,  # X: shape (n_contexts, n_features)
+    ],
+    NDArray[np.float64],  # returns: shape (n_arms, n_contexts, size)
+]
 
 # ContextType must be both iterable and have a length
 
@@ -100,8 +120,41 @@ def _accepts_context(
         return False
 
 
+def _accepts_context_batch(
+    func: Union[BatchRewardFunction, ContextAwareBatchRewardFunction],
+) -> TypeGuard[ContextAwareBatchRewardFunction]:
+    """Detect if batch reward function accepts 'X' context parameter."""
+    try:
+        sig = inspect.signature(func)
+        params = list(sig.parameters.keys())
+        # Check if third parameter exists and is named 'X'
+        return len(params) >= 3 and params[2] == "X"
+    except (ValueError, TypeError):
+        return False
+
+
 def identity(x: NDArray[np.float64]) -> NDArray[np.float64]:
     return x
+
+
+def is_identity_function(func: Any) -> bool:
+    """Check if a function is the identity function.
+
+    This handles both direct reference checks and module reloading issues.
+    """
+    return func is identity or (
+        hasattr(func, "__name__")
+        and func.__name__ == "identity"
+        and hasattr(func, "__module__")
+        and func.__module__ == "bayesianbandits._arm"
+    )
+
+
+def batch_identity(
+    samples: NDArray[np.float64], action_tokens: List[Any]
+) -> NDArray[np.float64]:
+    """Batch identity function that ignores action_tokens."""
+    return samples
 
 
 class Arm(Generic[ContextType, TokenType]):
