@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from functools import wraps
 from typing import (
     Any,
@@ -14,6 +15,7 @@ from typing import (
     Union,
     cast,
 )
+from typing_extensions import TypeGuard
 
 import numpy as np
 from numpy.typing import NDArray
@@ -25,20 +27,32 @@ HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 
 P = ParamSpec("P")
 R = TypeVar("R", covariant=True)
-# Reward function must return NDArray to match sample method's return type
-RewardFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
+ContextType = TypeVar("ContextType", bound=Sized)
+
+# Traditional reward function type
+TraditionalRewardFunction = Callable[[NDArray[np.float64]], NDArray[np.float64]]
+
+# Context-aware reward function type
+ContextAwareRewardFunction = Callable[
+    [NDArray[np.float64], ContextType], NDArray[np.float64]
+]
+
+# Union type for backward compatibility
+RewardFunction = Union[
+    TraditionalRewardFunction, ContextAwareRewardFunction[ContextType]
+]
 TokenType = TypeVar("TokenType")
 X_contra = TypeVar("X_contra", contravariant=True)  # Contravariant for input types
 A = TypeVar("A", bound="Arm[Any, Any]")
 
 # ContextType must be both iterable and have a length
-ContextType = TypeVar("ContextType", bound=Sized)
 
 
 class Learner(Protocol[X_contra]):
     """Protocol defining the learner interface with contravariant X type parameter."""
 
     def sample(self, X: X_contra, size: int = 1) -> NDArray[np.float64]: ...
+
     def partial_fit(
         self,
         X: X_contra,
@@ -73,6 +87,17 @@ def requires_learner(
         return func(self, *args, **kwargs)
 
     return wrapper
+
+
+def _accepts_context(
+    func: RewardFunction,
+) -> TypeGuard[ContextAwareRewardFunction[ContextType]]:
+    """Detect if reward function accepts 'X' context parameter."""
+    try:
+        sig = inspect.signature(func)
+        return "X" in sig.parameters
+    except (ValueError, TypeError):
+        return False
 
 
 def identity(x: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -110,7 +135,14 @@ class Arm(Generic[ContextType, TokenType]):
     def sample(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
         """Sample from learner and compute the reward."""
         assert self.learner is not None
-        return self.reward_function(self.learner.sample(X, size))
+        samples = self.learner.sample(X, size)
+
+        if _accepts_context(self.reward_function):
+            # TypeGuard ensures this function accepts context
+            return self.reward_function(samples, X)
+        else:
+            self.reward_function = cast(TraditionalRewardFunction, self.reward_function)
+            return self.reward_function(samples)
 
     @requires_learner
     def update(
@@ -283,6 +315,11 @@ def batch_sample_arms(
     # Pre-allocate result array
     results = np.empty_like(samples)
     for i, arm in enumerate(arms):
-        results[i] = arm.reward_function(samples[i])
+        if _accepts_context(arm.reward_function):
+            # TypeGuard ensures this function accepts context
+            results[i] = arm.reward_function(samples[i], X)
+        else:
+            arm.reward_function = cast(TraditionalRewardFunction, arm.reward_function)
+            results[i] = arm.reward_function(samples[i])
 
     return results
