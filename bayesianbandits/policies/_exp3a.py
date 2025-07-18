@@ -210,16 +210,20 @@ class EXP3A:
         # samples shape: (n_arms, n_contexts, samples_needed)
         # Take mean over samples axis - exactly what __call__ does
         rewards = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
-        
+
         # Exponential weights with numerical stability
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-        
+
         # Compute probabilities
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(arms)
-        
+        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
+            arms
+        )
+
         # Selection logic from current __call__
         if top_k is None:
-            choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])]
+            choices = [
+                rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])
+            ]
             return [arms[i] for i in choices]
         else:
             # Sample k arms without replacement according to probabilities
@@ -227,23 +231,27 @@ class EXP3A:
             for i in range(probs.shape[1]):
                 k = min(top_k, len(arms))
                 context_probs = probs[:, i]
-                
+
                 # Check if we have enough non-zero probabilities for sampling without replacement
                 non_zero_count = np.count_nonzero(context_probs)
-                
+
                 if non_zero_count >= k:
                     # Normal case: we can sample k arms according to probabilities
-                    indices = rng.choice(len(arms), size=k, replace=False, p=context_probs)
+                    indices = rng.choice(
+                        len(arms), size=k, replace=False, p=context_probs
+                    )
                 else:
                     # Edge case: not enough non-zero probabilities
                     # Take all non-zero probability arms, then add random arms to reach k
                     non_zero_indices = np.where(context_probs > 0)[0]
                     zero_indices = np.where(context_probs == 0)[0]
                     remaining_needed = k - len(non_zero_indices)
-                    additional_indices = rng.choice(zero_indices, size=remaining_needed, replace=False)
+                    additional_indices = rng.choice(
+                        zero_indices, size=remaining_needed, replace=False
+                    )
                     indices = np.concatenate([non_zero_indices, additional_indices])
                     rng.shuffle(indices)  # Shuffle to avoid bias in ordering
-                
+
                 results.append([arms[idx] for idx in indices])
             return results
 
