@@ -77,10 +77,7 @@ from ._arm import (
     ContextType,
     Learner,
     TokenType,
-    _accepts_context,
     _accepts_context_batch,
-    ContextAwareRewardFunction,
-    TraditionalRewardFunction,
     BatchRewardFunction,
     ContextAwareBatchRewardFunction,
     batch_identity,
@@ -712,9 +709,26 @@ class LipschitzContextualAgent(Generic[TokenType]):
     batch_reward_function : Optional[Union[BatchRewardFunction, ContextAwareBatchRewardFunction]], default=None
         Optional batch reward function that processes all arms at once.
         If provided, it replaces individual arm reward functions during pull().
-        Must accept (samples, action_tokens) or (samples, action_tokens, X)
-        and return array with shape matching input samples[:3].
-        If None and all arms use identity reward function, automatically optimizes.
+        
+        For traditional batch reward functions, signature is:
+            def batch_reward(samples, action_tokens):
+                # samples: shape (n_arms, n_contexts, size, ...)
+                # action_tokens: list of length n_arms
+                return rewards  # shape (n_arms, n_contexts, size)
+        
+        For context-aware batch reward functions, signature is:
+            def batch_reward(samples, action_tokens, X):
+                # samples: shape (n_arms, n_contexts, size, ...)
+                # action_tokens: list of length n_arms
+                # X: original context, shape (n_contexts, n_features)
+                return rewards  # shape (n_arms, n_contexts, size)
+        
+        The action_tokens list is ordered to match the first dimension of samples.
+        For example, if action_tokens = [5, 2, 8], then samples[0] corresponds 
+        to token 5, samples[1] to token 2, and samples[2] to token 8.
+        
+        If None and all arms use identity reward function, automatically optimizes
+        to use a fast batch identity function.
     random_seed : Union[int, None, np.random.Generator], default=None
         Seed for the random number generator. If None, a random seed is used.
 
@@ -764,6 +778,52 @@ class LipschitzContextualAgent(Generic[TokenType]):
     >>> for token, context, reward in zip(selected_products, X, [1.0, 0.5]):
     ...     agent.select_for_update(token).update(np.atleast_2d(context), np.array([reward]))
 
+    Example with batch reward function for revenue optimization:
+
+    >>> # Pre-compute revenue array for all products (vectorized approach)
+    >>> n_products = 100
+    >>> product_revenues = np.random.uniform(0.5, 3.0, n_products)  # Revenue per product
+    >>> 
+    >>> # Create vectorized batch reward function
+    >>> def revenue_batch_reward(samples, action_tokens):
+    ...     # Direct numpy indexing - fully vectorized
+    ...     multipliers = product_revenues[action_tokens]
+    ...     # Broadcast to match samples shape: (n_arms, n_contexts, size)
+    ...     return samples * multipliers[:, np.newaxis, np.newaxis]
+    >>>
+    >>> # Create agent with batch reward function
+    >>> agent = LipschitzContextualAgent(
+    ...     arms=arms,
+    ...     policy=ThompsonSampling(),
+    ...     arm_featurizer=ArmColumnFeaturizer(column_name="product_id"),
+    ...     learner=NormalRegressor(alpha=1, beta=1),
+    ...     batch_reward_function=revenue_batch_reward
+    ... )
+
+    Example with context-aware batch reward function:
+
+    >>> # Context-aware: calculate gross profit from prices, costs, and taxes
+    >>> # Arms represent different price points
+    >>> price_points = np.array([9.99, 14.99, 19.99, 24.99, 29.99])
+    >>> arms = [Arm(i, learner=None) for i in range(len(price_points))]
+    >>> 
+    >>> def gross_profit_reward(samples, action_tokens, X):
+    ...     # X contains: [customer_value, cost_per_unit, tax_rate]
+    ...     costs = X[:, 1]      # shape: (n_contexts,)
+    ...     tax_rates = X[:, 2]  # shape: (n_contexts,)
+    ...     
+    ...     # Get prices for selected arms
+    ...     prices = price_points[action_tokens]  # shape: (n_arms,)
+    ...     
+    ...     # Vectorized profit calculation for all (arm, context) pairs
+    ...     # Revenue after tax: price * (1 - tax_rate)
+    ...     # Gross profit: revenue_after_tax - cost
+    ...     revenue_after_tax = prices[:, np.newaxis] * (1 - tax_rates[np.newaxis, :])
+    ...     gross_profit = revenue_after_tax - costs[np.newaxis, :]
+    ...     
+    ...     # Apply profit multiplier to samples, clamping negative profits to 0
+    ...     profit_multiplier = np.maximum(gross_profit, 0)
+    ...     return samples * profit_multiplier[:, :, np.newaxis]
 
     Notes
     -----
@@ -1063,19 +1123,12 @@ class LipschitzContextualAgent(Generic[TokenType]):
                 )
             samples = result
         else:
-            # Fall back to individual arm functions (existing code)
+            # Fall back to individual arm functions
+            from ._arm import apply_reward_function
+
             processed_samples: List[NDArray[np.float64]] = []
             for i, arm in enumerate(self.arms):
-                if _accepts_context(arm.reward_function):
-                    context_func = cast(
-                        ContextAwareRewardFunction[Any], arm.reward_function
-                    )
-                    arm_samples = context_func(samples[i], X)
-                else:
-                    traditional_func = cast(
-                        TraditionalRewardFunction, arm.reward_function
-                    )
-                    arm_samples = traditional_func(samples[i])
+                arm_samples = apply_reward_function(arm.reward_function, samples[i], X)
                 processed_samples.append(arm_samples)
             samples = np.array(processed_samples)
         # Final shape: (n_arms, n_contexts, size)

@@ -50,20 +50,67 @@ A = TypeVar("A", bound="Arm[Any, Any]")
 BatchRewardFunction = Callable[
     [
         NDArray[np.float64],  # samples: shape (n_arms, n_contexts, size, ...)
-        List[Any],  # action_tokens: length n_arms
+        List[Any],  # action_tokens: length n_arms (ordered by arm index)
     ],
     NDArray[np.float64],  # returns: shape (n_arms, n_contexts, size)
 ]
+"""
+BatchRewardFunction processes rewards for multiple arms in a single call.
+
+Parameters
+----------
+samples : NDArray[np.float64]
+    Samples from the learner with shape (n_arms, n_contexts, size, ...).
+    The first dimension corresponds to arms in the same order as action_tokens.
+action_tokens : List[Any]
+    List of action tokens, one per arm, in the order corresponding to the
+    arms in the agent's arms list. This order matches the first dimension
+    of the samples array.
+
+Returns
+-------
+NDArray[np.float64]
+    Reward values with shape (n_arms, n_contexts, size), maintaining the
+    same arm ordering as the input.
+
+Notes
+-----
+The action_tokens list is ordered to match the agent's arms list order,
+NOT necessarily in numerical or alphabetical order. For example, if
+arms were added with tokens [5, 2, 8], then action_tokens = [5, 2, 8]
+and samples[0] corresponds to token 5, samples[1] to token 2, etc.
+"""
 
 # Context-aware batch reward function
 ContextAwareBatchRewardFunction = Callable[
     [
         NDArray[np.float64],  # samples: shape (n_arms, n_contexts, size, ...)
-        List[Any],  # action_tokens: length n_arms
+        List[Any],  # action_tokens: length n_arms (ordered by arm index)
         Sized,  # X: shape (n_contexts, n_features)
     ],
     NDArray[np.float64],  # returns: shape (n_arms, n_contexts, size)
 ]
+"""
+Context-aware batch reward function that also receives context information.
+
+Parameters
+----------
+samples : NDArray[np.float64]
+    Samples from the learner with shape (n_arms, n_contexts, size, ...).
+    The first dimension corresponds to arms in the same order as action_tokens.
+action_tokens : List[Any]
+    List of action tokens, one per arm, in the order corresponding to the
+    arms in the agent's arms list.
+X : Sized
+    Original context data with shape (n_contexts, n_features), before
+    arm featurization. This is the same context passed to pull().
+
+Returns
+-------
+NDArray[np.float64]
+    Reward values with shape (n_arms, n_contexts, size), maintaining the
+    same arm ordering as the input.
+"""
 
 # ContextType must be both iterable and have a length
 
@@ -157,6 +204,41 @@ def batch_identity(
     return samples
 
 
+def apply_reward_function(
+    reward_function: RewardFunction,
+    samples: NDArray[np.float64],
+    context: Optional[ContextType] = None,
+) -> NDArray[np.float64]:
+    """
+    Apply a reward function with automatic context detection.
+
+    This wrapper reduces cyclomatic complexity by centralizing the logic
+    for determining whether to pass context to a reward function.
+
+    Parameters
+    ----------
+    reward_function : RewardFunction
+        The reward function to apply
+    samples : NDArray[np.float64]
+        The samples to transform
+    context : Optional[ContextType]
+        The context to pass if the function accepts it
+
+    Returns
+    -------
+    NDArray[np.float64]
+        The transformed samples
+    """
+    if context is not None and _accepts_context(reward_function):
+        # TypeGuard ensures this function accepts context
+        context_func = cast(ContextAwareRewardFunction[ContextType], reward_function)
+        return context_func(samples, context)
+    else:
+        # Traditional function
+        traditional_func = cast(TraditionalRewardFunction, reward_function)
+        return traditional_func(samples)
+
+
 class Arm(Generic[ContextType, TokenType]):
     """Arm of a bandit with type-safe X parameter.
 
@@ -189,13 +271,7 @@ class Arm(Generic[ContextType, TokenType]):
         """Sample from learner and compute the reward."""
         assert self.learner is not None
         samples = self.learner.sample(X, size)
-
-        if _accepts_context(self.reward_function):
-            # TypeGuard ensures this function accepts context
-            return self.reward_function(samples, X)
-        else:
-            self.reward_function = cast(TraditionalRewardFunction, self.reward_function)
-            return self.reward_function(samples)
+        return apply_reward_function(self.reward_function, samples, X)
 
     @requires_learner
     def update(
@@ -368,11 +444,6 @@ def batch_sample_arms(
     # Pre-allocate result array
     results = np.empty_like(samples)
     for i, arm in enumerate(arms):
-        if _accepts_context(arm.reward_function):
-            # TypeGuard ensures this function accepts context
-            results[i] = arm.reward_function(samples[i], X)
-        else:
-            arm.reward_function = cast(TraditionalRewardFunction, arm.reward_function)
-            results[i] = arm.reward_function(samples[i])
+        results[i] = apply_reward_function(arm.reward_function, samples[i], X)
 
     return results

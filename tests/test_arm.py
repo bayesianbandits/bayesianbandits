@@ -152,14 +152,19 @@ class TestContextAwareRewardFunctions:
 
         def premium_user_reward(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
             """Higher rewards for premium users in certain contexts."""
-            age, income, premium_status = X[0, 0], X[0, 1], X[0, 2]
+            # Handle multiple contexts properly
+            result = np.zeros_like(samples)
+            for i in range(X.shape[0]):
+                age, income, premium_status = X[i, 0], X[i, 1], X[i, 2]
 
-            if premium_status and age > 35:
-                return samples * 2.0
-            elif income > 100000:
-                return samples * 1.5
-            else:
-                return samples
+                if premium_status and age > 35:
+                    result[:, i] = samples[:, i] * 2.0
+                elif income > 100000:
+                    result[:, i] = samples[:, i] * 1.5
+                else:
+                    result[:, i] = samples[:, i]
+
+            return result
 
         from bayesianbandits import NormalRegressor
 
@@ -184,7 +189,6 @@ class TestContextAwareRewardFunctions:
 
         def fixed_reward_table(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
             """Fixed rewards based on context lookup."""
-            context_key = tuple(X[0])
             reward_table = {
                 (25, 50000): 5.0,
                 (35, 75000): 8.0,
@@ -192,8 +196,14 @@ class TestContextAwareRewardFunctions:
             }
             default_reward = 3.0
 
-            reward_value = reward_table.get(context_key, default_reward)
-            return np.full_like(samples, reward_value)
+            # Handle multiple contexts
+            result = np.zeros_like(samples)
+            for i in range(X.shape[0]):
+                context_key = tuple(X[i])
+                reward_value = reward_table.get(context_key, default_reward)
+                result[:, i] = reward_value
+
+            return result
 
         from bayesianbandits import NormalRegressor
 
