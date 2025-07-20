@@ -152,29 +152,18 @@ class TestContextAwareRewardFunctions:
 
         def premium_user_reward(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
             """Higher rewards for premium users in certain contexts."""
-            # Handle single context for backward compatibility
-            if X.shape[0] == 1:
-                age, income, premium_status = X[0, 0], X[0, 1], X[0, 2]
-                
-                if premium_status and age > 35:
-                    return samples * 2.0
-                elif income > 100000:
-                    return samples * 1.5
-                else:
-                    return samples
-            
             # Handle multiple contexts properly
             result = np.zeros_like(samples)
             for i in range(X.shape[0]):
                 age, income, premium_status = X[i, 0], X[i, 1], X[i, 2]
-                
+
                 if premium_status and age > 35:
                     result[:, i] = samples[:, i] * 2.0
                 elif income > 100000:
                     result[:, i] = samples[:, i] * 1.5
                 else:
                     result[:, i] = samples[:, i]
-            
+
             return result
 
         from bayesianbandits import NormalRegressor
@@ -206,20 +195,14 @@ class TestContextAwareRewardFunctions:
                 (45, 100000): 10.0,
             }
             default_reward = 3.0
-            
-            # Handle single context
-            if X.shape[0] == 1:
-                context_key = tuple(X[0])
-                reward_value = reward_table.get(context_key, default_reward)
-                return np.full_like(samples, reward_value)
-            
+
             # Handle multiple contexts
             result = np.zeros_like(samples)
             for i in range(X.shape[0]):
                 context_key = tuple(X[i])
                 reward_value = reward_table.get(context_key, default_reward)
                 result[:, i] = reward_value
-            
+
             return result
 
         from bayesianbandits import NormalRegressor
@@ -239,4 +222,3 @@ class TestContextAwareRewardFunctions:
         X_unknown = np.array([[20, 30000]])
         result = arm.sample(X_unknown, size=1)
         assert result.shape == (1, 1)
-
