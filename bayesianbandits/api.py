@@ -709,24 +709,24 @@ class LipschitzContextualAgent(Generic[TokenType]):
     batch_reward_function : Optional[Union[BatchRewardFunction, ContextAwareBatchRewardFunction]], default=None
         Optional batch reward function that processes all arms at once.
         If provided, it replaces individual arm reward functions during pull().
-        
+
         For traditional batch reward functions, signature is:
             def batch_reward(samples, action_tokens):
                 # samples: shape (n_arms, n_contexts, size, ...)
                 # action_tokens: list of length n_arms
                 return rewards  # shape (n_arms, n_contexts, size)
-        
+
         For context-aware batch reward functions, signature is:
             def batch_reward(samples, action_tokens, X):
                 # samples: shape (n_arms, n_contexts, size, ...)
                 # action_tokens: list of length n_arms
                 # X: original context, shape (n_contexts, n_features)
                 return rewards  # shape (n_arms, n_contexts, size)
-        
+
         The action_tokens list is ordered to match the first dimension of samples.
-        For example, if action_tokens = [5, 2, 8], then samples[0] corresponds 
+        For example, if action_tokens = [5, 2, 8], then samples[0] corresponds
         to token 5, samples[1] to token 2, and samples[2] to token 8.
-        
+
         If None and all arms use identity reward function, automatically optimizes
         to use a fast batch identity function.
     random_seed : Union[int, None, np.random.Generator], default=None
@@ -783,7 +783,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
     >>> # Pre-compute revenue array for all products (vectorized approach)
     >>> n_products = 100
     >>> product_revenues = np.random.uniform(0.5, 3.0, n_products)  # Revenue per product
-    >>> 
+    >>>
     >>> # Create vectorized batch reward function
     >>> def revenue_batch_reward(samples, action_tokens):
     ...     # Direct numpy indexing - fully vectorized
@@ -806,21 +806,21 @@ class LipschitzContextualAgent(Generic[TokenType]):
     >>> # Arms represent different price points
     >>> price_points = np.array([9.99, 14.99, 19.99, 24.99, 29.99])
     >>> arms = [Arm(i, learner=None) for i in range(len(price_points))]
-    >>> 
+    >>>
     >>> def gross_profit_reward(samples, action_tokens, X):
     ...     # X contains: [customer_value, cost_per_unit, tax_rate]
     ...     costs = X[:, 1]      # shape: (n_contexts,)
     ...     tax_rates = X[:, 2]  # shape: (n_contexts,)
-    ...     
+    ...
     ...     # Get prices for selected arms
     ...     prices = price_points[action_tokens]  # shape: (n_arms,)
-    ...     
+    ...
     ...     # Vectorized profit calculation for all (arm, context) pairs
     ...     # Revenue after tax: price * (1 - tax_rate)
     ...     # Gross profit: revenue_after_tax - cost
     ...     revenue_after_tax = prices[:, np.newaxis] * (1 - tax_rates[np.newaxis, :])
     ...     gross_profit = revenue_after_tax - costs[np.newaxis, :]
-    ...     
+    ...
     ...     # Apply profit multiplier to samples, clamping negative profits to 0
     ...     profit_multiplier = np.maximum(gross_profit, 0)
     ...     return samples * profit_multiplier[:, :, np.newaxis]
@@ -1213,4 +1213,4 @@ class LipschitzContextualAgent(Generic[TokenType]):
         X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
 
         # Decay the shared learner once
-        self.learner.decay(X_enriched, decay_rate=decay_rate)
+        self.learner.decay(X_enriched[0], decay_rate=decay_rate)
