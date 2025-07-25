@@ -1202,15 +1202,15 @@ class LipschitzContextualAgent(Generic[TokenType]):
 
         Notes
         -----
-        This method enriches contexts with ALL arms' features and applies
-        decay to the shared learner once. This is more efficient than
-        decaying each arm separately.
+        This method enriches contexts with a single arm's features and applies
+        decay to the shared learner once. This ensures we decay based on the
+        number of contexts, not the number of arms.
         """
-        # Get all action tokens
-        action_tokens = [arm.action_token for arm in self.arms]
+        # Use any single arm's token - we just need the enriched shape for one arm
+        single_token = [self.arms[0].action_token]
 
-        # Enrich context with all arm features
-        X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
+        # Enrich context with single arm features
+        X_enriched = self.arm_featurizer.transform(X, action_tokens=single_token)
 
         # Decay the shared learner once
-        self.learner.decay(X_enriched[0], decay_rate=decay_rate)
+        self.learner.decay(X_enriched, decay_rate=decay_rate)
