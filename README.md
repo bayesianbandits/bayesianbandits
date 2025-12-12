@@ -24,7 +24,7 @@ While the API is still evolving, this library is already being used in productio
 
 ## Compatibility
 
-`bayesianbandits` is tested with Python 3.10, 3.11, 3.12 and 3.13 with `scikit-learn` 1.4.2, 1.5.2, 1.6.1, 1.7.2.
+`bayesianbandits` is tested with Python 3.10, 3.11, 3.12, 3.13, and 3.14 with `scikit-learn` 1.5.2, 1.6.1, 1.7.2, 1.8.0.
 
 ## Getting Started
 
