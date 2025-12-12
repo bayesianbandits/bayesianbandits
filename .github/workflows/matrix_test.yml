@@ -14,20 +14,15 @@ jobs:
         include:
 
           - python-version: '3.10'
-            sklearn-version: '1.4.2'
-          - python-version: '3.11'
-            sklearn-version: '1.4.2'
-          - python-version: '3.12'
-            sklearn-version: '1.4.2'
-
-          - python-version: '3.10'
             sklearn-version: '1.5.2'
           - python-version: '3.11'
             sklearn-version: '1.5.2'
           - python-version: '3.12'
             sklearn-version: '1.5.2'
           - python-version: '3.13'
-            sklearn-version: '1.5.2'            
+            sklearn-version: '1.5.2'
+          - python-version: '3.14'
+            sklearn-version: '1.5.2'          
 
           - python-version: '3.10'
             sklearn-version: '1.6.1'
@@ -37,6 +32,8 @@ jobs:
             sklearn-version: '1.6.1'
           - python-version: '3.13'
             sklearn-version: '1.6.1'
+          - python-version: '3.14'
+            sklearn-version: '1.6.1'
 
           - python-version: '3.10'
             sklearn-version: '1.7.2'
@@ -45,7 +42,20 @@ jobs:
           - python-version: '3.12'
             sklearn-version: '1.7.2'
           - python-version: '3.13'
-            sklearn-version: '1.7.2'  
+            sklearn-version: '1.7.2'
+          - python-version: '3.14'
+            sklearn-version: '1.7.2'
+
+          - python-version: '3.10'
+            sklearn-version: '1.8.0'
+          - python-version: '3.11'
+            sklearn-version: '1.8.0'
+          - python-version: '3.12'
+            sklearn-version: '1.8.0'
+          - python-version: '3.13'
+            sklearn-version: '1.8.0'
+          - python-version: '3.14'
+            sklearn-version: '1.8.0'
 
     steps:
     - uses: actions/checkout@v4
