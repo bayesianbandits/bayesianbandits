@@ -32,7 +32,7 @@ from scipy.stats._multivariate import _squeeze_output  # type: ignore
 use_solver(useUmfpack=False)
 
 try:
-    from sksparse.cholmod import cholesky as cholmod_cholesky  # type: ignore
+    from sksparse.cholmod import cho_factor as cholmod_cho_factor  # type: ignore
 
     use_cholmod = True
 except ImportError:
@@ -55,7 +55,7 @@ else:
     solver = SparseSolver.SUPERLU
 
 if TYPE_CHECKING:
-    from sksparse.cholmod import cholesky as cholmod_cholesky  # type: ignore
+    from sksparse.cholmod import cho_factor as cholmod_cho_factor  # type: ignore
 
     # This helps Pylance understand that solver can be either SparseSolver.SUPERLU or SparseSolver.CHOLMOD.
     # For some reason, without this cast, it thinks solver is always SparseSolver.SUPERLU.
@@ -76,10 +76,11 @@ class SparseMatrixProtocol(Protocol[SM, SM_T]):
 
 
 class SparseCholeskyDecompositionOBject(Protocol):
-    def solve_Lt(
-        self, b: NDArray[np.float64], use_LDLt_decomposition: bool
+    @property
+    def perm(self) -> NDArray[np.int_]: ...
+    def solve(
+        self, b: NDArray[np.float64], system: str = ...
     ) -> NDArray[np.float64]: ...
-    def apply_Pt(self, x: NDArray[np.float64]) -> NDArray[np.float64]: ...
 
 
 class SuperLUObject(Protocol):
@@ -130,7 +131,7 @@ class CovViaSparsePrecision(Covariance):
     random variable X has the precision matrix P.
 
     If using suitesparse, this is done by computing the Cholesky decomposition
-    of P, which may or may not be permuted. CHOLMOD's solve_Lt solves W^T X = Z
+    of P, which may or may not be permuted. CHOLMOD's solve(Z, system="Lt") solves W^T X = Z
     to color X with the permuted precision matrix P'. This P' is the precision
     matrix we would have gotten if we'd reordered the features of the training
     data to be in the order given by the permutation. Therefore, we need only
@@ -156,7 +157,7 @@ class CovViaSparsePrecision(Covariance):
 
         if self.solver == SparseSolver.CHOLMOD:
             self._W: LUObject | SparseCholeskyDecompositionOBject = cast(
-                SparseCholeskyDecompositionOBject, cholmod_cholesky(csc_matrix(prec))
+                SparseCholeskyDecompositionOBject, cholmod_cho_factor(csc_matrix(prec))
             )
 
         else:
@@ -199,7 +200,8 @@ class CovViaSparsePrecision(Covariance):
     def colorize_solve(self) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
         w: LUObject | SparseCholeskyDecompositionOBject = self._W
         if self._is_cholmod(w):
-            return lambda x: w.apply_Pt(w.solve_Lt(x, False))
+            inv_perm = np.argsort(w.perm)
+            return lambda x: w.solve(x, system="Lt")[inv_perm]
         else:
             assert isinstance(w, LUObject)
             return lambda x: w.solve_system(x)

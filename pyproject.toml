@@ -33,7 +33,7 @@ dev = [
     "pandas>=2.2.3",
     "pyright==1.1.402",
 ]
-cholmod = ["scikit-sparse>=0.4.15,<0.5"]
+cholmod = ["scikit-sparse>=0.5.0,<0.6"]
 
 [tool.uv]
 default-groups = [
