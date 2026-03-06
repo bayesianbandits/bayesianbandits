@@ -1119,9 +1119,9 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if self.sparse:
             # Update the mean vector
             if solver == SparseSolver.CHOLMOD:
-                from sksparse.cholmod import cholesky as cholmod_cholesky
+                from sksparse.cholmod import cho_factor as cholmod_cho_factor
 
-                m_n = cholmod_cholesky(csc_matrix(V_n))(
+                m_n = cholmod_cho_factor(csc_matrix(V_n)).solve(
                     prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
                 )
             else:

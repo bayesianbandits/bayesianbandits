@@ -65,9 +65,9 @@ def solve_precision_weighted_mean(
     """Solve precision @ mu = eta for mu."""
     if sparse:
         if solver == SparseSolver.CHOLMOD:
-            from sksparse.cholmod import cholesky as cholmod_cholesky
+            from sksparse.cholmod import cho_factor as cholmod_cho_factor
 
-            return cholmod_cholesky(csc_matrix(precision))(eta)
+            return cholmod_cho_factor(csc_matrix(precision)).solve(eta)
         else:
             lu = splu(
                 precision,
