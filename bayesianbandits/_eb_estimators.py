@@ -141,11 +141,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         self.beta = beta_new
         return log_ev
 
-    def _eb_mackay_step_online(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-    ) -> None:
+    def _eb_mackay_step_online(self) -> None:
         """MacKay step using accumulated sufficient statistics for beta."""
         alpha_new, beta_new = mackay_update_normal_online(
             self.coef_,
@@ -312,7 +308,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             # Accumulate sufficient statistics for the beta update.
             self._accumulate_stats(X_fit, y, prior_decay)
 
-        self._eb_mackay_step_online(X_fit, y)
+        self._eb_mackay_step_online()
         self._correct_precision(alpha_old, beta_old)
 
         return result
