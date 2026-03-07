@@ -18,7 +18,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 )
 def suitesparse_envvar(request):
     """Test with different sparse solvers."""
-    with mock.patch("bayesianbandits._gaussian.solver", request.param):
+    with mock.patch("bayesianbandits._sparse_bayesian_linear_regression.solver", request.param):
         yield
 
 
@@ -471,7 +471,7 @@ def test_bayesian_glm_serialization_after_sample(binary_data, sparse: bool) -> N
     )
     clf.fit(X_fit, y)
 
-    # Access cov_ (creates CovViaSparsePrecision with C objects for sparse)
+    # Access cov_ (creates SparseFactor with C objects for sparse)
     _ = clf.cov_
     # Also sample, which accesses cov_ internally
     clf.sample(X_fit[:5], size=5)

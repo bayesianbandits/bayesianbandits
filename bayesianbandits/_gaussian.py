@@ -3,11 +3,9 @@ from typing import Literal, NamedTuple, Optional, Protocol, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.sparse import csc_array, csc_matrix
-from scipy.sparse.linalg import splu
+from scipy.sparse import csc_array
 from scipy.special import expit
 
-from ._sparse_bayesian_linear_regression import SparseSolver, solver
 
 # Type aliases
 ArrayType = Union[NDArray[np.float64], csc_array]
@@ -64,23 +62,10 @@ def solve_precision_weighted_mean(
 ) -> NDArray[np.float64]:
     """Solve precision @ mu = eta for mu."""
     if sparse:
-        if solver == SparseSolver.CHOLMOD:
-            from sksparse.cholmod import cho_factor as cholmod_cho_factor
+        from ._sparse_bayesian_linear_regression import create_sparse_factor
 
-            return cholmod_cho_factor(csc_matrix(precision)).solve(eta)
-        else:
-            lu = splu(
-                precision,
-                # These two settings tell SuperLU that we're decomposing a Hermitian
-                # positive-definite matrix, so we only want to pivot on the diagonal.
-                # This preserves the sparsity of the matrix better than the default,
-                # which allows for off-diagonal pivoting. See SuperLU User Guide
-                # for more details.
-                diag_pivot_thresh=0.0,
-                permc_spec="MMD_AT_PLUS_A",
-                options=dict(SymmetricMode=True),
-            )
-            return lu.solve(eta)
+        assert isinstance(precision, csc_array)
+        return create_sparse_factor(precision).solve(eta)
     else:
         from scipy.linalg import solve
 

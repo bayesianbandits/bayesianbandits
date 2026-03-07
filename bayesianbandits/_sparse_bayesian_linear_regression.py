@@ -1,16 +1,10 @@
 import os
 from dataclasses import dataclass
 from enum import Enum
-from functools import cached_property
 from typing import (
     TYPE_CHECKING,
-    Callable,
-    Final,
+    Any,
     Literal,
-    Protocol,
-    Tuple,
-    TypeGuard,
-    TypeVar,
     Union,
     cast,
 )
@@ -22,12 +16,9 @@ from scipy.sparse import (  # type: ignore  # type: ignore
     csc_matrix,
     csr_matrix,
     diags,  # type: ignore
-    eye,  # type: ignore
     issparse,  # type: ignore
 )
 from scipy.sparse.linalg import splu, spsolve, use_solver  # type: ignore
-from scipy.stats import Covariance  # type: ignore
-from scipy.stats._multivariate import _squeeze_output  # type: ignore
 
 use_solver(useUmfpack=False)
 
@@ -63,176 +54,77 @@ if TYPE_CHECKING:
         Literal[SparseSolver.SUPERLU, SparseSolver.CHOLMOD], solver
     )  # type: ignore
 
-SM = TypeVar("SM", bound="Union[csc_matrix, csr_matrix]")
-SM_T = TypeVar("SM_T", bound="Union[csc_matrix, csr_matrix]")
 
+@dataclass
+class CholmodSparseFactor:
+    """Wraps a CHOLMOD factor for solving and sampling."""
 
-class SparseMatrixProtocol(Protocol[SM, SM_T]):
-    shape: tuple[int, int]
-    T: SM_T
+    _factor: Any  # sksparse.cholmod.Factor (C extension, no useful type)
+    _precision: csc_array
 
-    def dot(self, other: Union[SM, NDArray[np.float64]]) -> SM: ...
-    def diagonal(self) -> NDArray[np.float64]: ...
+    def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        return self._factor.solve(b)
 
-
-class SparseCholeskyDecompositionOBject(Protocol):
-    @property
-    def perm(self) -> NDArray[np.int_]: ...
-    def solve(
-        self, b: NDArray[np.float64], system: str = ...
-    ) -> NDArray[np.float64]: ...
-
-
-class SuperLUObject(Protocol):
-    L: SparseMatrixProtocol[csr_matrix, csc_matrix]
-    U: SparseMatrixProtocol[csr_matrix, csc_matrix]
-    perm_r: NDArray[np.int_]
-    perm_c: NDArray[np.int_]
+    def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Solve L^T x = z, undo permutation."""
+        inv_perm = np.argsort(self._factor.perm)
+        return self._factor.solve(z, system="Lt")[inv_perm]
 
 
 @dataclass
-class LUObject:
-    L: SparseMatrixProtocol[csr_matrix, csc_matrix]
-    Pr: SparseMatrixProtocol[csc_matrix, csr_matrix]
+class SuperLUSparseFactor:
+    """Wraps SuperLU decomposition for solving and sampling."""
 
-    def solve_system(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
-        return cast(NDArray[np.float64], self.Pr.T @ spsolve(self.L.T, x))
+    _L: csr_matrix
+    _Pr: csc_matrix
+    _precision: csc_array
+
+    def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        return cast(NDArray[np.float64], spsolve(self._precision, b))
+
+    def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Solve L^T x = z, undo permutation."""
+        return cast(NDArray[np.float64], self._Pr.T @ spsolve(self._L.T, z))
 
 
-class CovViaSparsePrecision(Covariance):
-    """Covariance class for sparse precision matrices.
+SparseFactor = CholmodSparseFactor | SuperLUSparseFactor
 
-    Parameters
-    ----------
-    prec : csc_array
-        Sparse precision matrix.
-    use_suitesparse : bool, optional
-        Whether to use the sksparse.cholmod module for solving linear systems.
-        If False, use scipy.sparse.linalg.splu instead. Default is True if
-        sksparse.cholmod is installed, False otherwise.
 
-    Raises
-    ------
-    ValueError
-        If prec is not a sparse array.
-    ValueError
-        If prec is not symmetric.
-
-    Notes
-    -----
-    This class is used to colorize samples from a standard normal distribution
-    with a sparse precision matrix. The precision matrix is assumed to be
-    positive-definite, because our Bayesian linear regression models always
-    have positive-definite precision matrices (due to the prior).
-
-    A coloring transform from a precision matrix is performed by first finding
-    a factor W such that W W^T = P. Then, the colorizing transform is given by
-    W^T X = Z, where Z is a standard normal random variable. The resulting
-    random variable X has the precision matrix P.
-
-    If using suitesparse, this is done by computing the Cholesky decomposition
-    of P, which may or may not be permuted. CHOLMOD's solve(Z, system="Lt") solves W^T X = Z
-    to color X with the permuted precision matrix P'. This P' is the precision
-    matrix we would have gotten if we'd reordered the features of the training
-    data to be in the order given by the permutation. Therefore, we need only
-    apply the inverse permutation to X to get samples colored with our actual
-    precision matrix P.
-
-    If not using suitesparse, this is done by computing the LU decomposition
-    using SuperLU. By telling SuperLU that the matrix is symmetric by setting
-    options=dict(SymmetricMode=True), diag_pivot_thresh=0, and
-    permc_spec="MMD_AT_PLUS_A", we can prevent partial pivoting and get a
-    symmetric factorization L L^T = P', where P' is some permutation of P.
-    L^T X = Z is solved to color X with the permuted precision matrix P', same
-    as with suitesparse. The inverse permutation is applied to X to get samples
-    colored with the original precision matrix P.
-    """
-
-    def __init__(self, prec: csc_array, solver: SparseSolver = solver):
-        if not issparse(prec):
-            raise TypeError("prec must be a sparse array")
-
-        self.solver: Final[SparseSolver] = solver
-        self._precision: Final[csc_array] = prec
-
-        if self.solver == SparseSolver.CHOLMOD:
-            self._W: LUObject | SparseCholeskyDecompositionOBject = cast(
-                SparseCholeskyDecompositionOBject, cholmod_cho_factor(csc_matrix(prec))
-            )
-
-        else:
-            # Tells SuperLU that we have a symmetric matrix and we only want to pivot on the diagonal
-            splu_ = cast(
-                SuperLUObject,
-                splu(
-                    prec,
-                    diag_pivot_thresh=0,
-                    permc_spec="MMD_AT_PLUS_A",
-                    options=dict(SymmetricMode=True),
-                ),
-            )
-            if (splu_.perm_r != splu_.perm_c).any():
-                raise ValueError("W must be symmetric")
-
-            self._W = LUObject(  # type: ignore
-                L=cast(
-                    SparseMatrixProtocol[csr_matrix, csc_matrix],
-                    splu_.L.dot(diags(np.sqrt(splu_.U.diagonal()))),  # type: ignore
-                ),
-                Pr=cast(
-                    SparseMatrixProtocol[csc_matrix, csr_matrix],
-                    csc_matrix(
-                        (
-                            np.ones(splu_.L.shape[0]),
-                            (splu_.perm_r, np.arange(splu_.L.shape[0])),
-                        )
-                    ),
-                ),
-            )
-
-        self._rank = cast(Tuple[int, ...], prec.shape)[
-            -1
-        ]  # must be full rank for cholesky
-        self._shape = prec.shape
-        self._allow_singular = False
-
-    @property
-    def colorize_solve(self) -> Callable[[NDArray[np.float64]], NDArray[np.float64]]:
-        w: LUObject | SparseCholeskyDecompositionOBject = self._W
-        if self._is_cholmod(w):
-            inv_perm = np.argsort(w.perm)
-            return lambda x: w.solve(x, system="Lt")[inv_perm]
-        else:
-            assert isinstance(w, LUObject)
-            return lambda x: w.solve_system(x)
-
-    @cached_property
-    def _covariance(self) -> csc_array:
-        prec_shape: Tuple[int, ...] = cast(Tuple[int, ...], self._precision.shape)
-        return cast(
-            csc_array, spsolve(self._precision, eye(prec_shape[0], format="csc"))
+def create_sparse_factor(
+    precision: csc_array, solver: Union[SparseSolver, None] = None
+) -> SparseFactor:
+    """Create a SparseFactor from a precision matrix."""
+    if solver is None:
+        solver = globals()["solver"]
+    if not issparse(precision):
+        raise TypeError("precision must be a sparse array")
+    if solver == SparseSolver.CHOLMOD:
+        return CholmodSparseFactor(
+            _factor=cholmod_cho_factor(csc_matrix(precision)),
+            _precision=precision,
         )
+    else:
+        splu_ = splu(
+            precision,
+            diag_pivot_thresh=0,
+            permc_spec="MMD_AT_PLUS_A",
+            options=dict(SymmetricMode=True),
+        )
+        if (splu_.perm_r != splu_.perm_c).any():
+            raise ValueError("Matrix must be symmetric")
+        L = splu_.L.dot(diags(np.sqrt(splu_.U.diagonal())))
+        Pr = csc_matrix(
+            (
+                np.ones(splu_.L.shape[0]),
+                (splu_.perm_r, np.arange(splu_.L.shape[0])),
+            )
+        )
+        return SuperLUSparseFactor(_L=L, _Pr=Pr, _precision=precision)
 
-    def _whiten(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
-        raise NotImplementedError("Not implemented for sparse matrices")
 
-    def _colorize(self, x: NDArray[np.float64]) -> NDArray[np.float64]:
-        samples = self.colorize_solve(x.T).T
-        # csc_arrray and csc_matrix have different behavior, so CHOLMOD doesn't
-        # auto-squeeze the output. We do it here.
-        if samples.shape[0] == 1:
-            return samples[0]
-        return samples
-
-    def _is_cholmod(
-        self, obj: SparseCholeskyDecompositionOBject | LUObject
-    ) -> TypeGuard[SparseCholeskyDecompositionOBject]:
-        return self.solver == SparseSolver.CHOLMOD
-
-
-def multivariate_normal_sample_from_sparse_covariance(
+def multivariate_normal_sample_from_sparse_precision(
     mean: Union[csc_array, NDArray[np.float64], None],
-    cov: Covariance,
+    factor: SparseFactor,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
 ) -> NDArray[np.float64]:
@@ -244,8 +136,8 @@ def multivariate_normal_sample_from_sparse_covariance(
     ----------
     mean : array_like, optional
         Mean of the distribution. Default is 0.
-    prec : array_like
-        Precision matrix of the distribution. Ideally a csc sparse array.
+    factor : SparseFactor
+        Factored precision matrix.
     size : int or tuple of ints, optional
         Given a shape of, for example, (m,n,k), m*n*k samples are generated,
         and packed in an m-by-n-by-k arrangement. Because each sample is
@@ -264,28 +156,20 @@ def multivariate_normal_sample_from_sparse_covariance(
         shape is (N,).
 
     """
-    # Set the random state
     rng = np.random.default_rng(random_state)
-
-    # Compute size from the shape of Q plus the size parameter
-    gen_size = cast(Tuple[int, int], (size,) + (cov.shape[-1],))  # type: ignore
-
-    # Sample Z from a standard multivariate normal distribution
-    _Z = rng.standard_normal(gen_size)
-
-    # Colorize Z
-    _y: NDArray[np.float64] = cast(NDArray[np.float64], cov.colorize(_Z))  # type: ignore
-
-    # Add the mean vector to each sample if provided
+    n_features = cast(tuple[int, int], factor._precision.shape)[0]
+    _Z = rng.standard_normal((size, n_features))
+    samples = factor.colorize(_Z.T).T
+    if samples.shape[0] == 1:
+        samples = samples[0]
     if mean is not None:
-        _y += mean  # type: ignore
+        samples = samples + mean
+    return samples
 
-    return cast(NDArray[np.float64], _y)
 
-
-def multivariate_t_sample_from_sparse_covariance(
+def multivariate_t_sample_from_sparse_precision(
     loc: Union[csc_array, NDArray[np.float64], None],
-    shape: Covariance,
+    factor: SparseFactor,
     df: float = 1.0,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
@@ -298,8 +182,8 @@ def multivariate_t_sample_from_sparse_covariance(
     ----------
     loc : array_like
         Mean of the distribution.
-    shape_inv_ : array_like
-        Inverse of the shape matrix of the distribution. Ideally a csc sparse array.
+    factor : SparseFactor
+        Factored precision (inverse shape) matrix.
     df : int or float, optional
         Degrees of freedom of the distribution. Default is 1.
     size : int or tuple of ints, optional
@@ -321,18 +205,18 @@ def multivariate_t_sample_from_sparse_covariance(
 
 
     """
-
-    # Set the random state
     rng = np.random.default_rng(random_state)
 
     x = rng.chisquare(df, size) / df
 
-    z = multivariate_normal_sample_from_sparse_covariance(
-        mean=None, cov=shape, size=size, random_state=random_state
+    z = multivariate_normal_sample_from_sparse_precision(
+        mean=None, factor=factor, size=size, random_state=random_state
     )
     if loc is None:
         loc = np.zeros_like(z)
     samples = cast(NDArray[np.float64], loc + z / np.sqrt(x)[..., None])
+    from scipy.stats._multivariate import _squeeze_output  # type: ignore
+
     samples = _squeeze_output(samples)
 
     return samples

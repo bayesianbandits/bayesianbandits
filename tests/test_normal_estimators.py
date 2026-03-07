@@ -26,7 +26,7 @@ suitespare_envvar_params = [
 )
 def suitesparse_envvar(request):
     """Allows running test suite with and without CHOLMOD."""
-    with mock.patch("bayesianbandits._estimators.solver", request.param):
+    with mock.patch("bayesianbandits._sparse_bayesian_linear_regression.solver", request.param):
         yield
 
 
