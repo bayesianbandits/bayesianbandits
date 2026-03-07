@@ -965,6 +965,18 @@ class TestErrorPaths:
         with pytest.raises(TypeError, match="precision must be sparse"):
             trace_of_inverse(np.eye(3), sparse=True)
 
+    def test_factorization_stats_sparse_with_dense_raises_typeerror(self) -> None:
+        """_factorization_stats TypeError via mackay_update_normal with dense + sparse=True."""
+        rng = np.random.default_rng(42)
+        p = 3
+        X = rng.standard_normal((10, p))
+        y = rng.standard_normal(10)
+        mu_n = rng.standard_normal(p)
+        precision = np.eye(p)
+
+        with pytest.raises(TypeError, match="precision must be sparse"):
+            mackay_update_normal(mu_n, precision, X, y, 1.0, 1.0, sparse=True)
+
     def test_mackay_glm_unknown_link_raises(self) -> None:
         rng = np.random.default_rng(42)
         p = 3
@@ -975,3 +987,17 @@ class TestErrorPaths:
 
         with pytest.raises(ValueError, match="Unknown link function"):
             mackay_update_glm(theta, H, 1.0, X, y, "unknown")
+
+    def test_hutchinson_trace_default_rng(self) -> None:
+        """_hutchinson_trace uses default rng when rng=None."""
+        from unittest.mock import MagicMock
+
+        from bayesianbandits._empirical_bayes import _hutchinson_trace
+
+        # Create a mock factor whose solve returns the input (identity inverse)
+        mock_factor = MagicMock()
+        mock_factor.solve.side_effect = lambda z: z  # A^{-1} = I => tr = p
+        p = 5
+        result = _hutchinson_trace(mock_factor, p, n_probes=50, rng=None)
+        # tr(I) = p = 5 (Rademacher vectors have z_i^2 = 1)
+        np.testing.assert_allclose(result, float(p), rtol=0.2)

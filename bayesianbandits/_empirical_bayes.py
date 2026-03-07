@@ -107,7 +107,7 @@ def _hutchinson_trace(
     """Batched Hutchinson trace estimator: tr(A^-1) via multi-RHS solve."""
     if rng is None:
         rng = np.random.default_rng()
-    Z = rng.choice(np.array([-1.0, 1.0]), size=(p, n_probes))
+    Z = 2.0 * rng.integers(0, 2, size=(p, n_probes), dtype=np.int8) - 1.0
     V = factor.solve(Z)
     return float(np.sum(Z * V) / n_probes)
 
@@ -203,11 +203,6 @@ def effective_num_parameters(
         precision, factor=factor, sparse=sparse, n_probes=n_probes, rng=rng
     )
     return float(p - alpha * tr_inv)
-
-
-# ---------------------------------------------------------------------------
-# MacKay update rules (M-step) — each returns updated hyperparams + log evidence
-# ---------------------------------------------------------------------------
 
 
 def mackay_update_normal(
@@ -385,8 +380,7 @@ def mackay_update_glm(
 
     # Log-prior: p/2·log(α/(2π)) - α/2·‖θ‖²
     log_prior = float(
-        0.5 * p * (math.log(alpha) - _LOG_2PI)
-        - 0.5 * alpha * theta_norm_sq
+        0.5 * p * (math.log(alpha) - _LOG_2PI) - 0.5 * alpha * theta_norm_sq
     )
 
     # Laplace correction: + p/2·log(2π) - ½·log|H|
