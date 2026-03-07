@@ -4,17 +4,17 @@ Provides:
 - logdet dispatch (dense/sparse)
 - Trace of inverse (exact dense, Hutchinson sparse)
 - Effective number of parameters
-- MacKay update rules for Normal, NIG, and GLM models
-- Log evidence functions for monitoring
+- MacKay update rules for Normal, NIG, and GLM models (each returns log evidence)
 """
 
 from __future__ import annotations
 
+import math
 from typing import Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import solve as scipy_solve
+from scipy.linalg import solve_triangular
 from scipy.sparse import csc_array, issparse
 from scipy.special import gammaln
 
@@ -22,6 +22,8 @@ from ._sparse_bayesian_linear_regression import (
     SparseFactor,
     create_sparse_factor,
 )
+
+_LOG_2PI = math.log(2.0 * math.pi)
 
 
 def logdet(
@@ -60,6 +62,56 @@ def logdet(
         return float(ld)
 
 
+def _dense_cholesky_stats(
+    precision: NDArray[np.float64],
+) -> tuple[float, float]:
+    """Returns (logdet, trace_of_inverse) from one Cholesky.
+
+    Math: logdet = 2·sum(log(diag(L))), tr(A^-1) = ||L^-1||^2_F.
+    """
+    L = np.linalg.cholesky(precision)
+    ld = 2.0 * float(np.sum(np.log(np.diag(L))))
+    L_inv = solve_triangular(L, np.eye(L.shape[0]), lower=True, check_finite=False)
+    tr_inv = float(np.sum(L_inv**2))
+    return ld, tr_inv
+
+
+def _factorization_stats(
+    precision: Union[NDArray[np.float64], csc_array],
+    factor: Optional[SparseFactor],
+    sparse: bool,
+    n_probes: int,
+    rng: Optional[np.random.Generator],
+) -> tuple[float, float]:
+    """Return (logdet, trace_inverse) from a single factorization."""
+    if sparse:
+        if factor is None:
+            if not issparse(precision):
+                raise TypeError("precision must be sparse when sparse=True")
+            factor = create_sparse_factor(cast(csc_array, precision))
+        p = cast(tuple[int, int], precision.shape)[0]
+        ld = factor.logdet()
+        tr_inv = _hutchinson_trace(factor, p, n_probes, rng)
+    else:
+        assert isinstance(precision, np.ndarray)
+        ld, tr_inv = _dense_cholesky_stats(precision)
+    return ld, tr_inv
+
+
+def _hutchinson_trace(
+    factor: SparseFactor,
+    p: int,
+    n_probes: int,
+    rng: Optional[np.random.Generator],
+) -> float:
+    """Batched Hutchinson trace estimator: tr(A^-1) via multi-RHS solve."""
+    if rng is None:
+        rng = np.random.default_rng()
+    Z = rng.choice(np.array([-1.0, 1.0]), size=(p, n_probes))
+    V = factor.solve(Z)
+    return float(np.sum(Z * V) / n_probes)
+
+
 def trace_of_inverse(
     precision: Union[NDArray[np.float64], csc_array],
     factor: Optional[SparseFactor] = None,
@@ -69,7 +121,7 @@ def trace_of_inverse(
 ) -> float:
     """Compute tr(precision^{-1}).
 
-    Dense: exact via solving precision @ X = I.
+    Dense: exact via Cholesky.
     Sparse: Hutchinson's stochastic trace estimator using Rademacher probes.
 
     Parameters
@@ -101,22 +153,12 @@ def trace_of_inverse(
             if not issparse(precision):
                 raise TypeError("precision must be sparse when sparse=True")
             factor = create_sparse_factor(cast(csc_array, precision))
-        if rng is None:
-            rng = np.random.default_rng()
         p = cast(tuple[int, int], precision.shape)[0]
-        # Hutchinson: tr(A^{-1}) ≈ (1/m) Σ zᵢᵀ A^{-1} zᵢ
-        total = 0.0
-        for _ in range(n_probes):
-            z = rng.choice(np.array([-1.0, 1.0]), size=p)
-            total += float(z @ factor.solve(z))
-        return total / n_probes
+        return _hutchinson_trace(factor, p, n_probes, rng)
     else:
         assert isinstance(precision, np.ndarray)
-        p = precision.shape[0]
-        inv_prec = scipy_solve(
-            precision, np.eye(p), check_finite=False, assume_a="pos"
-        )
-        return float(np.trace(inv_prec))
+        _, tr_inv = _dense_cholesky_stats(precision)
+        return tr_inv
 
 
 def effective_num_parameters(
@@ -164,7 +206,7 @@ def effective_num_parameters(
 
 
 # ---------------------------------------------------------------------------
-# MacKay update rules (M-step)
+# MacKay update rules (M-step) — each returns updated hyperparams + log evidence
 # ---------------------------------------------------------------------------
 
 
@@ -179,34 +221,47 @@ def mackay_update_normal(
     factor: Optional[SparseFactor] = None,
     n_probes: int = 20,
     rng: Optional[np.random.Generator] = None,
-) -> tuple[float, float]:
+) -> tuple[float, float, float]:
     """MacKay update for NormalRegressor.
 
-    Returns (α_new, β_new) where:
+    Returns (α_new, β_new, log_evidence) where:
         γ = p − α·tr(Λₙ⁻¹)
         α_new = γ / ‖μₙ‖²
         β_new = (n − γ) / ‖y − Xμₙ‖²
 
+    log p(y|X,α,β) = p/2·log(α) + n/2·log(β) - ½·log|Λₙ|
+                     - ½[β‖y-Xμₙ‖² + α‖μₙ‖²] - n/2·log(2π)
+
     References
     ----------
     .. [1] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §3.5.2, Eqs 3.92, 3.95.
+       §3.5.1–§3.5.2, Eqs 3.86, 3.92, 3.95.
     .. [2] MacKay, D. J. C. (1992). "Bayesian Interpolation",
        Neural Computation 4(3), 415-447.
     """
-    gamma = effective_num_parameters(
-        alpha, precision, factor=factor, sparse=sparse, n_probes=n_probes, rng=rng
-    )
-    mu_norm_sq = float(mu_n @ mu_n)
-    alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
-
     n = y.shape[0]
+    p = cast(tuple[int, int], precision.shape)[0]
+
     residual = y - X @ mu_n
     rss = float(residual @ residual)
+    mu_norm_sq = float(mu_n @ mu_n)
+
+    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+
+    gamma = float(p - alpha * tr_inv)
+    alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
     denom = n - gamma
     beta_new = denom / rss if rss > 0 and denom > 0 else beta
 
-    return alpha_new, beta_new
+    log_ev = float(
+        0.5 * p * math.log(alpha)
+        + 0.5 * n * math.log(beta)
+        - 0.5 * ld
+        - 0.5 * (beta * rss + alpha * mu_norm_sq)
+        - 0.5 * n * _LOG_2PI
+    )
+
+    return alpha_new, beta_new, log_ev
 
 
 def mackay_update_nig(
@@ -215,22 +270,32 @@ def mackay_update_nig(
     alpha: float,
     an: float,
     bn: float,
+    a0: float,
+    b0: float,
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
     n_probes: int = 20,
     rng: Optional[np.random.Generator] = None,
-) -> float:
+    n_obs: int = 0,
+) -> tuple[float, float]:
     """MacKay update for NormalInverseGammaRegressor.
 
-    Returns α_new using the direct stationary-point formula:
+    Returns (α_new, log_evidence) using the direct stationary-point formula:
         σ² = bₙ/aₙ  (posterior mean of noise variance)
         α_new = p·σ² / (‖μₙ‖² + σ²·tr(Λₙ⁻¹))
 
-    In the NIG model the prior is w|σ² ~ N(0, σ²/α · I), so both the prior
-    precision (α/σ²)I and the posterior precision Λₙ/σ² scale identically
-    with σ². Setting ∂/∂α log p(y|α) = 0 and solving yields the formula
-    above. This is the direct stationary-point form, which converges in one
-    step and avoids dependence on the previous α.
+    log p(y|X,α,a₀,b₀) = logΓ(aₙ) - logΓ(a₀) + a₀·log(b₀) - aₙ·log(bₙ)
+                         + ½·p·log(α) - ½·log|Λₙ| - n/2·log(2π)
+
+    Parameters
+    ----------
+    mu_n : posterior mean
+    precision : posterior precision matrix
+    alpha : prior precision scalar
+    an, bn : posterior IG parameters
+    a0, b0 : prior IG parameters (needed for evidence)
+    sparse, factor, n_probes, rng : sparse computation parameters
+    n_obs : number of observations (needed for evidence)
 
     References
     ----------
@@ -239,172 +304,80 @@ def mackay_update_nig(
     .. [2] MacKay, D. J. C. (1992). "Bayesian Interpolation",
        Neural Computation 4(3), 415-447.
     """
-    sigma_sq = bn / an
-    tr_inv = trace_of_inverse(
-        precision, factor=factor, sparse=sparse, n_probes=n_probes, rng=rng
-    )
     p = cast(tuple[int, int], precision.shape)[0]
+    sigma_sq = bn / an
     mu_norm_sq = float(mu_n @ mu_n)
+
+    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+
     denom = mu_norm_sq + sigma_sq * tr_inv
-    return float(p * sigma_sq / denom) if denom > 0 else alpha
+    alpha_new = float(p * sigma_sq / denom) if denom > 0 else alpha
+
+    if b0 > 0 and bn > 0 and alpha > 0:
+        log_ev = float(
+            gammaln(an)
+            - gammaln(a0)
+            + a0 * math.log(b0)
+            - an * math.log(bn)
+            + 0.5 * p * math.log(alpha)
+            - 0.5 * ld
+            - 0.5 * n_obs * _LOG_2PI
+        )
+    else:
+        log_ev = -math.inf
+
+    return alpha_new, log_ev
 
 
 def mackay_update_glm(
     theta_MAP: NDArray[np.float64],
     precision: Union[NDArray[np.float64], csc_array],
     alpha: float,
+    X: Union[NDArray[np.float64], csc_array],
+    y: NDArray[np.float64],
+    link: str,
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
     n_probes: int = 20,
     rng: Optional[np.random.Generator] = None,
-) -> float:
+) -> tuple[float, float]:
     """MacKay update for BayesianGLM.
 
-    Returns α_new where:
+    Returns (α_new, log_evidence) where:
         γ = p − α·tr(H⁻¹)
         α_new = γ / ‖θ_MAP‖²
 
-    H is the Hessian of the negative log-posterior (i.e. αI + Hessian of
-    negative log-likelihood), used as the precision in a Laplace
-    approximation.
+    log p(y|X,α) ≈ ℓ(θ_MAP) + log p(θ_MAP|α) + p/2·log(2π) - ½·log|H|
+
+    Parameters
+    ----------
+    theta_MAP : MAP estimate
+    precision : Hessian of negative log-posterior (αI + Hessian of NLL)
+    alpha : prior precision scalar
+    X : design matrix
+    y : response vector
+    link : link function ("logit" or "log")
+    sparse, factor, n_probes, rng : sparse computation parameters
 
     References
     ----------
     .. [1] MacKay, D. J. C. (1992). "Bayesian Interpolation",
        Neural Computation 4(3), 415-447.
     .. [2] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §3.5.2, Eq 3.92 — same γ-based update applies to the Laplace case.
+       §3.5.2, §4.4.1.
     """
-    gamma = effective_num_parameters(
-        alpha, precision, factor=factor, sparse=sparse, n_probes=n_probes, rng=rng
-    )
+    p = cast(tuple[int, int], precision.shape)[0]
     theta_norm_sq = float(theta_MAP @ theta_MAP)
-    return gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
 
+    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
 
-# ---------------------------------------------------------------------------
-# Log evidence functions (monitoring, uses logdet)
-# ---------------------------------------------------------------------------
-
-
-def log_evidence_normal(
-    X: Union[NDArray[np.float64], csc_array],
-    y: NDArray[np.float64],
-    mu_n: NDArray[np.float64],
-    precision: Union[NDArray[np.float64], csc_array],
-    alpha: float,
-    beta: float,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
-) -> float:
-    """Log marginal likelihood for NormalRegressor.
-
-    log p(y|X,α,β) = p/2·log(α) + n/2·log(β) - ½·log|Λₙ|
-                     - ½[β‖y-Xμₙ‖² + α‖μₙ‖²] - n/2·log(2π)
-
-    References
-    ----------
-    .. [1] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §3.5.1, Eq 3.86.
-    """
-    n = y.shape[0]
-    p = cast(tuple[int, int], precision.shape)[0]
-
-    ld = logdet(precision, factor=factor, sparse=sparse)
-    residual = y - X @ mu_n
-    rss = float(residual @ residual)
-    mu_norm_sq = float(mu_n @ mu_n)
-
-    return float(
-        0.5 * p * np.log(alpha)
-        + 0.5 * n * np.log(beta)
-        - 0.5 * ld
-        - 0.5 * (beta * rss + alpha * mu_norm_sq)
-        - 0.5 * n * np.log(2.0 * np.pi)
-    )
-
-
-def log_evidence_nig(
-    X: Union[NDArray[np.float64], csc_array],
-    y: NDArray[np.float64],
-    mu_n: NDArray[np.float64],
-    precision: Union[NDArray[np.float64], csc_array],
-    alpha: float,
-    a0: float,
-    b0: float,
-    an: float,
-    bn: float,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
-) -> float:
-    """Log marginal likelihood for NormalInverseGammaRegressor.
-
-    log p(y|X,α,a₀,b₀) = logΓ(aₙ) - logΓ(a₀) + a₀·log(b₀) - aₙ·log(bₙ)
-                         + ½·p·log(α) - ½·log|Λₙ| - n/2·log(2π)
-
-    Obtained by integrating out both w and σ² from the joint
-    p(y,w,σ²|X,α,a₀,b₀). The (2π)^{-n/2} normalizing constant arises
-    because the prior's (2π)^{-p/2} cancels with (2π)^{p/2} from the
-    Gaussian integral over w.
-
-    References
-    ----------
-    .. [1] Murphy, K. P. (2007). "Conjugate Bayesian analysis of the
-       Gaussian distribution", Technical Report.
-    .. [2] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §3.5.1 — known-variance case; NIG extension integrates over σ².
-    """
-    n = y.shape[0]
-    p = cast(tuple[int, int], precision.shape)[0]
-
-    ld = logdet(precision, factor=factor, sparse=sparse)
-
-    return float(
-        gammaln(an)
-        - gammaln(a0)
-        + a0 * np.log(b0)
-        - an * np.log(bn)
-        + 0.5 * p * np.log(alpha)
-        - 0.5 * ld
-        - 0.5 * n * np.log(2.0 * np.pi)
-    )
-
-
-def log_evidence_glm_laplace(
-    X: Union[NDArray[np.float64], csc_array],
-    y: NDArray[np.float64],
-    theta_MAP: NDArray[np.float64],
-    precision: Union[NDArray[np.float64], csc_array],
-    alpha: float,
-    link: str,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
-) -> float:
-    """Log marginal likelihood for BayesianGLM (Laplace approximation).
-
-    log p(y|X,α) ≈ ℓ(θ_MAP) + log p(θ_MAP|α) + p/2·log(2π) - ½·log|H|
-
-    where ℓ(θ_MAP) is the log-likelihood at the MAP estimate and
-    log p(θ_MAP|α) = p/2·log(α/(2π)) - α/2·‖θ_MAP‖² is the log-prior.
-
-    References
-    ----------
-    .. [1] MacKay, D. J. C. (1992). "Bayesian Interpolation",
-       Neural Computation 4(3), 415-447, §4.
-    .. [2] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §4.4.1 — Laplace approximation for model evidence.
-    """
-    from scipy.special import expit as _expit
-
-    p = cast(tuple[int, int], precision.shape)[0]
-    eta = X @ theta_MAP
+    gamma = float(p - alpha * tr_inv)
+    alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
 
     # Log-likelihood at MAP
+    eta = X @ theta_MAP
     if link == "logit":
-        mu = _expit(eta)
-        log_lik = float(
-            np.sum(y * np.log(mu + 1e-15) + (1 - y) * np.log(1 - mu + 1e-15))
-        )
+        log_lik = float(np.sum(y * eta - np.logaddexp(0, eta)))
     elif link == "log":
         log_lik = float(np.sum(y * eta - np.exp(eta) - gammaln(y + 1)))
     else:
@@ -412,12 +385,13 @@ def log_evidence_glm_laplace(
 
     # Log-prior: p/2·log(α/(2π)) - α/2·‖θ‖²
     log_prior = float(
-        0.5 * p * np.log(alpha / (2.0 * np.pi))
-        - 0.5 * alpha * float(theta_MAP @ theta_MAP)
+        0.5 * p * (math.log(alpha) - _LOG_2PI)
+        - 0.5 * alpha * theta_norm_sq
     )
 
     # Laplace correction: + p/2·log(2π) - ½·log|H|
-    ld = logdet(precision, factor=factor, sparse=sparse)
-    laplace_correction = float(0.5 * p * np.log(2.0 * np.pi) - 0.5 * ld)
+    laplace_correction = float(0.5 * p * _LOG_2PI - 0.5 * ld)
 
-    return float(log_lik + log_prior + laplace_correction)
+    log_ev = float(log_lik + log_prior + laplace_correction)
+
+    return alpha_new, log_ev
