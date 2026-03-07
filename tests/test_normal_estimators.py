@@ -1491,11 +1491,11 @@ def test_normal_inverse_gamma_regressor_variance_update_with_weights(
 
 
 @pytest.mark.parametrize("sparse", [True, False])
-def test_normal_inverse_gamma_scaled_factor_sample(sparse: bool) -> None:
-    """Test that NIG sampling uses ScaledSparseFactor (via shape_ -> scale_factor).
+def test_normal_inverse_gamma_scaled_factor_colorize(sparse: bool) -> None:
+    """Test that NIG sampling uses ScaledSparseFactor.colorize.
 
     After fit, shape_ calls scale_factor(_factor, a_/b_), producing a
-    ScaledSparseFactor whose solve/colorize are used during sampling.
+    ScaledSparseFactor. Sampling then calls colorize on it.
     """
     X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
 
@@ -1513,6 +1513,37 @@ def test_normal_inverse_gamma_scaled_factor_sample(sparse: bool) -> None:
     samples = reg.sample(X_fit, size=5)
     assert samples.shape == (5, 50)
     assert np.all(np.isfinite(samples))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_scaled_factor_solve(sparse: bool) -> None:
+    """Test that ScaledSparseFactor.solve produces correct results.
+
+    solve is not called on ScaledSparseFactor in current production paths
+    (only colorize is used during sampling), so we test it directly by
+    comparing against a freshly factored scaled precision matrix.
+    """
+    if not sparse:
+        pytest.skip("ScaledSparseFactor only applies to sparse mode")
+
+    from bayesianbandits._sparse_bayesian_linear_regression import (
+        create_sparse_factor,
+        scale_factor,
+    )
+
+    X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
+
+    reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42)
+    reg.fit(sp.csc_array(X), y)
+
+    scale = float(reg.a_ / reg.b_)
+    scaled_factor = scale_factor(reg._factor, scale)
+
+    # Compare against direct factorization of the scaled precision
+    direct_factor = create_sparse_factor(reg.cov_inv_ * scale)
+
+    b = np.random.default_rng(0).standard_normal(3)
+    assert_almost_equal(scaled_factor.solve(b), direct_factor.solve(b))
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -1545,3 +1576,25 @@ def test_normal_inverse_gamma_decay_then_sample(sparse: bool) -> None:
     samples = reg.sample(X_fit, size=5)
     assert samples.shape == (5, 50)
     assert np.all(np.isfinite(samples))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_scale_factor_identity(sparse: bool) -> None:
+    """Test scale_factor early return when scale == 1.0."""
+    if not sparse:
+        pytest.skip("ScaledSparseFactor only applies to sparse mode")
+
+    X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
+
+    reg = NormalInverseGammaRegressor(
+        sparse=sparse, random_state=42, learning_rate=1.0
+    )
+    reg.fit(sp.csc_array(X), y)
+
+    original_factor = reg._factor
+
+    # learning_rate=1.0 means prior_decay = 1.0^N = 1.0, so scale_factor
+    # should return the original factor unchanged
+    reg.decay(sp.csc_array(X))
+
+    assert reg._factor is original_factor
