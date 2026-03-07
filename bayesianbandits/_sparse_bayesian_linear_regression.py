@@ -87,7 +87,43 @@ class SuperLUSparseFactor:
         return cast(NDArray[np.float64], self._Pr.T @ spsolve(self._L.T, z))
 
 
-SparseFactor = CholmodSparseFactor | SuperLUSparseFactor
+ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
+
+
+@dataclass
+class ScaledSparseFactor:
+    """A factor scaled by a scalar. Avoids refactorizing for scalar precision changes.
+
+    If L L^T = P, then (s*P) has factor (√s * L).
+    - solve(s*P, b) = (1/s) * solve(P, b)
+    - colorize(s*P, z) = (1/√s) * colorize(P, z)
+    """
+
+    _inner: ConcreteFactor
+    _scale: float
+    _precision: csc_array  # the inner's precision; only used for .shape
+
+    def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        return cast(NDArray[np.float64], self._inner.solve(b) / self._scale)
+
+    def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        return cast(NDArray[np.float64], self._inner.colorize(z) / np.sqrt(self._scale))
+
+
+SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
+
+
+def scale_factor(factor: SparseFactor, scale: float) -> SparseFactor:
+    """Scale a factor by a scalar, composing rather than nesting."""
+    if scale == 1.0:
+        return factor
+    if isinstance(factor, ScaledSparseFactor):
+        return ScaledSparseFactor(
+            _inner=factor._inner,
+            _scale=factor._scale * scale,
+            _precision=factor._precision,
+        )
+    return ScaledSparseFactor(_inner=factor, _scale=scale, _precision=factor._precision)
 
 
 def create_sparse_factor(
