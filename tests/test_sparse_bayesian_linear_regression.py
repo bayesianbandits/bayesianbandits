@@ -135,6 +135,16 @@ class TestSparseFactor:
         assert_array_almost_equal(sparse_samples, scipy_samples)
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_logdet_matches_dense(self, precision_matrix, solver):
+        """logdet via sparse factor matches np.linalg.slogdet for both solvers."""
+        factor = create_sparse_factor(
+            sp.csc_array(precision_matrix), solver=solver
+        )
+        expected = float(np.linalg.slogdet(precision_matrix)[1])
+        result = factor.logdet()
+        assert_allclose(result, expected, atol=1e-6)
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvt_sampling_against_scipy(self, precision_matrix, solver):
         factor = create_sparse_factor(
             sp.csc_array(precision_matrix), solver=solver
