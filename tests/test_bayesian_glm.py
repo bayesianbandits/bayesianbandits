@@ -453,6 +453,45 @@ def test_bayesian_glm_serialization(binary_data) -> None:
     assert samples.shape == (10, 5)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bayesian_glm_serialization_after_sample(binary_data, sparse: bool) -> None:
+    """Test that accessing cov_ before pickling doesn't break serialization."""
+    from io import BytesIO
+
+    import joblib
+
+    X, y = binary_data
+    X_fit = sp.csc_array(X) if sparse else X
+
+    clf = BayesianGLM(
+        alpha=0.1,
+        link="logit",
+        approximator=LaplaceApproximator(n_iter=10),
+        sparse=sparse,
+    )
+    clf.fit(X_fit, y)
+
+    # Access cov_ (creates CovViaSparsePrecision with C objects for sparse)
+    _ = clf.cov_
+    # Also sample, which accesses cov_ internally
+    clf.sample(X_fit[:5], size=5)
+
+    # Serialize and deserialize
+    buffer = BytesIO()
+    joblib.dump(clf, buffer)
+    buffer.seek(0)
+    clf_loaded = joblib.load(buffer)
+
+    # Check predictions match
+    preds_original = clf.predict(X_fit)
+    preds_loaded = clf_loaded.predict(X_fit)
+    assert_allclose(preds_original, preds_loaded)
+
+    # Check sampling still works after deserialization
+    samples = clf_loaded.sample(X_fit[:5], size=10)
+    assert samples.shape == (10, 5)
+
+
 @pytest.mark.parametrize(
     "link,y_vals", [("logit", [0, 1, 1, 0, 1]), ("log", [0, 1, 3, 7, 15])]
 )

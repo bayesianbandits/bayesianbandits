@@ -1421,6 +1421,12 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         else:
             self.approximator_ = self.approximator
 
+    @_invalidate_cached_properties
+    def __getstate__(self) -> Any:
+        # Delete the cached covariance matrix, since it likely contains C
+        # objects that cannot be pickled
+        return super().__getstate__()  # type: ignore
+
     @cached_property
     def cov_(self) -> Covariance:
         """Posterior covariance matrix (cached).
