@@ -1488,3 +1488,60 @@ def test_normal_inverse_gamma_regressor_variance_update_with_weights(
 
     # b_n should be different (depends on weighted sum of squares)
     assert reg1.b_ != reg2.b_
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_scaled_factor_sample(sparse: bool) -> None:
+    """Test that NIG sampling uses ScaledSparseFactor (via shape_ -> scale_factor).
+
+    After fit, shape_ calls scale_factor(_factor, a_/b_), producing a
+    ScaledSparseFactor whose solve/colorize are used during sampling.
+    """
+    X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
+
+    reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42)
+    if sparse:
+        X_fit = sp.csc_array(X)
+    else:
+        X_fit = X
+
+    reg.fit(X_fit, y)
+
+    # a_/b_ != 1.0 after fit, so scale_factor creates a ScaledSparseFactor
+    assert reg.a_ / reg.b_ != 1.0
+
+    samples = reg.sample(X_fit, size=5)
+    assert samples.shape == (5, 50)
+    assert np.all(np.isfinite(samples))
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_normal_inverse_gamma_decay_then_sample(sparse: bool) -> None:
+    """Test ScaledSparseFactor composition: decay scales _factor, then sample
+    scales again via shape_, exercising the isinstance(factor, ScaledSparseFactor)
+    branch in scale_factor.
+    """
+    X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
+
+    reg = NormalInverseGammaRegressor(
+        sparse=sparse, random_state=42, learning_rate=0.95
+    )
+    if sparse:
+        X_fit = sp.csc_array(X)
+    else:
+        X_fit = X
+
+    reg.fit(X_fit, y)
+    pre_decay_pred = reg.predict(X_fit)
+
+    # Decay scales _factor by prior_decay (0.95^50), creating a ScaledSparseFactor
+    reg.decay(X_fit)
+
+    # Predictions should be unchanged (decay only widens variance)
+    assert_almost_equal(reg.predict(X_fit), pre_decay_pred)
+
+    # Sampling now goes through shape_ which calls scale_factor on the
+    # already-scaled factor, testing the composition branch
+    samples = reg.sample(X_fit, size=5)
+    assert samples.shape == (5, 50)
+    assert np.all(np.isfinite(samples))
