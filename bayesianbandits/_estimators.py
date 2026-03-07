@@ -31,16 +31,17 @@ from ._gaussian import (
     LinkFunction,
     PosteriorApproximator,
     compute_effective_weights,
-    solve_precision_weighted_mean,
 )
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CholmodSparseFactor,
+    ScaledSparseFactor,
     SparseFactor,
     SuperLUSparseFactor,
     create_sparse_factor,
     multivariate_normal_sample_from_sparse_precision,
     multivariate_t_sample_from_sparse_precision,
+    scale_factor,
 )
 
 Params = ParamSpec("Params")
@@ -543,14 +544,11 @@ def _invalidate_cached_properties(
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
     @wraps(func)
     def wrapper(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
-        try:
-            del self.shape_
-        except AttributeError:
-            pass
-        try:
-            del self.cov_
-        except AttributeError:
-            pass
+        for attr in ("shape_", "cov_"):
+            try:
+                delattr(self, attr)
+            except AttributeError:
+                pass
         return func(self, *args, **kwargs)
 
     return wrapper
@@ -658,8 +656,8 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
     @_invalidate_cached_properties
     def __getstate__(self) -> Any:
-        # Delete the cached covariance matrix, since it likely contains C
-        # objects that cannot be pickled
+        # Delete cached objects that contain C extensions and cannot be pickled
+        self.__dict__.pop("_factor", None)
         return super().__getstate__()  # type: ignore
 
     def fit(
@@ -714,6 +712,8 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         The covariance matrix of the model.
         """
         if self.sparse:
+            if hasattr(self, "_factor"):
+                return self._factor
             assert isinstance(self.cov_inv_, csc_array)
             return create_sparse_factor(self.cov_inv_)
         else:
@@ -783,7 +783,15 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
         eta = cast(NDArray[np.float64], eta)
 
-        coef = solve_precision_weighted_mean(cov_inv, eta, self.sparse)
+        if self.sparse:
+            assert isinstance(cov_inv, csc_array)
+            factor = create_sparse_factor(cov_inv)
+            coef = factor.solve(eta)
+            self._factor = factor
+        else:
+            coef = solve(
+                cov_inv, eta, check_finite=False, assume_a="pos"
+            )
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -856,7 +864,7 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
         if self.sparse:
             cov = self.cov_
-            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor))
+            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
             samples = np.atleast_1d(
                 multivariate_normal_sample_from_sparse_precision(
                     self.coef_,
@@ -898,9 +906,9 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         # Decay the prior without making an update. Because we're only
         # increasing the prior variance, we do not need to update the
         # mean.
-        cov_inv = prior_decay * self.cov_inv_
-
-        self.cov_inv_ = cov_inv
+        self.cov_inv_ = prior_decay * self.cov_inv_
+        if self.sparse and hasattr(self, "_factor"):
+            self._factor = scale_factor(self._factor, prior_decay)
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -1122,9 +1130,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
         if self.sparse:
             # Update the mean vector
             assert isinstance(V_n, csc_array)
-            m_n = create_sparse_factor(V_n).solve(
+            factor = create_sparse_factor(V_n)
+            m_n = factor.solve(
                 prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
             )
+            self._factor = factor
         else:
             # Update the mean vector
             m_n = solve(
@@ -1154,11 +1164,14 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
     @cached_property
     def shape_(self) -> Union[Covariance, SparseFactor]:
-        shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
         if self.sparse:
+            if hasattr(self, "_factor"):
+                return scale_factor(self._factor, float(self.a_ / self.b_))
+            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
             assert isinstance(shape_inv_, csc_array)
             return create_sparse_factor(shape_inv_)
         else:
+            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
             shape = solve(
                 shape_inv_,
                 np.eye(self.n_features_),
@@ -1188,7 +1201,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
         # Sparse sampling is not supported by scipy, so we use our own implementation
         if self.sparse:
             shape = self.shape_
-            assert isinstance(shape, (CholmodSparseFactor, SuperLUSparseFactor))
+            assert isinstance(shape, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
             samples = multivariate_t_sample_from_sparse_precision(
                 self.coef_, shape, df, size, self.random_state_
             )
@@ -1238,13 +1251,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         # decay only increases the variance, so we only need to update the
         # inverse covariance matrix, a_, and b_
-        V_n = prior_decay * self.cov_inv_
-        a_n = prior_decay * self.a_
-        b_n = prior_decay * self.b_
-
-        self.cov_inv_ = V_n
-        self.a_ = a_n
-        self.b_ = b_n
+        self.cov_inv_ = prior_decay * self.cov_inv_
+        self.a_ = prior_decay * self.a_
+        self.b_ = prior_decay * self.b_
+        if self.sparse and hasattr(self, "_factor"):
+            self._factor = scale_factor(self._factor, prior_decay)
 
 
 def multivariate_t_sample_from_covariance(
@@ -1419,8 +1430,8 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
 
     @_invalidate_cached_properties
     def __getstate__(self) -> Any:
-        # Delete the cached covariance matrix, since it likely contains C
-        # objects that cannot be pickled
+        # Delete cached objects that contain C extensions and cannot be pickled
+        self.__dict__.pop("_factor", None)
         return super().__getstate__()  # type: ignore
 
     @cached_property
@@ -1431,6 +1442,8 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         consider using only the diagonal or avoiding this property entirely.
         """
         if self.sparse:
+            if hasattr(self, "_factor"):
+                return self._factor
             assert isinstance(self.cov_inv_, csc_array)
             return create_sparse_factor(self.cov_inv_)
         else:
@@ -1462,6 +1475,9 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
+        if self.sparse:
+            assert isinstance(posterior.precision, csc_array)
+            self._factor = create_sparse_factor(posterior.precision)
 
     def fit(
         self,
@@ -1609,7 +1625,7 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         # Sample parameters from posterior
         if self.sparse:
             cov = self.cov_
-            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor))
+            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
             param_samples = multivariate_normal_sample_from_sparse_precision(
                 self.coef_, cov, size=size, random_state=self.random_state_
             )
@@ -1668,3 +1684,5 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         prior_decay = decay_rate ** X.shape[0]
 
         self.cov_inv_ = prior_decay * self.cov_inv_
+        if self.sparse and hasattr(self, "_factor"):
+            self._factor = scale_factor(self._factor, prior_decay)
