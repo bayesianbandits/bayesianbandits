@@ -70,6 +70,10 @@ class CholmodSparseFactor:
         inv_perm = np.argsort(self._factor.perm)
         return self._factor.solve(z, system="Lt")[inv_perm]
 
+    def logdet(self) -> float:
+        """Log-determinant of the factored matrix via CHOLMOD."""
+        return float(self._factor.logdet())
+
 
 @dataclass
 class SuperLUSparseFactor:
@@ -85,6 +89,14 @@ class SuperLUSparseFactor:
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve L^T x = z, undo permutation."""
         return cast(NDArray[np.float64], self._Pr.T @ spsolve(self._L.T, z))
+
+    def logdet(self) -> float:
+        """Log-determinant of the factored matrix.
+
+        L already has D folded in (L = L_splu @ diag(sqrt(D))), so
+        |P| = |L|^2  =>  log|P| = 2 * sum(log|diag(L)|).
+        """
+        return float(2.0 * np.sum(np.log(np.abs(self._L.diagonal()))))
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
@@ -108,6 +120,11 @@ class ScaledSparseFactor:
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cast(NDArray[np.float64], self._inner.colorize(z) / np.sqrt(self._scale))
+
+    def logdet(self) -> float:
+        """Log-determinant: log|s*P| = p*log(s) + log|P|."""
+        p = cast(tuple[int, int], self._precision.shape)[0]
+        return float(p * np.log(self._scale) + self._inner.logdet())
 
 
 SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
