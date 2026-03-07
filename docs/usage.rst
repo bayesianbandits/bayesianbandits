@@ -39,8 +39,11 @@ Powerful methods for improved efficiency and performance.
 .. toctree::
     :maxdepth: 1
 
+    notebooks/empirical-bayes
     notebooks/hybrid-bandits
     notebooks/persistence
+
+**Automatic Hyperparameter Tuning** (`empirical-bayes`): Learn prior precision and noise precision from data via evidence maximization, eliminating sensitivity to hyperparameter choices.
 
 **Cross-Arm Learning** (`hybrid-bandits`): Share knowledge across similar arms for faster learning and better sample efficiency. Essential for large action spaces.
 
