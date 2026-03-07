@@ -7,8 +7,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cholesky, solve
-from scipy.sparse import csc_array, csc_matrix, diags, eye
-from scipy.sparse.linalg import splu
+from scipy.sparse import csc_array, diags, eye
 from scipy.special import expit
 from scipy.stats import (
     Covariance,
@@ -36,11 +35,12 @@ from ._gaussian import (
 )
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
-    CovViaSparsePrecision,
-    SparseSolver,
-    multivariate_normal_sample_from_sparse_covariance,
-    multivariate_t_sample_from_sparse_covariance,
-    solver,
+    CholmodSparseFactor,
+    SparseFactor,
+    SuperLUSparseFactor,
+    create_sparse_factor,
+    multivariate_normal_sample_from_sparse_precision,
+    multivariate_t_sample_from_sparse_precision,
 )
 
 Params = ParamSpec("Params")
@@ -709,12 +709,13 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
             self.cov_inv_ = np.eye(self.n_features_) * self.alpha
 
     @cached_property
-    def cov_(self) -> Covariance:
+    def cov_(self) -> Union[Covariance, SparseFactor]:
         """
         The covariance matrix of the model.
         """
         if self.sparse:
-            return CovViaSparsePrecision(self.cov_inv_, solver=solver)  # type: ignore
+            assert isinstance(self.cov_inv_, csc_array)
+            return create_sparse_factor(self.cov_inv_)
         else:
             cov = solve(
                 self.cov_inv_,
@@ -854,10 +855,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         )
 
         if self.sparse:
+            cov = self.cov_
+            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor))
             samples = np.atleast_1d(
-                multivariate_normal_sample_from_sparse_covariance(
+                multivariate_normal_sample_from_sparse_precision(
                     self.coef_,
-                    self.cov_,
+                    cov,
                     size=size,
                     random_state=self.random_state_,
                 )
@@ -1118,22 +1121,10 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         if self.sparse:
             # Update the mean vector
-            if solver == SparseSolver.CHOLMOD:
-                from sksparse.cholmod import cho_factor as cholmod_cho_factor
-
-                m_n = cholmod_cho_factor(csc_matrix(V_n)).solve(
-                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
-                )
-            else:
-                lu = splu(
-                    V_n,
-                    diag_pivot_thresh=0,
-                    permc_spec="MMD_AT_PLUS_A",
-                    options=dict(SymmetricMode=True),
-                )
-                m_n = lu.solve(
-                    prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted,
-                )
+            assert isinstance(V_n, csc_array)
+            m_n = create_sparse_factor(V_n).solve(
+                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
+            )
         else:
             # Update the mean vector
             m_n = solve(
@@ -1162,10 +1153,11 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self.b_ = b_n
 
     @cached_property
-    def shape_(self) -> Covariance:
+    def shape_(self) -> Union[Covariance, SparseFactor]:
         shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
         if self.sparse:
-            return CovViaSparsePrecision(shape_inv_)  # type: ignore
+            assert isinstance(shape_inv_, csc_array)
+            return create_sparse_factor(shape_inv_)
         else:
             shape = solve(
                 shape_inv_,
@@ -1195,18 +1187,22 @@ class NormalInverseGammaRegressor(NormalRegressor):
 
         # Sparse sampling is not supported by scipy, so we use our own implementation
         if self.sparse:
-            samples = multivariate_t_sample_from_sparse_covariance(
-                self.coef_, self.shape_, df, size, self.random_state_
+            shape = self.shape_
+            assert isinstance(shape, (CholmodSparseFactor, SuperLUSparseFactor))
+            samples = multivariate_t_sample_from_sparse_precision(
+                self.coef_, shape, df, size, self.random_state_
             )
 
         else:
+            shape = self.shape_
+            assert isinstance(shape, Covariance)
             _, loc, _, df = multivariate_t._process_parameters(
-                self.coef_, self.shape_.covariance, df
+                self.coef_, shape.covariance, df
             )
 
             samples = multivariate_t_sample_from_covariance(
                 loc,
-                self.shape_,
+                shape,
                 df,
                 size,
                 self.random_state_,
@@ -1428,14 +1424,15 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         return super().__getstate__()  # type: ignore
 
     @cached_property
-    def cov_(self) -> Covariance:
+    def cov_(self) -> Union[Covariance, SparseFactor]:
         """Posterior covariance matrix (cached).
 
         Warning: O(p³) computation and O(p²) memory. For high dimensions,
         consider using only the diagonal or avoiding this property entirely.
         """
         if self.sparse:
-            return CovViaSparsePrecision(self.cov_inv_, solver=solver)  # type: ignore
+            assert isinstance(self.cov_inv_, csc_array)
+            return create_sparse_factor(self.cov_inv_)
         else:
             cov = solve(
                 self.cov_inv_,
@@ -1611,8 +1608,10 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
 
         # Sample parameters from posterior
         if self.sparse:
-            param_samples = multivariate_normal_sample_from_sparse_covariance(
-                self.coef_, self.cov_, size=size, random_state=self.random_state_
+            cov = self.cov_
+            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor))
+            param_samples = multivariate_normal_sample_from_sparse_precision(
+                self.coef_, cov, size=size, random_state=self.random_state_
             )
         else:
             from scipy.stats import multivariate_normal
