@@ -898,3 +898,94 @@ class TestMackayGLM:
         theta, H = _solve_glm_map(X, y, alpha, link)
         alpha_check = mackay_update_glm(theta, H, alpha, sparse=False)
         np.testing.assert_allclose(alpha_check, alpha, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 13. Guard clauses
+# ---------------------------------------------------------------------------
+
+
+class TestGuardClauses:
+    def test_mackay_normal_zero_mu_returns_old_alpha(self) -> None:
+        """When mu_n is zero, alpha_new should fall back to the old alpha."""
+        p = 4
+        alpha, beta = 2.0, 5.0
+        rng = np.random.default_rng(42)
+        X = rng.standard_normal((20, p))
+        y = rng.standard_normal(20)
+        mu_n = np.zeros(p)
+        precision = alpha * np.eye(p) + beta * X.T @ X
+
+        alpha_new, _ = mackay_update_normal(
+            mu_n, precision, X, y, alpha, beta, sparse=False
+        )
+        assert alpha_new == alpha
+
+    def test_mackay_normal_zero_rss_returns_old_beta(self) -> None:
+        """When residual is zero, beta_new should fall back to the old beta."""
+        p = 3
+        alpha, beta = 1.0, 10.0
+        rng = np.random.default_rng(42)
+        X = rng.standard_normal((20, p))
+        mu_n = rng.standard_normal(p)
+        # y = X @ mu_n exactly so residual is zero
+        y = X @ mu_n
+        precision = alpha * np.eye(p) + beta * X.T @ X
+
+        _, beta_new = mackay_update_normal(
+            mu_n, precision, X, y, alpha, beta, sparse=False
+        )
+        assert beta_new == beta
+
+    def test_mackay_nig_zero_denom_returns_old_alpha(self) -> None:
+        """When denom <= 0, mackay_update_nig should return the old alpha."""
+        p = 3
+        alpha = 5.0
+        mu_n = np.zeros(p)
+        # sigma_sq = bn/an = 0, and mu_n = 0 => denom = 0
+        precision = np.eye(p)
+        an = 1.0
+        bn = 0.0  # sigma_sq = 0 exactly
+
+        alpha_new = mackay_update_nig(
+            mu_n, precision, alpha, an, bn, sparse=False
+        )
+        assert alpha_new == alpha
+
+    def test_mackay_glm_zero_theta_returns_old_alpha(self) -> None:
+        """When theta_MAP is zero, alpha_new should fall back to the old alpha."""
+        p = 4
+        alpha = 3.0
+        theta_MAP = np.zeros(p)
+        rng = np.random.default_rng(42)
+        A = rng.standard_normal((p, p))
+        precision = A.T @ A + alpha * np.eye(p)
+
+        alpha_new = mackay_update_glm(theta_MAP, precision, alpha, sparse=False)
+        assert alpha_new == alpha
+
+
+# ---------------------------------------------------------------------------
+# 14. Error paths
+# ---------------------------------------------------------------------------
+
+
+class TestErrorPaths:
+    def test_logdet_sparse_with_dense_raises_typeerror(self) -> None:
+        with pytest.raises(TypeError, match="precision must be sparse"):
+            logdet(np.eye(3), sparse=True)
+
+    def test_trace_of_inverse_sparse_with_dense_raises_typeerror(self) -> None:
+        with pytest.raises(TypeError, match="precision must be sparse"):
+            trace_of_inverse(np.eye(3), sparse=True)
+
+    def test_log_evidence_glm_unknown_link_raises(self) -> None:
+        rng = np.random.default_rng(42)
+        p = 3
+        X = rng.standard_normal((10, p))
+        y = rng.standard_normal(10)
+        theta = rng.standard_normal(p)
+        H = np.eye(p)
+
+        with pytest.raises(ValueError, match="Unknown link function"):
+            log_evidence_glm_laplace(X, y, theta, H, 1.0, "unknown")
