@@ -10,12 +10,13 @@ from scipy.sparse import csc_array, eye as speye
 from scipy.special import expit, gammaln
 
 from bayesianbandits._empirical_bayes import (
-    effective_num_parameters,
+    _factorization_stats,
+    accumulate_sufficient_stats,
     logdet,
     mackay_update_glm,
     mackay_update_nig,
     mackay_update_normal,
-    trace_of_inverse,
+    mackay_update_normal_online,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
     create_sparse_factor,
@@ -268,80 +269,7 @@ class TestScaledSparseFactorLogdet:
 
 
 # ---------------------------------------------------------------------------
-# 3. Hutchinson trace estimator
-# ---------------------------------------------------------------------------
-
-
-class TestTraceOfInverse:
-    def test_dense_exact(self, small_spd_matrix: NDArray[np.float64]) -> None:
-        expected = float(np.trace(np.linalg.inv(small_spd_matrix)))
-        result = trace_of_inverse(small_spd_matrix, sparse=False)
-        np.testing.assert_allclose(result, expected, atol=1e-10)
-
-    def test_hutchinson_converges(
-        self, small_spd_matrix: NDArray[np.float64]
-    ) -> None:
-        """Stochastic trace converges to exact trace (rtol ~5% at 50 probes)."""
-        exact = float(np.trace(np.linalg.inv(small_spd_matrix)))
-        sparse_prec = csc_array(small_spd_matrix)
-        result = trace_of_inverse(
-            sparse_prec, sparse=True, n_probes=200, rng=np.random.default_rng(0)
-        )
-        np.testing.assert_allclose(result, exact, rtol=0.1)
-
-    @pytest.mark.parametrize("sparse", [True, False])
-    def test_identity_trace(self, sparse: bool) -> None:
-        """tr(I^{-1}) = p."""
-        p = 10
-        if sparse:
-            prec = csc_array(speye(p, format="csc"))
-            result = trace_of_inverse(
-                prec, sparse=True, n_probes=100, rng=np.random.default_rng(42)
-            )
-        else:
-            prec = np.eye(p)
-            result = trace_of_inverse(prec, sparse=False)
-        np.testing.assert_allclose(result, float(p), rtol=0.05)
-
-
-# ---------------------------------------------------------------------------
-# 4. effective_num_parameters
-# ---------------------------------------------------------------------------
-
-
-class TestEffectiveNumParameters:
-    def test_bounds(self, small_spd_matrix: NDArray[np.float64]) -> None:
-        """gamma must satisfy 0 <= gamma <= p."""
-        p = small_spd_matrix.shape[0]
-        gamma = effective_num_parameters(1.0, small_spd_matrix, sparse=False)
-        assert 0 <= gamma <= p
-
-    def test_analytical_identity_case(self) -> None:
-        """X=I: precision=(alpha+beta)I, so tr(inv)=p/(alpha+beta), gamma=p*beta/(alpha+beta)."""
-        p = 5
-        alpha, beta = 2.0, 8.0
-        precision = (alpha + beta) * np.eye(p)
-        gamma = effective_num_parameters(alpha, precision, sparse=False)
-        expected = p * beta / (alpha + beta)
-        np.testing.assert_allclose(gamma, expected, atol=1e-10)
-
-    @pytest.mark.parametrize("sparse", [True, False])
-    def test_sparse_dense_parity(
-        self, small_spd_matrix: NDArray[np.float64], sparse: bool
-    ) -> None:
-        if sparse:
-            prec = csc_array(small_spd_matrix)
-            gamma = effective_num_parameters(
-                1.0, prec, sparse=True, n_probes=500, rng=np.random.default_rng(0)
-            )
-        else:
-            gamma = effective_num_parameters(1.0, small_spd_matrix, sparse=False)
-        exact = effective_num_parameters(1.0, small_spd_matrix, sparse=False)
-        np.testing.assert_allclose(gamma, exact, rtol=0.1)
-
-
-# ---------------------------------------------------------------------------
-# 5. MacKay analytical case (X=I)
+# 3. MacKay analytical case (X=I)
 # ---------------------------------------------------------------------------
 
 
@@ -360,12 +288,11 @@ class TestMackayAnalytical:
         precision = (alpha + beta) * np.eye(p)
         mu_n = solve(precision, beta * y, assume_a="pos")
 
-        # Verify trace
-        tr_inv = trace_of_inverse(precision, sparse=False)
+        # Verify trace and gamma via _factorization_stats
+        _, tr_inv = _factorization_stats(precision, None, False, 20, None)
         np.testing.assert_allclose(tr_inv, p / (alpha + beta), atol=1e-10)
 
-        # Verify gamma
-        gamma = effective_num_parameters(alpha, precision, sparse=False)
+        gamma = float(p - alpha * tr_inv)
         np.testing.assert_allclose(gamma, p * beta / (alpha + beta), atol=1e-10)
 
         # Run MacKay update
@@ -546,7 +473,203 @@ class TestLogEvidenceFromUpdates:
 
 
 # ---------------------------------------------------------------------------
-# 10. Sparse/dense parity
+# 10. Online/batch parity
+# ---------------------------------------------------------------------------
+
+
+class TestOnlineBatchParity:
+    """When sufficient stats match the full dataset, online == batch."""
+
+    def test_online_matches_batch(self) -> None:
+        """mackay_update_normal_online with full-data stats == mackay_update_normal."""
+        rng = np.random.default_rng(42)
+        n, p = 30, 4
+        alpha, beta = 2.0, 3.0
+
+        X = rng.standard_normal((n, p))
+        w = rng.standard_normal(p)
+        y = X @ w + rng.standard_normal(n) * 0.5
+        mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
+
+        # Batch update.
+        alpha_batch, beta_batch, ev_batch = mackay_update_normal(
+            mu_n, precision, X, y, alpha, beta,
+        )
+
+        # Online update with sufficient stats matching the full dataset.
+        alpha_online, beta_online = mackay_update_normal_online(
+            mu_n, precision, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+        )
+
+        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
+        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
+
+    def test_accumulated_stats_match_batch(self) -> None:
+        """Accumulating stats one-at-a-time (no decay) matches batch stats."""
+        rng = np.random.default_rng(99)
+        n, p = 20, 3
+        alpha, beta = 1.5, 2.0
+
+        X = rng.standard_normal((n, p))
+        w = rng.standard_normal(p)
+        y = X @ w + rng.standard_normal(n) * 0.3
+
+        # Accumulate one observation at a time with no decay.
+        eff_n = 0.0
+        eff_yTy = 0.0
+        eff_XTy = np.zeros(p)
+        for i in range(n):
+            eff_n, eff_yTy, eff_XTy = accumulate_sufficient_stats(
+                eff_n, eff_yTy, eff_XTy,
+                X[[i]], y[[i]], prior_decay=1.0,
+            )
+
+        np.testing.assert_allclose(eff_n, float(n))
+        np.testing.assert_allclose(eff_yTy, float(y @ y), atol=1e-10)
+        np.testing.assert_allclose(eff_XTy, X.T @ y, atol=1e-10)
+
+        # Now verify that online update with these stats matches batch.
+        mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
+
+        alpha_batch, beta_batch, _ = mackay_update_normal(
+            mu_n, precision, X, y, alpha, beta,
+        )
+        alpha_online, beta_online = mackay_update_normal_online(
+            mu_n, precision, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=eff_n,
+            eff_yTy=eff_yTy,
+            eff_XTy=eff_XTy,
+        )
+
+        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
+        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
+
+    def test_online_matches_batch_sparse(self) -> None:
+        """Sparse variant: online with full-data stats == batch."""
+        rng = np.random.default_rng(77)
+        n, p = 25, 3
+        alpha, beta = 1.0, 2.0
+
+        X = rng.standard_normal((n, p))
+        w = rng.standard_normal(p)
+        y = X @ w + rng.standard_normal(n) * 0.4
+        mu_n, precision_dense = _compute_posterior_normal(X, y, alpha, beta)
+        precision_sparse = csc_array(precision_dense)
+
+        alpha_batch, beta_batch, ev_batch = mackay_update_normal(
+            mu_n, precision_dense, X, y, alpha, beta,
+        )
+
+        # Use enough probes that Hutchinson is accurate.
+        alpha_online, beta_online = mackay_update_normal_online(
+            mu_n, precision_sparse, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+            sparse=True,
+            n_probes=500,
+            rng=rng,
+        )
+
+        np.testing.assert_allclose(alpha_online, alpha_batch, rtol=0.05)
+        np.testing.assert_allclose(beta_online, beta_batch, rtol=0.05)
+
+    def test_accumulated_stats_sparse_X(self) -> None:
+        """accumulate_sufficient_stats with sparse X matches dense."""
+        rng = np.random.default_rng(55)
+        n, p = 15, 4
+
+        X_dense = rng.standard_normal((n, p))
+        X_sparse = csc_array(X_dense)
+        y = rng.standard_normal(n)
+
+        eff_n_d = 0.0
+        eff_yTy_d = 0.0
+        eff_XTy_d = np.zeros(p)
+
+        eff_n_s = 0.0
+        eff_yTy_s = 0.0
+        eff_XTy_s = np.zeros(p)
+
+        for i in range(n):
+            eff_n_d, eff_yTy_d, eff_XTy_d = accumulate_sufficient_stats(
+                eff_n_d, eff_yTy_d, eff_XTy_d,
+                X_dense[[i]], y[[i]], prior_decay=0.99,
+            )
+            eff_n_s, eff_yTy_s, eff_XTy_s = accumulate_sufficient_stats(
+                eff_n_s, eff_yTy_s, eff_XTy_s,
+                csc_array(X_sparse[[i]]), y[[i]], prior_decay=0.99,
+            )
+
+        np.testing.assert_allclose(eff_n_s, eff_n_d, atol=1e-10)
+        np.testing.assert_allclose(eff_yTy_s, eff_yTy_d, atol=1e-10)
+        np.testing.assert_allclose(eff_XTy_s, eff_XTy_d, atol=1e-10)
+
+    def test_online_beta_fallback(self) -> None:
+        """When RSS <= 0, mackay_update_normal_online returns beta unchanged."""
+        rng = np.random.default_rng(33)
+        p = 3
+        alpha, beta = 1.0, 2.0
+        mu_n = rng.standard_normal(p)
+        precision = np.eye(p) * alpha + np.eye(p) * beta
+
+        # Craft sufficient stats so RSS = yTy - 2*m'XTy + m'XTXm <= 0.
+        # Set eff_yTy = 0 and eff_XTy large so RSS goes negative.
+        alpha_new, beta_new = mackay_update_normal_online(
+            mu_n, precision, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=1.0,
+            eff_yTy=0.0,
+            eff_XTy=mu_n * 1000.0,
+        )
+        assert beta_new == beta
+
+    def test_online_sparse_precision_matvec(self) -> None:
+        """mackay_update_normal_online handles sparse precision @ dense mu_n."""
+        rng = np.random.default_rng(88)
+        n, p = 20, 4
+        alpha, beta = 1.5, 2.5
+
+        X = rng.standard_normal((n, p))
+        w = rng.standard_normal(p)
+        y = X @ w + rng.standard_normal(n) * 0.3
+
+        mu_n, precision_dense = _compute_posterior_normal(X, y, alpha, beta)
+        precision_sparse = csc_array(precision_dense)
+
+        # Dense reference
+        alpha_dense, beta_dense = mackay_update_normal_online(
+            mu_n, precision_dense, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+        )
+
+        # Sparse path
+        alpha_sparse, beta_sparse = mackay_update_normal_online(
+            mu_n, precision_sparse, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+            sparse=True,
+            n_probes=500,
+            rng=rng,
+        )
+
+        np.testing.assert_allclose(alpha_sparse, alpha_dense, rtol=0.05)
+        np.testing.assert_allclose(beta_sparse, beta_dense, rtol=0.05)
+
+
+# ---------------------------------------------------------------------------
+# 11. Sparse/dense parity
 # ---------------------------------------------------------------------------
 
 
@@ -677,10 +800,9 @@ class TestMackayNIG:
         sigma_sq = bn / an
 
         # With X=I: precision = (alpha+1)I, tr(inv) = p/(alpha+1)
+        _, tr_inv_actual = _factorization_stats(precision, None, False, 20, None)
         tr_inv = p / (alpha + 1.0)
-        np.testing.assert_allclose(
-            trace_of_inverse(precision, sparse=False), tr_inv, atol=1e-10
-        )
+        np.testing.assert_allclose(tr_inv_actual, tr_inv, atol=1e-10)
 
         # Verify alpha_new = p*sigma^2 / (||mu_n||^2 + sigma^2 * tr_inv)
         expected_alpha = p * sigma_sq / (float(mu_n @ mu_n) + sigma_sq * tr_inv)
@@ -960,10 +1082,6 @@ class TestErrorPaths:
     def test_logdet_sparse_with_dense_raises_typeerror(self) -> None:
         with pytest.raises(TypeError, match="precision must be sparse"):
             logdet(np.eye(3), sparse=True)
-
-    def test_trace_of_inverse_sparse_with_dense_raises_typeerror(self) -> None:
-        with pytest.raises(TypeError, match="precision must be sparse"):
-            trace_of_inverse(np.eye(3), sparse=True)
 
     def test_factorization_stats_sparse_with_dense_raises_typeerror(self) -> None:
         """_factorization_stats TypeError via mackay_update_normal with dense + sparse=True."""

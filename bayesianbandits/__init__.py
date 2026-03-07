@@ -86,6 +86,20 @@ is useful for restless bandits.
     NormalRegressor
     NormalInverseGammaRegressor
 
+Empirical Bayes Estimators
+==========================
+
+These estimators automatically tune their hyperparameters via evidence
+maximization (MacKay's update rules). They are drop-in replacements for their
+base estimators and are especially useful when hyperparameters are unknown or
+when the environment may be non-stationary (pair with ``learning_rate < 1``
+for decay as a defensive default).
+
+.. autosummary::
+    :toctree: _autosummary
+
+    EmpiricalBayesNormalRegressor
+
 Utilities
 =========
 These utilities provide additional functionality for the bandit algorithms,
@@ -100,6 +114,7 @@ such as Laplace approximation for Gaussian posteriors.
 
 from ._arm import Arm
 from ._arm_featurizer import ArmFeaturizer
+from ._eb_estimators import EmpiricalBayesNormalRegressor
 from ._estimators import (
     BayesianGLM,
     DirichletClassifier,
@@ -127,6 +142,7 @@ __all__ = [
     "FunctionArmFeaturizer",
     "BayesianGLM",
     "DirichletClassifier",
+    "EmpiricalBayesNormalRegressor",
     "GammaRegressor",
     "NormalInverseGammaRegressor",
     "NormalRegressor",
