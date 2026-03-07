@@ -266,10 +266,7 @@ def mackay_update_normal_online(
     m = mu_n
     mTXTy = float(m @ eff_XTy)
 
-    XTX_m = precision @ m
-    if issparse(XTX_m):
-        XTX_m = np.asarray(XTX_m).ravel()
-    XTX_m = XTX_m - prior_scalar * m
+    XTX_m = precision @ m - prior_scalar * m
     mTXTXm = float(m @ XTX_m) / beta
 
     rss = eff_yTy - 2.0 * mTXTy + mTXTXm
