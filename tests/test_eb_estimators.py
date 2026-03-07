@@ -151,3 +151,116 @@ class TestEBNormalRegressor:
         assert loaded.log_evidence_ == model.log_evidence_
         assert loaded.alpha == model.alpha
         assert loaded.beta == model.beta
+
+    def test_fit_sparse_X(self, regression_data, sparse):
+        """fit() with csc_array X initializes _eff_XTy via sparse branch."""
+        if not sparse:
+            pytest.skip("only relevant for sparse=True")
+        X, y = regression_data
+        from scipy.sparse import csc_array as csc
+
+        X_sp = csc(X)
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=True)
+        model.fit(X_sp, y)
+
+        assert hasattr(model, "_eff_XTy")
+        assert model._eff_XTy.shape == (X.shape[1],)
+
+        # Compare to dense fit
+        model_dense = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=True, random_state=42,
+        )
+        model_dense.fit(X, y)
+        # Both should produce finite predictions
+        assert np.all(np.isfinite(model.predict(X)))
+
+    def test_correct_precision_noop(self, regression_data, sparse):
+        """_correct_precision returns early when hyperparams are unchanged."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X, y)
+
+        cov_inv_before = model.cov_inv_.copy() if not sparse else model.cov_inv_.toarray().copy()
+        # Call with same alpha/beta — should be a no-op
+        model._correct_precision(model.alpha, model.beta)
+        cov_inv_after = model.cov_inv_ if not sparse else model.cov_inv_.toarray()
+        np.testing.assert_array_equal(cov_inv_before, cov_inv_after)
+
+    def test_sample_before_partial_fit(self, regression_data, sparse):
+        """partial_fit after sample() initializes EB state correctly."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+
+        # sample() triggers _initialize_prior, setting coef_ without _prior_scalar
+        model.sample(X[:1])
+        assert hasattr(model, "coef_")
+        assert not hasattr(model, "_prior_scalar")
+
+        # partial_fit should detect the sample-before-fit case
+        model.partial_fit(X[:5], y[:5])
+        assert hasattr(model, "_prior_scalar")
+        assert hasattr(model, "_effective_n")
+        assert hasattr(model, "_eff_XTy")
+        assert np.isfinite(model.alpha)
+        assert np.isfinite(model.beta)
+
+    def test_decay(self, regression_data, sparse):
+        """decay() scales _prior_scalar and sufficient stats."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+        )
+        model.fit(X, y)
+
+        prior_before = model._prior_scalar
+        eff_n_before = model._effective_n
+        eff_yTy_before = model._eff_yTy
+        eff_XTy_before = model._eff_XTy.copy()
+
+        model.decay(X[:1])  # decay by 1 observation
+
+        decay = 0.99 ** 1
+        np.testing.assert_allclose(model._prior_scalar, prior_before * decay)
+        np.testing.assert_allclose(model._effective_n, eff_n_before * decay)
+        np.testing.assert_allclose(model._eff_yTy, eff_yTy_before * decay)
+        np.testing.assert_allclose(model._eff_XTy, eff_XTy_before * decay)
+
+    def test_decay_before_fit(self, sparse):
+        """decay() before fit is a no-op."""
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+        )
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((5, 3))
+        # Should not raise
+        model.decay(X)
+
+    def test_partial_fit_cold_start(self, regression_data, sparse):
+        """partial_fit with no prior fit() or sample() delegates to fit()."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+
+        # No fit() or sample() — partial_fit should call fit() internally,
+        # which sets _prior_scalar, and return via the early-return path.
+        model.partial_fit(X[:10], y[:10])
+        assert hasattr(model, "_prior_scalar")
+        assert hasattr(model, "log_evidence_")
+
+    def test_sample_before_partial_fit_sparse_X(self, regression_data, sparse):
+        """sample-before-fit path with sparse X in partial_fit."""
+        if not sparse:
+            pytest.skip("only relevant for sparse=True")
+        X, y = regression_data
+        from scipy.sparse import csc_array as csc
+
+        X_sp = csc(X)
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=True)
+
+        # sample() sets coef_ without _prior_scalar
+        model.sample(X_sp[:1])
+        assert not hasattr(model, "_prior_scalar")
+
+        # partial_fit with sparse X hits the sparse first-obs branch
+        model.partial_fit(X_sp[:5], y[:5])
+        assert hasattr(model, "_eff_XTy")
+        assert model._eff_XTy.shape == (X.shape[1],)

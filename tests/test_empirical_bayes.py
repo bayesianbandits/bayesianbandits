@@ -580,6 +580,93 @@ class TestOnlineBatchParity:
         np.testing.assert_allclose(alpha_online, alpha_batch, rtol=0.05)
         np.testing.assert_allclose(beta_online, beta_batch, rtol=0.05)
 
+    def test_accumulated_stats_sparse_X(self) -> None:
+        """accumulate_sufficient_stats with sparse X matches dense."""
+        rng = np.random.default_rng(55)
+        n, p = 15, 4
+
+        X_dense = rng.standard_normal((n, p))
+        X_sparse = csc_array(X_dense)
+        y = rng.standard_normal(n)
+
+        eff_n_d = 0.0
+        eff_yTy_d = 0.0
+        eff_XTy_d = np.zeros(p)
+
+        eff_n_s = 0.0
+        eff_yTy_s = 0.0
+        eff_XTy_s = np.zeros(p)
+
+        for i in range(n):
+            eff_n_d, eff_yTy_d, eff_XTy_d = accumulate_sufficient_stats(
+                eff_n_d, eff_yTy_d, eff_XTy_d,
+                X_dense[[i]], y[[i]], prior_decay=0.99,
+            )
+            eff_n_s, eff_yTy_s, eff_XTy_s = accumulate_sufficient_stats(
+                eff_n_s, eff_yTy_s, eff_XTy_s,
+                csc_array(X_sparse[[i]]), y[[i]], prior_decay=0.99,
+            )
+
+        np.testing.assert_allclose(eff_n_s, eff_n_d, atol=1e-10)
+        np.testing.assert_allclose(eff_yTy_s, eff_yTy_d, atol=1e-10)
+        np.testing.assert_allclose(eff_XTy_s, eff_XTy_d, atol=1e-10)
+
+    def test_online_beta_fallback(self) -> None:
+        """When RSS <= 0, mackay_update_normal_online returns beta unchanged."""
+        rng = np.random.default_rng(33)
+        p = 3
+        alpha, beta = 1.0, 2.0
+        mu_n = rng.standard_normal(p)
+        precision = np.eye(p) * alpha + np.eye(p) * beta
+
+        # Craft sufficient stats so RSS = yTy - 2*m'XTy + m'XTXm <= 0.
+        # Set eff_yTy = 0 and eff_XTy large so RSS goes negative.
+        alpha_new, beta_new = mackay_update_normal_online(
+            mu_n, precision, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=1.0,
+            eff_yTy=0.0,
+            eff_XTy=mu_n * 1000.0,
+        )
+        assert beta_new == beta
+
+    def test_online_sparse_precision_matvec(self) -> None:
+        """mackay_update_normal_online handles sparse precision @ dense mu_n."""
+        rng = np.random.default_rng(88)
+        n, p = 20, 4
+        alpha, beta = 1.5, 2.5
+
+        X = rng.standard_normal((n, p))
+        w = rng.standard_normal(p)
+        y = X @ w + rng.standard_normal(n) * 0.3
+
+        mu_n, precision_dense = _compute_posterior_normal(X, y, alpha, beta)
+        precision_sparse = csc_array(precision_dense)
+
+        # Dense reference
+        alpha_dense, beta_dense = mackay_update_normal_online(
+            mu_n, precision_dense, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+        )
+
+        # Sparse path
+        alpha_sparse, beta_sparse = mackay_update_normal_online(
+            mu_n, precision_sparse, alpha, beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=X.T @ y,
+            sparse=True,
+            n_probes=500,
+            rng=rng,
+        )
+
+        np.testing.assert_allclose(alpha_sparse, alpha_dense, rtol=0.05)
+        np.testing.assert_allclose(beta_sparse, beta_dense, rtol=0.05)
+
 
 # ---------------------------------------------------------------------------
 # 11. Sparse/dense parity
