@@ -100,6 +100,11 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         Whether to use sparse precision matrices.
     random_state : int, Generator, or None, default=None
         Random state for reproducibility.
+    trace_method : str, default="auto"
+        Method for computing tr(Λ⁻¹) in the MacKay update.
+        ``"auto"`` uses Takahashi recursion (exact) for sparse and
+        Cholesky for dense.  ``"diagonal"`` uses the fast O(p)
+        approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
 
     Attributes
     ----------
@@ -121,6 +126,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         learning_rate: float = 1.0,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
+        trace_method: str = "auto",
     ) -> None:
         super().__init__(
             alpha=alpha,
@@ -131,6 +137,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         )
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
+        self.trace_method = trace_method
 
     def _eb_mackay_step(
         self,
@@ -146,7 +153,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             self.beta,
             sparse=self.sparse,
             factor=getattr(self, "_factor", None),
-            rng=self.random_state_,
+            trace_method=self.trace_method,
         )
         self.alpha = alpha_new
         self.beta = beta_new
@@ -154,7 +161,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
     def _eb_mackay_step_online(self) -> None:
         """MacKay step using accumulated sufficient statistics for beta."""
-        alpha_new, beta_new = mackay_update_normal_online(
+        alpha_new, beta_new, factor = mackay_update_normal_online(
             self.coef_,
             self.cov_inv_,
             self.alpha,
@@ -165,10 +172,12 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             self._eff_XTy,
             sparse=self.sparse,
             factor=getattr(self, "_factor", None),
-            rng=self.random_state_,
+            trace_method=self.trace_method,
         )
         self.alpha = alpha_new
         self.beta = beta_new
+        if factor is not None:
+            self._factor = factor
 
     def _accumulate_stats(
         self,
@@ -235,6 +244,9 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         After MacKay changes α and β, rescale both components so the
         matrix is consistent with the new hyperparameters.
+
+        After correction, eagerly refactorizes so the factor is ready
+        for ``sample()`` without an extra factorization.
         """
         alpha_new = self.alpha
         beta_new = self.beta
@@ -279,8 +291,84 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             self.cov_inv_[diag_idx] += prior_reinjection
         if hasattr(self, "_factor"):
             del self._factor
-            if self.sparse:
-                self._factor = create_sparse_factor(cast(csc_array, self.cov_inv_))
+
+    @_invalidate_cached_properties
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> None:  # type: ignore[override]
+        """Override to fold prior reinjection into precision construction.
+
+        When ``_pending_reinjection > 0``, adds ``(1 - γ) · α · I`` to
+        the precision during the decay + data update.  This means the
+        factorization for the linear solve already reflects the
+        reinjected prior — no separate ``_reinject_prior`` call or
+        refactorization needed.
+        """
+        reinjection = getattr(self, "_pending_reinjection", 0.0)
+        if reinjection == 0.0:
+            # No reinjection needed — delegate to base class.
+            super()._fit_helper(X, y, sample_weight)
+            return
+
+        # -- Below: base class logic with reinjection folded in --
+
+        if self.sparse:
+            X = csc_array(X)
+
+        assert X.shape is not None
+
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+
+        from ._estimators import compute_effective_weights
+
+        effective_weights = compute_effective_weights(
+            X.shape[0], sample_weight, self.learning_rate
+        )
+
+        prior_decay = self.learning_rate ** X.shape[0]
+
+        if self.sparse:
+            from scipy.sparse import diags as sp_diags
+
+            W_sqrt = sp_diags(np.sqrt(effective_weights), format="csc")
+            X_weighted = W_sqrt @ X
+            cov_inv = cast(
+                csc_array,
+                prior_decay * self.cov_inv_ + self.beta * (X_weighted.T @ X_weighted),
+            )
+            # Fold in the prior reinjection
+            cov_inv.setdiag(cov_inv.diagonal() + reinjection)
+        else:
+            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
+            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
+                X_weighted.T @ X_weighted
+            )
+            cov_inv = cast(NDArray[np.float64], cov_inv)
+            diag_idx = np.diag_indices_from(cov_inv)
+            cov_inv[diag_idx] += reinjection
+
+        y_weighted = y * effective_weights
+        eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
+        eta = cast(NDArray[np.float64], eta)
+
+        if self.sparse:
+            assert isinstance(cov_inv, csc_array)
+            factor = create_sparse_factor(cov_inv)
+            coef = factor.solve(eta)
+            self._factor = factor
+        else:
+            from scipy.linalg import solve
+
+            coef = solve(cov_inv, eta, check_finite=False, assume_a="pos")
+
+        self.cov_inv_ = cov_inv
+        self.coef_ = coef
 
     def partial_fit(
         self,
@@ -302,16 +390,19 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
                 prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
             )
 
-        # The stabilized re-injection amount that must be added to the
-        # precision diagonal after the base class applies uniform decay.
-        prior_reinjection = (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
+        # Store reinjection amount for _fit_helper to fold in.
+        # When > 0, _fit_helper adds this to the precision diagonal during
+        # construction, avoiding a separate _reinject_prior + refactorization.
+        self._pending_reinjection = (
+            (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
+        )
 
         alpha_old = self.alpha
         beta_old = self.beta
 
         result = super().partial_fit(X, y, sample_weight)
 
-        self._reinject_prior(prior_reinjection)
+        self._pending_reinjection = 0.0
 
         if not had_prior_scalar:
             if hasattr(self, "_prior_scalar"):
