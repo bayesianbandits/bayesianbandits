@@ -30,8 +30,10 @@ def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
     """Compute diag((LL')⁻¹) via Takahashi recursion (selected inversion).
 
     Given a lower triangular CSC matrix L where LL' = A, computes the
-    diagonal of A⁻¹ exactly in O(nnz(L)) time using backward recursion
-    through L's sparsity structure.
+    diagonal of A⁻¹ exactly using backward recursion through L's sparsity
+    structure.  Cost is O(Σⱼ nⱼ²) where nⱼ is the number of sub-diagonal
+    entries in column j — the same order as the Cholesky factorization
+    itself.
 
     Parameters
     ----------
