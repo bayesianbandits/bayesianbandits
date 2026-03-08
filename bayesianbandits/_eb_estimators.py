@@ -261,6 +261,27 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         self._prior_scalar = new_prior_scalar
 
+    def _reinject_prior(self, prior_reinjection: float) -> None:
+        """Add stabilized prior re-injection to the precision diagonal.
+
+        After exponential decay the prior contribution shrinks toward zero.
+        This adds back ``prior_reinjection`` to every diagonal entry so that
+        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
+        """
+        if prior_reinjection == 0.0:
+            return
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            cov_inv.setdiag(cov_inv.diagonal() + prior_reinjection)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += prior_reinjection
+        if hasattr(self, "_factor"):
+            del self._factor
+            if self.sparse:
+                self._factor = create_sparse_factor(cast(csc_array, self.cov_inv_))
+
     def partial_fit(
         self,
         X: Union[NDArray[Any], csc_array],
@@ -290,22 +311,7 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         result = super().partial_fit(X, y, sample_weight)
 
-        # Add the stabilized prior re-injection to the precision diagonal.
-        # _fit_helper applied uniform decay (prior_decay * cov_inv_), so
-        # the prior diagonal is prior_decay * old_prior_scalar.  We need
-        # to add back (1 - prior_decay) * alpha to match _prior_scalar.
-        if prior_reinjection != 0.0:
-            if self.sparse:
-                cov_inv = cast(csc_array, self.cov_inv_)
-                cov_inv.setdiag(cov_inv.diagonal() + prior_reinjection)
-                self.cov_inv_ = cov_inv
-            else:
-                diag_idx = np.diag_indices_from(self.cov_inv_)
-                self.cov_inv_[diag_idx] += prior_reinjection
-            if hasattr(self, "_factor"):
-                del self._factor
-                if self.sparse:
-                    self._factor = create_sparse_factor(cast(csc_array, self.cov_inv_))
+        self._reinject_prior(prior_reinjection)
 
         if not had_prior_scalar:
             if hasattr(self, "_prior_scalar"):
@@ -382,16 +388,4 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         # Base class applies uniform decay: cov_inv_ *= prior_decay
         super().decay(X, decay_rate=decay_rate)
 
-        # Add back the stabilized prior re-injection to the diagonal.
-        if prior_reinjection != 0.0:
-            if self.sparse:
-                cov_inv = cast(csc_array, self.cov_inv_)
-                cov_inv.setdiag(cov_inv.diagonal() + prior_reinjection)
-                self.cov_inv_ = cov_inv
-            else:
-                diag_idx = np.diag_indices_from(self.cov_inv_)
-                self.cov_inv_[diag_idx] += prior_reinjection
-            if hasattr(self, "_factor"):
-                del self._factor
-                if self.sparse:
-                    self._factor = create_sparse_factor(cast(csc_array, self.cov_inv_))
+        self._reinject_prior(prior_reinjection)

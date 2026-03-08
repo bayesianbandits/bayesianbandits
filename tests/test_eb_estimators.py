@@ -228,6 +228,69 @@ class TestEBNormalRegressor:
         np.testing.assert_allclose(model._eff_yTy, eff_yTy_before * decay)
         np.testing.assert_allclose(model._eff_XTy, eff_XTy_before * decay)
 
+    def test_partial_fit_prior_reinjection(self, regression_data, sparse):
+        """partial_fit with learning_rate < 1 re-injects prior into precision diagonal."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+        )
+        model.fit(X[:50], y[:50])
+
+        if sparse:
+            diag_before = model.cov_inv_.toarray().diagonal().copy()
+        else:
+            diag_before = model.cov_inv_.diagonal().copy()
+
+        n_new = 10
+        prior_decay = 0.99 ** n_new
+
+        model.partial_fit(X[50:50 + n_new], y[50:50 + n_new])
+
+        # The diagonal should include the re-injection amount relative to
+        # what pure decay would have produced.
+        if sparse:
+            diag_after = model.cov_inv_.toarray().diagonal()
+        else:
+            diag_after = model.cov_inv_.diagonal()
+
+        # After decay alone the diagonal would be prior_decay * diag_before
+        # (plus data contributions).  The re-injection adds expected_reinjection
+        # uniformly, so the diagonal must exceed prior_decay * diag_before.
+        assert np.all(diag_after > prior_decay * diag_before), (
+            "Prior re-injection did not increase precision diagonal"
+        )
+
+    def test_decay_prior_reinjection_precision(self, regression_data, sparse):
+        """decay() with learning_rate < 1 re-injects prior into precision diagonal."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+        )
+        model.fit(X, y)
+
+        if sparse:
+            diag_before = model.cov_inv_.toarray().diagonal().copy()
+        else:
+            diag_before = model.cov_inv_.diagonal().copy()
+
+        n_obs = X[:1].shape[0]
+        prior_decay = 0.99 ** n_obs
+        expected_reinjection = (1 - prior_decay) * model.alpha
+
+        model.decay(X[:1])
+
+        if sparse:
+            diag_after = model.cov_inv_.toarray().diagonal()
+        else:
+            diag_after = model.cov_inv_.diagonal()
+
+        # Without re-injection: diag = prior_decay * diag_before
+        # With re-injection: diag = prior_decay * diag_before + expected_reinjection
+        np.testing.assert_allclose(
+            diag_after,
+            prior_decay * diag_before + expected_reinjection,
+        )
+
     def test_decay_before_fit(self, sparse):
         """decay() before fit is a no-op."""
         model = EmpiricalBayesNormalRegressor(
