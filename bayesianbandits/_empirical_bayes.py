@@ -26,6 +26,128 @@ from ._sparse_bayesian_linear_regression import (
 _LOG_2PI = math.log(2.0 * math.pi)
 
 
+def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
+    """Compute diag((LL')⁻¹) via Takahashi recursion (selected inversion).
+
+    Given a lower triangular CSC matrix L where LL' = A, computes the
+    diagonal of A⁻¹ exactly using backward recursion through L's sparsity
+    structure.  Cost is O(Σⱼ nⱼ²) where nⱼ is the number of sub-diagonal
+    entries in column j — the same order as the Cholesky factorization
+    itself.
+
+    Parameters
+    ----------
+    L_csc : csc_array
+        Lower triangular Cholesky factor in CSC format.
+
+    Returns
+    -------
+    NDArray[np.float64]
+        Diagonal of (LL')⁻¹, length p.
+
+    References
+    ----------
+    .. [1] Takahashi, K., Fagan, J., & Chin, M.-S. (1973). "Formation of
+       a sparse bus impedance matrix and its application to short circuit
+       study." 8th PICA Conference Proceedings.
+    """
+    p = cast(tuple[int, int], L_csc.shape)[0]
+
+    # Ensure rows within each column are sorted ascending (required by the
+    # recursion which assumes the diagonal entry is first in each column).
+    if not L_csc.has_sorted_indices:
+        L_csc = L_csc.copy()
+        L_csc.sort_indices()
+
+    L_data = L_csc.data
+    L_indices = L_csc.indices
+    L_indptr = L_csc.indptr
+
+    # Z_data: parallel to L_data, stores off-diagonal entries of Z = A⁻¹
+    Z_data = np.empty_like(L_data)
+    Z_diag = np.empty(p, dtype=np.float64)
+
+    # Diagonal values of L: first entry in each CSC column
+    L_diag = L_data[L_indptr[:-1]]
+
+    # Trivial columns (no sub-diagonal entries): Z_jj = 1/L_jj², vectorized
+    col_lengths = np.diff(L_indptr)
+    trivial = col_lengths == 1
+    Z_diag[trivial] = 1.0 / (L_diag[trivial] ** 2)
+
+    # Nontrivial columns: backward recursion
+    nontrivial = np.flatnonzero(~trivial)
+
+    for j in nontrivial[::-1]:
+        col_start = L_indptr[j]
+        col_end = L_indptr[j + 1]
+        L_jj = L_data[col_start]
+        inv_L_jj = 1.0 / L_jj
+
+        sub_start = col_start + 1
+        sub_rows = L_indices[sub_start:col_end]
+        sub_vals = L_data[sub_start:col_end]
+        n_sub = sub_rows.shape[0]
+
+        # Assemble Z_sub: Z at positions (sub_rows[a], sub_rows[b]).
+        # Since indices are sorted, b > a implies rb > ra, so all lookups
+        # for a given 'a' target column ra — one vectorized searchsorted.
+        Z_sub = np.empty((n_sub, n_sub), dtype=np.float64)
+        for a in range(n_sub):
+            ra = sub_rows[a]
+            Z_sub[a, a] = Z_diag[ra]
+            remaining = sub_rows[a + 1:]
+            if remaining.shape[0] > 0:
+                start = L_indptr[ra]
+                positions = start + np.searchsorted(
+                    L_indices[start:L_indptr[ra + 1]], remaining
+                )
+                Z_sub[a, a + 1:] = Z_data[positions]
+                Z_sub[a + 1:, a] = Z_data[positions]
+
+        # Off-diagonal Z entries for column j
+        z_col = (-inv_L_jj) * (Z_sub @ sub_vals)
+        Z_data[sub_start:col_end] = z_col
+
+        # Diagonal
+        Z_diag[j] = inv_L_jj * inv_L_jj - inv_L_jj * float(
+            sub_vals @ z_col
+        )
+
+    return Z_diag
+
+
+def _takahashi_trace(factor: SparseFactor) -> float:
+    """Compute tr(Λ⁻¹) exactly via Takahashi recursion.
+
+    Extracts the Cholesky factor L from the SparseFactor, runs Takahashi
+    diagonal recursion, and returns sum(diag((LL')⁻¹)).
+
+    The trace is permutation-invariant, so the result is correct regardless
+    of fill-reducing permutation order.
+    """
+    L = factor.get_L_csc()
+    Z_diag = _takahashi_diagonal(L)
+    return float(np.sum(Z_diag))
+
+
+def _diagonal_trace_approx(
+    precision: Union[NDArray[np.float64], csc_array],
+) -> float:
+    """Approximate tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
+
+    Fast O(p) approximation valid when the precision matrix is strongly
+    diagonally dominant.
+    """
+    if issparse(precision):
+        diag = np.asarray(precision.diagonal(), dtype=np.float64)
+    else:
+        assert isinstance(precision, np.ndarray)
+        diag = np.diag(precision).astype(np.float64)
+    return float(np.sum(1.0 / diag))
+
+
+
 def logdet(
     precision: Union[NDArray[np.float64], csc_array],
     factor: Optional[SparseFactor] = None,
@@ -80,36 +202,40 @@ def _factorization_stats(
     precision: Union[NDArray[np.float64], csc_array],
     factor: Optional[SparseFactor],
     sparse: bool,
-    n_probes: int,
-    rng: Optional[np.random.Generator],
-) -> tuple[float, float]:
-    """Return (logdet, trace_inverse) from a single factorization."""
+    trace_method: str = "auto",
+) -> tuple[float, float, Optional[SparseFactor]]:
+    """Return (logdet, trace_inverse, factor) from a single factorization.
+
+    The factor is returned so callers can cache it and avoid redundant
+    refactorizations.  For dense or ``"diagonal"`` paths the returned
+    factor is the same as the input (possibly ``None``).
+
+    Parameters
+    ----------
+    precision : dense or sparse matrix
+    factor : pre-computed sparse factorization (optional)
+    sparse : whether to use sparse computation
+    trace_method : ``"auto"`` uses Takahashi recursion for sparse and
+        exact Cholesky for dense.  ``"diagonal"`` uses the fast
+        O(p) approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
+    """
+    if trace_method == "diagonal":
+        tr_inv = _diagonal_trace_approx(precision)
+        ld = logdet(precision, factor=factor, sparse=sparse)
+        return ld, tr_inv, factor
+
+    # trace_method == "auto" (default)
     if sparse:
         if factor is None:
             if not issparse(precision):
                 raise TypeError("precision must be sparse when sparse=True")
             factor = create_sparse_factor(cast(csc_array, precision))
-        p = cast(tuple[int, int], precision.shape)[0]
         ld = factor.logdet()
-        tr_inv = _hutchinson_trace(factor, p, n_probes, rng)
+        tr_inv = _takahashi_trace(factor)
     else:
         assert isinstance(precision, np.ndarray)
         ld, tr_inv = _dense_cholesky_stats(precision)
-    return ld, tr_inv
-
-
-def _hutchinson_trace(
-    factor: SparseFactor,
-    p: int,
-    n_probes: int,
-    rng: Optional[np.random.Generator],
-) -> float:
-    """Batched Hutchinson trace estimator: tr(A^-1) via multi-RHS solve."""
-    if rng is None:
-        rng = np.random.default_rng()
-    Z = 2 * rng.integers(0, 2, size=(p, n_probes), dtype=np.int8) - np.int8(1)
-    V = factor.solve(Z.astype(np.float64))
-    return float(np.sum(Z * V) / n_probes)
+    return ld, tr_inv, factor
 
 
 def mackay_update_normal(
@@ -121,8 +247,7 @@ def mackay_update_normal(
     beta: float,
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
-    n_probes: int = 20,
-    rng: Optional[np.random.Generator] = None,
+    trace_method: str = "auto",
 ) -> tuple[float, float, float]:
     """MacKay update for NormalRegressor.
 
@@ -148,7 +273,7 @@ def mackay_update_normal(
     rss = float(residual @ residual)
     mu_norm_sq = float(mu_n @ mu_n)
 
-    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
 
     # gamma is the effective number of well-determined parameters,
     # bounded by (0, min(n, p)].  Clamping prevents negative or zero
@@ -220,9 +345,8 @@ def mackay_update_normal_online(
     eff_XTy: NDArray[np.float64],
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
-    n_probes: int = 30,
-    rng: Optional[np.random.Generator] = None,
-) -> tuple[float, float]:
+    trace_method: str = "auto",
+) -> tuple[float, float, Optional[SparseFactor]]:
     """MacKay update using accumulated sufficient statistics for beta.
 
     The standard ``mackay_update_normal`` computes beta from the passed
@@ -250,17 +374,17 @@ def mackay_update_normal_online(
     effective_n : decayed effective sample size
     eff_yTy : decayed yᵀy
     eff_XTy : decayed Xᵀy
-    sparse, factor, n_probes, rng : factorization parameters
+    sparse, factor : factorization parameters
 
     Returns
     -------
-    (alpha_new, beta_new)
+    (alpha_new, beta_new, factor)
     """
     p = cast(tuple[int, int], precision.shape)[0]
     mu_norm_sq = float(mu_n @ mu_n)
 
     # Single factorization for trace estimate.
-    _, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+    _, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
 
     # gamma is the effective number of well-determined parameters,
     # bounded by (0, min(effective_n, p)].
@@ -286,7 +410,7 @@ def mackay_update_normal_online(
     else:
         beta_new = beta
 
-    return alpha_new, beta_new
+    return alpha_new, beta_new, factor
 
 
 def mackay_update_nig(
@@ -299,9 +423,8 @@ def mackay_update_nig(
     b0: float,
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
-    n_probes: int = 20,
-    rng: Optional[np.random.Generator] = None,
     n_obs: int = 0,
+    trace_method: str = "auto",
 ) -> tuple[float, float]:
     """MacKay update for NormalInverseGammaRegressor.
 
@@ -319,7 +442,7 @@ def mackay_update_nig(
     alpha : prior precision scalar
     an, bn : posterior IG parameters
     a0, b0 : prior IG parameters (needed for evidence)
-    sparse, factor, n_probes, rng : sparse computation parameters
+    sparse, factor : sparse computation parameters
     n_obs : number of observations (needed for evidence)
 
     References
@@ -333,7 +456,7 @@ def mackay_update_nig(
     sigma_sq = bn / an
     mu_norm_sq = float(mu_n @ mu_n)
 
-    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
 
     denom = mu_norm_sq + sigma_sq * tr_inv
     alpha_new = float(p * sigma_sq / denom) if denom > 0 else alpha
@@ -363,8 +486,7 @@ def mackay_update_glm(
     link: str,
     sparse: bool = False,
     factor: Optional[SparseFactor] = None,
-    n_probes: int = 20,
-    rng: Optional[np.random.Generator] = None,
+    trace_method: str = "auto",
 ) -> tuple[float, float]:
     """MacKay update for BayesianGLM.
 
@@ -382,7 +504,7 @@ def mackay_update_glm(
     X : design matrix
     y : response vector
     link : link function ("logit" or "log")
-    sparse, factor, n_probes, rng : sparse computation parameters
+    sparse, factor : sparse computation parameters
 
     References
     ----------
@@ -394,7 +516,7 @@ def mackay_update_glm(
     p = cast(tuple[int, int], precision.shape)[0]
     theta_norm_sq = float(theta_MAP @ theta_MAP)
 
-    ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
+    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
 
     gamma = float(p - alpha * tr_inv)
     alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha

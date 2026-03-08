@@ -330,3 +330,96 @@ class TestEBNormalRegressor:
         model.partial_fit(X_sp[:5], y[:5])
         assert hasattr(model, "_eff_XTy")
         assert model._eff_XTy.shape == (X.shape[1],)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("trace_method", ["auto", "diagonal"])
+class TestTraceMethod:
+    def test_fit_with_trace_method(self, regression_data, sparse, trace_method):
+        """Both trace methods produce valid fit results."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method=trace_method
+        )
+        model.fit(X, y)
+
+        assert np.isfinite(model.log_evidence_)
+        assert model.alpha > 0
+        assert model.beta > 0
+
+    def test_partial_fit_with_trace_method(self, regression_data, sparse, trace_method):
+        """Both trace methods work through partial_fit (online MacKay)."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method=trace_method
+        )
+        model.fit(X[:50], y[:50])
+        alpha_after_fit = model.alpha
+
+        model.partial_fit(X[50:60], y[50:60])
+        # MacKay should have updated alpha
+        assert model.alpha != alpha_after_fit
+
+    def test_auto_and_diagonal_agree_on_alpha_direction(
+        self, regression_data, sparse, trace_method
+    ):
+        """auto and diagonal should move alpha in the same direction."""
+        if trace_method != "auto":
+            pytest.skip("only run once per sparse setting")
+        X, y = regression_data
+
+        model_auto = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method="auto"
+        )
+        model_auto.fit(X, y)
+
+        model_diag = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method="diagonal"
+        )
+        model_diag.fit(X, y)
+
+        # Both should move alpha away from the initial value in the same direction
+        assert (model_auto.alpha > 1.0) == (model_diag.alpha > 1.0)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+class TestSampleWeight:
+    def test_partial_fit_with_sample_weight(self, regression_data, sparse):
+        """partial_fit with sample_weight exercises the reinjection _fit_helper path."""
+        X, y = regression_data
+        weights = np.ones(10, dtype=np.float64)
+        weights[:5] = 2.0  # upweight first half
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model.fit(X[:50], y[:50])
+
+        # This hits _fit_helper with _pending_reinjection > 0 AND sample_weight != None
+        model.partial_fit(X[50:60], y[50:60], sample_weight=weights)
+
+        assert model.alpha > 0
+        assert model.beta > 0
+        assert hasattr(model, "_prior_scalar")
+
+    def test_sample_weight_changes_result(self, regression_data, sparse):
+        """Non-uniform weights should produce different coefficients than uniform."""
+        X, y = regression_data
+
+        model_uniform = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model_uniform.fit(X[:50], y[:50])
+        model_uniform.partial_fit(X[50:60], y[50:60])
+        coef_uniform = model_uniform.coef_.copy()
+
+        model_weighted = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model_weighted.fit(X[:50], y[:50])
+        weights = np.ones(10)
+        weights[0] = 100.0
+        model_weighted.partial_fit(X[50:60], y[50:60], sample_weight=weights)
+        coef_weighted = model_weighted.coef_
+
+        assert not np.allclose(coef_uniform, coef_weighted)

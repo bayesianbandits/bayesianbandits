@@ -10,7 +10,10 @@ from scipy.sparse import csc_array, eye as speye
 from scipy.special import expit, gammaln
 
 from bayesianbandits._empirical_bayes import (
+    _diagonal_trace_approx,
     _factorization_stats,
+    _takahashi_diagonal,
+    _takahashi_trace,
     accumulate_sufficient_stats,
     logdet,
     mackay_update_glm,
@@ -20,6 +23,7 @@ from bayesianbandits._empirical_bayes import (
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
     create_sparse_factor,
+    scale_factor,
 )
 
 
@@ -251,8 +255,6 @@ class TestLogdet:
 class TestScaledSparseFactorLogdet:
     def test_scaled_logdet(self, small_spd_matrix: NDArray[np.float64]) -> None:
         """Verify log|sP| = p·log(s) + log|P|."""
-        from bayesianbandits._sparse_bayesian_linear_regression import scale_factor
-
         scale = 3.7
         p = small_spd_matrix.shape[0]
 
@@ -269,7 +271,164 @@ class TestScaledSparseFactorLogdet:
 
 
 # ---------------------------------------------------------------------------
-# 3. MacKay analytical case (X=I)
+# 3. Takahashi diagonal recursion
+# ---------------------------------------------------------------------------
+
+
+class TestTakahashiDiagonal:
+    def test_dense_spd_matches_inv(self) -> None:
+        """Takahashi diagonal matches np.linalg.inv diagonal for small dense SPD."""
+        rng = np.random.default_rng(42)
+        p = 6
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 3.0 * np.eye(p)
+
+        expected_diag = np.diag(np.linalg.inv(M))
+
+        L_dense = np.linalg.cholesky(M)
+        L_csc = csc_array(L_dense)
+        result_diag = _takahashi_diagonal(L_csc)
+
+        np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
+
+    def test_sparse_spd_cholmod_or_superlu(self) -> None:
+        """Takahashi via SparseFactor matches dense inverse diagonal."""
+        rng = np.random.default_rng(77)
+        p = 8
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 5.0 * np.eye(p)
+
+        expected_diag = np.diag(np.linalg.inv(M))
+        expected_trace = float(np.sum(expected_diag))
+
+        sparse_M = csc_array(M)
+        factor = create_sparse_factor(sparse_M)
+        result_trace = _takahashi_trace(factor)
+
+        np.testing.assert_allclose(result_trace, expected_trace, atol=1e-10)
+
+    def test_truly_sparse_matrix(self) -> None:
+        """Takahashi on a sparse tridiagonal matrix."""
+        p = 20
+        diag = np.full(p, 4.0)
+        off_diag = np.full(p - 1, -1.0)
+        M_dense = np.diag(diag) + np.diag(off_diag, 1) + np.diag(off_diag, -1)
+
+        expected_diag = np.diag(np.linalg.inv(M_dense))
+
+        sparse_M = csc_array(M_dense)
+        factor = create_sparse_factor(sparse_M)
+        L = factor.get_L_csc()
+        result_diag = _takahashi_diagonal(L)
+
+        # Trace is permutation-invariant, so compare sorted diagonals
+        np.testing.assert_allclose(
+            sorted(result_diag), sorted(expected_diag), atol=1e-10
+        )
+
+    def test_scaled_sparse_factor(self) -> None:
+        """Takahashi trace through ScaledSparseFactor."""
+        rng = np.random.default_rng(99)
+        p = 5
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 4.0 * np.eye(p)
+        s = 2.5
+
+        expected_trace = float(np.trace(np.linalg.inv(s * M)))
+
+        sparse_M = csc_array(M)
+        factor = create_sparse_factor(sparse_M)
+        scaled = scale_factor(factor, s)
+        result_trace = _takahashi_trace(scaled)
+
+        np.testing.assert_allclose(result_trace, expected_trace, atol=1e-10)
+
+    def test_identity(self) -> None:
+        """Takahashi on identity: diag(I⁻¹) = [1, 1, ..., 1]."""
+        p = 10
+        M = csc_array(np.eye(p))
+        factor = create_sparse_factor(M)
+        L = factor.get_L_csc()
+        result_diag = _takahashi_diagonal(L)
+        np.testing.assert_allclose(result_diag, np.ones(p), atol=1e-14)
+
+
+# ---------------------------------------------------------------------------
+# 4. Diagonal trace approximation
+# ---------------------------------------------------------------------------
+
+
+class TestDiagonalTraceApprox:
+    def test_diagonal_matrix_exact(self) -> None:
+        """For a diagonal matrix, the approximation is exact."""
+        diag_vals = np.array([2.0, 5.0, 10.0, 0.5])
+        M = np.diag(diag_vals)
+        expected = float(np.sum(1.0 / diag_vals))
+        result = _diagonal_trace_approx(M)
+        np.testing.assert_allclose(result, expected, atol=1e-14)
+
+    def test_sparse_diagonal_matrix_exact(self) -> None:
+        """Sparse diagonal: approximation is exact."""
+        diag_vals = np.array([2.0, 5.0, 10.0, 0.5])
+        M = csc_array(np.diag(diag_vals))
+        expected = float(np.sum(1.0 / diag_vals))
+        result = _diagonal_trace_approx(M)
+        np.testing.assert_allclose(result, expected, atol=1e-14)
+
+    def test_diagonally_dominant_close(self) -> None:
+        """For strongly diag-dominant matrices, approx is close to exact."""
+        rng = np.random.default_rng(42)
+        p = 5
+        A = rng.standard_normal((p, p)) * 0.1
+        M = A.T @ A + 10.0 * np.eye(p)  # strongly dominant
+
+        exact = float(np.trace(np.linalg.inv(M)))
+        approx = _diagonal_trace_approx(M)
+
+        # Should be within ~10% for strongly dominant
+        np.testing.assert_allclose(approx, exact, rtol=0.15)
+
+
+# ---------------------------------------------------------------------------
+# 5. _factorization_stats with trace_method
+# ---------------------------------------------------------------------------
+
+
+class TestFactorizationStatsTraceMethod:
+    def test_auto_dense_matches_cholesky(self) -> None:
+        rng = np.random.default_rng(42)
+        p = 5
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 3.0 * np.eye(p)
+
+        ld, tr_inv, _ = _factorization_stats(M, None, False, trace_method="auto")
+        expected_tr = float(np.trace(np.linalg.inv(M)))
+        np.testing.assert_allclose(tr_inv, expected_tr, atol=1e-10)
+
+    def test_diagonal_method(self) -> None:
+        rng = np.random.default_rng(42)
+        p = 5
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 10.0 * np.eye(p)
+
+        ld, tr_inv, _ = _factorization_stats(M, None, False, trace_method="diagonal")
+        expected = _diagonal_trace_approx(M)
+        np.testing.assert_allclose(tr_inv, expected, atol=1e-14)
+
+    def test_auto_sparse_exact(self) -> None:
+        rng = np.random.default_rng(42)
+        p = 5
+        A = rng.standard_normal((p, p))
+        M = A.T @ A + 3.0 * np.eye(p)
+
+        sparse_M = csc_array(M)
+        ld, tr_inv, _ = _factorization_stats(sparse_M, None, True, trace_method="auto")
+        expected_tr = float(np.trace(np.linalg.inv(M)))
+        np.testing.assert_allclose(tr_inv, expected_tr, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# 6. MacKay analytical case (X=I)
 # ---------------------------------------------------------------------------
 
 
@@ -289,7 +448,7 @@ class TestMackayAnalytical:
         mu_n = solve(precision, beta * y, assume_a="pos")
 
         # Verify trace and gamma via _factorization_stats
-        _, tr_inv = _factorization_stats(precision, None, False, 20, None)
+        _, tr_inv, _f = _factorization_stats(precision, None, False)
         np.testing.assert_allclose(tr_inv, p / (alpha + beta), atol=1e-10)
 
         gamma = float(p - alpha * tr_inv)
@@ -315,7 +474,7 @@ class TestMackayAnalytical:
 
 
 # ---------------------------------------------------------------------------
-# 6. MacKay recovery
+# 7. MacKay recovery
 # ---------------------------------------------------------------------------
 
 
@@ -344,7 +503,7 @@ class TestMackayRecovery:
 
 
 # ---------------------------------------------------------------------------
-# 7. Evidence monotonicity
+# 8. Evidence monotonicity
 # ---------------------------------------------------------------------------
 
 
@@ -378,7 +537,7 @@ class TestEvidenceMonotonicity:
 
 
 # ---------------------------------------------------------------------------
-# 8. Gradient check at convergence
+# 9. Gradient check at convergence
 # ---------------------------------------------------------------------------
 
 
@@ -419,7 +578,7 @@ class TestGradientAtConvergence:
 
 
 # ---------------------------------------------------------------------------
-# 9. Log evidence vs hand computation (folded into update tests)
+# 10. Log evidence vs hand computation (folded into update tests)
 # ---------------------------------------------------------------------------
 
 
@@ -473,7 +632,7 @@ class TestLogEvidenceFromUpdates:
 
 
 # ---------------------------------------------------------------------------
-# 10. Online/batch parity
+# 11. Online/batch parity
 # ---------------------------------------------------------------------------
 
 
@@ -497,7 +656,7 @@ class TestOnlineBatchParity:
         )
 
         # Online update with sufficient stats matching the full dataset.
-        alpha_online, beta_online = mackay_update_normal_online(
+        alpha_online, beta_online, _ = mackay_update_normal_online(
             mu_n, precision, alpha, beta,
             prior_scalar=alpha,
             effective_n=float(n),
@@ -538,7 +697,7 @@ class TestOnlineBatchParity:
         alpha_batch, beta_batch, _ = mackay_update_normal(
             mu_n, precision, X, y, alpha, beta,
         )
-        alpha_online, beta_online = mackay_update_normal_online(
+        alpha_online, beta_online, _ = mackay_update_normal_online(
             mu_n, precision, alpha, beta,
             prior_scalar=alpha,
             effective_n=eff_n,
@@ -550,7 +709,7 @@ class TestOnlineBatchParity:
         np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
 
     def test_online_matches_batch_sparse(self) -> None:
-        """Sparse variant: online with full-data stats == batch."""
+        """Sparse variant: online with full-data stats == batch (now exact via Takahashi)."""
         rng = np.random.default_rng(77)
         n, p = 25, 3
         alpha, beta = 1.0, 2.0
@@ -565,20 +724,18 @@ class TestOnlineBatchParity:
             mu_n, precision_dense, X, y, alpha, beta,
         )
 
-        # Use enough probes that Hutchinson is accurate.
-        alpha_online, beta_online = mackay_update_normal_online(
+        # Takahashi is exact, so tolerance can be tight
+        alpha_online, beta_online, _ = mackay_update_normal_online(
             mu_n, precision_sparse, alpha, beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
             eff_XTy=X.T @ y,
             sparse=True,
-            n_probes=500,
-            rng=rng,
         )
 
-        np.testing.assert_allclose(alpha_online, alpha_batch, rtol=0.05)
-        np.testing.assert_allclose(beta_online, beta_batch, rtol=0.05)
+        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
+        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
 
     def test_accumulated_stats_sparse_X(self) -> None:
         """accumulate_sufficient_stats with sparse X matches dense."""
@@ -621,7 +778,7 @@ class TestOnlineBatchParity:
 
         # Craft sufficient stats so RSS = yTy - 2*m'XTy + m'XTXm <= 0.
         # Set eff_yTy = 0 and eff_XTy large so RSS goes negative.
-        alpha_new, beta_new = mackay_update_normal_online(
+        alpha_new, beta_new, _ = mackay_update_normal_online(
             mu_n, precision, alpha, beta,
             prior_scalar=alpha,
             effective_n=1.0,
@@ -644,7 +801,7 @@ class TestOnlineBatchParity:
         precision_sparse = csc_array(precision_dense)
 
         # Dense reference
-        alpha_dense, beta_dense = mackay_update_normal_online(
+        alpha_dense, beta_dense, _ = mackay_update_normal_online(
             mu_n, precision_dense, alpha, beta,
             prior_scalar=alpha,
             effective_n=float(n),
@@ -652,24 +809,22 @@ class TestOnlineBatchParity:
             eff_XTy=X.T @ y,
         )
 
-        # Sparse path
-        alpha_sparse, beta_sparse = mackay_update_normal_online(
+        # Sparse path (now exact via Takahashi)
+        alpha_sparse, beta_sparse, _ = mackay_update_normal_online(
             mu_n, precision_sparse, alpha, beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
             eff_XTy=X.T @ y,
             sparse=True,
-            n_probes=500,
-            rng=rng,
         )
 
-        np.testing.assert_allclose(alpha_sparse, alpha_dense, rtol=0.05)
-        np.testing.assert_allclose(beta_sparse, beta_dense, rtol=0.05)
+        np.testing.assert_allclose(alpha_sparse, alpha_dense, atol=1e-10)
+        np.testing.assert_allclose(beta_sparse, beta_dense, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
-# 11. Sparse/dense parity
+# 12. Sparse/dense parity
 # ---------------------------------------------------------------------------
 
 
@@ -700,7 +855,7 @@ class TestSparseDenseParity:
             sX = csc_array(X)
             a_new, b_new, ev = mackay_update_normal(
                 mu_n, sp, sX, y, alpha, beta,
-                sparse=True, n_probes=500, rng=np.random.default_rng(0),
+                sparse=True,
             )
         else:
             a_new, b_new, ev = mackay_update_normal(
@@ -711,8 +866,9 @@ class TestSparseDenseParity:
         a_exact, b_exact, ev_exact = mackay_update_normal(
             mu_n, precision, X, y, alpha, beta, sparse=False
         )
-        np.testing.assert_allclose(a_new, a_exact, rtol=0.1)
-        np.testing.assert_allclose(b_new, b_exact, rtol=0.1)
+        # Takahashi is exact, so tight tolerance
+        np.testing.assert_allclose(a_new, a_exact, atol=1e-10)
+        np.testing.assert_allclose(b_new, b_exact, atol=1e-10)
         np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
 
     @pytest.mark.parametrize("sparse", [True, False])
@@ -729,7 +885,7 @@ class TestSparseDenseParity:
             sp = csc_array(precision)
             result, ev = mackay_update_nig(
                 mu_n, sp, alpha, an, bn, a0, b0,
-                sparse=True, n_probes=500, rng=np.random.default_rng(0),
+                sparse=True,
                 n_obs=n,
             )
         else:
@@ -740,7 +896,7 @@ class TestSparseDenseParity:
         exact, ev_exact = mackay_update_nig(
             mu_n, precision, alpha, an, bn, a0, b0, n_obs=n
         )
-        np.testing.assert_allclose(result, exact, rtol=0.1)
+        np.testing.assert_allclose(result, exact, atol=1e-10)
         np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
 
     @pytest.mark.parametrize("sparse", [True, False])
@@ -755,18 +911,18 @@ class TestSparseDenseParity:
             sp = csc_array(H)
             result, ev = mackay_update_glm(
                 theta, sp, alpha, X, y, "logit",
-                sparse=True, n_probes=500, rng=np.random.default_rng(0),
+                sparse=True,
             )
         else:
             result, ev = mackay_update_glm(theta, H, alpha, X, y, "logit")
 
         exact, ev_exact = mackay_update_glm(theta, H, alpha, X, y, "logit")
-        np.testing.assert_allclose(result, exact, rtol=0.1)
+        np.testing.assert_allclose(result, exact, atol=1e-10)
         np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
 
 
 # ---------------------------------------------------------------------------
-# 11. MacKay NIG
+# 13. MacKay NIG
 # ---------------------------------------------------------------------------
 
 
@@ -800,7 +956,7 @@ class TestMackayNIG:
         sigma_sq = bn / an
 
         # With X=I: precision = (alpha+1)I, tr(inv) = p/(alpha+1)
-        _, tr_inv_actual = _factorization_stats(precision, None, False, 20, None)
+        _, tr_inv_actual, _f = _factorization_stats(precision, None, False)
         tr_inv = p / (alpha + 1.0)
         np.testing.assert_allclose(tr_inv_actual, tr_inv, atol=1e-10)
 
@@ -918,7 +1074,7 @@ class TestMackayNIG:
 
 
 # ---------------------------------------------------------------------------
-# 12. MacKay GLM (parameterized over link)
+# 14. MacKay GLM (parameterized over link)
 # ---------------------------------------------------------------------------
 
 
@@ -1005,7 +1161,7 @@ class TestMackayGLM:
 
 
 # ---------------------------------------------------------------------------
-# 13. Guard clauses
+# 15. Guard clauses
 # ---------------------------------------------------------------------------
 
 
@@ -1074,7 +1230,7 @@ class TestGuardClauses:
 
 
 # ---------------------------------------------------------------------------
-# 14. Error paths
+# 16. Error paths
 # ---------------------------------------------------------------------------
 
 
@@ -1105,17 +1261,3 @@ class TestErrorPaths:
 
         with pytest.raises(ValueError, match="Unknown link function"):
             mackay_update_glm(theta, H, 1.0, X, y, "unknown")
-
-    def test_hutchinson_trace_default_rng(self) -> None:
-        """_hutchinson_trace uses default rng when rng=None."""
-        from unittest.mock import MagicMock
-
-        from bayesianbandits._empirical_bayes import _hutchinson_trace
-
-        # Create a mock factor whose solve returns the input (identity inverse)
-        mock_factor = MagicMock()
-        mock_factor.solve.side_effect = lambda z: z  # A^{-1} = I => tr = p
-        p = 5
-        result = _hutchinson_trace(mock_factor, p, n_probes=50, rng=None)
-        # tr(I) = p = 5 (Rademacher vectors have z_i^2 = 1)
-        np.testing.assert_allclose(result, float(p), rtol=0.2)

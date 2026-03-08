@@ -74,6 +74,15 @@ class CholmodSparseFactor:
         """Log-determinant of the factored matrix via CHOLMOD."""
         return float(self._factor.logdet())
 
+    def get_L_csc(self) -> csc_array:
+        """Return the lower triangular Cholesky factor as CSC.
+
+        The factor satisfies PΛP' = LL' where P is the fill-reducing
+        permutation.  The returned L includes the permutation implicitly
+        (rows/cols are in permuted order).
+        """
+        return csc_array(self._factor.L)
+
 
 @dataclass
 class SuperLUSparseFactor:
@@ -97,6 +106,14 @@ class SuperLUSparseFactor:
         |P| = |L|^2  =>  log|P| = 2 * sum(log|diag(L)|).
         """
         return float(2.0 * np.sum(np.log(np.abs(self._L.diagonal()))))
+
+    def get_L_csc(self) -> csc_array:
+        """Return the lower triangular factor as CSC.
+
+        The SuperLU factor already has D folded in: L = L_splu @ diag(√D).
+        Rows are in permuted order (matching _Pr).
+        """
+        return csc_array(self._L)
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
@@ -125,6 +142,14 @@ class ScaledSparseFactor:
         """Log-determinant: log|s*P| = p*log(s) + log|P|."""
         p = cast(tuple[int, int], self._precision.shape)[0]
         return float(p * np.log(self._scale) + self._inner.logdet())
+
+    def get_L_csc(self) -> csc_array:
+        """Return the scaled lower triangular factor as CSC.
+
+        If inner factor has LL' = P, then scaled factor has (√s·L)(√s·L)' = s·P.
+        """
+        L = self._inner.get_L_csc()
+        return csc_array(L * np.sqrt(self._scale))
 
 
 SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
