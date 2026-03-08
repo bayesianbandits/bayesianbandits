@@ -150,7 +150,13 @@ def mackay_update_normal(
 
     ld, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
 
-    gamma = float(p - alpha * tr_inv)
+    # gamma is the effective number of well-determined parameters,
+    # bounded by (0, min(n, p)].  Clamping prevents negative or zero
+    # alpha when the problem is underdetermined.  We use a small
+    # positive floor (not zero) so alpha_new stays positive — a zero
+    # alpha would destroy the prior component in _correct_precision.
+    _EPS = 1e-8
+    gamma = float(np.clip(p - alpha * tr_inv, _EPS, min(n, p)))
     alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
     denom = n - gamma
     beta_new = denom / rss if rss > 0 and denom > 0 else beta
@@ -256,7 +262,10 @@ def mackay_update_normal_online(
     # Single factorization for trace estimate.
     _, tr_inv = _factorization_stats(precision, factor, sparse, n_probes, rng)
 
-    gamma = float(p - alpha * tr_inv)
+    # gamma is the effective number of well-determined parameters,
+    # bounded by (0, min(effective_n, p)].
+    _EPS = 1e-8
+    gamma = float(np.clip(p - alpha * tr_inv, _EPS, min(effective_n, p)))
 
     # Alpha update (same as mackay_update_normal).
     alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha

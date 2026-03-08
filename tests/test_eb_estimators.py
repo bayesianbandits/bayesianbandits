@@ -220,7 +220,10 @@ class TestEBNormalRegressor:
         model.decay(X[:1])  # decay by 1 observation
 
         decay = 0.99 ** 1
-        np.testing.assert_allclose(model._prior_scalar, prior_before * decay)
+        # Stabilized forgetting: prior_scalar converges to alpha instead of
+        # decaying to zero (Kulhavy & Zarrop, 1993).
+        expected_prior = decay * prior_before + (1 - decay) * model.alpha
+        np.testing.assert_allclose(model._prior_scalar, expected_prior)
         np.testing.assert_allclose(model._effective_n, eff_n_before * decay)
         np.testing.assert_allclose(model._eff_yTy, eff_yTy_before * decay)
         np.testing.assert_allclose(model._eff_XTy, eff_XTy_before * decay)
