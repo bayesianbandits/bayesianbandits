@@ -81,10 +81,7 @@ class CholmodSparseFactor:
         permutation.  The returned L includes the permutation implicitly
         (rows/cols are in permuted order).
         """
-        L = self._factor.L  # property, not method
-        if not isinstance(L, csc_array):
-            return csc_array(L)
-        return L
+        return csc_array(self._factor.L)
 
 
 @dataclass
@@ -116,10 +113,7 @@ class SuperLUSparseFactor:
         The SuperLU factor already has D folded in: L = L_splu @ diag(√D).
         Rows are in permuted order (matching _Pr).
         """
-        L = self._L
-        if not isinstance(L, csc_array):
-            return csc_array(L)
-        return L
+        return csc_array(self._L)
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor

@@ -320,12 +320,12 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         assert X.shape is not None
 
+        from ._estimators import compute_effective_weights
+
         if sample_weight is None:
             sample_weight = np.ones(X.shape[0], dtype=np.float64)
         else:
             sample_weight = np.asarray(sample_weight, dtype=np.float64)
-
-        from ._estimators import compute_effective_weights
 
         effective_weights = compute_effective_weights(
             X.shape[0], sample_weight, self.learning_rate

@@ -380,3 +380,46 @@ class TestTraceMethod:
 
         # Both should move alpha away from the initial value in the same direction
         assert (model_auto.alpha > 1.0) == (model_diag.alpha > 1.0)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+class TestSampleWeight:
+    def test_partial_fit_with_sample_weight(self, regression_data, sparse):
+        """partial_fit with sample_weight exercises the reinjection _fit_helper path."""
+        X, y = regression_data
+        weights = np.ones(10, dtype=np.float64)
+        weights[:5] = 2.0  # upweight first half
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model.fit(X[:50], y[:50])
+
+        # This hits _fit_helper with _pending_reinjection > 0 AND sample_weight != None
+        model.partial_fit(X[50:60], y[50:60], sample_weight=weights)
+
+        assert model.alpha > 0
+        assert model.beta > 0
+        assert hasattr(model, "_prior_scalar")
+
+    def test_sample_weight_changes_result(self, regression_data, sparse):
+        """Non-uniform weights should produce different coefficients than uniform."""
+        X, y = regression_data
+
+        model_uniform = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model_uniform.fit(X[:50], y[:50])
+        model_uniform.partial_fit(X[50:60], y[50:60])
+        coef_uniform = model_uniform.coef_.copy()
+
+        model_weighted = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+        )
+        model_weighted.fit(X[:50], y[:50])
+        weights = np.ones(10)
+        weights[0] = 100.0
+        model_weighted.partial_fit(X[50:60], y[50:60], sample_weight=weights)
+        coef_weighted = model_weighted.coef_
+
+        assert not np.allclose(coef_uniform, coef_weighted)
