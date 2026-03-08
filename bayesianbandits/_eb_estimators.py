@@ -17,6 +17,7 @@ from ._empirical_bayes import (
     mackay_update_normal_online,
 )
 from ._estimators import NormalRegressor, _invalidate_cached_properties
+from ._sparse_bayesian_linear_regression import create_sparse_factor
 
 
 class _EmpiricalBayesMixin:
@@ -72,6 +73,16 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
     Uses MacKay's update rules to iteratively optimize the prior precision
     (alpha) and noise precision (beta) by maximizing the marginal likelihood.
+
+    When ``learning_rate < 1``, exponential forgetting is applied to the
+    precision matrix.  To prevent the prior contribution from collapsing to
+    zero under repeated decay, *stabilized forgetting* re-injects a fixed
+    prior floor after each decay step, following [1]_.
+
+    References
+    ----------
+    .. [1] Kulhavy, R. & Zarrop, M. B. (1993). "On a general concept of
+       forgetting." *International Journal of Control*, 58(4), 905-924.
 
     Parameters
     ----------
@@ -166,15 +177,13 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         prior_decay: float,
     ) -> None:
         """Update decayed sufficient statistics for the beta update."""
-        self._effective_n, self._eff_yTy, self._eff_XTy = (
-            accumulate_sufficient_stats(
-                self._effective_n,
-                self._eff_yTy,
-                self._eff_XTy,
-                X,
-                y,
-                prior_decay,
-            )
+        self._effective_n, self._eff_yTy, self._eff_XTy = accumulate_sufficient_stats(
+            self._effective_n,
+            self._eff_yTy,
+            self._eff_XTy,
+            X,
+            y,
+            prior_decay,
         )
 
     def fit(
@@ -252,6 +261,27 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         self._prior_scalar = new_prior_scalar
 
+    def _reinject_prior(self, prior_reinjection: float) -> None:
+        """Add stabilized prior re-injection to the precision diagonal.
+
+        After exponential decay the prior contribution shrinks toward zero.
+        This adds back ``prior_reinjection`` to every diagonal entry so that
+        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
+        """
+        if prior_reinjection == 0.0:
+            return
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            cov_inv.setdiag(cov_inv.diagonal() + prior_reinjection)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += prior_reinjection
+        if hasattr(self, "_factor"):
+            del self._factor
+            if self.sparse:
+                self._factor = create_sparse_factor(cast(csc_array, self.cov_inv_))
+
     def partial_fit(
         self,
         X: Union[NDArray[Any], csc_array],
@@ -261,16 +291,27 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         had_prior_scalar = hasattr(self, "_prior_scalar")
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
-        prior_decay = self.learning_rate ** n_samples
+        prior_decay = self.learning_rate**n_samples
 
         if had_prior_scalar:
-            # Apply decay to _prior_scalar to track what _fit_helper does.
-            self._prior_scalar *= prior_decay
+            # Stabilized forgetting: decay the tracked prior contribution but
+            # re-inject (1 - prior_decay) * alpha so it converges to alpha
+            # instead of decaying to zero.  This ensures the EB-tuned prior
+            # always regularizes new or dormant coefficients.
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+
+        # The stabilized re-injection amount that must be added to the
+        # precision diagonal after the base class applies uniform decay.
+        prior_reinjection = (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
 
         alpha_old = self.alpha
         beta_old = self.beta
 
         result = super().partial_fit(X, y, sample_weight)
+
+        self._reinject_prior(prior_reinjection)
 
         if not had_prior_scalar:
             if hasattr(self, "_prior_scalar"):
@@ -319,7 +360,11 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         *,
         decay_rate: Optional[float] = None,
     ) -> None:
-        """Decay the precision matrix and track the prior contribution."""
+        """Decay the precision matrix with stabilized prior re-injection.
+
+        Uses stabilized forgetting (Kulhavy & Zarrop, 1993) so that the
+        prior precision converges to ``alpha`` instead of decaying to zero.
+        """
         if not hasattr(self, "coef_"):
             return
 
@@ -329,11 +374,18 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         assert X.shape is not None
         prior_decay = decay_rate ** X.shape[0]
 
+        prior_reinjection = 0.0
         if hasattr(self, "_prior_scalar"):
-            self._prior_scalar *= prior_decay
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+            prior_reinjection = (1 - prior_decay) * self.alpha
         if hasattr(self, "_effective_n"):
             self._effective_n *= prior_decay
             self._eff_yTy *= prior_decay
             self._eff_XTy *= prior_decay
 
+        # Base class applies uniform decay: cov_inv_ *= prior_decay
         super().decay(X, decay_rate=decay_rate)
+
+        self._reinject_prior(prior_reinjection)
