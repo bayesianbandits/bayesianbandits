@@ -330,3 +330,53 @@ class TestEBNormalRegressor:
         model.partial_fit(X_sp[:5], y[:5])
         assert hasattr(model, "_eff_XTy")
         assert model._eff_XTy.shape == (X.shape[1],)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.parametrize("trace_method", ["auto", "diagonal"])
+class TestTraceMethod:
+    def test_fit_with_trace_method(self, regression_data, sparse, trace_method):
+        """Both trace methods produce valid fit results."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method=trace_method
+        )
+        model.fit(X, y)
+
+        assert np.isfinite(model.log_evidence_)
+        assert model.alpha > 0
+        assert model.beta > 0
+
+    def test_partial_fit_with_trace_method(self, regression_data, sparse, trace_method):
+        """Both trace methods work through partial_fit (online MacKay)."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method=trace_method
+        )
+        model.fit(X[:50], y[:50])
+        alpha_after_fit = model.alpha
+
+        model.partial_fit(X[50:60], y[50:60])
+        # MacKay should have updated alpha
+        assert model.alpha != alpha_after_fit
+
+    def test_auto_and_diagonal_agree_on_alpha_direction(
+        self, regression_data, sparse, trace_method
+    ):
+        """auto and diagonal should move alpha in the same direction."""
+        if trace_method != "auto":
+            pytest.skip("only run once per sparse setting")
+        X, y = regression_data
+
+        model_auto = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method="auto"
+        )
+        model_auto.fit(X, y)
+
+        model_diag = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, trace_method="diagonal"
+        )
+        model_diag.fit(X, y)
+
+        # Both should move alpha away from the initial value in the same direction
+        assert (model_auto.alpha > 1.0) == (model_diag.alpha > 1.0)
