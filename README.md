@@ -26,6 +26,8 @@ While the API is still evolving, this library is already being used in productio
 
 `bayesianbandits` is tested with Python 3.10, 3.11, 3.12, 3.13, and 3.14 with `scikit-learn` 1.5.2, 1.6.1, 1.7.2, 1.8.0.
 
+Requires NumPy >= 2.0 and SciPy >= 1.14. For CHOLMOD sparse support, requires `scikit-sparse` >= 0.5.0, which in turn requires SuiteSparse >= 7.4.0.
+
 ## Getting Started
 
 Install this package from PyPI.
