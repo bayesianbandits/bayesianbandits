@@ -56,6 +56,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["bayesianbandits*"]
 
+[tool.setuptools.package-data]
+bayesianbandits = ["*.pyx"]
+
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
 filterwarnings = "ignore::DeprecationWarning"
