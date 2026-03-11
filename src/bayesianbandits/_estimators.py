@@ -251,7 +251,21 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def predict_proba(self, X: NDArray[Any]) -> Any:
         """
-        Predict class probabilities for X.
+        Predict class probabilities for X using the posterior mean.
+
+        Computes the expected class probabilities under the Dirichlet
+        posterior: ``E[θ_k] = α_k / Σ α_k``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` indexes a
+            separate Dirichlet posterior.
+
+        Returns
+        -------
+        proba : ndarray of shape (n_samples, n_classes)
+            Predicted class probabilities. Each row sums to 1.
         """
         try:
             check_is_fitted(self, "n_features_")
@@ -265,13 +279,44 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
         """
-        Predict class for X.
+        Predict the most likely class for each sample in X.
+
+        Returns the class with the highest posterior mean probability.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` indexes a
+            separate Dirichlet posterior.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,)
+            Predicted class labels.
         """
         return self.classes_[self.predict_proba(X).argmax(axis=1)]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
-        Sample from the posterior for X.
+        Sample class probability vectors from the Dirichlet posterior.
+
+        For each sample in X, draws from the Dirichlet posterior
+        ``Dir(α_1, ..., α_K)`` where the ``α_k`` are the posterior
+        concentration parameters for that input's group.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` indexes a
+            separate Dirichlet posterior.
+        size : int, default=1
+            Number of independent draws from each posterior.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples, n_classes)
+            Sampled probability vectors. Each sample along the last axis
+            sums to 1.
         """
         try:
             check_is_fitted(self, "n_features_")
@@ -285,7 +330,21 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
-        Decay the prior by a factor of `learning_rate`.
+        Decay the Dirichlet concentration parameters toward the prior.
+
+        Multiplies all posterior concentration parameters ``α_k`` by
+        ``decay_rate`` for each group present in X. This increases
+        posterior uncertainty, allowing the model to adapt to
+        non-stationary environments.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` identifies
+            a group whose concentration parameters are decayed.
+        decay_rate : float, optional
+            Multiplicative decay factor in (0, 1]. If None, uses
+            ``self.learning_rate``.
         """
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
@@ -496,7 +555,21 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
         """
-        Predict class for X.
+        Predict the posterior mean rate for each sample in X.
+
+        Returns the mean of the Gamma posterior: ``E[λ] = α / β``,
+        where ``α`` and ``β`` are the posterior shape and rate parameters.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` indexes a
+            separate Gamma posterior.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,)
+            Predicted rates (posterior means).
         """
         try:
             check_is_fitted(self, "coef_")
@@ -510,7 +583,24 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
-        Sample from the posterior for X.
+        Sample rates from the Gamma posterior for each input in X.
+
+        For each sample in X, draws from the Gamma posterior
+        ``Gamma(α, β)`` where ``α`` and ``β`` are the posterior shape
+        and rate parameters for that input's group.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` indexes a
+            separate Gamma posterior.
+        size : int, default=1
+            Number of independent draws from each posterior.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Sampled rates from the Gamma posterior.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -527,7 +617,22 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
-        Decay the prior by a factor of `learning_rate`.
+        Decay the Gamma posterior parameters toward the prior.
+
+        Multiplies both shape (``α``) and rate (``β``) parameters by
+        ``decay_rate`` for each group present in X. Because both
+        parameters are scaled equally, the posterior mean ``α/β`` is
+        unchanged but the variance ``α/β²`` increases, reflecting
+        greater uncertainty.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Input features. Each unique value of ``X[:, 0]`` identifies
+            a group whose parameters are decayed.
+        decay_rate : float, optional
+            Multiplicative decay factor in (0, 1]. If None, uses
+            ``self.learning_rate``.
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior()
@@ -669,6 +774,10 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         """
         Fit the model using X as training data and y as target values.
 
+        Resets the posterior to the prior and then performs a single
+        batch update. With ``learning_rate < 1``, earlier samples in
+        the batch receive exponentially less weight.
+
         Parameters
         ----------
         X_fit : array-like of shape (n_samples, n_features)
@@ -678,6 +787,11 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         sample_weight : array-like of shape (n_samples,), optional
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
+
+        Returns
+        -------
+        self : NormalRegressor
+            Fitted estimator.
         """
         X_fit, y = check_X_y(
             X_fit,  # type: ignore
@@ -803,7 +917,12 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Update the model using X as training data and y as target values.
+        Incrementally update the posterior with new data.
+
+        If the model has not been fitted, delegates to ``fit()``.
+        Otherwise performs a recursive Bayesian update: the current
+        posterior becomes the prior, decayed by ``learning_rate``,
+        and the new data is incorporated.
 
         Parameters
         ----------
@@ -814,6 +933,11 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         sample_weight : array-like of shape (n_samples,), optional
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
+
+        Returns
+        -------
+        self : NormalRegressor
+            Updated estimator.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -834,7 +958,20 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
         """
-        Predict class for X.
+        Predict target values using the posterior mean coefficients.
+
+        Computes ``X @ coef_`` where ``coef_`` is the posterior mean
+        of the weight vector.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,)
+            Predicted target values.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -851,7 +988,26 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self, X: Union[NDArray[Any], csc_array], size: int = 1
     ) -> NDArray[np.float64]:
         """
-        Sample from the model posterior at X.
+        Sample predicted values from the posterior predictive distribution.
+
+        Draws weight vectors ``w`` from the posterior
+        ``N(coef_, Λ⁻¹)`` where ``Λ = cov_inv_``, then computes
+        ``w @ X.T`` to project into observation space. This integrates
+        over parameter uncertainty but not noise.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data at which to evaluate predictions.
+        size : int, default=1
+            Number of posterior weight vectors to draw.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw. Each row
+            corresponds to one sampled weight vector applied to all
+            rows of X.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -891,7 +1047,25 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         decay_rate: Optional[float] = None,
     ) -> None:
         """
-        Decay the prior by a factor of `learning_rate`.
+        Decay the precision matrix to increase posterior uncertainty.
+
+        Applies exponential forgetting: ``Λ_new = γ^n · Λ_old`` where
+        ``γ`` is the decay rate and ``n = X.shape[0]``. The posterior
+        mean ``coef_`` is unchanged; only the precision (inverse
+        covariance) is reduced, widening the posterior.
+
+        This is used in non-stationary environments to down-weight
+        historical observations and allow the model to adapt.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only to determine the number of time steps ``n`` for
+            the decay exponent ``γ^n``. The actual feature values are
+            not used.
+        decay_rate : float, optional
+            Decay factor ``γ`` in (0, 1]. If None, uses
+            ``self.learning_rate``.
         """
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
@@ -1184,9 +1358,28 @@ class NormalInverseGammaRegressor(NormalRegressor):
         self, X: Union[NDArray[Any], csc_array], size: int = 1
     ) -> NDArray[np.float64]:
         """
-        Sample from the coefficient marginal posterior at X. This is equivalent to
-        sampling from a multivariate t distribution with the posterior mean and
-        covariance, and degrees of freedom equal to 2 * a.
+        Sample predicted values from the marginal posterior predictive.
+
+        Draws weight vectors from the marginal posterior of the
+        coefficients, which is a multivariate t distribution with
+        ``df = 2·a_`` degrees of freedom, location ``coef_``, and
+        shape matrix ``(b_/a_)·Λ⁻¹`` where ``Λ = cov_inv_``. The
+        noise variance is integrated out analytically. Sampled weights
+        are then projected via ``w @ X.T``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data at which to evaluate predictions.
+        size : int, default=1
+            Number of posterior weight vectors to draw.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw. Each row
+            corresponds to one sampled weight vector applied to all
+            rows of X.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1234,10 +1427,29 @@ class NormalInverseGammaRegressor(NormalRegressor):
         decay_rate: Optional[float] = None,
     ) -> None:
         """
-        Decay the prior by a factor of `learning_rate`. This is equivalent to
-        applying the learning rate to the prior, and then ignoring the data.
-        It does not change the mean of the coefficient marginal posterior, but
-        it does increase the variance.
+        Decay precision and variance parameters to increase uncertainty.
+
+        Applies exponential forgetting to the precision matrix and the
+        inverse-gamma parameters:
+
+        - ``Λ_new = γ^n · Λ``
+        - ``a_new = γ^n · a_``
+        - ``b_new = γ^n · b_``
+
+        where ``γ`` is the decay rate and ``n = X.shape[0]``. The
+        posterior mean ``coef_`` is unchanged, but the marginal t
+        distribution widens (lower degrees of freedom and higher
+        scale).
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only to determine the number of time steps ``n`` for
+            the decay exponent ``γ^n``. The actual feature values are
+            not used.
+        decay_rate : float, optional
+            Decay factor ``γ`` in (0, 1]. If None, uses
+            ``self.learning_rate``.
         """
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):

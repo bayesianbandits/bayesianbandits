@@ -201,6 +201,29 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
+        """
+        Fit the model with empirical Bayes hyperparameter tuning.
+
+        Iteratively optimizes ``alpha`` (prior precision) and ``beta``
+        (noise precision) by maximizing the log marginal likelihood
+        using MacKay's evidence framework, then performs a final
+        posterior update with the converged hyperparameters.
+
+        Parameters
+        ----------
+        X_fit : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : EmpiricalBayesNormalRegressor
+            Fitted estimator with tuned ``alpha`` and ``beta``.
+        """
         X_fit, y = check_X_y(
             X_fit,  # type: ignore
             y,
@@ -376,6 +399,35 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
+        """
+        Incrementally update the posterior and retune hyperparameters.
+
+        Performs a recursive Bayesian update (delegating to
+        ``NormalRegressor.partial_fit``), then runs one online MacKay
+        step to adjust ``alpha`` and ``beta`` using accumulated
+        sufficient statistics. The precision matrix is corrected to
+        reflect the updated hyperparameters.
+
+        When ``learning_rate < 1``, stabilized forgetting (Kulhavy &
+        Zarrop 1993) re-injects ``(1 - γ^n)·α`` into the precision
+        diagonal so that the prior contribution converges to ``alpha``
+        instead of decaying to zero.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self : EmpiricalBayesNormalRegressor
+            Updated estimator with retuned hyperparameters.
+        """
         had_prior_scalar = hasattr(self, "_prior_scalar")
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
@@ -451,10 +503,28 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         *,
         decay_rate: Optional[float] = None,
     ) -> None:
-        """Decay the precision matrix with stabilized prior re-injection.
+        """
+        Decay the precision matrix with stabilized prior re-injection.
 
-        Uses stabilized forgetting (Kulhavy & Zarrop, 1993) so that the
-        prior precision converges to ``alpha`` instead of decaying to zero.
+        Applies exponential forgetting ``Λ_new = γ^n · Λ_old`` and
+        then re-injects ``(1 - γ^n)·α`` onto the diagonal, following
+        stabilized forgetting (Kulhavy & Zarrop 1993). This ensures
+        the prior contribution to the precision converges to ``alpha``
+        rather than decaying to zero under repeated decay steps.
+
+        Sufficient statistics (``_effective_n``, ``_eff_yTy``,
+        ``_eff_XTy``) used for the online MacKay beta update are
+        also decayed.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only to determine the number of time steps ``n`` for
+            the decay exponent ``γ^n``. The actual feature values are
+            not used.
+        decay_rate : float, optional
+            Decay factor ``γ`` in (0, 1]. If None, uses
+            ``self.learning_rate``.
         """
         if not hasattr(self, "coef_"):
             return
