@@ -35,6 +35,8 @@ def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
     entries in column j — the same order as the Cholesky factorization
     itself.
 
+    Delegates to a Cython implementation for performance.
+
     Parameters
     ----------
     L_csc : csc_array
@@ -51,70 +53,18 @@ def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
        a sparse bus impedance matrix and its application to short circuit
        study." 8th PICA Conference Proceedings.
     """
-    p = cast(tuple[int, int], L_csc.shape)[0]
+    from ._takahashi import takahashi_diagonal as _cy_impl
 
-    # Ensure rows within each column are sorted ascending (required by the
-    # recursion which assumes the diagonal entry is first in each column).
+    p = cast(tuple[int, int], L_csc.shape)[0]
     if not L_csc.has_sorted_indices:
         L_csc = L_csc.copy()
         L_csc.sort_indices()
-
-    L_data = L_csc.data
-    L_indices = L_csc.indices
-    L_indptr = L_csc.indptr
-
-    # Z_data: parallel to L_data, stores off-diagonal entries of Z = A⁻¹
-    Z_data = np.empty_like(L_data)
-    Z_diag = np.empty(p, dtype=np.float64)
-
-    # Diagonal values of L: first entry in each CSC column
-    L_diag = L_data[L_indptr[:-1]]
-
-    # Trivial columns (no sub-diagonal entries): Z_jj = 1/L_jj², vectorized
-    col_lengths = np.diff(L_indptr)
-    trivial = col_lengths == 1
-    Z_diag[trivial] = 1.0 / (L_diag[trivial] ** 2)
-
-    # Nontrivial columns: backward recursion
-    nontrivial = np.flatnonzero(~trivial)
-
-    for j in nontrivial[::-1]:
-        col_start = L_indptr[j]
-        col_end = L_indptr[j + 1]
-        L_jj = L_data[col_start]
-        inv_L_jj = 1.0 / L_jj
-
-        sub_start = col_start + 1
-        sub_rows = L_indices[sub_start:col_end]
-        sub_vals = L_data[sub_start:col_end]
-        n_sub = sub_rows.shape[0]
-
-        # Assemble Z_sub: Z at positions (sub_rows[a], sub_rows[b]).
-        # Since indices are sorted, b > a implies rb > ra, so all lookups
-        # for a given 'a' target column ra — one vectorized searchsorted.
-        Z_sub = np.empty((n_sub, n_sub), dtype=np.float64)
-        for a in range(n_sub):
-            ra = sub_rows[a]
-            Z_sub[a, a] = Z_diag[ra]
-            remaining = sub_rows[a + 1:]
-            if remaining.shape[0] > 0:
-                start = L_indptr[ra]
-                positions = start + np.searchsorted(
-                    L_indices[start:L_indptr[ra + 1]], remaining
-                )
-                Z_sub[a, a + 1:] = Z_data[positions]
-                Z_sub[a + 1:, a] = Z_data[positions]
-
-        # Off-diagonal Z entries for column j
-        z_col = (-inv_L_jj) * (Z_sub @ sub_vals)
-        Z_data[sub_start:col_end] = z_col
-
-        # Diagonal
-        Z_diag[j] = inv_L_jj * inv_L_jj - inv_L_jj * float(
-            sub_vals @ z_col
-        )
-
-    return Z_diag
+    return _cy_impl(
+        L_csc.data,
+        L_csc.indices.astype(np.int32),
+        L_csc.indptr.astype(np.int32),
+        p,
+    )
 
 
 def _takahashi_trace(factor: SparseFactor) -> float:

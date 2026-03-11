@@ -276,6 +276,7 @@ class TestScaledSparseFactorLogdet:
 
 
 class TestTakahashiDiagonal:
+    @pytest.mark.cython
     def test_dense_spd_matches_inv(self) -> None:
         """Takahashi diagonal matches np.linalg.inv diagonal for small dense SPD."""
         rng = np.random.default_rng(42)
@@ -290,6 +291,30 @@ class TestTakahashiDiagonal:
         result_diag = _takahashi_diagonal(L_csc)
 
         np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
+
+    @pytest.mark.cython
+    def test_sparse_tridiagonal_no_factor(self) -> None:
+        """Takahashi on a tridiagonal L constructed directly (no suitesparse)."""
+        p = 50
+        diag = np.full(p, 4.0)
+        off_diag = np.full(p - 1, -1.0)
+        M_dense = np.diag(diag) + np.diag(off_diag, 1) + np.diag(off_diag, -1)
+
+        expected_diag = np.diag(np.linalg.inv(M_dense))
+
+        L_dense = np.linalg.cholesky(M_dense)
+        L_csc = csc_array(L_dense)
+        result_diag = _takahashi_diagonal(L_csc)
+
+        np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
+
+    @pytest.mark.cython
+    def test_identity_no_factor(self) -> None:
+        """Takahashi on identity without SparseFactor: diag(I⁻¹) = ones."""
+        p = 10
+        L_csc = csc_array(np.eye(p))
+        result_diag = _takahashi_diagonal(L_csc)
+        np.testing.assert_allclose(result_diag, np.ones(p), atol=1e-14)
 
     def test_sparse_spd_cholmod_or_superlu(self) -> None:
         """Takahashi via SparseFactor matches dense inverse diagonal."""
