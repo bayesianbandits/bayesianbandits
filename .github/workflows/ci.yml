@@ -61,4 +61,4 @@ jobs:
         run: uv sync --no-group cholmod
 
       - name: Run Cython tests
-        run: uv run pytest -m cython -v
+        run: uv run --no-group cholmod pytest -m cython -v
