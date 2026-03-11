@@ -32,6 +32,7 @@ dev = [
     "ipywidgets>=8.1.5,<9",
     "pandas>=2.2.3",
     "pyright==1.1.402",
+    "cython>=3.0",
 ]
 cholmod = ["scikit-sparse>=0.5.0,<0.6"]
 
@@ -43,15 +44,24 @@ default-groups = [
 
 [tool.pyright]
 include = [
-    "bayesianbandits",
+    "src/bayesianbandits",
     "tests",
 ]
 typeCheckingMode = "standard"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=75", "cython>=3.0", "numpy>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+bayesianbandits = ["*.pyx"]
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
 filterwarnings = "ignore::DeprecationWarning"
+markers = [
+    "cython: tests that exercise the Cython extension (no suitesparse needed)",
+]

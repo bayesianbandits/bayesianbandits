@@ -9,8 +9,8 @@ on:
       - master
 
 jobs:
-  build:
-    name: tests
+  tests:
+    name: Full tests (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +19,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -37,3 +37,28 @@ jobs:
         uses: codecov/codecov-action@v3
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  cython-crossplatform:
+    name: Cython tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install Dependencies
+        run: uv sync --no-group cholmod
+
+      - name: Run Cython tests
+        run: uv run --no-group cholmod pytest -m cython -v
