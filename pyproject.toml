@@ -44,7 +44,7 @@ default-groups = [
 
 [tool.pyright]
 include = [
-    "bayesianbandits",
+    "src/bayesianbandits",
     "tests",
 ]
 typeCheckingMode = "standard"
@@ -54,7 +54,7 @@ requires = ["setuptools>=75", "cython>=3.0", "numpy>=2.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["bayesianbandits*"]
+where = ["src"]
 
 [tool.setuptools.package-data]
 bayesianbandits = ["*.pyx"]

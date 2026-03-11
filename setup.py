@@ -7,7 +7,7 @@ setup(
         [
             Extension(
                 "bayesianbandits._takahashi",
-                ["bayesianbandits/_takahashi.pyx"],
+                ["src/bayesianbandits/_takahashi.pyx"],
                 include_dirs=[numpy.get_include()],
             )
         ],
