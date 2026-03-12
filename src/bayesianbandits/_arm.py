@@ -240,12 +240,203 @@ def apply_reward_function(
 
 
 class Arm(Generic[ContextType, TokenType]):
-    """Arm of a bandit with type-safe X parameter.
+    """Single arm of a multi-armed bandit.
+
+    An arm pairs a Bayesian learner with an action token and an
+    optional reward function. The learner maintains a posterior
+    distribution over the outcome model; the arm draws from this
+    posterior and composes the result with the reward function to
+    produce reward samples that drive policy decisions.
 
     Type Parameters
     ---------------
-    ContextType : Input array type
-    TokenType : Action token type
+    ContextType : Input array type (e.g. ``NDArray``, ``DataFrame``).
+    TokenType : Action token type returned by ``pull``.
+
+    Parameters
+    ----------
+    action_token : TokenType
+        Identifier returned when this arm is selected. Can be any
+        hashable value (int, str, enum, etc.).
+    reward_function : callable, default=None
+        Transforms raw learner samples into reward values used by the
+        policy. If None, the identity function is used (raw samples
+        are treated as rewards directly). See *Notes* for the formal
+        definition.
+    learner : Learner, default=None
+        Bayesian estimator that maintains the posterior over outcomes.
+        Must implement the ``Learner`` protocol (``sample``,
+        ``partial_fit``, ``decay``, ``predict``). Typically set to
+        None when arms are passed to a ``LipschitzContextualAgent``,
+        which assigns a shared learner during initialization.
+
+    Attributes
+    ----------
+    action_token : TokenType
+        The action identifier for this arm.
+    reward_function : callable
+        The reward transformation applied to posterior samples.
+    learner : Learner or None
+        The Bayesian estimator backing this arm.
+
+    See Also
+    --------
+    Agent : Non-contextual multi-armed bandit agent.
+    ContextualAgent : Contextual multi-armed bandit agent.
+    LipschitzContextualAgent : Contextual agent with shared learner
+        for large or continuous action spaces.
+
+    Notes
+    -----
+    The arm's design reflects the separation between *inference*,
+    *utility*, and *decision* in Bayesian decision theory [1]_:
+
+    - The **learner** performs inference, maintaining a posterior
+      :math:`p(\\theta_a \\mid \\mathcal{D}_a)` over an outcome
+      model (e.g. click-through rates, conversion counts).
+    - The **reward function** :math:`g_a` encodes the utility — it
+      maps raw outcomes to decision-relevant values (e.g. expected
+      revenue, profit margin).
+    - The **policy** selects the action that maximizes expected
+      utility under posterior uncertainty.
+
+    Sampling from arm :math:`a` given context :math:`x` produces:
+
+    .. math::
+
+        \\tilde{r}_a(x)
+        = g_a\\!\\bigl(\\tilde{\\theta}_a(x)\\bigr),
+        \\qquad
+        \\tilde{\\theta}_a(x) \\sim p(\\theta_a \\mid \\mathcal{D}_a)
+
+    where :math:`\\tilde{\\theta}_a(x)` is a posterior predictive
+    draw and :math:`g_a` is the reward function. This is a
+    Monte Carlo approximation to the expected utility:
+
+    .. math::
+
+        U_a(x)
+        = \\mathbb{E}_{\\theta_a \\mid \\mathcal{D}_a}
+          \\bigl[g_a\\!\\bigl(\\theta_a(x)\\bigr)\\bigr]
+        \\approx \\frac{1}{S} \\sum_{s=1}^{S}
+          g_a\\!\\bigl(\\tilde{\\theta}_a^{(s)}(x)\\bigr)
+
+    This separation is what allows the same learner (e.g. a
+    ``GammaRegressor`` modeling click rates) to be used with
+    different reward functions depending on the business objective,
+    without retraining.
+
+    The policy receives these reward samples
+    :math:`\\tilde{r}_a(x)` for every arm and selects the arm to
+    play according to its selection rule (e.g. Thompson sampling
+    picks the arm with the highest single draw, UCB picks the arm
+    with the highest upper quantile across many draws).
+
+    **Disjoint vs. shared learners.** The ``Arm`` class supports two
+    fundamentally different bandit architectures depending on how
+    learners are assigned:
+
+    *Disjoint* — each arm carries its own independent learner with
+    parameters :math:`\\theta_a`. The posteriors are separate:
+
+    .. math::
+
+        p(\\theta_a \\mid \\mathcal{D}_a)
+        \\perp
+        p(\\theta_b \\mid \\mathcal{D}_b)
+        \\quad \\text{for } a \\neq b
+
+    An observation for arm :math:`a` updates only that arm's
+    posterior. This is the standard multi-armed bandit setup used by
+    ``Agent`` and ``ContextualAgent``, and is appropriate when the
+    arms represent qualitatively different actions with no shared
+    structure.
+
+    *Shared* — all arms reference the same learner instance with a
+    single parameter vector :math:`\\theta`. Each arm augments the
+    context :math:`x` with arm-specific features via a featurizer
+    :math:`\\phi_a`, so arm :math:`a` effectively models:
+
+    .. math::
+
+        \\tilde{\\theta}_a(x)
+        = f\\!\\bigl(\\phi_a(x);\\, \\theta\\bigr),
+        \\qquad
+        \\theta \\sim p(\\theta \\mid \\mathcal{D})
+
+    where :math:`\\mathcal{D} = \\bigcup_a \\mathcal{D}_a` pools
+    observations across all arms. An observation for any arm updates
+    the shared posterior, enabling generalization across the action
+    space. This is the architecture used by
+    ``LipschitzContextualAgent`` and is appropriate when the action
+    space is large or continuous and rewards vary smoothly with the
+    action (Lipschitz continuity).
+
+    **Posterior updates.** After observing outcome :math:`y` given
+    context :math:`x`, calling ``update(x, y)`` performs the
+    conjugate (or approximate) Bayesian update:
+
+    .. math::
+
+        p(\\theta_a \\mid \\mathcal{D}_a)
+        \\;\\longrightarrow\\;
+        p(\\theta_a \\mid \\mathcal{D}_a \\cup \\{(x, y)\\})
+
+    Crucially, the update is performed on the *raw outcome*
+    :math:`y`, not the transformed reward :math:`g_a(y)`. The
+    learner models what *actually happens* (the data-generating
+    process), while the reward function captures what that outcome
+    is *worth*. These are fundamentally different quantities.
+
+    Consider a marketing example: a learner models whether a user
+    converts (a binary outcome), but different arms correspond to
+    campaigns with different costs. The observable :math:`y \\in
+    \\{0, 1\\}` is the same regardless of cost — a conversion is a
+    conversion. The cost structure lives entirely in the reward
+    function :math:`g_a`, which might compute
+    ``revenue - cost_a`` for each arm. Training the learner on
+    :math:`g_a(y)` would conflate the conversion model with the
+    cost model, making it impossible to update costs without
+    retraining. By keeping them separate, the posterior over
+    conversion rates remains valid even if campaign costs change,
+    and only the reward function needs updating.
+
+    **Decay.** For restless bandit problems where the reward
+    distribution may change over time, calling ``decay`` shrinks the
+    learner's posterior precision, increasing uncertainty and allowing
+    the model to adapt to non-stationarity. See the individual
+    estimator documentation for the specific decay mechanics.
+
+    References
+    ----------
+    .. [1] Russo, Daniel J., et al. "A Tutorial on Thompson
+       Sampling." *Foundations and Trends in Machine Learning*
+       11.1 (2018): 1-96.
+
+    Examples
+    --------
+    Basic arm with identity reward (raw posterior samples = rewards):
+
+    >>> import numpy as np
+    >>> from bayesianbandits import Arm, GammaRegressor
+    >>> arm = Arm(action_token="ad_A", learner=GammaRegressor(1, 1))
+    >>> arm.update(np.array([[1]]), np.array([5]))
+    >>> arm.sample(np.array([[1]]), size=3).shape
+    (3, 1)
+
+    Arm with a reward function that converts click-through rate
+    to expected revenue:
+
+    >>> revenue_per_click = 0.50
+    >>> arm = Arm(
+    ...     action_token="ad_B",
+    ...     reward_function=lambda ctr: ctr * revenue_per_click,
+    ...     learner=GammaRegressor(1, 1),
+    ... )
+    >>> arm.update(np.array([[1]]), np.array([3]))
+    >>> samples = arm.sample(np.array([[1]]), size=2)
+    >>> samples.shape
+    (2, 1)
     """
 
     def __init__(
@@ -263,12 +454,40 @@ class Arm(Generic[ContextType, TokenType]):
 
     @requires_learner
     def pull(self) -> TokenType:
-        """Pull the arm."""
+        """Return this arm's action token.
+
+        This is typically called by the agent after the policy has
+        selected this arm. The token identifies the action to take
+        in the environment.
+
+        Returns
+        -------
+        TokenType
+            The action token for this arm.
+        """
         return self.action_token
 
     @requires_learner
     def sample(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
-        """Sample from learner and compute the reward."""
+        """Draw posterior predictive samples and apply the reward function.
+
+        Computes :math:`\\tilde{r}_a(x) = g_a(\\tilde{\\theta}_a(x))`
+        where :math:`\\tilde{\\theta}_a(x)` is drawn from the
+        learner's posterior predictive distribution and :math:`g_a`
+        is the reward function.
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix of shape ``(n_contexts, n_features)``.
+        size : int, default=1
+            Number of posterior samples to draw per context.
+
+        Returns
+        -------
+        NDArray[np.float64]
+            Reward samples of shape ``(size, n_contexts)``.
+        """
         assert self.learner is not None
         samples = self.learner.sample(X, size)
         return apply_reward_function(self.reward_function, samples, X)
@@ -280,13 +499,47 @@ class Arm(Generic[ContextType, TokenType]):
         y: NDArray[np.float64],
         sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> None:
-        """Update the learner."""
+        """Perform a Bayesian posterior update with observed outcomes.
+
+        Updates the learner's posterior using the conjugate (or
+        approximate) update rule:
+
+        .. math::
+
+            p(\\theta \\mid \\mathcal{D})
+            \\;\\longrightarrow\\;
+            p(\\theta \\mid \\mathcal{D} \\cup \\{(X, y)\\})
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix of shape ``(n_samples, n_features)``.
+        y : NDArray[np.float64]
+            Observed outcomes of shape ``(n_samples,)``.
+        sample_weight : NDArray[np.float64] or None, default=None
+            Per-sample weights. Used for importance-weighted updates
+            in adversarial bandit algorithms (e.g. EXP3).
+        """
         assert self.learner is not None
         self.learner.partial_fit(X, y, sample_weight)
 
     @requires_learner
     def decay(self, X: ContextType, *, decay_rate: Optional[float] = None) -> None:
-        """Decay the learner."""
+        """Increase posterior uncertainty for non-stationary environments.
+
+        Shrinks the learner's posterior precision, allowing the model
+        to forget old observations and adapt to changing reward
+        distributions (restless bandit setting).
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix (required by the learner interface; used
+            by context-dependent estimators).
+        decay_rate : float or None, default=None
+            Override the learner's default ``learning_rate``. Values
+            less than 1 geometrically shrink posterior precision.
+        """
         assert self.learner is not None
         self.learner.decay(X, decay_rate=decay_rate)
 
