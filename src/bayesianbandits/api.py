@@ -209,16 +209,16 @@ class ContextualAgent(Generic[ContextType, TokenType]):
     See Also
     --------
     Agent : Non-contextual (intercept-only) agent.
-    LipschitzContextualAgent : Shared-learner agent for large or
-        continuous action spaces.
+    LipschitzContextualAgent : Shared-learner agent with configurable
+        design matrix; generalizes this agent.
 
     Notes
     -----
     **Independent learners.** Each arm owns a separate learner instance
     that is updated only with observations from that arm. This is the
-    standard approach for moderate action spaces but becomes expensive
-    when the number of arms is large; see
-    :class:`LipschitzContextualAgent` for a shared-model alternative.
+    standard approach when arms have independent reward distributions.
+    For parameter sharing across arms, see
+    :class:`LipschitzContextualAgent`.
 
     **Batch contexts.** Both :meth:`pull` and :meth:`update` accept
     matrices with multiple rows, producing one decision or update per
@@ -536,8 +536,8 @@ class Agent(Generic[TokenType]):
     --------
     ContextualAgent : Agent that conditions decisions on a feature
         matrix.
-    LipschitzContextualAgent : Shared-learner agent for large or
-        continuous action spaces.
+    LipschitzContextualAgent : Shared-learner agent with configurable
+        design matrix; generalizes both Agent and ContextualAgent.
 
     Notes
     -----
@@ -763,22 +763,37 @@ class Agent(Generic[TokenType]):
 
 class LipschitzContextualAgent(Generic[TokenType]):
     """
-    Contextual agent with a shared learner for large action spaces.
+    Contextual agent with a shared learner and a configurable design matrix.
 
-    Standard contextual bandits maintain one learner per arm, which
-    becomes prohibitively expensive when :math:`K` is large or the
-    action space is continuous. This agent instead uses a single shared
-    learner that conditions on both context and arm features:
+    This is the most general agent in the library. The design matrix,
+    constructed by the ``arm_featurizer``, encodes your assumptions about
+    how arms relate to each other and to the context. By choosing the
+    right design matrix structure, you can express a spectrum of models:
+
+    - **One-hot arms only** (no context features): recovers
+      :class:`Agent` (non-contextual bandits).
+    - **One-hot arms interacted with context** (block-diagonal design
+      matrix): recovers :class:`ContextualAgent` (disjoint bandits,
+      independent parameters per arm).
+    - **Shared features + arm-specific intercepts**: hybrid bandits
+      with cross-arm learning and Bayesian shrinkage toward shared
+      structure (see the ``hybrid-bandits`` tutorial).
+    - **Continuous arm features**: Lipschitz-style bandits (the
+      namesake), where nearby arms in feature space share information.
+
+    Formally, the agent uses a single shared learner that conditions
+    on both context and arm features:
 
     .. math::
 
         \\tilde{x}_{a} = \\phi(x, a), \\qquad
         r \\mid \\tilde{x}_{a} \\sim p(r \\mid \\theta, \\tilde{x}_{a})
 
-    where :math:`\\phi` is the arm featurizer that enriches the context
-    :math:`x` with arm-specific features and :math:`\\theta` is the
-    shared parameter vector. At each round, posterior samples for
-    **all** arms are drawn in a single vectorized call:
+    where :math:`\\phi` is the arm featurizer that constructs the design
+    matrix from context :math:`x` and arm identity :math:`a`, and
+    :math:`\\theta` is the shared parameter vector. At each round,
+    posterior samples for **all** arms are drawn in a single vectorized
+    call:
 
     .. math::
 
@@ -796,8 +811,10 @@ class LipschitzContextualAgent(Generic[TokenType]):
         (:class:`ThompsonSampling`, :class:`UpperConfidenceBound`,
         :class:`EpsilonGreedy`) are compatible.
     arm_featurizer : ArmFeaturizer[TokenType]
-        Featurizer that transforms ``(context, action_tokens)`` into
-        enriched feature matrices in a single vectorized call.
+        Featurizer that constructs the design matrix from
+        ``(context, action_tokens)`` in a single vectorized call.
+        The structure of this matrix encodes assumptions about how
+        arms relate to each other and to the context -- see Notes.
     learner : Learner
         Shared learner instance that will be set on all arms. Because
         all arms share this object, updates to any arm improve
@@ -843,11 +860,12 @@ class LipschitzContextualAgent(Generic[TokenType]):
 
     See Also
     --------
-    ContextualAgent : Independent-learner agent for moderate action
-        spaces.
-    Agent : Non-contextual (intercept-only) agent.
-    ArmColumnFeaturizer : Featurizer that appends a one-hot arm column
-        to the context matrix.
+    ContextualAgent : Independent-learner agent; equivalent to this
+        agent with a block-diagonal design matrix (no parameter sharing).
+    Agent : Non-contextual (intercept-only) agent; equivalent to this
+        agent with one-hot arm indicators and no context features.
+    ArmColumnFeaturizer : Default featurizer that appends an arm
+        identifier column to the context matrix.
 
     Notes
     -----
@@ -860,12 +878,30 @@ class LipschitzContextualAgent(Generic[TokenType]):
     only for the selected arm, so the update cost is independent of
     :math:`K`.
 
-    **Lipschitz assumption.** The name reflects the assumption that the
-    reward function varies smoothly with arm features, so that
-    observations from one arm provide information about nearby arms in
-    feature space. This is automatically satisfied when the shared
-    learner is a linear model or a model with a Lipschitz-continuous
-    mean function.
+    **Design matrix as assumption encoding.** The structure of
+    :math:`\\phi(x, a)` is the mechanism by which you encode domain
+    knowledge about the relationship between arms.  A block-diagonal
+    design matrix (one-hot arms interacted with context) yields fully
+    independent parameters per arm -- equivalent to
+    :class:`ContextualAgent`.  Adding shared columns (e.g. user
+    features that affect all arms) introduces cross-arm learning: the
+    shared learner pools data across arms for those features while
+    keeping arm-specific effects separate.  This creates a "poor man's
+    hierarchical model" where Bayesian priors automatically shrink
+    arm-specific effects toward the shared structure.  See the
+    ``hybrid-bandits`` tutorial for a worked example.
+
+    **Relationship to other agents.** :class:`Agent` and
+    :class:`ContextualAgent` are special cases of this agent with
+    particular design matrix structures.  This makes
+    ``LipschitzContextualAgent`` the most general agent in the library,
+    suitable for any problem where you can describe the arm structure
+    through features.
+
+    **Name origin.** The class name comes from the Lipschitz bandit
+    literature [1]_ [2]_, where rewards vary smoothly with continuous
+    arm features.  The agent is not limited to that setting -- it works
+    equally well with discrete arms and arbitrary feature structures.
 
     References
     ----------
@@ -877,6 +913,11 @@ class LipschitzContextualAgent(Generic[TokenType]):
        (2020). "Contextual bandits with continuous actions: smoothing,
        zooming, and adapting." Journal of Machine Learning Research,
        21(137), 1-45.
+
+    .. [3] Li, L., Chu, W., Langford, J., and Schapire, R. E. (2010).
+       "A contextual-bandit approach to personalized news article
+       recommendation." Proceedings of the 19th International Conference
+       on World Wide Web (WWW), 661-670.
 
     Examples
     --------

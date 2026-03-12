@@ -45,7 +45,7 @@ Powerful methods for improved efficiency and performance.
 
 **Automatic Hyperparameter Tuning** (`empirical-bayes`): Learn prior precision and noise precision from data via evidence maximization, eliminating sensitivity to hyperparameter choices.
 
-**Cross-Arm Learning** (`hybrid-bandits`): Share knowledge across similar arms for faster learning and better sample efficiency. Essential for large action spaces.
+**Cross-Arm Learning** (`hybrid-bandits`): Use ``LipschitzContextualAgent`` with different design matrix structures to express disjoint, hybrid, or hierarchical bandits. Demonstrates how the design matrix encodes assumptions about arm relationships.
 
 **Production Deployment** (`persistence`): Patterns for saving, loading, and updating bandits in live systems with proper serialization.
 
@@ -79,7 +79,7 @@ Choose the right agent for your use case:
     Contextual bandits with separate models per arm. Use when arms are completely different (e.g., different product categories).
 
 **LipschitzContextualAgent**
-    Contextual bandits with shared model across arms. Use for large action spaces where arms are similar (e.g., thousands of articles, products).
+    The most general agent: a single shared model with a configurable design matrix. Can express non-contextual, disjoint, hybrid, or Lipschitz bandits depending on how the arm featurizer constructs the design matrix. See the ``hybrid-bandits`` tutorial for examples.
 
 Pipeline Integration
 ====================

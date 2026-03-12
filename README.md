@@ -77,7 +77,7 @@ Update the bandit with the reward.
 agent.update(context, np.array([15.0]))
 ```
 
-For shared learning across arms with hybrid bandits:
+For shared learning across arms via the design matrix:
 
 ```python
 from bayesianbandits import LipschitzContextualAgent, ArmColumnFeaturizer, NormalRegressor
