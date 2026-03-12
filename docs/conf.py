@@ -11,7 +11,7 @@ import numpy as np  # type: ignore
 project = "bayesianbandits"
 copyright = "2023, Rishi Kulkarni"
 author = "Rishi Kulkarni"
-release = "0.6.0"
+release = "1.2.0"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -21,8 +21,12 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.autodoc.typehints",
     "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
     "nbsphinx",
 ]
+intersphinx_mapping = {
+    "sklearn": ("https://scikit-learn.org/stable/", None),
+}
 napoleon_preprocess_types = True
 napoleon_type_aliases = {
     "NDArray": "np.typing.NDArray",
@@ -43,6 +47,16 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
-html_css_files = ["style.css"]
+html_theme_options = {
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/rishi-kulkarni/bayesianbandits",
+            "icon": "fa-brands fa-github",
+        },
+    ],
+    "navigation_depth": 3,
+    "show_toc_level": 2,
+}

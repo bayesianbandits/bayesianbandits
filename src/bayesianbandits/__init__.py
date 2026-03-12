@@ -30,7 +30,6 @@ code. Additionally, it is designed to make it easy to modify the arms and the
 policies of your bandit as your needs change.
 
 .. autosummary::
-    :toctree: _autosummary
 
     Agent
     ContextualAgent
@@ -47,7 +46,6 @@ Pipelines enable the use of sklearn transformers with Bayesian bandits,
 providing preprocessing capabilities at different levels.
 
 .. autosummary::
-    :toctree: _autosummary
 
     AgentPipeline
     LearnerPipeline
@@ -59,7 +57,6 @@ based on action tokens. They support vectorized operations for efficient
 multi-arm processing.
 
 .. autosummary::
-    :toctree: _autosummary
 
     ArmFeaturizer
     ArmColumnFeaturizer
@@ -78,7 +75,6 @@ increase the variance of the prior. This is a type of state-space model that
 is useful for restless bandits.
 
 .. autosummary::
-    :toctree: _autosummary
 
     BayesianGLM
     DirichletClassifier
@@ -96,7 +92,6 @@ when the environment may be non-stationary (pair with ``learning_rate < 1``
 for decay as a defensive default).
 
 .. autosummary::
-    :toctree: _autosummary
 
     EmpiricalBayesNormalRegressor
 
@@ -106,7 +101,6 @@ These utilities provide additional functionality for the bandit algorithms,
 such as Laplace approximation for Gaussian posteriors.
 
 .. autosummary::
-    :toctree: _autosummary
 
     LaplaceApproximator
 

@@ -69,51 +69,149 @@ class _EmpiricalBayesMixin:
 
 
 class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
-    """NormalRegressor with automatic hyperparameter tuning via evidence maximization.
+    """Bayesian linear regression with empirical Bayes hyperparameter tuning.
 
-    Uses MacKay's update rules to iteratively optimize the prior precision
-    (alpha) and noise precision (beta) by maximizing the marginal likelihood.
+    Extends :class:`NormalRegressor` with automatic optimization of the
+    prior precision (``alpha``) and noise precision (``beta``) via
+    MacKay's evidence maximization framework [1]_. During ``fit``, the
+    hyperparameters are iteratively updated to maximize the log marginal
+    likelihood. During ``partial_fit``, a single online MacKay step is
+    performed using accumulated sufficient statistics.
 
     When ``learning_rate < 1``, exponential forgetting is applied to the
-    precision matrix.  To prevent the prior contribution from collapsing to
-    zero under repeated decay, *stabilized forgetting* re-injects a fixed
-    prior floor after each decay step, following [1]_.
-
-    References
-    ----------
-    .. [1] Kulhavy, R. & Zarrop, M. B. (1993). "On a general concept of
-       forgetting." *International Journal of Control*, 58(4), 905-924.
+    precision matrix. To prevent the prior contribution from collapsing
+    to zero under repeated decay, *stabilized forgetting* [2]_ re-injects
+    a fixed prior floor after each decay step.
 
     Parameters
     ----------
-    alpha : float
-        Initial prior precision of the weights.
-    beta : float
-        Initial noise precision.
+    alpha : float, default=1.0
+        Initial prior precision of the weights. The prior is
+        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)`. Updated
+        automatically during fitting.
+    beta : float, default=1.0
+        Initial noise precision. The likelihood is
+        :math:`y \\mid x, w \\sim \\mathcal{N}(x^T w, \\beta^{-1})`.
+        Updated automatically during fitting.
     n_eb_iter : int, default=10
         Maximum number of empirical Bayes iterations during ``fit``.
+        Each iteration re-fits the posterior and runs one MacKay update.
+        Set to 0 to disable EB tuning during ``fit``.
     eb_tol : float, default=1e-4
-        Convergence tolerance on log evidence change.
+        Convergence tolerance on the change in log marginal likelihood
+        between successive EB iterations.
     learning_rate : float, default=1.0
-        Learning rate for recursive Bayesian updates.
+        Decay rate for sequential updates. Values less than 1
+        geometrically shrink the precision matrix on each call to
+        ``decay`` or ``partial_fit``, enabling adaptation to
+        non-stationary environments.
     sparse : bool, default=False
-        Whether to use sparse precision matrices.
-    random_state : int, Generator, or None, default=None
-        Random state for reproducibility.
-    trace_method : str, default="auto"
-        Method for computing tr(Λ⁻¹) in the MacKay update.
-        ``"auto"`` uses Takahashi recursion (exact) for sparse and
-        Cholesky for dense.  ``"diagonal"`` uses the fast O(p)
-        approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
+        If True, use sparse matrix operations for the precision matrix.
+        Input ``X`` must be a ``scipy.sparse.csc_array``. When CHOLMOD
+        is available (via ``scikit-sparse``), it is used for efficient
+        Cholesky factorization; otherwise falls back to SuperLU.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
+    trace_method : {'auto', 'diagonal'}, default='auto'
+        Method for computing :math:`\\operatorname{tr}(\\Lambda^{-1})`
+        in the MacKay update for ``alpha``:
+
+        - ``'auto'``: Uses Takahashi recursion (exact, exploits
+          sparsity) for sparse matrices, Cholesky for dense.
+        - ``'diagonal'``: Fast :math:`O(p)` approximation
+          :math:`\\operatorname{tr}(\\Lambda^{-1}) \\approx
+          \\sum_i 1/\\Lambda_{ii}`.
 
     Attributes
     ----------
     log_evidence_ : float
-        Log marginal likelihood at convergence.
+        Log marginal likelihood at convergence (after ``fit``), or
+        ``-inf`` if ``n_eb_iter=0``.
     n_eb_iterations_ : int
-        Number of EB iterations performed.
+        Number of EB iterations performed during the last ``fit``.
     eb_converged_ : bool
-        Whether the EB loop converged within tolerance.
+        Whether the EB loop converged within ``eb_tol`` during
+        the last ``fit``.
+
+    See Also
+    --------
+    NormalRegressor : Base estimator without empirical Bayes tuning.
+    BayesianGLM : Bayesian GLM for non-Gaussian likelihoods (logistic,
+        Poisson).
+
+    Notes
+    -----
+    **Evidence maximization (MacKay's update rules)**
+
+    Given the posterior precision
+    :math:`\\Lambda = \\alpha I + \\beta X^T X` and MAP estimate
+    :math:`\\hat{w}`, the effective number of well-determined
+    parameters is:
+
+    .. math::
+
+        \\gamma = p - \\alpha \\operatorname{tr}(\\Lambda^{-1})
+
+    The hyperparameters are updated as [1]_:
+
+    .. math::
+
+        \\alpha_{\\text{new}} = \\frac{\\gamma}{\\hat{w}^T \\hat{w}},
+        \\qquad
+        \\beta_{\\text{new}} = \\frac{N - \\gamma}{
+        \\| y - X \\hat{w} \\|^2}
+
+    **Stabilized forgetting**
+
+    Under exponential decay with rate :math:`\\gamma < 1`, the prior
+    contribution to the precision diagonal decays as
+    :math:`\\gamma^t \\alpha \\to 0`. Stabilized forgetting [2]_
+    re-injects :math:`(1 - \\gamma^n) \\alpha` after each decay step,
+    so the prior contribution converges to :math:`\\alpha` instead of
+    zero:
+
+    .. math::
+
+        s_{t+n} = \\gamma^n s_t + (1 - \\gamma^n) \\alpha
+
+    where :math:`s_t` tracks the cumulative prior scalar on the
+    diagonal.
+
+    References
+    ----------
+    .. [1] MacKay, D. J. C. (1992). "Bayesian Interpolation."
+       *Neural Computation*, 4(3), 415-447.
+
+    .. [2] Kulhavy, R. & Zarrop, M. B. (1993). "On a general concept of
+       forgetting." *International Journal of Control*, 58(4), 905-924.
+
+    Examples
+    --------
+    Batch fitting with automatic hyperparameter tuning:
+
+    >>> import numpy as np
+    >>> from bayesianbandits import EmpiricalBayesNormalRegressor
+    >>> rng = np.random.default_rng(42)
+    >>> X = rng.standard_normal((100, 3))
+    >>> w_true = np.array([1.0, -0.5, 0.0])
+    >>> y = X @ w_true + 0.1 * rng.standard_normal(100)
+    >>> model = EmpiricalBayesNormalRegressor(random_state=42)
+    >>> _ = model.fit(X, y)
+    >>> model.eb_converged_
+    True
+    >>> np.round(model.coef_, 2)  # Close to [1.0, -0.5, 0.0]
+    array([ 1.  , -0.49, -0.02])
+
+    Online learning with forgetting for non-stationary environments:
+
+    >>> model = EmpiricalBayesNormalRegressor(
+    ...     learning_rate=0.99, random_state=42
+    ... )
+    >>> for i in range(10):  # doctest: +SKIP
+    ...     X_batch = rng.standard_normal((5, 3))
+    ...     y_batch = X_batch @ w_true + 0.1 * rng.standard_normal(5)
+    ...     model.partial_fit(X_batch, y_batch)
     """
 
     def __init__(
@@ -223,6 +321,10 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         -------
         self : EmpiricalBayesNormalRegressor
             Fitted estimator with tuned ``alpha`` and ``beta``.
+
+        See Also
+        --------
+        partial_fit : Incremental update with one online MacKay step.
         """
         X_fit, y = check_X_y(
             X_fit,  # type: ignore
@@ -427,6 +529,11 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         -------
         self : EmpiricalBayesNormalRegressor
             Updated estimator with retuned hyperparameters.
+
+        See Also
+        --------
+        fit : Fit from scratch with full EB iteration loop.
+        decay : Increase uncertainty without observing new data.
         """
         had_prior_scalar = hasattr(self, "_prior_scalar")
 
@@ -522,9 +629,13 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             Used only to determine the number of time steps ``n`` for
             the decay exponent ``γ^n``. The actual feature values are
             not used.
-        decay_rate : float, optional
-            Decay factor ``γ`` in (0, 1]. If None, uses
+        decay_rate : float, default=None
+            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
             ``self.learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         if not hasattr(self, "coef_"):
             return

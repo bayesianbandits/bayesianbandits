@@ -37,7 +37,6 @@ Bandit Classes
 ==============
 
 .. autosummary::
-    :toctree: _autosummary
 
     ContextualAgent
     Agent
@@ -47,7 +46,6 @@ Policy Functions
 ================
 
 .. autosummary::
-    :toctree: _autosummary
 
     EpsilonGreedy
     ThompsonSampling
@@ -175,20 +173,6 @@ class ContextualAgent(Generic[ContextType, TokenType]):
         and the context as input and returns the chosen arm.
     random_seed : int, default=None
         Seed for the random number generator. If None, a random seed is used.
-
-    Attributes
-    ----------
-    arms : List[Arm]
-        List of arms to choose from. All arms must have a learner and a unique
-        action token.
-    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
-        Function to choose an arm from the list of arms. Takes the list of arms
-        and the context as input and returns the chosen arm.
-    arm_to_update : Arm
-        Arm to update with the next reward.
-    rng : Generator
-        Random number generator used for choosing arms and decaying.
-
 
     Examples
     --------
@@ -463,17 +447,6 @@ class Agent(Generic[TokenType]):
         and the context as input and returns the chosen arm.
     random_seed : int, default=None
         Seed for the random number generator. If None, a random seed is used.
-
-    Attributes
-    ----------
-    arms : List[Arm]
-        List of arms to choose from. All arms must have a learner and a unique
-        action token.
-    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
-        Function to choose an arm from the list of arms. Takes the list of arms
-        and the context as input and returns the chosen arm.
-    arm_to_update : Arm
-        Arm to update with the next reward.
 
     Examples
     --------
