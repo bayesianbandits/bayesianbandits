@@ -21,19 +21,53 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     Policy object for Thompson sampling.
 
     Thompson sampling chooses the best arm with probability equal to the
-    probability that the arm is the best arm. That is, it takes a sample from
-    each arm's posterior distribution and chooses the arm with the highest
-    sample.
+    probability that the arm is the best arm. At each round, a single sample
+    is drawn from each arm's posterior and the arm with the highest sample is
+    selected:
+
+    .. math::
+
+        \\tilde{\\theta}_a \\sim p(\\theta_a \\mid \\mathcal{D}_a)
+        \\quad \\forall a, \\qquad
+        a^* = \\arg\\max_a \\; g_a(\\tilde{\\theta}_a)
+
+    where :math:`g_a` is the reward function (possibly context-dependent) and
+    :math:`\\mathcal{D}_a` is the data observed for arm :math:`a`.
 
     Notes
     -----
-    The implementation here is based on the implementation in [1]_.
+    **Regret bounds (standard setting).** For the :math:`K`-armed stochastic
+    bandit with Beta-Bernoulli or Gaussian conjugate models, Thompson sampling
+    achieves a Bayesian expected regret of
+
+    .. math::
+
+        \\mathbb{E}[\\mathrm{Regret}(T)]
+        = O\\!\\left(\\sqrt{KT \\ln K}\\right)
+
+    and an asymptotically optimal problem-dependent bound of
+    :math:`O\\!\\left(\\sum_{a:\\Delta_a>0}
+    \\frac{\\ln T}{\\Delta_a}\\right)` matching the Lai-Robbins lower bound
+    [2]_.
+
+    **Applicability to this library.** The bounds above are proven for
+    stationary, non-contextual bandits with exact conjugate posteriors. This
+    library targets anytime, contextual, and potentially non-stationary
+    problems, and the Bayesian learners may use approximate posteriors (e.g.
+    Laplace approximations) or variance-increasing decay. Under these
+    modifications the classical regret guarantees do not formally apply,
+    though the core explore-exploit mechanism---probability matching via
+    posterior sampling---is preserved.
 
     References
     ----------
-    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
-       thompson sampling." Advances in neural information processing systems
-       24 (2011): 2249-2257.
+    .. [1] Chapelle, O. and Li, L. (2011). "An empirical evaluation of
+       Thompson sampling." Advances in Neural Information Processing Systems
+       24, 2249-2257.
+
+    .. [2] Agrawal, S. and Goyal, N. (2012). "Analysis of Thompson sampling
+       for the multi-armed bandit problem." Proceedings of the 25th Annual
+       Conference on Learning Theory (COLT), JMLR W&CP 23, 39.1-39.26.
     """
 
     def __repr__(self) -> str:
