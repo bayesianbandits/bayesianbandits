@@ -161,24 +161,88 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
 
 
 class ContextualAgent(Generic[ContextType, TokenType]):
-    """Agent for a contextual multi-armed bandit problem.
+    """
+    Agent for a contextual multi-armed bandit problem.
+
+    At each round the agent observes a context :math:`x_t`, selects an
+    arm :math:`a_t` according to the configured policy, and later receives
+    a reward :math:`r_t`. Each arm maintains an independent Bayesian
+    learner, so the posterior for arm :math:`a` is updated only when that
+    arm is selected:
+
+    .. math::
+
+        a_t = \\pi\\bigl(\\{p(\\theta_a \\mid \\mathcal{D}_a)\\}_{a=1}^{K},
+        \\; x_t\\bigr), \\qquad
+        \\mathcal{D}_{a_t} \\leftarrow \\mathcal{D}_{a_t}
+        \\cup \\{(x_t, r_t)\\}
+
+    where :math:`\\pi` is the policy (e.g. Thompson sampling, UCB, or
+    :math:`\\varepsilon`-greedy) and :math:`K` is the number of arms.
 
     Parameters
     ----------
-    arms : List[Arm]
-        List of arms to choose from. All arms must have a learner and a unique
-        action token.
-    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
-        Function to choose an arm from the list of arms. Takes the list of arms
-        and the context as input and returns the chosen arm.
-    random_seed : int, default=None
-        Seed for the random number generator. If None, a random seed is used.
+    arms : Sequence[Arm[ContextType, TokenType]]
+        Arms to choose from. Each arm must carry a fitted or unfitted
+        learner and a unique action token that identifies it.
+    policy : PolicyProtocol[ContextType, TokenType]
+        Policy object that implements arm selection given posteriors and
+        context. Built-in options: :class:`ThompsonSampling`,
+        :class:`UpperConfidenceBound`, :class:`EpsilonGreedy`.
+    random_seed : int, np.random.Generator, or None, default=None
+        Controls the random number generator shared by the policy and
+        all learners. Pass an int for reproducible results across calls.
+
+    Attributes
+    ----------
+    arms : List[Arm[ContextType, TokenType]]
+        Current list of arms.
+    arm_to_update : Arm[ContextType, TokenType]
+        Arm that will receive the next ``update`` call. Automatically
+        set to the last pulled arm (when ``top_k`` is None), or must be
+        set explicitly via :meth:`select_for_update`.
+    policy : PolicyProtocol[ContextType, TokenType]
+        Active policy. Can be replaced at any time.
+    rng : np.random.Generator
+        Shared random number generator.
+
+    See Also
+    --------
+    Agent : Non-contextual (intercept-only) agent.
+    LipschitzContextualAgent : Shared-learner agent for large or
+        continuous action spaces.
+
+    Notes
+    -----
+    **Independent learners.** Each arm owns a separate learner instance
+    that is updated only with observations from that arm. This is the
+    standard approach for moderate action spaces but becomes expensive
+    when the number of arms is large; see
+    :class:`LipschitzContextualAgent` for a shared-model alternative.
+
+    **Batch contexts.** Both :meth:`pull` and :meth:`update` accept
+    matrices with multiple rows, producing one decision or update per
+    row. This enables efficient batch serving but requires the user to
+    match rewards to the correct arms when using delayed feedback.
+
+    **Serialization.** The agent (including all arm learners) is
+    pickle-compatible, making it straightforward to persist to a
+    database or message queue for use in live services.
+
+    References
+    ----------
+    .. [1] Chapelle, O. and Li, L. (2011). "An empirical evaluation of
+       Thompson sampling." Advances in Neural Information Processing
+       Systems 24, 2249-2257.
+
+    .. [2] Li, L., Chu, W., Langford, J., and Schapire, R. E. (2010).
+       "A contextual-bandit approach to personalized news article
+       recommendation." Proceedings of the 19th International Conference
+       on World Wide Web (WWW), 661-670.
 
     Examples
     --------
-
-    Minimally, an agent can be instantiated with a list of arms and a policy
-    function. The arms should have a learner and a unique action token.
+    Create an agent with two arms and pull for a single context:
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
     >>> from bayesianbandits import ContextualAgent, ThompsonSampling
@@ -188,28 +252,24 @@ class ContextualAgent(Generic[ContextType, TokenType]):
     ... ]
     >>> agent = ContextualAgent(arms, ThompsonSampling(), random_seed=0)
 
-    The agent can then be used to choose an arm and pull it. The `pull` method
-    takes a context matrix as input and returns the action token of the chosen
-    arm.
+    The ``pull`` method takes a context matrix and returns one action
+    token per row:
 
     >>> import numpy as np
     >>> X = np.array([[1.0, 15.0]])
     >>> agent.pull(X)
     [1]
 
-    The agent can then be updated with the observed reward. The `update` method
-    takes a context matrix and a reward vector as input. By default, the last
-    pulled arm is updated.
+    By default the last pulled arm is queued for update. Call
+    ``update`` with the same context and the observed reward:
 
     >>> y = np.array([100.0])
     >>> agent.update(X, y)
     >>> agent.arm_to_update.learner.predict(X)
     array([99.55947137])
 
-    The agent can also be 'fluently' updated by chaining the `arm` method with
-    the `update` method. This is useful when the reward is not immediately
-    available, and a batch of updates needs to be made later. The user is
-    trusted with calling `arm` with the right action token.
+    For delayed rewards, explicitly select which arm to update using
+    the fluent :meth:`select_for_update` interface:
 
     >>> agent.select_for_update(1).update(X, y)
     >>> agent.arm_to_update is arms[1]
@@ -430,29 +490,72 @@ class ContextualAgent(Generic[ContextType, TokenType]):
 
 class Agent(Generic[TokenType]):
     """
-    Agent for a non-contextual multi-armed bandit problem.
+    Agent for a non-contextual (classic) multi-armed bandit problem.
 
-    The non-contextual bandit is a special case of the contextual bandit where
-    the context matrix is a single column of ones. This class is a wrapper
-    around the `ContextualAgent` class that automatically synthesizes the
-    context matrix for the `pull`, `update`, and `decay` methods.
+    Implements the :math:`K`-armed bandit where the agent selects an arm
+    :math:`a_t` without observing any side information. Internally this
+    is a thin wrapper around :class:`ContextualAgent` with the context
+    fixed to a single intercept column :math:`x = [1]`:
+
+    .. math::
+
+        a_t = \\pi\\bigl(\\{p(\\theta_a \\mid \\mathcal{D}_a)\\}_{a=1}^{K}
+        \\bigr), \\qquad
+        \\mathcal{D}_{a_t} \\leftarrow \\mathcal{D}_{a_t}
+        \\cup \\{r_t\\}
+
+    All ``pull``, ``update``, and ``decay`` calls automatically
+    synthesize the intercept context, so the caller never needs to
+    provide a feature matrix.
 
     Parameters
     ----------
-    arms : List[Arm]
-        List of arms to choose from. All arms must have a learner and a unique
-        action token.
-    policy : Callable[[List[Arm], NDArray[np.float64], Generator], Arm]
-        Function to choose an arm from the list of arms. Takes the list of arms
-        and the context as input and returns the chosen arm.
-    random_seed : int, default=None
-        Seed for the random number generator. If None, a random seed is used.
+    arms : Sequence[Arm[Any, TokenType]]
+        Arms to choose from. Each arm must carry a fitted or unfitted
+        learner and a unique action token that identifies it.
+    policy : PolicyProtocol[Any, TokenType]
+        Policy object that implements arm selection given posteriors.
+        Built-in options: :class:`ThompsonSampling`,
+        :class:`UpperConfidenceBound`, :class:`EpsilonGreedy`.
+    random_seed : int, np.random.Generator, or None, default=None
+        Controls the random number generator shared by the policy and
+        all learners. Pass an int for reproducible results across calls.
+
+    Attributes
+    ----------
+    arms : List[Arm[NDArray[np.float64], TokenType]]
+        Current list of arms.
+    arm_to_update : Arm[NDArray[np.float64], TokenType]
+        Arm that will receive the next ``update`` call.
+    policy : PolicyProtocol[NDArray[np.float64], TokenType]
+        Active policy. Can be replaced at any time.
+    rng : np.random.Generator
+        Shared random number generator.
+
+    See Also
+    --------
+    ContextualAgent : Agent that conditions decisions on a feature
+        matrix.
+    LipschitzContextualAgent : Shared-learner agent for large or
+        continuous action spaces.
+
+    Notes
+    -----
+    Because the context is always a single intercept, every learner
+    reduces to an intercept-only model. For example,
+    :class:`NormalRegressor` becomes a simple Bayesian estimate of the
+    mean reward, and :class:`DirichletClassifier` maintains a posterior
+    over class probabilities.
+
+    References
+    ----------
+    .. [1] Chapelle, O. and Li, L. (2011). "An empirical evaluation of
+       Thompson sampling." Advances in Neural Information Processing
+       Systems 24, 2249-2257.
 
     Examples
     --------
-    The key difference between the `Agent` and the `ContextualAgent` is that
-    the `Agent` does not take a context matrix as input. Instead, the context
-    matrix is synthesized automatically.
+    Create a non-contextual agent and pull:
 
     >>> from bayesianbandits import Arm, NormalInverseGammaRegressor
     >>> from bayesianbandits import Agent, ThompsonSampling
@@ -464,8 +567,8 @@ class Agent(Generic[TokenType]):
     >>> agent.pull()
     [1]
 
-    This is equivalent to calling the `pull` method with a context matrix containing
-    only a global intercept. The `update` and `decay` methods work the same way.
+    No context matrix is needed. The ``update`` and ``decay`` methods
+    similarly take only a reward vector:
 
     >>> import numpy as np
     >>> y = np.array([100.0])
@@ -578,13 +681,13 @@ class Agent(Generic[TokenType]):
 
         Parameters
         ----------
-        token : Any
+        token : TokenType
             Action token of the arm to get.
 
         Returns
         -------
-        Self
-            Self for chaining.
+        Arm[NDArray[np.float64], TokenType]
+            Arm with the given action token.
 
         Raises
         ------
@@ -660,69 +763,124 @@ class Agent(Generic[TokenType]):
 
 class LipschitzContextualAgent(Generic[TokenType]):
     """
-    Agent for Lipschitz/continuous contextual bandits with shared learner.
+    Contextual agent with a shared learner for large action spaces.
 
-    This agent is designed for scenarios where a single learner instance is shared
-    across all arms, enabling efficient batched operations for large action spaces.
-    The key insight is setting the same learner object on all arms, so existing
-    policies work unchanged while the learner accumulates knowledge across all
-    arm-context pairs.
+    Standard contextual bandits maintain one learner per arm, which
+    becomes prohibitively expensive when :math:`K` is large or the
+    action space is continuous. This agent instead uses a single shared
+    learner that conditions on both context and arm features:
+
+    .. math::
+
+        \\tilde{x}_{a} = \\phi(x, a), \\qquad
+        r \\mid \\tilde{x}_{a} \\sim p(r \\mid \\theta, \\tilde{x}_{a})
+
+    where :math:`\\phi` is the arm featurizer that enriches the context
+    :math:`x` with arm-specific features and :math:`\\theta` is the
+    shared parameter vector. At each round, posterior samples for
+    **all** arms are drawn in a single vectorized call:
+
+    .. math::
+
+        a^* = \\pi\\bigl(
+        \\{\\tilde{\\theta} \\sim p(\\theta \\mid \\mathcal{D})\\},
+        \\; \\{\\phi(x, a)\\}_{a=1}^{K}\\bigr)
 
     Parameters
     ----------
-    arms : Sequence[Arm]
-        List of arms to choose from. Arms can have learner=None initially - the
-        shared learner will be set on all arms during initialization.
-    policy : PolicyProtocol
-        Policy function to choose arms. All existing policies are compatible.
-    arm_featurizer : ArmFeaturizer
-        Featurizer to transform contexts with arm features in vectorized batches.
+    arms : Sequence[Arm[Any, TokenType]]
+        Arms to choose from. Arms may have ``learner=None``; the
+        shared learner is set on every arm during initialization.
+    policy : PolicyProtocol[Any, TokenType]
+        Policy object for arm selection. All built-in policies
+        (:class:`ThompsonSampling`, :class:`UpperConfidenceBound`,
+        :class:`EpsilonGreedy`) are compatible.
+    arm_featurizer : ArmFeaturizer[TokenType]
+        Featurizer that transforms ``(context, action_tokens)`` into
+        enriched feature matrices in a single vectorized call.
     learner : Learner
-        Shared learner instance that will be set on all arms.
-    batch_reward_function : Optional[Union[BatchRewardFunction, ContextAwareBatchRewardFunction]], default=None
-        Optional batch reward function that processes all arms at once.
-        If provided, it replaces individual arm reward functions during pull().
+        Shared learner instance that will be set on all arms. Because
+        all arms share this object, updates to any arm improve
+        predictions for every arm.
+    batch_reward_function : BatchRewardFunction or ContextAwareBatchRewardFunction or None, default=None
+        Optional function that processes rewards for all arms at once.
 
-        For traditional batch reward functions, signature is:
+        *Traditional* signature::
+
             def batch_reward(samples, action_tokens):
                 # samples: shape (n_arms, n_contexts, size, ...)
                 # action_tokens: list of length n_arms
                 return rewards  # shape (n_arms, n_contexts, size)
 
-        For context-aware batch reward functions, signature is:
+        *Context-aware* signature::
+
             def batch_reward(samples, action_tokens, X):
-                # samples: shape (n_arms, n_contexts, size, ...)
-                # action_tokens: list of length n_arms
                 # X: original context, shape (n_contexts, n_features)
                 return rewards  # shape (n_arms, n_contexts, size)
 
-        The action_tokens list is ordered to match the first dimension of samples.
-        For example, if action_tokens = [5, 2, 8], then samples[0] corresponds
-        to token 5, samples[1] to token 2, and samples[2] to token 8.
-
-        If None and all arms use identity reward function, automatically optimizes
-        to use a fast batch identity function.
-    random_seed : Union[int, None, np.random.Generator], default=None
-        Seed for the random number generator. If None, a random seed is used.
+        The ``action_tokens`` list is ordered to match the first
+        dimension of ``samples``. If None and all arms use the identity
+        reward function, an optimized batch identity is used
+        automatically.
+    random_seed : int, np.random.Generator, or None, default=None
+        Controls the random number generator shared by the policy and
+        the learner. Pass an int for reproducible results across calls.
 
     Attributes
     ----------
-    arms : List[Arm]
-        List of arms, all sharing the same learner instance.
-    policy : PolicyProtocol
-        Policy function for arm selection.
-    arm_featurizer : ArmFeaturizer
+    arms : List[Arm[Any, TokenType]]
+        Current list of arms, all sharing the same learner instance.
+    arm_to_update : Arm[Any, TokenType]
+        Arm that will receive the next ``update`` call.
+    policy : PolicyProtocol[Any, TokenType]
+        Active policy.
+    arm_featurizer : ArmFeaturizer[TokenType]
         Vectorized arm feature transformer.
     learner : Learner
-        Shared learner instance across all arms.
-    arm_to_update : Arm
-        Arm to update with the next reward.
+        Shared learner instance.
     rng : np.random.Generator
-        Random number generator.
+        Shared random number generator.
+
+    See Also
+    --------
+    ContextualAgent : Independent-learner agent for moderate action
+        spaces.
+    Agent : Non-contextual (intercept-only) agent.
+    ArmColumnFeaturizer : Featurizer that appends a one-hot arm column
+        to the context matrix.
+
+    Notes
+    -----
+    **Vectorized pull.** During :meth:`pull`, contexts are enriched for
+    *all* arms in a single featurizer call, followed by a single
+    learner ``sample`` call for the entire ``(n_arms * n_contexts)``
+    batch. This yields significant speedups when :math:`K \\gg 100`.
+
+    **Selective update.** During :meth:`update`, contexts are enriched
+    only for the selected arm, so the update cost is independent of
+    :math:`K`.
+
+    **Lipschitz assumption.** The name reflects the assumption that the
+    reward function varies smoothly with arm features, so that
+    observations from one arm provide information about nearby arms in
+    feature space. This is automatically satisfied when the shared
+    learner is a linear model or a model with a Lipschitz-continuous
+    mean function.
+
+    References
+    ----------
+    .. [1] Slivkins, A. (2014). "Contextual bandits with similarity
+       information." Journal of Machine Learning Research, 15(1),
+       2533-2568.
+
+    .. [2] Krishnamurthy, A., Langford, J., Slivkins, A., and Zhang, C.
+       (2020). "Contextual bandits with continuous actions: smoothing,
+       zooming, and adapting." Journal of Machine Learning Research,
+       21(137), 1-45.
 
     Examples
     --------
-    Create a Lipschitz contextual agent for product recommendation:
+    Create an agent for product recommendation with 100 products:
 
     >>> import numpy as np
     >>> from bayesianbandits import Arm, NormalRegressor, ThompsonSampling
@@ -751,7 +909,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
     >>> for token, context, reward in zip(selected_products, X, [1.0, 0.5]):
     ...     agent.select_for_update(token).update(np.atleast_2d(context), np.array([reward]))
 
-    Example with batch reward function for revenue optimization:
+    Using a batch reward function for revenue optimization:
 
     >>> # Pre-compute revenue array for all products (vectorized approach)
     >>> n_products = 100
@@ -773,7 +931,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
     ...     batch_reward_function=revenue_batch_reward
     ... )
 
-    Example with context-aware batch reward function:
+    Using a context-aware batch reward function:
 
     >>> # Context-aware: calculate gross profit from prices, costs, and taxes
     >>> # Arms represent different price points
@@ -797,18 +955,6 @@ class LipschitzContextualAgent(Generic[TokenType]):
     ...     # Apply profit multiplier to samples, clamping negative profits to 0
     ...     profit_multiplier = np.maximum(gross_profit, 0)
     ...     return samples * profit_multiplier[:, :, np.newaxis]
-
-    Notes
-    -----
-    Performance Benefits:
-    - **Vectorized Operations**: Single featurizer call for all arms vs N separate calls
-    - **Shared Model**: Single learner forward pass vs N separate model calls
-    - **Memory Efficiency**: Better cache locality with batched operations
-    - **Large Action Spaces**: Significant speedup when N >> 100 arms
-
-    The learner sees enriched feature vectors and is unaware of the bandit structure.
-    During pull(), contexts are enriched for ALL arms in a single vectorized call.
-    During update(), contexts are enriched only for the selected arm.
     """
 
     def __repr__(self) -> str:
