@@ -305,7 +305,17 @@ def update_gaussian_posterior_laplace(
 
 
 class PosteriorApproximator(Protocol):
-    """Base class for posterior approximation methods."""
+    """Protocol for posterior approximation strategies.
+
+    Implementations are passed to :class:`BayesianGLM` via the
+    ``approximator`` parameter to control how the posterior is
+    approximated for non-conjugate likelihoods.
+
+    See Also
+    --------
+    LaplaceApproximator : Default implementation using IRLS.
+    BayesianGLM : Estimator that uses this protocol.
+    """
 
     def update_posterior(
         self,
@@ -322,20 +332,54 @@ class PosteriorApproximator(Protocol):
 
 @dataclass
 class LaplaceApproximator(PosteriorApproximator):
-    """Laplace approximation using IRLS.
+    """Laplace approximation via iteratively reweighted least squares (IRLS).
+
+    Approximates the posterior of a Bayesian GLM by finding the MAP
+    estimate :math:`\\hat{w}` and fitting a Gaussian centered at the
+    mode with precision equal to the negative Hessian:
+
+    .. math::
+
+        p(w \\mid \\mathcal{D}) \\approx
+        \\mathcal{N}\\bigl(\\hat{w},\\;
+        (\\alpha I + X^T W X)^{-1}\\bigr)
+
+    where :math:`W` is the diagonal matrix of IRLS weights (Fisher
+    information).
 
     Parameters
     ----------
     n_iter : int, default=5
-        Number of Newton iterations to perform.
-        - 1: Single step update (fast, may not converge)
-        - >1: Iterate until convergence or max iterations
+        Maximum number of Newton (IRLS) iterations per update.
 
+        - ``1``: Single-step update from the current posterior. Fast
+          and usually sufficient for online/streaming use where the
+          posterior from the previous step is a good initialization.
+        - ``3–5``: Good default for mini-batch updates.
+        - ``>10``: Use for batch fitting when full convergence is
+          needed (pair with a tight ``tol``).
     tol : float, default=1e-4
-        Convergence tolerance for coefficient change.
-        Only used if n_iter > 1.
-        Convergence when: ||coef_new - coef_old||_∞ < tol
+        Convergence tolerance on the coefficient change. Iteration
+        stops when
+        :math:`\\|w_{\\text{new}} - w_{\\text{old}}\\|_\\infty < \\text{tol}`.
+        Only effective when ``n_iter > 1``.
 
+    See Also
+    --------
+    BayesianGLM : Estimator that uses this approximation strategy.
+
+    Examples
+    --------
+    Fast single-step updates for online learning:
+
+    >>> from bayesianbandits import LaplaceApproximator, BayesianGLM
+    >>> fast = LaplaceApproximator(n_iter=1)
+    >>> model = BayesianGLM(approximator=fast)
+
+    Tight convergence for batch fitting:
+
+    >>> batch = LaplaceApproximator(n_iter=500, tol=1e-8)
+    >>> model = BayesianGLM(approximator=batch)
     """
 
     n_iter: int = 5

@@ -51,52 +51,81 @@ SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 class DirichletClassifier(BaseEstimator, ClassifierMixin):
     """
-    Intercept-only Dirichlet Classifier with sample weight support.
+    Intercept-only Dirichlet-Multinomial classifier.
+
+    Maintains a separate Dirichlet posterior over class probabilities
+    for each unique value of the first feature. Supports sample
+    weights (for importance-weighted updates in adversarial bandit
+    algorithms) and online learning via ``partial_fit``.
 
     Parameters
     ----------
-    alphas : Dict[Union[int, str], float]
-        Prior alphas for each class. Keys must be the same as the classes in the
-        training data.
+    alphas : dict of {int or str: float}
+        Prior concentration parameters for each class. Keys define
+        the set of classes; values are the initial Dirichlet
+        :math:`\\alpha_k`. A uniform prior (e.g. ``{0: 1, 1: 1}``)
+        encodes no prior preference.
     learning_rate : float, default=1.0
-        Learning rate for the Dirichlet distribution. Higher values will give
-        more weight to recent data. This transforms the model into a recursive
-        Bayesian estimator.
-    random_state : Union[int, np.random.Generator, None], default=None
-        Random state for sampling from the Dirichlet distribution.
+        Decay rate for the concentration parameters. Values less
+        than 1 geometrically shrink the posterior on each call to
+        ``decay``, increasing uncertainty over time. This converts
+        the model into a forgetting estimator suitable for restless
+        bandit problems.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
 
     Attributes
     ----------
-    classes_ : np.ndarray
-        The classes seen during fit.
+    classes_ : ndarray of shape (n_classes,)
+        Class labels derived from the keys of ``alphas``.
     n_classes_ : int
-        The number of classes seen during fit.
+        Number of classes.
     n_features_ : int
-        The number of features seen during fit.
-    prior_ : np.ndarray
-        The prior alphas for each class.
-    known_alphas_ : Dict[Union[int, str], np.ndarray]
-        The posterior alphas for each class seen during fit.
+        Number of features seen during ``fit``. Must be 1.
+    prior_ : ndarray of shape (n_classes,)
+        Prior concentration parameters (values of ``alphas``).
+    known_alphas_ : dict of {int or str: ndarray of shape (n_classes,)}
+        Posterior concentration parameters for each observed feature
+        value. Unseen feature values default to the prior.
+
+    See Also
+    --------
+    GammaRegressor : Bayesian regression for positive continuous
+        outcomes.
+    NormalRegressor : Bayesian linear regression for real-valued
+        outcomes.
 
     Notes
     -----
-    This model implements the Dirichlet-Multinomial model described in Chapter 3
-    of ref [1]_. Sample weights are supported to enable importance sampling
-    for adversarial bandit algorithms.
+    This model implements the Dirichlet-Multinomial conjugate model
+    described in Chapter 3 of [1]_. The posterior update is:
 
-    The posterior update with sample weights is:
-        posterior_alpha_k = prior_alpha_k + sum(weight_i * I[y_i == k])
+    .. math::
 
-    where I[y_i == k] is the indicator function for class k.
+        \\alpha_k^{\\text{post}} = \\alpha_k^{\\text{prior}}
+        + \\sum_{i=1}^{N} w_i \\, \\mathbb{1}[y_i = k]
+
+    where :math:`w_i` are sample weights (defaulting to 1).
+
+    The predictive distribution for class probabilities is:
+
+    .. math::
+
+        \\mathbb{E}[\\theta_k] = \\frac{\\alpha_k}{\\sum_j \\alpha_j}
+
+    When ``learning_rate < 1``, calling ``decay`` scales all
+    concentration parameters by the decay rate, uniformly increasing
+    posterior uncertainty.
 
     References
     ----------
-    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic
+       Perspective." MIT Press, 2012.
 
     Examples
     --------
-
-    This classifier is used in the same way as any other scikit-learn classifier.
+    Basic classification with a uniform prior:
 
     >>> from bayesianbandits import DirichletClassifier
     >>> X = np.array([1, 1, 1, 2, 2, 2, 3, 3, 3]).reshape(-1, 1)
@@ -105,14 +134,13 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
     >>> clf.fit(X, y)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
 
-    Using sample weights for importance sampling:
+    Using sample weights for importance-weighted updates:
 
-    >>> # Give more weight to certain samples
     >>> weights = np.array([2.0, 1.0, 0.5, 1.0, 2.0, 1.0, 0.5, 1.0, 2.0])
     >>> clf.fit(X, y, sample_weight=weights)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
 
-    This classifier also implements `partial_fit` with sample weights:
+    Online learning with ``partial_fit``:
 
     >>> clf.partial_fit(X, y, sample_weight=weights)
     DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
@@ -136,22 +164,31 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Fit the model using X as training data and y as target values.
+        Fit the model from scratch, resetting the prior.
+
+        Initializes the Dirichlet prior from ``alphas`` and updates the
+        posterior concentration parameters using the observed class
+        counts (optionally weighted).
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data.
+        X : array-like of shape (n_samples, 1)
+            Training data. Only the first column is used; each unique
+            value indexes a separate Dirichlet posterior.
         y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), optional
+            Class labels. Must be a subset of the keys in ``alphas``.
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
 
         Returns
         -------
-        self : object
-            Returns self.
+        self : DirichletClassifier
+            Fitted estimator.
+
+        See Also
+        --------
+        partial_fit : Incremental update without resetting the prior.
         """
         X, y = check_X_y(X, y, copy=True, ensure_2d=True)
 
@@ -192,22 +229,31 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ):
         """
-        Update the model using X as training data and y as target values.
+        Incrementally update the model with new observations.
+
+        Uses the current posterior as the prior for the new update.
+        If the model has not been fitted yet, this is equivalent to
+        calling ``fit``.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data.
+        X : array-like of shape (n_samples, 1)
+            Training data. Only the first column is used; each unique
+            value indexes a separate Dirichlet posterior.
         y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), optional
+            Class labels. Must be a subset of the keys in ``alphas``.
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
 
         Returns
         -------
-        self : object
-            Returns self.
+        self : DirichletClassifier
+            Updated estimator.
+
+        See Also
+        --------
+        fit : Fit from scratch, resetting the prior.
         """
         try:
             check_is_fitted(self, "n_features_")
@@ -251,10 +297,13 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def predict_proba(self, X: NDArray[Any]) -> Any:
         """
-        Predict class probabilities for X using the posterior mean.
+        Predict class probabilities using the posterior mean.
 
         Computes the expected class probabilities under the Dirichlet
-        posterior: ``E[θ_k] = α_k / Σ α_k``.
+        posterior:
+        :math:`\\mathbb{E}[\\theta_k] = \\alpha_k / \\sum_j \\alpha_j`.
+
+        If the model has not been fitted, returns the prior mean.
 
         Parameters
         ----------
@@ -266,6 +315,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         -------
         proba : ndarray of shape (n_samples, n_classes)
             Predicted class probabilities. Each row sums to 1.
+
+        See Also
+        --------
+        predict : Return the most likely class label.
+        sample : Draw from the Dirichlet posterior.
         """
         try:
             check_is_fitted(self, "n_features_")
@@ -279,9 +333,10 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
         """
-        Predict the most likely class for each sample in X.
+        Predict the most likely class for each sample.
 
-        Returns the class with the highest posterior mean probability.
+        Returns the class with the highest posterior mean probability
+        :math:`\\arg\\max_k \\alpha_k`.
 
         Parameters
         ----------
@@ -293,6 +348,10 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         -------
         y_pred : ndarray of shape (n_samples,)
             Predicted class labels.
+
+        See Also
+        --------
+        predict_proba : Return full probability vectors.
         """
         return self.classes_[self.predict_proba(X).argmax(axis=1)]
 
@@ -300,9 +359,11 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         """
         Sample class probability vectors from the Dirichlet posterior.
 
-        For each sample in X, draws from the Dirichlet posterior
-        ``Dir(α_1, ..., α_K)`` where the ``α_k`` are the posterior
-        concentration parameters for that input's group.
+        For each input, draws from
+        :math:`\\text{Dir}(\\alpha_1, \\ldots, \\alpha_K)` where the
+        :math:`\\alpha_k` are the posterior concentration parameters
+        for that input's group. If the model has not been fitted,
+        samples from the prior.
 
         Parameters
         ----------
@@ -315,8 +376,12 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         Returns
         -------
         samples : ndarray of shape (size, n_samples, n_classes)
-            Sampled probability vectors. Each sample along the last axis
-            sums to 1.
+            Sampled probability vectors. Each sample along the last
+            axis sums to 1.
+
+        See Also
+        --------
+        predict_proba : Point estimate using the posterior mean.
         """
         try:
             check_is_fitted(self, "n_features_")
@@ -330,21 +395,28 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
-        Decay the Dirichlet concentration parameters toward the prior.
+        Decay concentration parameters to increase uncertainty.
 
-        Multiplies all posterior concentration parameters ``α_k`` by
-        ``decay_rate`` for each group present in X. This increases
-        posterior uncertainty, allowing the model to adapt to
-        non-stationary environments.
+        Scales the posterior concentration parameters
+        :math:`\\alpha_k \\leftarrow \\gamma \\, \\alpha_k` for each
+        group present in ``X``. This uniformly increases posterior
+        variance, allowing the model to adapt to non-stationary
+        environments.
+
+        Has no effect if the model has not been fitted.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, 1)
             Input features. Each unique value of ``X[:, 0]`` identifies
             a group whose concentration parameters are decayed.
-        decay_rate : float, optional
-            Multiplicative decay factor in (0, 1]. If None, uses
-            ``self.learning_rate``.
+        decay_rate : float, default=None
+            Multiplicative decay factor :math:`\\gamma` in (0, 1].
+            If None, uses ``self.learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
@@ -358,48 +430,84 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
 
 class GammaRegressor(BaseEstimator, RegressorMixin):
     """
-    Intercept-only Gamma regression model with sample weight support.
+    Intercept-only Gamma-Poisson conjugate regression model.
+
+    Maintains a separate Gamma posterior over the rate parameter
+    :math:`\\lambda` for each unique value of the first feature.
+    Designed for modeling count or positive continuous data where
+    the rate may differ across groups. Supports sample weights (for
+    importance-weighted updates in adversarial bandit algorithms)
+    and online learning via ``partial_fit``.
 
     Parameters
     ----------
     alpha : float
-        Shape parameter of the gamma distribution.
+        Prior shape parameter of the Gamma distribution. The prior
+        is :math:`\\lambda \\sim \\text{Gamma}(\\alpha, \\beta)`.
+        Larger values concentrate the prior more tightly around the
+        prior mean :math:`\\alpha / \\beta`.
     beta : float
-        Inverse scale parameter of the gamma distribution.
+        Prior rate (inverse scale) parameter. Together with
+        ``alpha``, determines the prior mean
+        :math:`\\mathbb{E}[\\lambda] = \\alpha / \\beta` and prior
+        variance :math:`\\text{Var}[\\lambda] = \\alpha / \\beta^2`.
     learning_rate : float, default=1.0
-        Learning rate for the model. This transforms the model into a recursive
-        Bayesian estimator.
-    random_state : int, np.random.Generator, default=None
-        Random state for the model.
+        Decay rate for the posterior parameters. Values less than 1
+        geometrically shrink both :math:`\\alpha` and :math:`\\beta`
+        on each call to ``decay``, increasing posterior variance
+        while preserving the mean. This converts the model into a
+        forgetting estimator suitable for restless bandit problems.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
 
     Attributes
     ----------
-    coef_ : float
-        Dictionary of coefficients for the model.
+    coef_ : dict of {int or float: ndarray of shape (2,)}
+        Posterior parameters ``[alpha, beta]`` for each observed
+        feature value. Unseen feature values default to the prior.
+    n_features_ : int
+        Number of features seen during ``fit``. Must be 1.
+    prior_ : ndarray of shape (2,)
+        Prior parameters ``[alpha, beta]``.
+
+    See Also
+    --------
+    DirichletClassifier : Bayesian classification for categorical
+        outcomes.
+    NormalRegressor : Bayesian linear regression for real-valued
+        outcomes.
 
     Notes
     -----
-    While this model is not described in ref [1]_, it is a simple extension
-    of the logic described in the section on conjugate prior models. Sample
-    weights are supported to enable importance sampling for adversarial
-    bandit algorithms.
+    This model implements the Gamma-Poisson conjugate model. Given
+    observations :math:`y_i` with sample weights :math:`w_i`, the
+    posterior update is [1]_:
 
-    The posterior update with sample weights is:
-        posterior_alpha = prior_alpha + sum(weight_i * count_i)
-        posterior_beta = prior_beta + sum(weight_i)
+    .. math::
 
-    where count_i is the observed count for sample i.
+        \\alpha^{\\text{post}} = \\alpha^{\\text{prior}}
+        + \\sum_{i=1}^{N} w_i \\, y_i, \\qquad
+        \\beta^{\\text{post}} = \\beta^{\\text{prior}}
+        + \\sum_{i=1}^{N} w_i
+
+    The posterior mean rate is
+    :math:`\\mathbb{E}[\\lambda] = \\alpha / \\beta` and the
+    posterior variance is
+    :math:`\\text{Var}[\\lambda] = \\alpha / \\beta^2`.
+
+    When ``learning_rate < 1``, calling ``decay`` scales both
+    :math:`\\alpha` and :math:`\\beta` equally, so the posterior
+    mean is preserved but the variance increases.
 
     References
     ----------
-    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic
+       Perspective." MIT Press, 2012.
 
     Examples
     --------
-
-    This regressor is intended to be used with a single feature. It is
-    useful for modeling count data, where the target is the number of
-    occurrences of an event.
+    Basic rate estimation:
 
     >>> import numpy as np
     >>> X = np.array([[1], [2], [3], [4], [5]])
@@ -408,13 +516,13 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
     >>> model.fit(X, y)
     GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    Using sample weights:
+    Using sample weights for importance-weighted updates:
 
     >>> weights = np.array([1.0, 2.0, 1.0, 0.5, 1.5])
     >>> model.fit(X, y, sample_weight=weights)
     GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    This model implements a partial fit method with sample weights:
+    Online learning with ``partial_fit``:
 
     >>> model.partial_fit(X, y, sample_weight=weights)
     GammaRegressor(alpha=1, beta=1, random_state=0)
@@ -440,23 +548,31 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Fit the model using X as training data and y as target values. y must be
-        count data.
+        Fit the model from scratch, resetting the prior.
+
+        Initializes the Gamma prior from ``alpha`` and ``beta`` and
+        updates the posterior parameters using the observed counts
+        (optionally weighted).
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data.
+        X : array-like of shape (n_samples, 1)
+            Training data. Only the first column is used; each unique
+            value indexes a separate Gamma posterior.
         y : array-like of shape (n_samples,)
-            Target values (count data).
-        sample_weight : array-like of shape (n_samples,), optional
+            Target values (non-negative counts or rates).
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
 
         Returns
         -------
-        self : object
-            Returns self.
+        self : GammaRegressor
+            Fitted estimator.
+
+        See Also
+        --------
+        partial_fit : Incremental update without resetting the prior.
         """
         X, y = check_X_y(X, y, copy=True, ensure_2d=True)
 
@@ -525,22 +641,31 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ):
         """
-        Update the model using X as training data and y as target values.
+        Incrementally update the model with new observations.
+
+        Uses the current posterior as the prior for the new update.
+        If the model has not been fitted yet, this is equivalent to
+        calling ``fit``.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data.
+        X : array-like of shape (n_samples, 1)
+            Training data. Only the first column is used; each unique
+            value indexes a separate Gamma posterior.
         y : array-like of shape (n_samples,)
-            Target values (count data).
-        sample_weight : array-like of shape (n_samples,), optional
+            Target values (non-negative counts or rates).
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
 
         Returns
         -------
-        self : object
-            Returns self.
+        self : GammaRegressor
+            Updated estimator.
+
+        See Also
+        --------
+        fit : Fit from scratch, resetting the prior.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -555,10 +680,12 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
         """
-        Predict the posterior mean rate for each sample in X.
+        Predict the posterior mean rate for each sample.
 
-        Returns the mean of the Gamma posterior: ``E[λ] = α / β``,
-        where ``α`` and ``β`` are the posterior shape and rate parameters.
+        Returns the mean of the Gamma posterior
+        :math:`\\mathbb{E}[\\lambda] = \\alpha / \\beta`.
+
+        If the model has not been fitted, returns the prior mean.
 
         Parameters
         ----------
@@ -570,6 +697,10 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         -------
         y_pred : ndarray of shape (n_samples,)
             Predicted rates (posterior means).
+
+        See Also
+        --------
+        sample : Draw from the Gamma posterior.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -583,11 +714,13 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
-        Sample rates from the Gamma posterior for each input in X.
+        Sample rates from the Gamma posterior.
 
-        For each sample in X, draws from the Gamma posterior
-        ``Gamma(α, β)`` where ``α`` and ``β`` are the posterior shape
-        and rate parameters for that input's group.
+        For each input, draws from
+        :math:`\\text{Gamma}(\\alpha, \\beta)` where :math:`\\alpha`
+        and :math:`\\beta` are the posterior shape and rate parameters
+        for that input's group. If the model has not been fitted,
+        samples from the prior.
 
         Parameters
         ----------
@@ -601,6 +734,10 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         -------
         samples : ndarray of shape (size, n_samples)
             Sampled rates from the Gamma posterior.
+
+        See Also
+        --------
+        predict : Point estimate using the posterior mean.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -617,22 +754,29 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
         """
-        Decay the Gamma posterior parameters toward the prior.
+        Decay posterior parameters to increase uncertainty.
 
-        Multiplies both shape (``α``) and rate (``β``) parameters by
-        ``decay_rate`` for each group present in X. Because both
-        parameters are scaled equally, the posterior mean ``α/β`` is
-        unchanged but the variance ``α/β²`` increases, reflecting
-        greater uncertainty.
+        Scales both shape and rate by the decay factor:
+        :math:`\\alpha \\leftarrow \\gamma \\alpha,\\;
+        \\beta \\leftarrow \\gamma \\beta`. Because both parameters
+        are scaled equally, the posterior mean
+        :math:`\\alpha / \\beta` is preserved but the variance
+        :math:`\\alpha / \\beta^2` increases.
+
+        Has no effect if the model has not been fitted.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, 1)
             Input features. Each unique value of ``X[:, 0]`` identifies
             a group whose parameters are decayed.
-        decay_rate : float, optional
-            Multiplicative decay factor in (0, 1]. If None, uses
-            ``self.learning_rate``.
+        decay_rate : float, default=None
+            Multiplicative decay factor :math:`\\gamma` in (0, 1].
+            If None, uses ``self.learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior()
@@ -661,54 +805,84 @@ def _invalidate_cached_properties(
 
 class NormalRegressor(BaseEstimator, RegressorMixin):
     """
-    A Bayesian linear regression model that assumes a Gaussian noise distribution.
+    Bayesian linear regression with known noise variance.
+
+    Places a Gaussian prior on the weight vector and performs exact
+    conjugate updates. Supports both dense and sparse feature matrices,
+    online learning via ``partial_fit``, and non-stationary environments
+    via ``decay``.
 
     Parameters
     ----------
     alpha : float
-        The prior for the precision of the weights. Weights are assumed to be
-        Gaussian distributed with mean 0 and precision `alpha`.
+        Prior precision for the weights. The prior is
+        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)`. Higher values
+        give stronger regularization toward zero.
     beta : float
-        The prior for the precision of the noise.
+        Known noise precision. The likelihood is
+        :math:`y \\mid x, w \\sim \\mathcal{N}(x^T w, \\beta^{-1})`.
     learning_rate : float, default=1.0
-        The learning rate for the model. This transforms the model into a recursive
-        Bayesian estimator, specifically a Kalman filter.
+        Decay rate for the posterior precision on each call to
+        ``decay``. Values less than 1 geometrically shrink the
+        precision matrix, increasing posterior uncertainty over time.
+        This converts the model into a forgetting estimator suitable
+        for restless bandit problems.
     sparse : bool, default=False
-        Whether to use a sparse representation for the precision matrix. If True
-        and CHOLMOD is installed, the model will use CHOLMOD to solve the linear
-        system. If False, the model will use scipy.sparse.linalg.spsolve.
-    random_state : int, np.random.Generator, default=None
-        The random state for the model. If an int is passed, it is used to
-        seed the numpy random number generator.
+        If True, use sparse matrix operations for the precision
+        matrix. Input ``X`` must be a ``scipy.sparse.csc_array``.
+        When CHOLMOD is available (via ``scikit-sparse``), it is used
+        for efficient Cholesky factorization; otherwise falls back to
+        UMFPACK (``scikit-umfpack``) or SuperLU.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
 
     Attributes
     ----------
-    coef_ : NDArray[np.float64]
-        The coefficients of the model.
-    cov_inv_ : NDArray[np.float64]
-        The inverse of the covariance matrix of the model.
+    coef_ : ndarray of shape (n_features,)
+        Posterior mean of the weight vector.
+    cov_inv_ : ndarray of shape (n_features, n_features) or \
+scipy.sparse.csc_array
+        Posterior precision matrix (inverse covariance).
+    n_features_ : int
+        Number of features seen during ``fit``.
+
+    See Also
+    --------
+    NormalInverseGammaRegressor : Bayesian linear regression with unknown
+        noise variance (marginal posterior is a multivariate t).
+    EmpiricalBayesNormalRegressor : Automatic hyperparameter tuning via
+        evidence maximization.
+    BayesianGLM : Bayesian GLM for non-Gaussian likelihoods.
 
     Notes
     -----
-    This model implements the "known variance" version of the Bayesian linear
-    formulation described in Chapter 7 of ref [1]_.
+    This model implements the "known variance" Bayesian linear regression
+    formulation described in Chapter 7 of [1]_. The posterior is:
 
-    If the model is initialized with `sparse=True` and CHOLMOD is installed
-    and made available with `scikit-sparse`, the model will use CHOLMOD to
-    solve the linear system. Otherwise, if scikit-umfpack is installed, the
-    model will use UMFPACK. Finally, if neither is installed, the model will
-    use SuperLU from `scipy.sparse.linalg`. These are roughly ordered from
-    fastest to slowest.
+    .. math::
+
+        \\Lambda_n = \\gamma^n \\Lambda_0 + \\beta X^T W X, \\qquad
+        \\mu_n = \\Lambda_n^{-1}
+        (\\gamma^n \\Lambda_0 \\mu_0 + \\beta X^T W y)
+
+    where :math:`\\gamma` is the learning rate (1.0 for standard
+    Bayesian update) and :math:`W` is a diagonal matrix of effective
+    sample weights incorporating both user-supplied weights and
+    learning-rate decay.
+
+    When ``learning_rate < 1``, calling ``decay`` scales the precision
+    matrix by :math:`\\gamma^n`, uniformly increasing posterior
+    uncertainty while preserving the mean.
 
     References
     ----------
-    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic
+       Perspective." MIT Press, 2012.
 
     Examples
     --------
-
-    This regressor can be used in the same way as any other scikit-learn linear
-    regressor.
+    Basic linear regression:
 
     >>> import numpy as np
     >>> X = np.array([[1], [2], [3], [4], [5]])
@@ -716,32 +890,25 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
     >>> model = NormalRegressor(alpha=0.1, beta=1, random_state=0)
     >>> model.fit(X, y)
     NormalRegressor(alpha=0.1, beta=1, random_state=0)
-
     >>> model.predict(X)
     array([0.99818512, 1.99637024, 2.99455535, 3.99274047, 4.99092559])
 
-    Unlike the intercept-only conjugate prior models in this package, this model
-    learns a coefficient for each feature. The coefficients are stored in the
-    `coef_` attribute.
+    The posterior mean weights are stored in ``coef_``:
 
     >>> model.coef_
     array([0.99818512])
 
-    For compatibility with the `Bandit` class, this model also has a `partial_fit`
-    method that updates the model using a single data point or a batch of data.
+    Online learning with ``partial_fit``:
 
     >>> model.partial_fit(X, y)
     NormalRegressor(alpha=0.1, beta=1, random_state=0)
     >>> model.predict(X)
     array([0.99909173, 1.99818347, 2.9972752 , 3.99636694, 4.99545867])
 
-    Futhermore, this model also has a `sample` method that samples from the
-    posterior distribution of the coefficients.
+    Sampling from the posterior predictive:
 
     >>> model.sample(X)
     array([[1.0110742 , 2.02214839, 3.03322259, 4.04429678, 5.05537098]])
-
-
     """
 
     def __init__(
@@ -772,26 +939,32 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Fit the model using X as training data and y as target values.
+        Fit the model from scratch, resetting the prior.
 
-        Resets the posterior to the prior and then performs a single
-        batch update. With ``learning_rate < 1``, earlier samples in
-        the batch receive exponentially less weight.
+        Initializes the prior
+        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)` and computes
+        the exact posterior. Any previously learned parameters are
+        discarded.
 
         Parameters
         ----------
         X_fit : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         y : array-like of shape (n_samples,)
             Target values.
-        sample_weight : array-like of shape (n_samples,), optional
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
-            are given weight 1.0.
+            are given equal weight.
 
         Returns
         -------
         self : NormalRegressor
             Fitted estimator.
+
+        See Also
+        --------
+        partial_fit : Incremental update without resetting the prior.
         """
         X_fit, y = check_X_y(
             X_fit,  # type: ignore
@@ -822,8 +995,17 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
     @cached_property
     def cov_(self) -> Union[Covariance, SparseFactor]:
-        """
-        The covariance matrix of the model.
+        """Posterior covariance matrix (cached, lazily computed).
+
+        Returns a ``scipy.stats.Covariance`` object (dense) or a
+        ``SparseFactor`` (sparse) wrapping the Cholesky factorization.
+        Automatically invalidated when the model is updated via
+        ``fit``, ``partial_fit``, or ``decay``.
+
+        .. warning::
+
+           For dense models, this is an :math:`O(p^3)` computation
+           with :math:`O(p^2)` memory.
         """
         if self.sparse:
             if hasattr(self, "_factor"):
@@ -919,25 +1101,30 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         """
         Incrementally update the posterior with new data.
 
-        If the model has not been fitted, delegates to ``fit()``.
-        Otherwise performs a recursive Bayesian update: the current
-        posterior becomes the prior, decayed by ``learning_rate``,
-        and the new data is incorporated.
+        Uses the current posterior as the prior for the new update,
+        decayed by ``learning_rate``. If the model has not been
+        fitted, this is equivalent to calling ``fit``.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         y : array-like of shape (n_samples,)
             Target values.
-        sample_weight : array-like of shape (n_samples,), optional
+        sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
-            are given weight 1.0.
+            are given equal weight.
 
         Returns
         -------
         self : NormalRegressor
             Updated estimator.
+
+        See Also
+        --------
+        fit : Fit from scratch, resetting the prior.
+        decay : Increase uncertainty without observing new data.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -958,20 +1145,28 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
     def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
         """
-        Predict target values using the posterior mean coefficients.
+        Predict target values using the posterior mean.
 
-        Computes ``X @ coef_`` where ``coef_`` is the posterior mean
-        of the weight vector.
+        Computes :math:`X \\hat{w}` where :math:`\\hat{w}` is the
+        posterior mean of the weight vector.
+
+        If the model has not been fitted, the prior mean (zero) is
+        used, returning all zeros.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Input data.
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
 
         Returns
         -------
         y_pred : ndarray of shape (n_samples,)
             Predicted target values.
+
+        See Also
+        --------
+        sample : Draw from the posterior predictive distribution.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -988,26 +1183,32 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         self, X: Union[NDArray[Any], csc_array], size: int = 1
     ) -> NDArray[np.float64]:
         """
-        Sample predicted values from the posterior predictive distribution.
+        Sample from the posterior predictive distribution.
 
-        Draws weight vectors ``w`` from the posterior
-        ``N(coef_, Λ⁻¹)`` where ``Λ = cov_inv_``, then computes
-        ``w @ X.T`` to project into observation space. This integrates
-        over parameter uncertainty but not noise.
+        Draws weight vectors from the posterior
+        :math:`w \\sim \\mathcal{N}(\\hat{w}, \\Lambda^{-1})` and
+        computes :math:`X w` for each draw. This marginalizes over
+        parameter uncertainty but not observation noise.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Input data at which to evaluate predictions.
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         size : int, default=1
-            Number of posterior weight vectors to draw.
+            Number of posterior samples to draw.
 
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Each row
-            corresponds to one sampled weight vector applied to all
-            rows of X.
+            Predicted values for each posterior draw.
+
+        See Also
+        --------
+        predict : Point predictions using the posterior mean.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1047,25 +1248,26 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
         decay_rate: Optional[float] = None,
     ) -> None:
         """
-        Decay the precision matrix to increase posterior uncertainty.
+        Decay the posterior precision to increase uncertainty.
 
-        Applies exponential forgetting: ``Λ_new = γ^n · Λ_old`` where
-        ``γ`` is the decay rate and ``n = X.shape[0]``. The posterior
-        mean ``coef_`` is unchanged; only the precision (inverse
-        covariance) is reduced, widening the posterior.
+        Scales the precision matrix by :math:`\\gamma^n`, where
+        :math:`\\gamma` is the decay rate and :math:`n` is the number
+        of rows in ``X``. The posterior mean is unchanged.
 
-        This is used in non-stationary environments to down-weight
-        historical observations and allow the model to adapt.
+        Has no effect if the model has not been fitted.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Used only to determine the number of time steps ``n`` for
-            the decay exponent ``γ^n``. The actual feature values are
-            not used.
-        decay_rate : float, optional
-            Decay factor ``γ`` in (0, 1]. If None, uses
+            Used only for its number of rows ``n_samples``, which
+            determines the exponent of the decay factor.
+        decay_rate : float, default=None
+            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
             ``self.learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
@@ -1087,70 +1289,107 @@ class NormalRegressor(BaseEstimator, RegressorMixin):
 
 class NormalInverseGammaRegressor(NormalRegressor):
     """
-    Bayesian linear regression with unknown variance.
+    Bayesian linear regression with unknown noise variance.
 
-    Default prior values correspond to ridge regression with alpha = 1.
+    Extends :class:`NormalRegressor` by placing a conjugate
+    Normal-Inverse-Gamma (NIG) prior on the weights and noise
+    variance jointly. Because the noise variance is integrated out
+    analytically, the marginal posterior over the weights is a
+    multivariate t distribution, producing heavier-tailed and more
+    robust uncertainty estimates than the known-variance model.
 
     Parameters
     ----------
-    mu : ArrayLike, default=0
-        Prior mean of the weights. If a scalar, the prior is assumed to be a
-        vector with the given value in each entry. If a vector, the prior is
-        assumed to be a vector with one entry for each column of X.
-    lam : ArrayLike, default=1
-        Prior covariance of the weights. If a scalar, the prior is assumed to
-        be a diagonal matrix with the given value on the diagonal. If a vector,
-        the prior is assumed to be a diagonal matrix with one entry for each
-        column of X. If a matrix, the prior is assumed to be a
-        full covariance matrix.
+    mu : float or array-like of shape (n_features,), default=0.0
+        Prior mean of the weights. A scalar is broadcast to all
+        features.
+    lam : float, array-like of shape (n_features,), or \
+array-like of shape (n_features, n_features), default=1.0
+        Prior precision (inverse covariance) of the weights. A
+        scalar gives :math:`\\lambda I`; a vector gives
+        :math:`\\text{diag}(\\lambda)`; a matrix is used directly.
     a : float, default=0.1
-        Prior shape parameter of the variance.
+        Prior shape parameter of the Inverse-Gamma distribution on
+        the noise variance :math:`\\sigma^2`. The prior is
+        :math:`\\sigma^2 \\sim \\text{IG}(a, b)`.
     b : float, default=0.1
-        Prior rate parameter of the variance.
+        Prior rate parameter of the Inverse-Gamma distribution.
+        The prior mean of the noise variance is :math:`b / (a - 1)`
+        for :math:`a > 1`.
     learning_rate : float, default=1.0
-        Learning rate for the model. This transforms the model into a
-        recursive Bayesian estimator, specifically a Kalman filter.
+        Decay rate for sequential updates. Values less than 1
+        geometrically shrink the precision and Inverse-Gamma
+        parameters on each call to ``decay``, enabling adaptation
+        to non-stationary environments.
     sparse : bool, default=False
-        Whether to use a sparse representation for the precision matrix. If True
-        and CHOLMOD is installed, the model will use CHOLMOD to solve the linear
-        system. If False, the model will use scipy.sparse.linalg.spsolve.
+        If True, use sparse matrix operations for the precision
+        matrix. Input ``X`` must be a ``scipy.sparse.csc_array``.
+        When CHOLMOD is available (via ``scikit-sparse``), it is
+        used for efficient Cholesky factorization; otherwise falls
+        back to UMFPACK or SuperLU.
     random_state : int, np.random.Generator, or None, default=None
-        Random state for the model.
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
 
     Attributes
     ----------
-    coef_ : NDArray[np.float64]
-        Posterior mean of the weights.
-    cov_inv_ : NDArray[np.float64]
-        Posterior inverse covariance of the weights.
-    n_features_ : int
-        Number of features in the model.
+    coef_ : ndarray of shape (n_features,)
+        Posterior mean of the weight vector.
+    cov_inv_ : ndarray of shape (n_features, n_features) or \
+scipy.sparse.csc_array
+        Posterior precision matrix of the weights (conditioned on
+        :math:`\\sigma^2`).
     a_ : float
-        Posterior shape parameter of the variance.
+        Posterior shape parameter of the Inverse-Gamma distribution.
     b_ : float
-        Posterior rate parameter of the variance.
+        Posterior rate parameter of the Inverse-Gamma distribution.
+    n_features_ : int
+        Number of features seen during ``fit``.
+
+    See Also
+    --------
+    NormalRegressor : Known-variance variant (Gaussian posterior on
+        weights).
+    EmpiricalBayesNormalRegressor : Known-variance with empirical
+        Bayes tuning of ``alpha`` and ``beta``.
+    BayesianGLM : Bayesian GLM for non-Gaussian likelihoods.
 
     Notes
     -----
-    This model implements the "unknown variance" version of the Bayesian linear
-    formulation described in Chapter 7 of ref [1]_.
+    This model implements the "unknown variance" Bayesian linear
+    regression formulation described in Chapter 7 of [1]_. The
+    joint prior is:
 
-    If the model is initialized with `sparse=True` and CHOLMOD is installed
-    and made available with `scikit-sparse`, the model will use CHOLMOD to
-    solve the linear system. Otherwise, if scikit-umfpack is installed, the
-    model will use UMFPACK. Finally, if neither is installed, the model will
-    use SuperLU from `scipy.sparse.linalg`. These are roughly ordered from
-    fastest to slowest.
+    .. math::
+
+        w \\mid \\sigma^2 \\sim
+        \\mathcal{N}(\\mu_0,\\; \\sigma^2 \\Lambda_0^{-1}), \\qquad
+        \\sigma^2 \\sim \\text{IG}(a_0, b_0)
+
+    After observing data :math:`(X, y)`, the posterior parameters
+    are updated as:
+
+    .. math::
+
+        \\Lambda_n &= \\Lambda_0 + X^T X \\\\
+        \\mu_n &= \\Lambda_n^{-1}(\\Lambda_0 \\mu_0 + X^T y) \\\\
+        a_n &= a_0 + \\tfrac{N}{2} \\\\
+        b_n &= b_0 + \\tfrac{1}{2}(y^T y + \\mu_0^T \\Lambda_0 \\mu_0
+        - \\mu_n^T \\Lambda_n \\mu_n)
+
+    The marginal posterior of the weights (integrating out
+    :math:`\\sigma^2`) is a multivariate t distribution with
+    :math:`2 a_n` degrees of freedom, location :math:`\\mu_n`, and
+    shape :math:`(b_n / a_n) \\Lambda_n^{-1}`.
 
     References
     ----------
-    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic Perspective."
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic
+       Perspective." MIT Press, 2012.
 
     Examples
     --------
-
-    This model can be used in the same way as the `NormalRegressor`
-    model.
+    Batch fitting:
 
     >>> from sklearn.datasets import make_regression
     >>> X, y, coef = make_regression(n_samples=30, n_features=2,
@@ -1164,8 +1403,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
     >>> est.coef_
     array([32.89089478, 71.16073032])
 
-    For compatibility with this library, this model also implements a `partial_fit`
-    method for online learning.
+    Online learning with ``partial_fit``:
 
     >>> est = NormalInverseGammaRegressor(random_state=1)
     >>> for x_, y_ in zip(X, y):
@@ -1173,10 +1411,7 @@ class NormalInverseGammaRegressor(NormalRegressor):
     >>> est.coef_
     array([32.89089478, 71.16073032])
 
-    Furthermore, this model implements a `sample` method for sampling from the
-    posterior distribution. Because the variance is unknown, the samples are
-    drawn from the marginal posterior distribution of the weights, which is a
-    multivariate t distribution.
+    Sampling from the marginal posterior predictive (multivariate t):
 
     >>> est.sample(X[[0]], size=5)
     array([[15.01030526],
@@ -1184,7 +1419,6 @@ class NormalInverseGammaRegressor(NormalRegressor):
            [15.21457505],
            [14.1703107 ],
            [14.57089036]])
-
     """
 
     def __init__(
@@ -1360,26 +1594,32 @@ class NormalInverseGammaRegressor(NormalRegressor):
         """
         Sample predicted values from the marginal posterior predictive.
 
-        Draws weight vectors from the marginal posterior of the
-        coefficients, which is a multivariate t distribution with
-        ``df = 2·a_`` degrees of freedom, location ``coef_``, and
-        shape matrix ``(b_/a_)·Λ⁻¹`` where ``Λ = cov_inv_``. The
-        noise variance is integrated out analytically. Sampled weights
-        are then projected via ``w @ X.T``.
+        Draws weight vectors from the marginal posterior, which is a
+        multivariate t distribution with :math:`2 a_n` degrees of
+        freedom, location :math:`\\mu_n`, and shape
+        :math:`(b_n / a_n) \\Lambda_n^{-1}`. The noise variance is
+        integrated out analytically, producing heavier tails than the
+        Gaussian posterior of :class:`NormalRegressor`.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Input data at which to evaluate predictions.
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         size : int, default=1
-            Number of posterior weight vectors to draw.
+            Number of posterior samples to draw.
 
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Each row
-            corresponds to one sampled weight vector applied to all
-            rows of X.
+            Predicted values for each posterior draw.
+
+        See Also
+        --------
+        predict : Point predictions using the posterior mean.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1429,27 +1669,33 @@ class NormalInverseGammaRegressor(NormalRegressor):
         """
         Decay precision and variance parameters to increase uncertainty.
 
-        Applies exponential forgetting to the precision matrix and the
-        inverse-gamma parameters:
+        Applies exponential forgetting to the precision matrix and
+        the Inverse-Gamma parameters:
 
-        - ``Λ_new = γ^n · Λ``
-        - ``a_new = γ^n · a_``
-        - ``b_new = γ^n · b_``
+        .. math::
 
-        where ``γ`` is the decay rate and ``n = X.shape[0]``. The
-        posterior mean ``coef_`` is unchanged, but the marginal t
-        distribution widens (lower degrees of freedom and higher
-        scale).
+            \\Lambda \\leftarrow \\gamma^n \\Lambda, \\quad
+            a \\leftarrow \\gamma^n a, \\quad
+            b \\leftarrow \\gamma^n b
+
+        The posterior mean is unchanged, but the marginal t
+        distribution widens (fewer degrees of freedom and higher
+        scale), reflecting greater uncertainty.
+
+        Has no effect if the model has not been fitted.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Used only to determine the number of time steps ``n`` for
-            the decay exponent ``γ^n``. The actual feature values are
-            not used.
-        decay_rate : float, optional
-            Decay factor ``γ`` in (0, 1]. If None, uses
+            Used only for its number of rows ``n_samples``, which
+            determines the exponent of the decay factor.
+        decay_rate : float, default=None
+            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
             ``self.learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
@@ -1521,40 +1767,110 @@ def multivariate_t_sample_from_covariance(
 
 class BayesianGLM(BaseEstimator, RegressorMixin):
     """
-    Bayesian Generalized Linear Model using configurable posterior approximation.
+    Bayesian Generalized Linear Model with Laplace approximation.
 
-    This model extends Bayesian linear regression to non-Gaussian likelihoods
-    using a configurable approximation method (default: Laplace approximation
-    with IRLS).
+    Extends Bayesian linear regression to non-Gaussian likelihoods (binary
+    and count data) using a configurable posterior approximation method.
+    The default uses Laplace approximation via iteratively reweighted least
+    squares (IRLS). Supports both dense and sparse feature matrices, online
+    learning via ``partial_fit``, and non-stationary environments via
+    ``decay``.
 
     Parameters
     ----------
     alpha : float, default=1.0
-        Prior precision for the weights. Higher values give stronger
-        regularization (more confident zero prior).
+        Prior precision for the weights. The prior is
+        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)`. Higher values
+        give stronger regularization toward zero.
     link : {'logit', 'log'}, default='logit'
-        Link function:
-        - 'logit': For binary outcomes (Bernoulli likelihood)
-        - 'log': For count outcomes (Poisson likelihood)
+        Link function relating the linear predictor to the mean of the
+        response distribution:
+
+        - ``'logit'``: Inverse logit (sigmoid). Use for binary outcomes
+          (Bernoulli likelihood).
+        - ``'log'``: Exponential. Use for count outcomes (Poisson
+          likelihood).
     learning_rate : float, default=1.0
-        Learning rate for sequential updates. Values < 1 decay the prior
-        influence over time (forgetful prior).
+        Decay rate for the posterior precision on each call to ``decay``.
+        Values less than 1 geometrically shrink the precision matrix,
+        increasing posterior uncertainty over time. This converts the
+        model into a forgetting (non-stationary) estimator suitable for
+        restless bandit problems.
     approximator : PosteriorApproximator, default=LaplaceApproximator()
-        Method for approximating the posterior. Default uses Laplace
-        approximation with 5 iterations of IRLS.
+        Strategy object for approximating the posterior. The default
+        ``LaplaceApproximator`` performs 5 IRLS iterations per update.
+        For fast online updates, use ``LaplaceApproximator(n_iter=1)``.
+        For batch convergence, increase ``n_iter`` and set a ``tol``.
     sparse : bool, default=False
-        Whether to use sparse matrix operations. Requires scipy.sparse inputs.
-    random_state : int or RandomState, default=None
-        Random state for reproducible sampling.
+        If True, use sparse matrix operations for the precision matrix.
+        Input ``X`` must be a ``scipy.sparse.csc_array``. When CHOLMOD
+        is available (via ``scikit-sparse``), it is used for efficient
+        Cholesky factorization; otherwise falls back to SuperLU.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``. Pass an
+        int for reproducible results across calls.
 
     Attributes
     ----------
-    coef_ : array-like of shape (n_features,)
-        Posterior mean of the coefficients (MAP estimate).
-    cov_inv_ : array-like of shape (n_features, n_features)
-        Posterior precision matrix (inverse covariance).
+    coef_ : ndarray of shape (n_features,)
+        Posterior mean of the weight vector (MAP estimate).
+    cov_inv_ : ndarray of shape (n_features, n_features) or \
+scipy.sparse.csc_array
+        Posterior precision matrix (inverse covariance). Dense when
+        ``sparse=False``, sparse CSC when ``sparse=True``.
     n_features_ : int
-        Number of features seen during fit.
+        Number of features seen during ``fit``.
+
+    See Also
+    --------
+    NormalRegressor : Bayesian linear regression with known noise variance.
+    NormalInverseGammaRegressor : Bayesian linear regression with unknown
+        noise variance.
+    LaplaceApproximator : The default posterior approximation strategy.
+
+    Notes
+    -----
+    The model places a Gaussian prior on the weight vector:
+
+    .. math::
+
+        w \\sim \\mathcal{N}(0, \\alpha^{-1} I)
+
+    For the logit link (Bernoulli likelihood):
+
+    .. math::
+
+        p(y=1 \\mid x) = \\sigma(x^T w)
+
+    For the log link (Poisson likelihood):
+
+    .. math::
+
+        \\mathbb{E}[y \\mid x] = \\exp(x^T w)
+
+    Since these likelihoods are not conjugate to the Gaussian prior, the
+    posterior is approximated using the Laplace approximation. This finds
+    the MAP estimate :math:`\\hat{w}` and approximates the posterior as:
+
+    .. math::
+
+        p(w \\mid \\mathcal{D}) \\approx
+        \\mathcal{N}(\\hat{w}, \\Lambda^{-1})
+
+    where :math:`\\Lambda = \\alpha I + X^T W X` is the posterior precision
+    and :math:`W` is the diagonal matrix of IRLS weights. See Chapter 8
+    of [1]_ for details.
+
+    When ``learning_rate < 1``, calling ``decay`` scales the precision
+    matrix by :math:`\\gamma^n` where :math:`\\gamma` is the learning rate
+    and :math:`n` is the number of samples. This uniformly increases
+    posterior uncertainty, allowing the model to adapt to non-stationary
+    environments.
+
+    References
+    ----------
+    .. [1] Murphy, Kevin P. "Machine Learning: A Probabilistic
+       Perspective." MIT Press, 2012.
 
     Examples
     --------
@@ -1578,7 +1894,7 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
     >>> model.predict(X)  # Returns expected counts
     array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
 
-    Online learning with custom approximator:
+    Online learning with fast single-iteration updates:
 
     >>> from bayesianbandits import LaplaceApproximator
     >>> approximator = LaplaceApproximator(n_iter=1)  # Fast online updates
@@ -1590,11 +1906,11 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
     >>> model.predict(np.array([[1], [2], [3], [4]]))
     array([0.59667319, 0.68637901, 0.76402365, 0.82728258])
 
-    Batch learning with more iterations:
+    Batch convergence with tighter tolerance:
 
     >>> approximator = LaplaceApproximator(n_iter=500, tol=1e-6)
     >>> model = BayesianGLM(alpha=0.1, approximator=approximator)
-    >>> model = model.fit(X, y)  # Will iterate until convergence
+    >>> model = model.fit(X, y)  # Iterates until convergence
     >>> model.predict(X)
     array([0.57027497, 0.63782727, 0.70034041, 0.75618799])
     """
@@ -1648,10 +1964,18 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
 
     @cached_property
     def cov_(self) -> Union[Covariance, SparseFactor]:
-        """Posterior covariance matrix (cached).
+        """Posterior covariance matrix (cached, lazily computed).
 
-        Warning: O(p³) computation and O(p²) memory. For high dimensions,
-        consider using only the diagonal or avoiding this property entirely.
+        Returns a ``scipy.stats.Covariance`` object (dense) or a
+        ``SparseFactor`` (sparse) that wraps the Cholesky factorization
+        of the covariance. Automatically invalidated when the model is
+        updated via ``fit``, ``partial_fit``, or ``decay``.
+
+        .. warning::
+
+           For dense models, this is an :math:`O(p^3)` computation with
+           :math:`O(p^2)` memory. For high-dimensional problems, prefer
+           ``sparse=True`` or avoid accessing this property directly.
         """
         if self.sparse:
             if hasattr(self, "_factor"):
@@ -1698,21 +2022,32 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Fit Bayesian GLM to training data.
+        Fit the model from scratch, resetting the prior.
+
+        Initializes the prior :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)`
+        and computes the posterior using the configured approximation method.
+        Any previously learned parameters are discarded.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), optional
-            Individual weights for each sample.
+            Target values. For ``link='logit'``, values should be 0 or 1.
+            For ``link='log'``, values should be non-negative counts.
+        sample_weight : array-like of shape (n_samples,), default=None
+            Individual weights for each sample. If None, all samples are
+            given equal weight.
 
         Returns
         -------
-        self : object
+        self : BayesianGLM
             Fitted estimator.
+
+        See Also
+        --------
+        partial_fit : Incremental update without resetting the prior.
         """
         X, y = check_X_y(
             X,  # type: ignore
@@ -1734,21 +2069,32 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
         """
-        Update model with new data (online learning).
+        Incrementally update the model with new data.
+
+        Uses the current posterior as the prior for the new update. If the
+        model has not been fitted yet, this is equivalent to calling
+        ``fit``.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training data.
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), optional
-            Individual weights for each sample.
+            Target values. For ``link='logit'``, values should be 0 or 1.
+            For ``link='log'``, values should be non-negative counts.
+        sample_weight : array-like of shape (n_samples,), default=None
+            Individual weights for each sample. If None, all samples are
+            given equal weight.
 
         Returns
         -------
-        self : object
+        self : BayesianGLM
             Updated estimator.
+
+        See Also
+        --------
+        fit : Fit from scratch, resetting the prior.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1769,18 +2115,30 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
 
     def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
         """
-        Predict expected values for X.
+        Predict mean of the response distribution for each sample.
+
+        Computes the inverse link applied to the linear predictor
+        :math:`g^{-1}(X \\hat{w})`, where :math:`\\hat{w}` is the
+        posterior mean.
+
+        If the model has not been fitted, the prior mean (zero) is used,
+        returning 0.5 for logit link and 1.0 for log link.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Samples.
+            Samples to predict. Must be a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
 
         Returns
         -------
-        y_pred : array-like of shape (n_samples,)
-            For logit link: probabilities in [0, 1]
-            For log link: expected counts (positive values)
+        y_pred : ndarray of shape (n_samples,)
+            Predicted values. For ``link='logit'``, probabilities in
+            [0, 1]. For ``link='log'``, expected counts (positive reals).
+
+        See Also
+        --------
+        sample : Draw from the posterior predictive distribution.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1806,24 +2164,33 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         """
         Sample from the posterior predictive distribution.
 
-        This samples parameters from the posterior N(coef_, cov_),
-        then computes predictions for each parameter sample. This
-        gives samples from the marginal posterior predictive distribution,
-        integrating over parameter uncertainty.
+        Draws weight vectors from the posterior
+        :math:`w \\sim \\mathcal{N}(\\hat{w}, \\Lambda^{-1})` and computes
+        :math:`g^{-1}(X w)` for each draw. This marginalizes over
+        parameter uncertainty, producing samples from the posterior
+        predictive distribution.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Input data.
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
         size : int, default=1
-            Number of samples to draw.
+            Number of posterior samples to draw.
 
         Returns
         -------
-        samples : array-like of shape (size, n_samples)
-            Samples from posterior predictive distribution.
-            For logit: samples of probabilities in [0, 1]
-            For log: samples of expected counts (positive)
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior sample. For
+            ``link='logit'``, probabilities in [0, 1]. For
+            ``link='log'``, expected counts (positive reals).
+
+        See Also
+        --------
+        predict : Point predictions using the posterior mean.
         """
         try:
             check_is_fitted(self, "coef_")
@@ -1873,18 +2240,29 @@ class BayesianGLM(BaseEstimator, RegressorMixin):
         decay_rate: Optional[float] = None,
     ) -> None:
         """
-        Decay the posterior precision (increase uncertainty).
+        Decay the posterior precision to increase uncertainty.
 
-        This allows the model to adapt to changing environments by
-        gradually forgetting old information. Only the precision is
-        decayed; the mean remains unchanged.
+        Scales the precision matrix by :math:`\\gamma^n`, where
+        :math:`\\gamma` is the decay rate and :math:`n` is the number
+        of rows in ``X``. This uniformly increases posterior variance
+        while leaving the posterior mean unchanged, allowing the model
+        to adapt to non-stationary environments.
+
+        Has no effect if the model has not been fitted.
 
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Not used directly, but shape determines decay amount.
-        decay_rate : float, optional
-            Decay rate. If None, uses the model's learning_rate.
+            Used only for its number of rows ``n_samples``, which
+            determines the exponent of the decay factor.
+        decay_rate : float, default=None
+            Decay factor per sample. If None, uses the model's
+            ``learning_rate``. Values less than 1 increase uncertainty;
+            a value of 1 has no effect.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
         """
         if not hasattr(self, "coef_"):
             return
