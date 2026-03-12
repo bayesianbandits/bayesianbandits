@@ -1,4 +1,4 @@
-bayesianbandits.AgentPipeline
+﻿bayesianbandits.AgentPipeline
 =============================
 
 .. currentmodule:: bayesianbandits

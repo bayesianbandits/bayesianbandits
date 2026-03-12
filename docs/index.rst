@@ -21,16 +21,7 @@ on the project page on GitHub or contact me at <rishi@kulkarni.science>.
 
    installation
    usage
-
-
-API Reference
-=============
-
-.. autosummary::
-   :toctree: generated/
-
-   bayesianbandits.api
-   bayesianbandits
+   api
 
 
 Indices and tables
