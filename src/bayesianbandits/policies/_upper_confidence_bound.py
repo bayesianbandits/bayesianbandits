@@ -18,28 +18,66 @@ from ._base import PolicyDefaultUpdate
 
 class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
     """
-    Policy object for upper confidence bound.
+    Policy object for Bayesian upper confidence bound.
 
-    Upper confidence bound takes `samples` samples from each arm's posterior
-    distribution and chooses the arm with the highest upper bound, as defined
-    by the `alpha` parameter.
+    At each round, posterior samples are used to estimate the
+    :math:`\\alpha`-quantile of each arm's reward distribution, and the arm
+    with the highest quantile is selected:
+
+    .. math::
+
+        a^* = \\arg\\max_a \\;
+        Q_{\\alpha}\\!\\bigl(g_a(\\theta_a) \\mid \\mathcal{D}_a\\bigr)
+
+    where :math:`Q_{\\alpha}` denotes the :math:`\\alpha`-quantile of the
+    posterior predictive reward, estimated via Monte Carlo with ``samples``
+    draws.
 
     Parameters
     ----------
     alpha : float, default=0.68
-        Confidence level (one-sided)
+        Quantile level used as the upper confidence bound. Higher values
+        produce more optimistic estimates and encourage exploration.
+        The default of 0.68 corresponds roughly to a one-standard-deviation
+        bound for a Gaussian posterior.
     samples : int, default=1000
-        Number of samples to use for computing the arm upper bounds.
+        Number of posterior samples used to estimate the quantile.
 
     Notes
     -----
-    The implementation here is based on the implementation in [1]_.
+    **Regret bounds (standard setting).** Kaufmann et al. (2012) show that
+    Bayesian UCB with a quantile schedule
+    :math:`\\alpha_t = 1 - 1/(t \\log^c(T))` achieves
+
+    .. math::
+
+        \\mathbb{E}[\\mathrm{Regret}(T)]
+        = O\\!\\left(\\sum_{a:\\Delta_a>0}
+        \\frac{\\ln T}{\\Delta_a}\\right)
+
+    matching the Lai-Robbins lower bound up to constants [2]_. With a fixed
+    :math:`\\alpha` (as used here), the problem-dependent bound is not
+    guaranteed, but a minimax rate of :math:`O(\\sqrt{KT \\ln T})` still
+    holds under mild conditions.
+
+    **Applicability to this library.** The bounds above assume stationary
+    rewards, exact conjugate posteriors, and a non-contextual setting. This
+    library uses a fixed quantile level, supports contextual features,
+    approximate posteriors, and variance-increasing decay for
+    non-stationarity. Under these modifications the formal guarantees do not
+    directly apply, though the optimism-in-the-face-of-uncertainty principle
+    that drives UCB's exploration is preserved.
 
     References
     ----------
-    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
-       thompson sampling." Advances in neural information processing systems
-       24 (2011): 2249-2257.
+    .. [1] Chapelle, O. and Li, L. (2011). "An empirical evaluation of
+       Thompson sampling." Advances in Neural Information Processing Systems
+       24, 2249-2257.
+
+    .. [2] Kaufmann, E., Cappe, O., and Garivier, A. (2012). "On Bayesian
+       upper confidence bounds for bandit problems." Proceedings of the 15th
+       International Conference on Artificial Intelligence and Statistics
+       (AISTATS), JMLR W&CP 22, 592-600.
     """
 
     def __repr__(self) -> str:

@@ -17,28 +17,69 @@ from ._base import PolicyDefaultUpdate
 
 
 class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
-    """
-    Policy object for epsilon-greedy.
+    r"""
+    Policy object for :math:`\varepsilon`-greedy selection.
 
-    Epsilon-greedy chooses the best arm with probability 1 - epsilon and a random
-    arm with probability epsilon.
+    With probability :math:`1 - \varepsilon` the arm with the highest
+    estimated posterior mean reward is selected (exploit); with probability
+    :math:`\varepsilon` an arm is chosen uniformly at random (explore):
+
+    .. math::
+
+        a_t =
+        \begin{cases}
+        \arg\max_a \; \hat{\mu}_a(x_t)
+            & \text{with probability } 1 - \varepsilon, \\
+        \text{Uniform}\{1, \ldots, K\}
+            & \text{with probability } \varepsilon,
+        \end{cases}
+
+    where :math:`\hat{\mu}_a(x_t) = \mathbb{E}_{\theta_a \mid
+    \mathcal{D}_a}[g_a(\theta_a, x_t)]` is estimated via Monte Carlo with
+    ``samples`` posterior draws.
 
     Parameters
     ----------
     epsilon : float, default=0.1
         Probability of exploration.
     samples : int, default=1000
-        Number of samples to use for computing the arm means.
+        Number of posterior samples used to estimate the arm means.
 
     Notes
     -----
-    The implementation here is based on the implementation in [1]_.
+    **Regret bounds (standard setting).** For a :math:`K`-armed stochastic
+    bandit with fixed :math:`\varepsilon`, the expected regret is bounded by
+
+    .. math::
+
+        \mathbb{E}[\mathrm{Regret}(T)]
+        \;\le\; \varepsilon\,T\,\Delta_{\max}
+        \;+\; \sum_{a:\Delta_a>0}
+        \frac{C}{\Delta_a}
+
+    where :math:`\Delta_a = \mu^* - \mu_a` is the sub-optimality gap and
+    :math:`C` depends on the concentration of the mean estimator [2]_.
+    With a decaying schedule :math:`\varepsilon_t = O(K / t)` the minimax
+    rate :math:`O(\sqrt{KT})` is achievable.
+
+    **Applicability to this library.** The classical analysis assumes
+    stationary rewards and empirical sample means with known concentration
+    properties. This implementation replaces the empirical mean with a
+    Bayesian posterior mean (which may use approximate inference) and
+    supports contextual features and variance-increasing decay for
+    non-stationarity. Under these modifications the formal bounds do not
+    directly apply, but the basic explore-exploit trade-off controlled by
+    :math:`\varepsilon` is preserved.
 
     References
     ----------
-    .. [1] Chapelle, Olivier, and Lihong Li. "An empirical evaluation of
-       thompson sampling." Advances in neural information processing systems
-       24 (2011): 2249-2257.
+    .. [1] Chapelle, O. and Li, L. (2011). "An empirical evaluation of
+       Thompson sampling." Advances in Neural Information Processing Systems
+       24, 2249-2257.
+
+    .. [2] Auer, P., Cesa-Bianchi, N., and Fischer, P. (2002).
+       "Finite-time analysis of the multiarmed bandit problem." Machine
+       Learning, 47(2-3), 235-256.
     """
 
     def __repr__(self) -> str:

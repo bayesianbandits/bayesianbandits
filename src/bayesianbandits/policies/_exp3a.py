@@ -21,10 +21,32 @@ class EXP3A:
     This algorithm provides adversarial robustness while solving several practical
     limitations of traditional adversarial bandit algorithms like EXP3/EXP4.
 
+    At each round the algorithm computes arm selection probabilities from
+    exponential weights over estimated average rewards:
+
+    .. math::
+
+        P_t(a) = (1 - \\gamma)\\,
+        \\frac{\\exp\\bigl(\\eta\\,\\hat{\\mu}_a(x_t)\\bigr)}
+        {\\sum_{j}\\exp\\bigl(\\eta\\,\\hat{\\mu}_j(x_t)\\bigr)}
+        \\;+\\; \\frac{\\gamma}{K}
+
+    where :math:`\\hat{\\mu}_a(x_t)` is the Monte Carlo posterior mean for
+    arm :math:`a` in context :math:`x_t`. After observing reward
+    :math:`r_t`, the selected arm's learner is updated with
+    importance-weighted observations:
+
+    .. math::
+
+        w_t = \\frac{1}{P_t(a_t) + \\gamma_{\\mathrm{ix}}}
+
+    The IX (Implicit eXploration) regularisation :math:`\\gamma_{\\mathrm{ix}}`
+    [2]_ replaces the forced-exploration mixture in classical EXP3.
+
     Core adversarial mechanism:
 
-    - Importance weighting: Uses weight = 1/(P(arm) + ix_gamma) to debias reward estimates
-    - Optional forced exploration: γ-mixing guarantees P(arm) ≥ γ/K when gamma > 0
+    - Importance weighting: Uses :math:`w = 1/(P(a) + \\gamma_{\\mathrm{ix}})` to debias reward estimates
+    - Optional forced exploration: :math:`\\gamma`-mixing guarantees :math:`P(a) \\ge \\gamma/K` when ``gamma > 0``
     - No assumptions: Works with arbitrary reward sequences, including adversarial
 
     Algorithm variants:
@@ -136,19 +158,34 @@ class EXP3A:
 
     Notes
     -----
-    This implementation is inspired by EXP3 (Auer et al., 2002) and EXP3-IX
-    (Neu, 2015) but makes several practical modifications that may affect
-    theoretical guarantees:
+    **Regret bounds (standard setting).** In the classical non-stochastic
+    :math:`K`-armed bandit with :math:`T` rounds, EXP3-IX achieves a
+    high-probability regret bound of
+
+    .. math::
+
+        \\mathrm{Regret}(T) = O\\!\\left(\\sqrt{KT\\ln K}\\right)
+
+    with appropriately tuned :math:`\\eta` and :math:`\\gamma_{\\mathrm{ix}}`
+    [2]_. The original EXP3 with forced exploration achieves the same
+    minimax rate in expectation [1]_.
+
+    **Applicability to this library.** This implementation is inspired by
+    EXP3/EXP3-IX but makes several practical modifications that affect
+    the formal guarantees:
 
     - Uses average-based rewards instead of cumulative sums
-    - Integrates with Bayesian learners rather than maintaining explicit weights
+    - Integrates with Bayesian learners rather than maintaining explicit
+      per-round weight tables
     - Employs Monte Carlo estimation for expected rewards
-    - Supports variance decay for non-stationary environments
+    - Supports variance-increasing decay for non-stationary environments
 
-    While these modifications improve practical performance, the theoretical
-    regret bounds from the original papers may not apply. This algorithm
-    should be viewed as a practical variant that maintains the adversarial
-    robustness intuition of EXP3 while adapting to real-world constraints.
+    Under these modifications the classical regret bounds do not formally
+    apply. However, the core adversarial-robustness mechanism---importance-
+    weighted updates that debias reward estimates under non-uniform
+    selection---is preserved, and the algorithm should be viewed as a
+    practical variant that maintains the adversarial robustness intuition of
+    EXP3 while adapting to contextual, anytime, and non-stationary settings.
     """
 
     def __init__(
