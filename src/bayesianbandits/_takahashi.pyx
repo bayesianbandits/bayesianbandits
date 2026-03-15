@@ -5,15 +5,12 @@ Compute diag((LL')⁻¹) via backward recursion through L's CSC sparsity
 structure using scatter/gather workspace (à la SuiteSparse sparseinv).
 """
 import numpy as np
-cimport numpy as cnp
-
-cnp.import_array()
 
 
 def takahashi_diagonal(
-    cnp.ndarray[cnp.float64_t, ndim=1] data,
-    cnp.ndarray[cnp.int32_t, ndim=1] indices,
-    cnp.ndarray[cnp.int32_t, ndim=1] indptr,
+    const double[::1] data,
+    const int[::1] indices,
+    const int[::1] indptr,
     int p,
 ):
     """Compute diag((LL')⁻¹) from CSC arrays of a lower-triangular L.
@@ -30,9 +27,9 @@ def takahashi_diagonal(
     ndarray of float64, length p
     """
     cdef int nnz = data.shape[0]
-    cdef cnp.ndarray[cnp.float64_t, ndim=1] z_data = np.zeros(nnz, dtype=np.float64)
-    cdef cnp.ndarray[cnp.float64_t, ndim=1] z_diag = np.zeros(p, dtype=np.float64)
-    cdef cnp.ndarray[cnp.float64_t, ndim=1] z_work = np.zeros(p, dtype=np.float64)
+    cdef double[::1] z_data = np.zeros(nnz, dtype=np.float64)
+    cdef double[::1] z_diag = np.zeros(p, dtype=np.float64)
+    cdef double[::1] z_work = np.zeros(p, dtype=np.float64)
 
     cdef int j, a, b, k, col_len, n_sub, col_start, col_end, sub_start
     cdef int ra, ra_start, ra_end, idx, max_sub
@@ -50,7 +47,7 @@ def takahashi_diagonal(
             if n_sub > max_sub:
                 max_sub = n_sub
 
-    cdef cnp.ndarray[cnp.float64_t, ndim=1] z_col = np.zeros(max_sub, dtype=np.float64)
+    cdef double[::1] z_col = np.zeros(max_sub, dtype=np.float64)
 
     # Backward pass over all columns; skip trivial ones inline.
     for j in range(p - 1, -1, -1):
@@ -103,4 +100,4 @@ def takahashi_diagonal(
 
         z_diag[j] = inv_l_jj * inv_l_jj * (1.0 + dot)
 
-    return z_diag
+    return np.asarray(z_diag)
