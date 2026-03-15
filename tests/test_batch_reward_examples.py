@@ -4,10 +4,10 @@ import numpy as np
 
 from bayesianbandits import (
     Arm,
-    LipschitzContextualAgent,
-    ThompsonSampling,
     ArmColumnFeaturizer,
+    LipschitzContextualAgent,
     NormalRegressor,
+    ThompsonSampling,
 )
 
 

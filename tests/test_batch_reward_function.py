@@ -1,16 +1,17 @@
 """Test suite for BatchRewardFunction functionality in LipschitzContextualAgent."""
 
+import warnings
+
 import numpy as np
 import pytest
-import warnings
 from numpy.typing import NDArray
 
 from bayesianbandits import (
     Arm,
-    LipschitzContextualAgent,
-    ThompsonSampling,
     ArmColumnFeaturizer,
+    LipschitzContextualAgent,
     NormalRegressor,
+    ThompsonSampling,
 )
 from bayesianbandits._arm import batch_identity
 
@@ -51,6 +52,7 @@ class TestBatchRewardFunction:
         # Add arm with custom reward function
         def custom_reward(x: NDArray[np.float64]) -> NDArray[np.float64]:
             return np.multiply(x, 2.0)
+
         custom_arm = Arm(10, reward_function=custom_reward, learner=None)
         agent.add_arm(custom_arm)
 
@@ -250,26 +252,25 @@ class TestArticleCPCIntegration:
         # by checking the transformation of samples
         n_contexts = 2
         X = np.random.randn(n_contexts, 3)
-        
+
         # Mock the policy's sample method to return known values
         # This way we can verify the batch reward function's effect
         mock_samples = np.ones((len(arms), n_contexts, 1))
-        
+
         # Get action tokens
         action_tokens = [arm.action_token for arm in agent.arms]
-        
+
         # Apply the batch reward function
         transformed = revenue_batch_reward(mock_samples, action_tokens)
-        
+
         # Verify CPC values are correctly applied
         for i, token in enumerate(action_tokens):
             expected_cpc = article_metadata[token]["cpc"]
             # Check all contexts for this arm have the right CPC multiplier
             assert np.allclose(transformed[i], expected_cpc), (
-                f"Arm {token} should have CPC {expected_cpc}, "
-                f"but got {transformed[i]}"
+                f"Arm {token} should have CPC {expected_cpc}, but got {transformed[i]}"
             )
-        
+
         # Also verify the agent can pull without errors
         result = agent.pull(X)
         assert len(result) == n_contexts

@@ -120,14 +120,14 @@ from ._gaussian import LaplaceApproximator
 from .api import (
     Agent,
     ContextualAgent,
-    LipschitzContextualAgent,
     EpsilonGreedy,
+    LipschitzContextualAgent,
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 from .pipelines import AgentPipeline, LearnerPipeline
 from .policies import EXP3A
-from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 
 __all__ = [
     "Arm",

@@ -16,8 +16,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.1.1,<9",
-    "black>=24.3.0,<25",
-    "flake8>=7.0.0,<8",
+    "ruff>=0.9,<1",
     "ipython>=8.16.1,<9",
     "coverage>=7.4.4,<8",
     "ipykernel>=6.25.2,<7",
@@ -48,6 +47,20 @@ include = [
     "tests",
 ]
 typeCheckingMode = "standard"
+
+[tool.ruff]
+line-length = 88
+exclude = [
+    "docs/source/conf.py",
+    "old",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length handled by ruff format
+
+[tool.ruff.format]
+# Black-compatible defaults
 
 [build-system]
 requires = ["setuptools>=75", "cython>=3.0", "numpy>=2.0"]

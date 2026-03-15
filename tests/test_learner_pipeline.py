@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import numpy as np
-from numpy.typing import NDArray
 import pytest
-from sklearn.preprocessing import StandardScaler, FunctionTransformer
+from numpy.typing import NDArray
 from sklearn.decomposition import PCA
+from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from bayesianbandits import (
-    NormalRegressor,
     Arm,
     LipschitzContextualAgent,
+    NormalRegressor,
     ThompsonSampling,
 )
 from bayesianbandits.pipelines import LearnerPipeline

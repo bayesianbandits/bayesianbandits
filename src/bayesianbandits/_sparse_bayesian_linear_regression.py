@@ -18,7 +18,12 @@ from scipy.sparse import (  # type: ignore  # type: ignore
     diags,  # type: ignore
     issparse,  # type: ignore
 )
-from scipy.sparse.linalg import splu, spsolve, spsolve_triangular, use_solver  # type: ignore
+from scipy.sparse.linalg import (  # type: ignore
+    splu,
+    spsolve,
+    spsolve_triangular,
+    use_solver,
+)
 
 use_solver(useUmfpack=False)
 

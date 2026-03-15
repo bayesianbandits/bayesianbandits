@@ -9,7 +9,6 @@ from typing import Any, Generic, Sequence, Sized
 
 from ._arm import TokenType
 
-
 __all__ = [
     "ArmFeaturizer",
 ]

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 from scipy.linalg import solve
-from scipy.sparse import csc_array, eye as speye
+from scipy.sparse import csc_array
 from scipy.special import expit, gammaln
 
 from bayesianbandits._empirical_bayes import (
@@ -25,7 +25,6 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     create_sparse_factor,
     scale_factor,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -152,8 +151,10 @@ def _log_evidence_nig_hand(
     """Hand-compute log evidence for NIG model (for test reference)."""
     ld = float(np.linalg.slogdet(precision)[1])
     return float(
-        gammaln(an) - gammaln(a0)
-        + a0 * np.log(b0) - an * np.log(bn)
+        gammaln(an)
+        - gammaln(a0)
+        + a0 * np.log(b0)
+        - an * np.log(bn)
         + 0.5 * p * np.log(alpha)
         - 0.5 * ld
         - 0.5 * n_obs * np.log(2 * np.pi)
@@ -200,9 +201,7 @@ def small_spd_matrix() -> NDArray[np.float64]:
 
 
 @pytest.fixture
-def regression_data() -> (
-    tuple[NDArray[np.float64], NDArray[np.float64], float, float]
-):
+def regression_data() -> tuple[NDArray[np.float64], NDArray[np.float64], float, float]:
     """Generate regression data with known hyperparameters."""
     rng = np.random.default_rng(123)
     n, p = 100, 3
@@ -506,9 +505,7 @@ class TestMackayAnalytical:
 class TestMackayRecovery:
     def test_converges_to_true_hyperparams(
         self,
-        regression_data: tuple[
-            NDArray[np.float64], NDArray[np.float64], float, float
-        ],
+        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
     ) -> None:
         """Iterate MacKay updates and verify convergence to true hyperparams."""
         X, y, alpha_true, beta_true = regression_data
@@ -535,9 +532,7 @@ class TestMackayRecovery:
 class TestEvidenceMonotonicity:
     def test_evidence_nondecreasing(
         self,
-        regression_data: tuple[
-            NDArray[np.float64], NDArray[np.float64], float, float
-        ],
+        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
     ) -> None:
         """Each EM iteration must not decrease log evidence (EM invariant)."""
         X, y, _, _ = regression_data
@@ -557,7 +552,7 @@ class TestEvidenceMonotonicity:
         # Evidence should be non-decreasing (allow tiny floating-point dips)
         for i in range(1, len(evidences)):
             assert evidences[i] >= evidences[i - 1] - 1e-6, (
-                f"Evidence decreased at step {i}: {evidences[i-1]:.6f} -> {evidences[i]:.6f}"
+                f"Evidence decreased at step {i}: {evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
             )
 
 
@@ -569,9 +564,7 @@ class TestEvidenceMonotonicity:
 class TestGradientAtConvergence:
     def test_gradients_near_zero(
         self,
-        regression_data: tuple[
-            NDArray[np.float64], NDArray[np.float64], float, float
-        ],
+        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
     ) -> None:
         """At MacKay fixed point, d/dalpha and d/dbeta of log evidence ~ 0."""
         X, y, _, _ = regression_data
@@ -619,7 +612,9 @@ class TestLogEvidenceFromUpdates:
         y = X @ w + rng.standard_normal(n) * 0.5
         mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
 
-        _, _, result = mackay_update_normal(X=X, y=y, mu_n=mu_n, precision=precision, alpha=alpha, beta=beta)
+        _, _, result = mackay_update_normal(
+            X=X, y=y, mu_n=mu_n, precision=precision, alpha=alpha, beta=beta
+        )
         expected = _log_evidence_normal_hand(X, y, mu_n, precision, alpha, beta)
         np.testing.assert_allclose(result, expected, atol=1e-10)
 
@@ -677,12 +672,20 @@ class TestOnlineBatchParity:
 
         # Batch update.
         alpha_batch, beta_batch, ev_batch = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta,
+            mu_n,
+            precision,
+            X,
+            y,
+            alpha,
+            beta,
         )
 
         # Online update with sufficient stats matching the full dataset.
         alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n, precision, alpha, beta,
+            mu_n,
+            precision,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
@@ -708,8 +711,12 @@ class TestOnlineBatchParity:
         eff_XTy = np.zeros(p)
         for i in range(n):
             eff_n, eff_yTy, eff_XTy = accumulate_sufficient_stats(
-                eff_n, eff_yTy, eff_XTy,
-                X[[i]], y[[i]], prior_decay=1.0,
+                eff_n,
+                eff_yTy,
+                eff_XTy,
+                X[[i]],
+                y[[i]],
+                prior_decay=1.0,
             )
 
         np.testing.assert_allclose(eff_n, float(n))
@@ -720,10 +727,18 @@ class TestOnlineBatchParity:
         mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
 
         alpha_batch, beta_batch, _ = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta,
+            mu_n,
+            precision,
+            X,
+            y,
+            alpha,
+            beta,
         )
         alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n, precision, alpha, beta,
+            mu_n,
+            precision,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=eff_n,
             eff_yTy=eff_yTy,
@@ -746,12 +761,20 @@ class TestOnlineBatchParity:
         precision_sparse = csc_array(precision_dense)
 
         alpha_batch, beta_batch, ev_batch = mackay_update_normal(
-            mu_n, precision_dense, X, y, alpha, beta,
+            mu_n,
+            precision_dense,
+            X,
+            y,
+            alpha,
+            beta,
         )
 
         # Takahashi is exact, so tolerance can be tight
         alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n, precision_sparse, alpha, beta,
+            mu_n,
+            precision_sparse,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
@@ -781,12 +804,20 @@ class TestOnlineBatchParity:
 
         for i in range(n):
             eff_n_d, eff_yTy_d, eff_XTy_d = accumulate_sufficient_stats(
-                eff_n_d, eff_yTy_d, eff_XTy_d,
-                X_dense[[i]], y[[i]], prior_decay=0.99,
+                eff_n_d,
+                eff_yTy_d,
+                eff_XTy_d,
+                X_dense[[i]],
+                y[[i]],
+                prior_decay=0.99,
             )
             eff_n_s, eff_yTy_s, eff_XTy_s = accumulate_sufficient_stats(
-                eff_n_s, eff_yTy_s, eff_XTy_s,
-                csc_array(X_sparse[[i]]), y[[i]], prior_decay=0.99,
+                eff_n_s,
+                eff_yTy_s,
+                eff_XTy_s,
+                csc_array(X_sparse[[i]]),
+                y[[i]],
+                prior_decay=0.99,
             )
 
         np.testing.assert_allclose(eff_n_s, eff_n_d, atol=1e-10)
@@ -804,7 +835,10 @@ class TestOnlineBatchParity:
         # Craft sufficient stats so RSS = yTy - 2*m'XTy + m'XTXm <= 0.
         # Set eff_yTy = 0 and eff_XTy large so RSS goes negative.
         alpha_new, beta_new, _ = mackay_update_normal_online(
-            mu_n, precision, alpha, beta,
+            mu_n,
+            precision,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=1.0,
             eff_yTy=0.0,
@@ -827,7 +861,10 @@ class TestOnlineBatchParity:
 
         # Dense reference
         alpha_dense, beta_dense, _ = mackay_update_normal_online(
-            mu_n, precision_dense, alpha, beta,
+            mu_n,
+            precision_dense,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
@@ -836,7 +873,10 @@ class TestOnlineBatchParity:
 
         # Sparse path (now exact via Takahashi)
         alpha_sparse, beta_sparse, _ = mackay_update_normal_online(
-            mu_n, precision_sparse, alpha, beta,
+            mu_n,
+            precision_sparse,
+            alpha,
+            beta,
             prior_scalar=alpha,
             effective_n=float(n),
             eff_yTy=float(y @ y),
@@ -879,7 +919,12 @@ class TestSparseDenseParity:
             sp = csc_array(precision)
             sX = csc_array(X)
             a_new, b_new, ev = mackay_update_normal(
-                mu_n, sp, sX, y, alpha, beta,
+                mu_n,
+                sp,
+                sX,
+                y,
+                alpha,
+                beta,
                 sparse=True,
             )
         else:
@@ -909,7 +954,13 @@ class TestSparseDenseParity:
         if sparse:
             sp = csc_array(precision)
             result, ev = mackay_update_nig(
-                mu_n, sp, alpha, an, bn, a0, b0,
+                mu_n,
+                sp,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
                 sparse=True,
                 n_obs=n,
             )
@@ -935,7 +986,12 @@ class TestSparseDenseParity:
         if sparse:
             sp = csc_array(H)
             result, ev = mackay_update_glm(
-                theta, sp, alpha, X, y, "logit",
+                theta,
+                sp,
+                alpha,
+                X,
+                y,
+                "logit",
                 sparse=True,
             )
         else:
@@ -1014,7 +1070,7 @@ class TestMackayNIG:
         for i in range(1, len(evidences)):
             assert evidences[i] >= evidences[i - 1] - 1e-6, (
                 f"NIG evidence decreased at step {i}: "
-                f"{evidences[i-1]:.6f} -> {evidences[i]:.6f}"
+                f"{evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
             )
 
     def test_gradient_at_convergence(self) -> None:
@@ -1136,7 +1192,7 @@ class TestMackayGLM:
         for i in range(1, len(evidences)):
             assert evidences[i] >= evidences[i - 1] - 1e-4, (
                 f"GLM ({link}) evidence decreased at step {i}: "
-                f"{evidences[i-1]:.6f} -> {evidences[i]:.6f}"
+                f"{evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
             )
 
     @pytest.mark.parametrize("link", ["logit", "log"])
