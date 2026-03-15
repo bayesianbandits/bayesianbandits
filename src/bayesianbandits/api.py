@@ -72,12 +72,12 @@ from typing_extensions import Self
 
 from ._arm import (
     Arm,
+    BatchRewardFunction,
+    ContextAwareBatchRewardFunction,
     ContextType,
     Learner,
     TokenType,
     _accepts_context_batch,
-    BatchRewardFunction,
-    ContextAwareBatchRewardFunction,
     batch_identity,
     is_identity_function,
 )

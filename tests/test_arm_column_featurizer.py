@@ -1,6 +1,7 @@
 """Tests for ArmColumnFeaturizer."""
 
 import importlib.util
+
 import numpy as np
 import pytest
 

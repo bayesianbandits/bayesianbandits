@@ -10,7 +10,6 @@ from sklearn.base import clone
 from bayesianbandits import EmpiricalBayesNormalRegressor
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
-
 suitespare_envvar_params = [
     SparseSolver.SUPERLU,
     SparseSolver.CHOLMOD,
@@ -75,19 +74,26 @@ class TestEBNormalRegressor:
             evidences.append(model.log_evidence_)
             # Use the updated hyperparams for next iteration
             model = EmpiricalBayesNormalRegressor(
-                alpha=model.alpha, beta=model.beta, n_eb_iter=1, eb_tol=0.0,
+                alpha=model.alpha,
+                beta=model.beta,
+                n_eb_iter=1,
+                eb_tol=0.0,
                 sparse=sparse,
             )
 
         for i in range(1, len(evidences)):
             assert evidences[i] >= evidences[i - 1] - 1e-6, (
-                f"Evidence decreased at step {i}: {evidences[i]} < {evidences[i-1]}"
+                f"Evidence decreased at step {i}: {evidences[i]} < {evidences[i - 1]}"
             )
 
     def test_convergence_flag(self, regression_data, sparse):
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, n_eb_iter=100, eb_tol=1e-2, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            n_eb_iter=100,
+            eb_tol=1e-2,
+            sparse=sparse,
         )
         model.fit(X, y)
         assert model.eb_converged_ is True
@@ -109,14 +115,21 @@ class TestEBNormalRegressor:
         X, y = regression_data
 
         model_eb = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, n_eb_iter=0, random_state=42, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            n_eb_iter=0,
+            random_state=42,
+            sparse=sparse,
         )
         model_eb.fit(X, y)
 
         from bayesianbandits import NormalRegressor
 
         model_plain = NormalRegressor(
-            alpha=1.0, beta=1.0, random_state=42, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            random_state=42,
+            sparse=sparse,
         )
         model_plain.fit(X, y)
 
@@ -124,7 +137,9 @@ class TestEBNormalRegressor:
         np.testing.assert_allclose(model_eb.predict(X), model_plain.predict(X))
 
     def test_get_set_params(self, sparse):
-        model = EmpiricalBayesNormalRegressor(alpha=2.0, beta=3.0, n_eb_iter=5, sparse=sparse)
+        model = EmpiricalBayesNormalRegressor(
+            alpha=2.0, beta=3.0, n_eb_iter=5, sparse=sparse
+        )
         params = model.get_params()
         assert params["alpha"] == 2.0
         assert params["beta"] == 3.0
@@ -134,7 +149,9 @@ class TestEBNormalRegressor:
         assert model.alpha == 10.0
 
     def test_clone(self, sparse):
-        model = EmpiricalBayesNormalRegressor(alpha=2.0, beta=3.0, n_eb_iter=7, sparse=sparse)
+        model = EmpiricalBayesNormalRegressor(
+            alpha=2.0, beta=3.0, n_eb_iter=7, sparse=sparse
+        )
         cloned = clone(model)
         assert cloned.get_params() == model.get_params()
         assert cloned is not model
@@ -168,7 +185,10 @@ class TestEBNormalRegressor:
 
         # Compare to dense fit
         model_dense = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=True, random_state=42,
+            alpha=1.0,
+            beta=1.0,
+            sparse=True,
+            random_state=42,
         )
         model_dense.fit(X, y)
         # Both should produce finite predictions
@@ -180,7 +200,9 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
         model.fit(X, y)
 
-        cov_inv_before = model.cov_inv_.copy() if not sparse else model.cov_inv_.toarray().copy()
+        cov_inv_before = (
+            model.cov_inv_.copy() if not sparse else model.cov_inv_.toarray().copy()
+        )
         # Call with same alpha/beta — should be a no-op
         model._correct_precision(model.alpha, model.beta)
         cov_inv_after = model.cov_inv_ if not sparse else model.cov_inv_.toarray()
@@ -208,7 +230,10 @@ class TestEBNormalRegressor:
         """decay() scales _prior_scalar and sufficient stats."""
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            learning_rate=0.99,
+            sparse=sparse,
         )
         model.fit(X, y)
 
@@ -219,7 +244,7 @@ class TestEBNormalRegressor:
 
         model.decay(X[:1])  # decay by 1 observation
 
-        decay = 0.99 ** 1
+        decay = 0.99**1
         # Stabilized forgetting: prior_scalar converges to alpha instead of
         # decaying to zero (Kulhavy & Zarrop, 1993).
         expected_prior = decay * prior_before + (1 - decay) * model.alpha
@@ -232,7 +257,10 @@ class TestEBNormalRegressor:
         """partial_fit with learning_rate < 1 re-injects prior into precision diagonal."""
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            learning_rate=0.99,
+            sparse=sparse,
         )
         model.fit(X[:50], y[:50])
 
@@ -242,9 +270,9 @@ class TestEBNormalRegressor:
             diag_before = model.cov_inv_.diagonal().copy()
 
         n_new = 10
-        prior_decay = 0.99 ** n_new
+        prior_decay = 0.99**n_new
 
-        model.partial_fit(X[50:50 + n_new], y[50:50 + n_new])
+        model.partial_fit(X[50 : 50 + n_new], y[50 : 50 + n_new])
 
         # The diagonal should include the re-injection amount relative to
         # what pure decay would have produced.
@@ -264,7 +292,10 @@ class TestEBNormalRegressor:
         """decay() with learning_rate < 1 re-injects prior into precision diagonal."""
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            learning_rate=0.99,
+            sparse=sparse,
         )
         model.fit(X, y)
 
@@ -274,7 +305,7 @@ class TestEBNormalRegressor:
             diag_before = model.cov_inv_.diagonal().copy()
 
         n_obs = X[:1].shape[0]
-        prior_decay = 0.99 ** n_obs
+        prior_decay = 0.99**n_obs
         expected_reinjection = (1 - prior_decay) * model.alpha
 
         model.decay(X[:1])
@@ -294,7 +325,10 @@ class TestEBNormalRegressor:
     def test_decay_before_fit(self, sparse):
         """decay() before fit is a no-op."""
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse,
+            alpha=1.0,
+            beta=1.0,
+            learning_rate=0.99,
+            sparse=sparse,
         )
         rng = np.random.default_rng(0)
         X = rng.standard_normal((5, 3))

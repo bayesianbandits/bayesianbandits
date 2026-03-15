@@ -1,14 +1,14 @@
 # tests/test_gaussian_posterior_laplace.py
 
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 from scipy.special import expit
-import pytest
 
 from bayesianbandits._gaussian import (
+    compute_effective_weights,
     logit_link_and_derivative,
     update_gaussian_posterior_laplace,
-    compute_effective_weights,
 )
 
 
@@ -215,7 +215,7 @@ class TestLaplaceApproximation:
         # Update with both batches at once
         X_both = np.vstack([X1, X2])
         y_both = np.hstack([y1, y2])
-        posterior_both = update_gaussian_posterior_laplace(
+        update_gaussian_posterior_laplace(
             X_both, y_both, prior_mean, prior_precision, link="logit"
         )
 
@@ -223,7 +223,7 @@ class TestLaplaceApproximation:
         posterior_1 = update_gaussian_posterior_laplace(
             X1, y1, prior_mean, prior_precision, link="logit"
         )
-        posterior_2 = update_gaussian_posterior_laplace(
+        update_gaussian_posterior_laplace(
             X2, y2, posterior_1.mean, posterior_1.precision, link="logit"
         )
 

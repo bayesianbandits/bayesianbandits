@@ -6,7 +6,6 @@ from numpy.typing import NDArray
 from scipy.sparse import csc_array
 from scipy.special import expit
 
-
 # Type aliases
 ArrayType = Union[NDArray[np.float64], csc_array]
 LinkFunction = Literal["logit", "log"]

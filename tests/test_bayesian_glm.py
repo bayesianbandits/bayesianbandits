@@ -18,7 +18,9 @@ from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 )
 def suitesparse_envvar(request):
     """Test with different sparse solvers."""
-    with mock.patch("bayesianbandits._sparse_bayesian_linear_regression.solver", request.param):
+    with mock.patch(
+        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
+    ):
         yield
 
 

@@ -923,8 +923,12 @@ def test_context_aware_reward_in_lipschitz_agent() -> None:
 
 def test_mixed_reward_functions() -> None:
     """Test mixing traditional and context-aware reward functions."""
-    identity = lambda samples: samples
-    context_aware = lambda samples, X: samples * 2
+
+    def identity(samples):
+        return samples
+
+    def context_aware(samples, X):
+        return samples * 2
 
     arms = [
         Arm(0, reward_function=identity, learner=None),
@@ -950,7 +954,7 @@ def test_context_aware_business_rules() -> None:
     def business_rule_reward(samples: np.ndarray, X: np.ndarray) -> np.ndarray:
         """Apply business rules based on user context."""
         # Assume features are: [age, income, is_premium, location_id]
-        age, income, is_premium, location = X[0, 0], X[0, 1], X[0, 2], X[0, 3]
+        _age, income, is_premium, location = X[0, 0], X[0, 1], X[0, 2], X[0, 3]
 
         # Premium users get higher rewards
         if is_premium:

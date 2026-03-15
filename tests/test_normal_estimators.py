@@ -26,7 +26,9 @@ suitespare_envvar_params = [
 )
 def suitesparse_envvar(request):
     """Allows running test suite with and without CHOLMOD."""
-    with mock.patch("bayesianbandits._sparse_bayesian_linear_regression.solver", request.param):
+    with mock.patch(
+        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
+    ):
         yield
 
 
@@ -1586,9 +1588,7 @@ def test_normal_inverse_gamma_scale_factor_identity(sparse: bool) -> None:
 
     X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
 
-    reg = NormalInverseGammaRegressor(
-        sparse=sparse, random_state=42, learning_rate=1.0
-    )
+    reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42, learning_rate=1.0)
     reg.fit(sp.csc_array(X), y)
 
     original_factor = reg._factor

@@ -97,7 +97,6 @@ def _diagonal_trace_approx(
     return float(np.sum(1.0 / diag))
 
 
-
 def logdet(
     precision: Union[NDArray[np.float64], csc_array],
     factor: Optional[SparseFactor] = None,

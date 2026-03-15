@@ -127,7 +127,9 @@ class TestContextAwareRewardFunctions:
 
     def test_traditional_reward_function_compatibility(self) -> None:
         """Test that traditional reward functions still work."""
-        identity = lambda samples: samples
+
+        def identity(samples):
+            return samples
 
         from bayesianbandits import NormalRegressor
 
@@ -141,8 +143,11 @@ class TestContextAwareRewardFunctions:
         """Test parameter detection utility."""
         from bayesianbandits._arm import _accepts_context
 
-        traditional = lambda samples: samples
-        context_aware = lambda samples, X: samples * 2
+        def traditional(samples):
+            return samples
+
+        def context_aware(samples, X):
+            return samples * 2
 
         assert not _accepts_context(traditional)
         assert _accepts_context(context_aware)

@@ -15,13 +15,12 @@ from typing import (
     Union,
     cast,
 )
-from typing_extensions import TypeGuard
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csr_matrix, issparse  # type: ignore[import]
 from scipy.sparse import vstack as sparse_vstack  # type: ignore[import]
-from typing_extensions import Concatenate, ParamSpec, Self
+from typing_extensions import Concatenate, ParamSpec, Self, TypeGuard
 
 HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 

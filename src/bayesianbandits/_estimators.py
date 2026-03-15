@@ -1085,9 +1085,7 @@ scipy.sparse.csc_array
             coef = factor.solve(eta)
             self._factor = factor
         else:
-            coef = solve(
-                cov_inv, eta, check_finite=False, assume_a="pos"
-            )
+            coef = solve(cov_inv, eta, check_finite=False, assume_a="pos")
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -1221,7 +1219,9 @@ scipy.sparse.csc_array
 
         if self.sparse:
             cov = self.cov_
-            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
+            assert isinstance(
+                cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
+            )
             samples = np.atleast_1d(
                 multivariate_normal_sample_from_sparse_precision(
                     self.coef_,
@@ -1634,7 +1634,9 @@ scipy.sparse.csc_array
         # Sparse sampling is not supported by scipy, so we use our own implementation
         if self.sparse:
             shape = self.shape_
-            assert isinstance(shape, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
+            assert isinstance(
+                shape, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
+            )
             samples = multivariate_t_sample_from_sparse_precision(
                 self.coef_, shape, df, size, self.random_state_
             )
@@ -2204,7 +2206,9 @@ scipy.sparse.csc_array
         # Sample parameters from posterior
         if self.sparse:
             cov = self.cov_
-            assert isinstance(cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor))
+            assert isinstance(
+                cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
+            )
             param_samples = multivariate_normal_sample_from_sparse_precision(
                 self.coef_, cov, size=size, random_state=self.random_state_
             )

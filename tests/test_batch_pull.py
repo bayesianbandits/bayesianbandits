@@ -259,7 +259,10 @@ class TestBatchSampleArms:
     def test_reward_function_identity(self, mock_arm_class, mock_model):
         # All arms use same reward function (identity)
         n_arms = 3
-        identity_func = lambda x: x
+
+        def identity_func(x):
+            return x
+
         arms = []
         for i in range(n_arms):
             learner = Mock()
@@ -282,8 +285,11 @@ class TestBatchSampleArms:
             learner = Mock()
             learner.transform = Mock(side_effect=lambda X: X)
             learner.final_estimator = mock_model
+
             # Each arm squares its reward differently
-            reward_func = lambda x, scale=i + 1: x * scale
+            def reward_func(x, scale=i + 1):
+                return x * scale
+
             arms.append(mock_arm_class(i, learner, reward_func))
 
         X = np.random.randn(2, 3)
@@ -293,49 +299,52 @@ class TestBatchSampleArms:
     def test_context_aware_reward_functions(self, mock_arm_class, mock_model):
         # Test context-aware reward functions in batch_sample_arms
         from bayesianbandits._arm import _accepts_context
-        
+
         # Set up mock model to return predictable values
         mock_model.sample = Mock(return_value=np.ones((15,)))  # 3 arms * 5 contexts
-        
+
         # Define both traditional and context-aware reward functions
-        traditional_reward = lambda samples: samples * 2
-        
+        def traditional_reward(samples):
+            return samples * 2
+
         def context_aware_reward(samples, X):
             # Use first feature from context as multiplier
             return samples * X[:, 0]
-        
+
         # Mix of traditional and context-aware arms
         arms = []
         for i in range(3):
             learner = Mock()
             learner.transform = Mock(side_effect=lambda X: X)
             learner.final_estimator = mock_model
-            
+
             if i == 1:  # Middle arm uses context-aware reward
                 arms.append(mock_arm_class(i, learner, context_aware_reward))
             else:
                 arms.append(mock_arm_class(i, learner, traditional_reward))
-        
+
         # Context with specific first feature values
         X = np.array([[3.0, 1.0], [4.0, 2.0], [5.0, 3.0], [6.0, 4.0], [7.0, 5.0]])
-        
+
         # Verify reward functions are correctly identified
         assert not _accepts_context(arms[0].reward_function)
         assert _accepts_context(arms[1].reward_function)
         assert not _accepts_context(arms[2].reward_function)
-        
+
         # Run batch sampling
         result = batch_sample_arms(arms, X)
         assert result is not None
         assert result.shape == (3, 5)
-        
+
         # Verify rewards are computed correctly
         # Arms 0 and 2: samples * 2 = 1 * 2 = 2
         np.testing.assert_array_almost_equal(result[0], np.ones(5) * 2)
         np.testing.assert_array_almost_equal(result[2], np.ones(5) * 2)
-        
+
         # Arm 1: samples * X[:, 0] = 1 * [3, 4, 5, 6, 7]
-        np.testing.assert_array_almost_equal(result[1], np.array([3., 4., 5., 6., 7.]))
+        np.testing.assert_array_almost_equal(
+            result[1], np.array([3.0, 4.0, 5.0, 6.0, 7.0])
+        )
 
     def test_single_context(self, mock_arm_class, mock_model):
         # Test with single context (needs len attribute for new code)
@@ -393,8 +402,9 @@ class TestIntegration:
         monkeypatch.setattr("sys.modules", sys.modules)
 
         # Force re-evaluation of HAS_PANDAS by reimporting the module
-        import bayesianbandits._arm
         from importlib import reload
+
+        import bayesianbandits._arm
 
         reload(bayesianbandits._arm)
         from bayesianbandits._arm import stack_features
