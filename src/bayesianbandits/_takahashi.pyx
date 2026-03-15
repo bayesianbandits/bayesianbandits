@@ -5,15 +5,12 @@ Compute diag((LL')⁻¹) via backward recursion through L's CSC sparsity
 structure using scatter/gather workspace (à la SuiteSparse sparseinv).
 """
 import numpy as np
-cimport numpy as cnp
-
-cnp.import_array()
 
 
 def takahashi_diagonal(
-    double[::1] data,
-    int[::1] indices,
-    int[::1] indptr,
+    const double[::1] data,
+    const int[::1] indices,
+    const int[::1] indptr,
     int p,
 ):
     """Compute diag((LL')⁻¹) from CSC arrays of a lower-triangular L.
