@@ -29,10 +29,10 @@ jobs:
         run: uv sync --no-group cholmod
 
       - name: Ruff format check
-        run: uv run ruff format --check .
+        run: uv run --no-group cholmod ruff format --check .
 
       - name: Ruff lint
-        run: uv run ruff check .
+        run: uv run --no-group cholmod ruff check .
 
   tests:
     name: Full tests (Linux)
