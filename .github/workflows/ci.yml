@@ -52,7 +52,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get install -y swig libsuitesparse-dev
+          sudo apt-get install -y libsuitesparse-dev
           uv sync
 
       - name: Run tests
