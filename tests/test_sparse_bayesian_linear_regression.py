@@ -10,10 +10,12 @@ from scipy.stats import Covariance, multivariate_normal, multivariate_t
 
 from bayesianbandits._estimators import multivariate_t_sample_from_covariance
 from bayesianbandits._sparse_bayesian_linear_regression import (
+    CholmodSparseFactor,
     SparseSolver,
     create_sparse_factor,
     multivariate_normal_sample_from_sparse_precision,
     multivariate_t_sample_from_sparse_precision,
+    scale_factor,
 )
 
 
@@ -85,9 +87,7 @@ class TestSparseFactor:
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvn_sampling_against_scipy(self, precision_matrix, solver):
-        factor = create_sparse_factor(
-            sp.csc_array(precision_matrix), solver=solver
-        )
+        factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         scipy_cov = Covariance.from_precision(precision_matrix)
 
         sparse_samples = multivariate_normal_sample_from_sparse_precision(
@@ -116,11 +116,8 @@ class TestSparseFactor:
         # in our implementation (as our above tests show that it's correct) and
         # just test the t distribution sampling.
         with patch("bayesianbandits._estimators.multivariate_normal.rvs") as mock_mvn:
-            mock_mvn.side_effect = (
-                lambda mean,
-                shape,
-                size,
-                random_state: random_state.multivariate_normal(
+            mock_mvn.side_effect = lambda mean, shape, size, random_state: (
+                random_state.multivariate_normal(
                     np.zeros(scipy_cov.shape[0]), shape, size=size
                 )
             )
@@ -137,18 +134,14 @@ class TestSparseFactor:
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_logdet_matches_dense(self, precision_matrix, solver):
         """logdet via sparse factor matches np.linalg.slogdet for both solvers."""
-        factor = create_sparse_factor(
-            sp.csc_array(precision_matrix), solver=solver
-        )
+        factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         expected = float(np.linalg.slogdet(precision_matrix)[1])
         result = factor.logdet()
         assert_allclose(result, expected, atol=1e-6)
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_mvt_sampling_against_scipy(self, precision_matrix, solver):
-        factor = create_sparse_factor(
-            sp.csc_array(precision_matrix), solver=solver
-        )
+        factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         scipy_cov = Covariance.from_precision(precision_matrix)
 
         sparse_samples = multivariate_t_sample_from_sparse_precision(
@@ -166,3 +159,67 @@ class TestSparseFactor:
         scipy_emp_cov = np.cov(scipy_samples.T)
 
         assert_allclose(sparse_emp_cov, scipy_emp_cov, atol=0.05)
+
+
+class TestRefactorize:
+    """Test that refactorize() produces identical results to fresh factorization."""
+
+    @pytest.fixture
+    def spd_matrices(self):
+        """Two SPD matrices with the same sparsity pattern but different values."""
+        rng = np.random.default_rng(42)
+        n = 200
+        base = sp.random(n, n, density=0.01, random_state=rng)
+        A1 = (base @ base.T) + 50 * sp.diags(1 + rng.gamma(1, 1, n))
+        A2 = (base @ base.T) + 80 * sp.diags(1 + rng.gamma(1, 1, n))
+        return sp.csc_array(A1), sp.csc_array(A2)
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_refactorize_solve(self, spd_matrices, solver):
+        A1, A2 = spd_matrices
+        b = np.random.default_rng(0).standard_normal(A1.shape[0])
+
+        fresh = create_sparse_factor(A2, solver=solver)
+        refactored = create_sparse_factor(A1, solver=solver).refactorize(A2)
+
+        assert_allclose(refactored.solve(b), fresh.solve(b), rtol=1e-12)
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_refactorize_logdet(self, spd_matrices, solver):
+        A1, A2 = spd_matrices
+
+        fresh = create_sparse_factor(A2, solver=solver)
+        refactored = create_sparse_factor(A1, solver=solver).refactorize(A2)
+
+        assert_allclose(refactored.logdet(), fresh.logdet(), rtol=1e-12)
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_refactorize_colorize(self, spd_matrices, solver):
+        A1, A2 = spd_matrices
+        z = np.random.default_rng(1).standard_normal(A1.shape[0])
+
+        fresh = create_sparse_factor(A2, solver=solver)
+        refactored = create_sparse_factor(A1, solver=solver).refactorize(A2)
+
+        assert_allclose(refactored.colorize(z), fresh.colorize(z), rtol=1e-12)
+
+    def test_cholmod_refactorize_returns_same_object(self, spd_matrices):
+        A1, A2 = spd_matrices
+        factor = create_sparse_factor(A1, solver=SparseSolver.CHOLMOD)
+        refactored = factor.refactorize(A2)
+        assert refactored is factor
+
+    def test_cholmod_refactorize_updates_precision(self, spd_matrices):
+        A1, A2 = spd_matrices
+        factor = create_sparse_factor(A1, solver=SparseSolver.CHOLMOD)
+        factor.refactorize(A2)
+        assert factor._precision is A2
+
+    def test_scaled_factor_refactorize_unwraps(self, spd_matrices):
+        """ScaledSparseFactor.refactorize delegates to inner factor."""
+        A1, A2 = spd_matrices
+        factor = create_sparse_factor(A1, solver=SparseSolver.CHOLMOD)
+        scaled = scale_factor(factor, 2.0)
+        refactored = scaled.refactorize(A2)
+        assert isinstance(refactored, CholmodSparseFactor)
+        assert refactored is factor

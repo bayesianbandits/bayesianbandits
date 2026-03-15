@@ -77,6 +77,12 @@ class CholmodSparseFactor:
         """Log-determinant of the factored matrix via CHOLMOD."""
         return float(self._factor.logdet())
 
+    def refactorize(self, precision: csc_array) -> "CholmodSparseFactor":
+        """Numeric refactorization reusing the existing symbolic analysis."""
+        self._factor.factorize(csc_matrix(precision))
+        self._precision = precision
+        return self
+
     def get_L_csc(self) -> csc_array:
         """Return the lower triangular Cholesky factor as CSC.
 
@@ -117,6 +123,21 @@ class SuperLUSparseFactor:
         """
         return float(2.0 * np.sum(np.log(np.abs(self._L.diagonal()))))
 
+    def refactorize(self, precision: csc_array) -> "SuperLUSparseFactor":
+        """SuperLU has no symbolic reuse API; performs a full refactorization."""
+        splu_ = splu(
+            precision,
+            diag_pivot_thresh=0,
+            permc_spec="MMD_AT_PLUS_A",
+            options=dict(SymmetricMode=True),
+        )
+        if (splu_.perm_r != splu_.perm_c).any():
+            raise ValueError("Matrix must be symmetric")
+        L = splu_.L.dot(diags(np.sqrt(splu_.U.diagonal())))
+        return SuperLUSparseFactor(
+            _L=L, _inv_perm=splu_.perm_r.copy(), _precision=precision
+        )
+
     def get_L_csc(self) -> csc_array:
         """Return the lower triangular factor as CSC.
 
@@ -152,6 +173,10 @@ class ScaledSparseFactor:
         """Log-determinant: log|s*P| = p*log(s) + log|P|."""
         p = cast(tuple[int, int], self._precision.shape)[0]
         return float(p * np.log(self._scale) + self._inner.logdet())
+
+    def refactorize(self, precision: csc_array) -> ConcreteFactor:
+        """Unwrap and delegate to the inner factor."""
+        return self._inner.refactorize(precision)
 
     def get_L_csc(self) -> csc_array:
         """Return the scaled lower triangular factor as CSC.

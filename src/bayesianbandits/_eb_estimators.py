@@ -484,7 +484,11 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
 
         if self.sparse:
             assert isinstance(cov_inv, csc_array)
-            factor = create_sparse_factor(cov_inv)
+            factor = (
+                self._factor.refactorize(cov_inv)
+                if hasattr(self, "_factor")
+                else create_sparse_factor(cov_inv)
+            )
             coef = factor.solve(eta)
             self._factor = factor
         else:
@@ -536,6 +540,14 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         decay : Increase uncertainty without observing new data.
         """
         had_prior_scalar = hasattr(self, "_prior_scalar")
+
+        # Clear cached factor so _fit_helper creates a fresh one.
+        # The sparsity pattern may change with new X, and a stale
+        # permutation can cause catastrophic fill-in (O(n^2) instead
+        # of O(nnz)).  Reuse is only safe inside the EB loop where X
+        # is fixed.
+        if hasattr(self, "_factor"):
+            del self._factor
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
         prior_decay = self.learning_rate**n_samples
