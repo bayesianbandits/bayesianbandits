@@ -32,6 +32,7 @@ dev = [
     "pandas>=2.2.3",
     "pyright==1.1.402",
     "cython>=3.0",
+    "pytest-benchmark>=5.1.0,<6",
 ]
 cholmod = ["scikit-sparse>=0.5.0,<0.6"]
 
@@ -77,4 +78,17 @@ addopts = "--doctest-modules -v"
 filterwarnings = "ignore::DeprecationWarning"
 markers = [
     "cython: tests that exercise the Cython extension (no suitesparse needed)",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+omit = ["benchmarks/*"]
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "@overload",
+    "if TYPE_CHECKING:",
+    "except ImportError",
+    "raise NotImplementedError",
 ]
