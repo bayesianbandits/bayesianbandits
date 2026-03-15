@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
@@ -18,7 +18,7 @@ from scipy.sparse import (  # type: ignore  # type: ignore
     diags,  # type: ignore
     issparse,  # type: ignore
 )
-from scipy.sparse.linalg import splu, spsolve, use_solver  # type: ignore
+from scipy.sparse.linalg import splu, spsolve, spsolve_triangular, use_solver  # type: ignore
 
 use_solver(useUmfpack=False)
 
@@ -61,14 +61,17 @@ class CholmodSparseFactor:
 
     _factor: Any  # sksparse.cholmod.Factor (C extension, no useful type)
     _precision: csc_array
+    _inv_perm: NDArray[np.intp] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._inv_perm = np.argsort(self._factor.perm)
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return self._factor.solve(b)
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve L^T x = z, undo permutation."""
-        inv_perm = np.argsort(self._factor.perm)
-        return self._factor.solve(z, system="Lt")[inv_perm]
+        return self._factor.solve(z, system="Lt")[self._inv_perm]
 
     def logdet(self) -> float:
         """Log-determinant of the factored matrix via CHOLMOD."""
@@ -89,15 +92,22 @@ class SuperLUSparseFactor:
     """Wraps SuperLU decomposition for solving and sampling."""
 
     _L: csr_matrix
-    _Pr: csc_matrix
+    _inv_perm: NDArray[np.intp]
     _precision: csc_array
+    _Lt_csc: csc_array = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._Lt_csc = csc_array(self._L.T)
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cast(NDArray[np.float64], spsolve(self._precision, b))
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve L^T x = z, undo permutation."""
-        return cast(NDArray[np.float64], self._Pr.T @ spsolve(self._L.T, z))
+        return cast(
+            NDArray[np.float64],
+            spsolve_triangular(self._Lt_csc, z, lower=False)[self._inv_perm],
+        )
 
     def logdet(self) -> float:
         """Log-determinant of the factored matrix.
@@ -191,13 +201,9 @@ def create_sparse_factor(
         if (splu_.perm_r != splu_.perm_c).any():
             raise ValueError("Matrix must be symmetric")
         L = splu_.L.dot(diags(np.sqrt(splu_.U.diagonal())))
-        Pr = csc_matrix(
-            (
-                np.ones(splu_.L.shape[0]),
-                (splu_.perm_r, np.arange(splu_.L.shape[0])),
-            )
+        return SuperLUSparseFactor(
+            _L=L, _inv_perm=splu_.perm_r.copy(), _precision=precision
         )
-        return SuperLUSparseFactor(_L=L, _Pr=Pr, _precision=precision)
 
 
 def multivariate_normal_sample_from_sparse_precision(
