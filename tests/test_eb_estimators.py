@@ -253,6 +253,23 @@ class TestEBNormalRegressor:
         np.testing.assert_allclose(model._eff_yTy, eff_yTy_before * decay)
         np.testing.assert_allclose(model._eff_XTy, eff_XTy_before * decay)
 
+    def test_decay_rate_one_no_reinjection(self, regression_data, sparse):
+        """decay() with decay_rate=1.0 is a no-op (zero reinjection)."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse
+        )
+        model.fit(X, y)
+
+        precision_before = (
+            model.cov_inv_.toarray().copy() if sparse else model.cov_inv_.copy()
+        )
+
+        model.decay(X[:1], decay_rate=1.0)
+
+        precision_after = model.cov_inv_.toarray() if sparse else model.cov_inv_
+        np.testing.assert_allclose(precision_after, precision_before)
+
     def test_partial_fit_prior_reinjection(self, regression_data, sparse):
         """partial_fit with learning_rate < 1 re-injects prior into precision diagonal."""
         X, y = regression_data

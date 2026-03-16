@@ -527,6 +527,15 @@ def test_bayesian_glm_invalid_link() -> None:
         clf.fit(np.array([[1]]), np.array([1]))
 
 
+def test_bayesian_glm_sample_invalid_link() -> None:
+    """Test sample raises error for invalid link function."""
+    clf = BayesianGLM(link="logit")
+    clf.fit(np.array([[1.0]]), np.array([1.0]))
+    clf.link = "invalid"  # type: ignore[assignment]
+    with pytest.raises(ValueError, match="Unknown link"):
+        clf.sample(np.array([[1.0]]))
+
+
 @pytest.mark.parametrize("n_samples,n_features", [(50, 2), (100, 5), (200, 10)])
 def test_bayesian_glm_scaling(n_samples, n_features) -> None:
     """Test model works with different data sizes."""

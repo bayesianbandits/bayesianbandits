@@ -4,7 +4,7 @@ from typing import Any, Literal, NamedTuple, Optional, Protocol, Union, cast
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import cho_factor, cho_solve
-from scipy.linalg.blas import dsymv, dsyrk
+from scipy.linalg.blas import dgemv, dsymv, dsyrk
 from scipy.sparse import csc_array
 from scipy.special import expit
 
@@ -55,25 +55,6 @@ def compute_effective_weights(
         return cast(NDArray[np.float64], sample_weight * decay_factors)
     else:
         return sample_weight
-
-
-def solve_precision_weighted_mean(
-    precision: Union[NDArray[np.float64], csc_array],
-    eta: NDArray[np.float64],
-    sparse: bool,
-) -> NDArray[np.float64]:
-    """Solve precision @ mu = eta for mu."""
-    if sparse:
-        from ._sparse_bayesian_linear_regression import create_sparse_factor
-
-        assert isinstance(precision, csc_array)
-        return create_sparse_factor(precision).solve(eta)
-    else:
-        from scipy.linalg import cho_factor, cho_solve
-
-        return cho_solve(
-            cho_factor(precision, check_finite=False), eta, check_finite=False
-        )
 
 
 def logit_link_and_derivative(
@@ -243,6 +224,11 @@ def update_gaussian_posterior_laplace(
 
     assert X.shape is not None, "X must be a 2D array"
     n_samples = X.shape[0]
+    n_features = X.shape[1]
+
+    # Fast path: no data means posterior == prior
+    if n_samples == 0:
+        return GaussianPosterior(prior_mean.copy(), prior_precision.copy(), None)
 
     # Apply learning rate decay to sample weights
     effective_weights = compute_effective_weights(
@@ -251,12 +237,30 @@ def update_gaussian_posterior_laplace(
     prior_decay = learning_rate**n_samples
 
     # Precompute prior contributions (these don't change in the loop)
-    prior_precision_scaled = prior_decay * prior_precision
+    no_decay = prior_decay == 1.0
+    if no_decay:
+        prior_precision_scaled = prior_precision
+    else:
+        prior_precision_scaled = prior_decay * prior_precision
     if sparse:
-        prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
+        if no_decay:
+            prior_eta_scaled = prior_precision @ prior_mean
+        else:
+            prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
     else:
         # dsymv: symmetric matvec reading only upper triangle
         prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
+
+        # F-order copy of prior precision for dsyrk accumulation buffer
+        prior_prec_F = np.asfortranarray(prior_precision_scaled)
+
+        # Pre-allocate reusable buffers for the dense IRLS loop
+        X_weighted = np.empty_like(X)
+        W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
+        Wz_buf = np.empty(n_samples, dtype=np.float64)
+        diff_buf = np.empty(n_features, dtype=np.float64)
+        precision_buf = np.empty_like(prior_prec_F)
+        eta_buf = np.empty_like(prior_eta_scaled)
 
     # Initialize at prior mean
     coef = prior_mean.copy()
@@ -283,22 +287,36 @@ def update_gaussian_posterior_laplace(
             y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
         )
 
-        # Likelihood contribution
+        # Likelihood contribution + combine with prior
         if sparse:
             from scipy.sparse import diags
 
-            W_sqrt = diags(np.sqrt(glm_weights.W), format="csc")
-            X_weighted = W_sqrt @ X_sparse  # type: ignore
-            likelihood_precision = X_weighted.T @ X_weighted
-            likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)  # type: ignore
-        else:
-            X_weighted = X * np.sqrt(glm_weights.W)[:, np.newaxis]
-            likelihood_precision = dsyrk(1.0, X_weighted, trans=1)
-            likelihood_eta = X.T @ (glm_weights.W * glm_weights.z)
+            # X^T W X via X^T @ (diag(W) @ X) — avoids sqrt
+            W_diag = diags(glm_weights.W, format="csc")
+            XW = W_diag @ X_sparse  # type: ignore
+            posterior_precision = csc_array(X_sparse.T @ XW)  # type: ignore
+            # In-place addition of prior to avoid allocating a third sparse matrix
+            posterior_precision += prior_precision_scaled
 
-        # Combine prior and likelihood (using precomputed prior terms)
-        posterior_precision = prior_precision_scaled + likelihood_precision
-        posterior_eta = prior_eta_scaled + likelihood_eta
+            likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)  # type: ignore
+            posterior_eta = prior_eta_scaled + likelihood_eta
+        else:
+            # Reuse buffers: sqrt(W) and X_weighted
+            np.sqrt(glm_weights.W, out=W_sqrt_buf)
+            np.multiply(X, W_sqrt_buf[:, np.newaxis], out=X_weighted)
+
+            # posterior_precision = 1.0 * X_w^T @ X_w + 1.0 * prior_copy
+            np.copyto(precision_buf, prior_prec_F)
+            posterior_precision = dsyrk(
+                1.0, X_weighted, trans=1, beta=1.0, c=precision_buf, overwrite_c=True
+            )
+
+            # posterior_eta = 1.0 * X^T @ Wz + 1.0 * prior_eta_copy
+            np.multiply(glm_weights.W, glm_weights.z, out=Wz_buf)
+            np.copyto(eta_buf, prior_eta_scaled)
+            posterior_eta = dgemv(
+                1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
+            )
 
         # Solve for new coefficients
         if sparse:
@@ -323,7 +341,12 @@ def update_gaussian_posterior_laplace(
 
         # Check convergence if n_iter > 1
         if iteration > 0 and n_iter > 1:
-            coef_change = np.max(np.abs(coef - coef_old))  # type: ignore
+            if sparse:
+                coef_change = np.max(np.abs(coef - coef_old))  # type: ignore
+            else:
+                np.subtract(coef, coef_old, out=diff_buf)  # type: ignore
+                np.abs(diff_buf, out=diff_buf)
+                coef_change = diff_buf.max()
             if coef_change < tol:
                 break
 
