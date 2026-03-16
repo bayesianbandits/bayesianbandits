@@ -224,6 +224,36 @@ def test_normal_regressor_sample(
     )
 
 
+def test_normal_regressor_cov_property_dense(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor cov_ property returns a valid Covariance on dense path."""
+    clf = NormalRegressor(alpha=1, beta=1, sparse=False, random_state=0)
+    clf.fit(X, y)
+
+    cov = clf.cov_
+    # Should return a scipy Covariance object
+    assert hasattr(cov, "covariance")
+    # Covariance should be the inverse of cov_inv_
+    assert_almost_equal(cov.covariance, np.linalg.inv(clf.cov_inv_))
+
+
+def test_normal_regressor_cov_property_dense_no_fit(
+    X: NDArray[np.int_],
+    y: NDArray[np.int_],
+) -> None:
+    """Test NormalRegressor cov_ before fit (after _initialize_prior), dense path."""
+    clf = NormalRegressor(alpha=1, beta=1, sparse=False, random_state=0)
+    # Trigger _initialize_prior without fitting
+    clf._initialize_prior(X)
+
+    cov = clf.cov_
+    assert hasattr(cov, "covariance")
+    # Prior precision is alpha * I, so covariance should be (1/alpha) * I
+    assert_almost_equal(cov.covariance, np.eye(X.shape[1]))
+
+
 @pytest.mark.parametrize("sparse", [True, False])
 def test_normal_regressor_sample_no_fit(
     X: NDArray[np.int_],

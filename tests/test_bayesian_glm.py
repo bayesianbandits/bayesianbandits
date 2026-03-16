@@ -104,6 +104,19 @@ def test_bayesian_glm_sample_before_fit_uses_prior(sparse: bool) -> None:
     assert np.all((samples >= 0) & (samples <= 1))
 
 
+def test_bayesian_glm_cov_before_fit_dense() -> None:
+    """Test BayesianGLM cov_ before fit (after _initialize_prior), dense path."""
+    X = np.random.randn(10, 5)
+    clf = BayesianGLM(alpha=0.1, link="logit", sparse=False)
+    # Trigger _initialize_prior without fitting
+    clf._initialize_prior(X)
+
+    cov = clf.cov_
+    assert hasattr(cov, "covariance")
+    # Prior precision is alpha * I = 0.1 * I, so covariance = 10 * I
+    np.testing.assert_almost_equal(cov.covariance, 10.0 * np.eye(X.shape[1]))
+
+
 @pytest.mark.parametrize("sparse", [True, False])
 def test_bayesian_glm_decay_before_fit_does_nothing(sparse: bool) -> None:
     """Test decay before fit does nothing."""
