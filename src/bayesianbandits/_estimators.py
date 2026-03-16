@@ -928,9 +928,10 @@ scipy.sparse.csc_array
 
     @_invalidate_cached_properties
     def __getstate__(self) -> Any:
-        # Delete cached objects that contain C extensions and cannot be pickled
-        self.__dict__.pop("_factor", None)
-        return super().__getstate__()  # type: ignore
+        # Exclude cached C extension objects that cannot be pickled
+        state = super().__getstate__()  # type: ignore
+        state.pop("_factor", None)
+        return state
 
     def fit(
         self,
@@ -1960,9 +1961,10 @@ scipy.sparse.csc_array
 
     @_invalidate_cached_properties
     def __getstate__(self) -> Any:
-        # Delete cached objects that contain C extensions and cannot be pickled
-        self.__dict__.pop("_factor", None)
-        return super().__getstate__()  # type: ignore
+        # Exclude cached C extension objects that cannot be pickled
+        state = super().__getstate__()  # type: ignore
+        state.pop("_factor", None)
+        return state
 
     @cached_property
     def cov_(self) -> Union[Covariance, SparseFactor]:
@@ -1985,11 +1987,12 @@ scipy.sparse.csc_array
             assert isinstance(self.cov_inv_, csc_array)
             return create_sparse_factor(self.cov_inv_)
         else:
-            cov = solve(
-                self.cov_inv_,
+            from scipy.linalg import cho_factor, cho_solve
+
+            cov = cho_solve(
+                cho_factor(self.cov_inv_, lower=False, check_finite=False),
                 np.eye(self.n_features_),
                 check_finite=False,
-                assume_a="pos",
             )
             return Covariance.from_cholesky(cholesky(cov, lower=True))
 
@@ -2013,9 +2016,8 @@ scipy.sparse.csc_array
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
-        if self.sparse:
-            assert isinstance(posterior.precision, csc_array)
-            self._factor = create_sparse_factor(posterior.precision)
+        if self.sparse and posterior.factor is not None:
+            self._factor = posterior.factor
 
     def fit(
         self,
@@ -2225,16 +2227,15 @@ scipy.sparse.csc_array
         # Ensure param_samples is always 2D: (size, n_features)
         param_samples = np.atleast_2d(param_samples)
 
-        # Compute predictions for each parameter sample
-        predictions = np.zeros((size, X_sample.shape[0]))
-        for i in range(size):
-            eta = X_sample @ param_samples[i]
-            if self.link == "logit":
-                predictions[i] = expit(eta)
-            elif self.link == "log":
-                predictions[i] = np.exp(np.clip(eta, -700, 700))
+        # Vectorized: (size, n_features) @ (n_features, n_samples) -> (size, n_samples)
+        eta = param_samples @ X_sample.T
 
-        return predictions
+        if self.link == "logit":
+            return expit(eta)
+        elif self.link == "log":
+            return np.exp(np.clip(eta, -700, 700))
+        else:
+            raise ValueError(f"Unknown link: {self.link}")
 
     @_invalidate_cached_properties
     def decay(

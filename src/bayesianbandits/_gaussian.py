@@ -1,8 +1,10 @@
 from dataclasses import dataclass
-from typing import Literal, NamedTuple, Optional, Protocol, Union, cast
+from typing import Any, Literal, NamedTuple, Optional, Protocol, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import cho_factor, cho_solve
+from scipy.linalg.blas import dsymv, dsyrk
 from scipy.sparse import csc_array
 from scipy.special import expit
 
@@ -31,6 +33,7 @@ class GaussianPosterior(NamedTuple):
 
     mean: ArrayType  # Posterior mean
     precision: ArrayType  # Posterior precision matrix
+    factor: Optional[Any] = None  # Sparse factor (CHOLMOD/SuperLU), if available
 
 
 def compute_effective_weights(
@@ -66,9 +69,11 @@ def solve_precision_weighted_mean(
         assert isinstance(precision, csc_array)
         return create_sparse_factor(precision).solve(eta)
     else:
-        from scipy.linalg import solve
+        from scipy.linalg import cho_factor, cho_solve
 
-        return solve(precision, eta, check_finite=False, assume_a="pos")
+        return cho_solve(
+            cho_factor(precision, check_finite=False), eta, check_finite=False
+        )
 
 
 def logit_link_and_derivative(
@@ -247,7 +252,11 @@ def update_gaussian_posterior_laplace(
 
     # Precompute prior contributions (these don't change in the loop)
     prior_precision_scaled = prior_decay * prior_precision
-    prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
+    if sparse:
+        prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
+    else:
+        # dsymv: symmetric matvec reading only upper triangle
+        prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
 
     # Initialize at prior mean
     coef = prior_mean.copy()
@@ -284,7 +293,7 @@ def update_gaussian_posterior_laplace(
             likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)  # type: ignore
         else:
             X_weighted = X * np.sqrt(glm_weights.W)[:, np.newaxis]
-            likelihood_precision = X_weighted.T @ X_weighted
+            likelihood_precision = dsyrk(1.0, X_weighted, trans=1)
             likelihood_eta = X.T @ (glm_weights.W * glm_weights.z)
 
         # Combine prior and likelihood (using precomputed prior terms)
@@ -292,7 +301,25 @@ def update_gaussian_posterior_laplace(
         posterior_eta = prior_eta_scaled + likelihood_eta
 
         # Solve for new coefficients
-        coef = solve_precision_weighted_mean(posterior_precision, posterior_eta, sparse)  # type: ignore
+        if sparse:
+            from ._sparse_bayesian_linear_regression import create_sparse_factor
+
+            assert isinstance(posterior_precision, csc_array)
+            if iteration == 0:
+                # First iteration: full symbolic + numeric factorization
+                sparse_factor = create_sparse_factor(posterior_precision)
+            else:
+                # Reuse symbolic analysis, numeric refactorization only
+                sparse_factor = sparse_factor.refactorize(posterior_precision)  # type: ignore[possibly-undefined]
+            coef = sparse_factor.solve(posterior_eta)
+        else:
+            # cho_factor(lower=False) reads only upper triangle,
+            # which is correct from dsyrk + symmetric prior
+            coef = cho_solve(
+                cho_factor(posterior_precision, lower=False, check_finite=False),
+                posterior_eta,
+                check_finite=False,
+            )
 
         # Check convergence if n_iter > 1
         if iteration > 0 and n_iter > 1:
@@ -300,7 +327,11 @@ def update_gaussian_posterior_laplace(
             if coef_change < tol:
                 break
 
-    return GaussianPosterior(coef, posterior_precision)  # type: ignore
+    return GaussianPosterior(
+        coef,
+        posterior_precision,  # type: ignore
+        sparse_factor if sparse else None,  # type: ignore[possibly-undefined]
+    )
 
 
 class PosteriorApproximator(Protocol):
