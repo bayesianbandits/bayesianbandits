@@ -6,7 +6,8 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.linalg import cholesky, solve
+from scipy.linalg import cho_factor, cho_solve, cholesky, solve
+from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore
 from scipy.sparse import csc_array, diags, eye
 from scipy.special import expit
 from scipy.stats import (
@@ -35,11 +36,12 @@ from ._gaussian import (
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CholmodSparseFactor,
+    DenseFactor,
     ScaledSparseFactor,
     SparseFactor,
     SuperLUSparseFactor,
     create_sparse_factor,
-    multivariate_normal_sample_from_sparse_precision,
+    multivariate_normal_sample_from_precision,
     multivariate_t_sample_from_sparse_precision,
     scale_factor,
 )
@@ -793,7 +795,7 @@ def _invalidate_cached_properties(
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
     @wraps(func)
     def wrapper(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
-        for attr in ("shape_", "cov_"):
+        for attr in ("shape_", "cov_", "_dense_factor"):
             try:
                 delattr(self, attr)
             except AttributeError:
@@ -1014,12 +1016,12 @@ scipy.sparse.csc_array
             assert isinstance(self.cov_inv_, csc_array)
             return create_sparse_factor(self.cov_inv_)
         else:
-            cov = solve(
-                self.cov_inv_,
-                np.eye(self.n_features_),
-                check_finite=False,
-                assume_a="pos",
-            )
+            if hasattr(self, "_dense_factor"):
+                factor = self._dense_factor
+            else:
+                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            cov = factor.solve(np.eye(self.n_features_))
         return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     @_invalidate_cached_properties
@@ -1055,38 +1057,61 @@ scipy.sparse.csc_array
 
         # Apply weights to X and y
         if self.sparse:
-            # For sparse matrices, create sparse diagonal weight matrix
-            from scipy.sparse import diags
-
-            W_sqrt = diags(np.sqrt(effective_weights), format="csc")
-            X_weighted = W_sqrt @ X
-            # Update the inverse covariance matrix
+            # Element-wise scaling avoids constructing a diagonal matrix.
+            # Absorb beta into weights so X_weighted^T @ X_weighted = beta * X^T W X
+            assert isinstance(X, csc_array)
+            w_sqrt = np.sqrt(self.beta * effective_weights)
+            X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             cov_inv = cast(
                 csc_array,
-                prior_decay * self.cov_inv_ + self.beta * (X_weighted.T @ X_weighted),
+                prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted,
             )
         else:
             # For dense matrices, use broadcasting for efficiency
-            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
-            # Update the inverse covariance matrix
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
-                X_weighted.T @ X_weighted
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X * w_sqrt[:, np.newaxis]
+            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
+            cov_inv = dsyrk(
+                self.beta,
+                X_weighted,
+                trans=1,
+                beta=1.0,
+                c=prior_scaled,
+                overwrite_c=True,
             )
-            cov_inv = cast(NDArray[np.float64], cov_inv)
+            # Symmetrize (dsyrk only fills upper triangle)
+            il = np.tril_indices(cov_inv.shape[0], -1)
+            cov_inv[il] = cov_inv[il[1], il[0]]
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
 
-        eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
-        eta = cast(NDArray[np.float64], eta)
-
         if self.sparse:
+            # Scale vectors instead of sparse matrices to avoid copies
+            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ (
+                self.beta * y_weighted
+            )
+            eta = cast(NDArray[np.float64], eta)
             assert isinstance(cov_inv, csc_array)
             factor = create_sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._factor = factor
         else:
-            coef = solve(cov_inv, eta, check_finite=False, assume_a="pos")
+            # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
+            # Accumulate into one buffer via dsymv then dgemv
+            eta = dsymv(
+                prior_decay,
+                self.cov_inv_,
+                self.coef_,
+            )
+            eta = dgemv(
+                self.beta, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True
+            )
+            # Cache the Cholesky factor for reuse in cov_/sample
+            cho = cho_factor(cov_inv, lower=False, check_finite=False)
+            self._dense_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            coef = cho_solve(cho, eta, check_finite=False)
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -1218,28 +1243,31 @@ scipy.sparse.csc_array
             X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
+        # Sample w ~ N(coef_, Λ^{-1}) via triangular solve against the
+        # Cholesky factor of the precision.  Both dense (DenseFactor) and
+        # sparse (CHOLMOD/SuperLU) paths use the same colorize interface.
         if self.sparse:
-            cov = self.cov_
+            factor = self.cov_
             assert isinstance(
-                cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
+                factor, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
             )
-            samples = np.atleast_1d(
-                multivariate_normal_sample_from_sparse_precision(
-                    self.coef_,
-                    cov,
-                    size=size,
-                    random_state=self.random_state_,
-                )
-            )
-
         else:
-            rv_gen = partial(
-                multivariate_normal.rvs, size=size, random_state=self.random_state_
+            if hasattr(self, "_dense_factor"):
+                factor = self._dense_factor
+            else:
+                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+
+        samples = np.atleast_2d(
+            multivariate_normal_sample_from_precision(
+                self.coef_,
+                factor,
+                size=size,
+                random_state=self.random_state_,
             )
+        )
 
-            samples = np.atleast_1d(rv_gen(self.coef_, self.cov_))  # type: ignore
-
-        return np.atleast_2d(samples @ X_sample.T)  # type: ignore
+        return samples @ X_sample.T  # type: ignore
 
     @_invalidate_cached_properties
     def decay(
@@ -1987,13 +2015,12 @@ scipy.sparse.csc_array
             assert isinstance(self.cov_inv_, csc_array)
             return create_sparse_factor(self.cov_inv_)
         else:
-            from scipy.linalg import cho_factor, cho_solve
-
-            cov = cho_solve(
-                cho_factor(self.cov_inv_, lower=False, check_finite=False),
-                np.eye(self.n_features_),
-                check_finite=False,
-            )
+            if hasattr(self, "_dense_factor"):
+                factor = self._dense_factor
+            else:
+                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            cov = factor.solve(np.eye(self.n_features_))
             return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     @_invalidate_cached_properties
@@ -2016,8 +2043,12 @@ scipy.sparse.csc_array
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
-        if self.sparse and posterior.factor is not None:
-            self._factor = posterior.factor
+        if posterior.factor is not None:
+            if self.sparse:
+                self._factor = posterior.factor
+            else:
+                cho = posterior.factor
+                self._dense_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
 
     def fit(
         self,
@@ -2205,27 +2236,28 @@ scipy.sparse.csc_array
             X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        # Sample parameters from posterior
+        # Sample w ~ N(coef_, Λ^{-1}) via triangular solve against the
+        # Cholesky factor of the precision (dense or sparse).
         if self.sparse:
-            cov = self.cov_
+            factor = self.cov_
             assert isinstance(
-                cov, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
-            )
-            param_samples = multivariate_normal_sample_from_sparse_precision(
-                self.coef_, cov, size=size, random_state=self.random_state_
+                factor, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
             )
         else:
-            from scipy.stats import multivariate_normal
+            if hasattr(self, "_dense_factor"):
+                factor = self._dense_factor
+            else:
+                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
 
-            param_samples = multivariate_normal.rvs(
-                mean=self.coef_,
-                cov=self.cov_,  # type: ignore
+        param_samples = np.atleast_2d(
+            multivariate_normal_sample_from_precision(
+                self.coef_,
+                factor,
                 size=size,
                 random_state=self.random_state_,
             )
-
-        # Ensure param_samples is always 2D: (size, n_features)
-        param_samples = np.atleast_2d(param_samples)
+        )
 
         # Vectorized: (size, n_features) @ (n_features, n_samples) -> (size, n_samples)
         eta = param_samples @ X_sample.T

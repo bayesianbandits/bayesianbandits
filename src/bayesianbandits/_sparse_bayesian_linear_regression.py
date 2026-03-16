@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -195,6 +196,40 @@ class ScaledSparseFactor:
 SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
 
 
+@dataclass
+class DenseFactor:
+    """Wraps a LAPACK Cholesky factorization for solving and sampling.
+
+    Stores the upper-triangular factor U where Λ = U^T U.
+    U^{-1} is computed lazily on first ``colorize`` call so that
+    ``fit``/``partial_fit`` (which only need ``solve``) pay no
+    extra cost.
+    """
+
+    _U: NDArray[np.float64]
+    _n_features: int
+
+    @cached_property
+    def _U_inv(self) -> NDArray[np.float64]:
+        from scipy.linalg import solve_triangular
+
+        return solve_triangular(
+            self._U, np.eye(self._n_features), lower=False, check_finite=False
+        )
+
+    def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        from scipy.linalg import cho_solve
+
+        return cho_solve((self._U, False), b, check_finite=False)
+
+    def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Compute U^{-1} z, producing samples from N(0, Λ^{-1})."""
+        return self._U_inv @ z
+
+
+PrecisionFactor = SparseFactor | DenseFactor
+
+
 def scale_factor(factor: SparseFactor, scale: float) -> SparseFactor:
     """Scale a factor by a scalar, composing rather than nesting."""
     if scale == 1.0:
@@ -236,49 +271,55 @@ def create_sparse_factor(
         )
 
 
-def multivariate_normal_sample_from_sparse_precision(
+def multivariate_normal_sample_from_precision(
     mean: Union[csc_array, NDArray[np.float64], None],
-    factor: SparseFactor,
+    factor: PrecisionFactor,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
 ) -> NDArray[np.float64]:
     """
-    Sample from a multivariate normal distribution with mean mu (default 0)
-    and sparse precision matrix Q.
+    Sample from a multivariate normal distribution parameterized by a
+    factored precision matrix.
+
+    Works with both dense (``DenseFactor``) and sparse
+    (``CholmodSparseFactor``, ``SuperLUSparseFactor``,
+    ``ScaledSparseFactor``) precision factors via the common
+    ``colorize`` interface.
 
     Parameters
     ----------
-    mean : array_like, optional
-        Mean of the distribution. Default is 0.
-    factor : SparseFactor
-        Factored precision matrix.
-    size : int or tuple of ints, optional
-        Given a shape of, for example, (m,n,k), m*n*k samples are generated,
-        and packed in an m-by-n-by-k arrangement. Because each sample is
-        N-dimensional, the output shape is (m,n,k,N). If no shape is specified,
-        a single (N-D) sample is returned.
-    random_state : int, RandomState instance or None, optional (default=None)
-        If int, random_state is the seed used by the random number generator;
-        If RandomState instance, random_state is the random number generator;
-        If None, the random number generator is the RandomState instance used
-        by `np.random.default_rng`.
+    mean : array_like or None
+        Mean of the distribution. If None, the zero vector is used.
+    factor : PrecisionFactor
+        Factored precision matrix (dense or sparse).
+    size : int, default=1
+        Number of samples to draw.
+    random_state : int, Generator, or None, default=None
+        Random state for reproducibility.
 
     Returns
     -------
-    out : ndarray
-        The drawn samples, of shape size, if that was provided. If not, the
-        shape is (N,).
-
+    out : ndarray of shape (size, n_features) or (n_features,) if size=1
+        The drawn samples.
     """
     rng = np.random.default_rng(random_state)
-    n_features = cast(tuple[int, int], factor._precision.shape)[0]
+    if isinstance(factor, DenseFactor):
+        n_features = factor._n_features
+    else:
+        n_features = cast(tuple[int, int], factor._precision.shape)[0]
     _Z = rng.standard_normal((size, n_features))
     samples = factor.colorize(_Z.T).T
     if samples.shape[0] == 1:
         samples = samples[0]
     if mean is not None:
-        samples = samples + mean
+        samples += mean
     return samples
+
+
+# Backwards-compatible alias
+multivariate_normal_sample_from_sparse_precision = (
+    multivariate_normal_sample_from_precision
+)
 
 
 def multivariate_t_sample_from_sparse_precision(
@@ -323,8 +364,11 @@ def multivariate_t_sample_from_sparse_precision(
 
     x = rng.chisquare(df, size) / df
 
-    z = multivariate_normal_sample_from_sparse_precision(
-        mean=None, factor=factor, size=size, random_state=random_state
+    z = multivariate_normal_sample_from_precision(
+        mean=None,
+        factor=factor,
+        size=size,
+        random_state=random_state,
     )
     if loc is None:
         loc = np.zeros_like(z)

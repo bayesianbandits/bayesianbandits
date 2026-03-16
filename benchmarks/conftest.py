@@ -102,6 +102,17 @@ def normal_sparse_1k_fresh(normal_sparse_1k):
 
 
 @pytest.fixture
+def normal_sparse_100k():
+    return _fit_estimator("normal", "sparse", 100_000)
+
+
+@pytest.fixture
+def normal_sparse_100k_fresh(normal_sparse_100k):
+    est, X_test, name = normal_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
 def normal_sparse_1m():
     return _fit_estimator("normal", "sparse", 1_000_000)
 
