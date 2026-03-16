@@ -169,3 +169,4 @@ src/bayesianbandits/_takahashi.c
 
 # Benchmarks
 .benchmarks/
+.tasks/
