@@ -1,6 +1,5 @@
 """Benchmarks for estimator operations (fit, sample, predict, partial_fit, decay)."""
 
-
 import numpy as np
 import pytest
 from scipy.sparse import csc_array

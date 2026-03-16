@@ -248,9 +248,7 @@ def test_fisher_information_equivalence():
     # Should match precision (minus prior contribution) — compare upper triangle
     # since dense precision is stored as upper-triangular from dsyrk
     likelihood_precision = posterior.precision - 0.01 * np.eye(3)
-    assert_allclose(
-        np.triu(likelihood_precision), np.triu(fisher), rtol=1e-3
-    )
+    assert_allclose(np.triu(likelihood_precision), np.triu(fisher), rtol=1e-3)
 
 
 def test_irls_finds_correct_map():
