@@ -37,7 +37,8 @@ def _make_data(kind, n_features, n_obs=200, rng=None):
         X_train = rng.standard_normal((n_obs, n_features))
         X_test = rng.standard_normal((10, n_features))
     else:
-        density = min(50_000 / (n_obs * n_features), 0.1)
+        nnz_per_row = 10
+        density = min(nnz_per_row / n_features, 0.1)
         X_train = csc_array(
             sparse_random(n_obs, n_features, density=density, random_state=42)
         )
@@ -117,8 +118,20 @@ def glm_logit_dense_100():
 
 
 @pytest.fixture
+def glm_logit_dense_100_fresh(glm_logit_dense_100):
+    est, X_test, name = glm_logit_dense_100
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
 def glm_logit_dense_1k():
     return _fit_estimator("glm_logit", "dense", 1_000)
+
+
+@pytest.fixture
+def glm_logit_dense_1k_fresh(glm_logit_dense_1k):
+    est, X_test, name = glm_logit_dense_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
 
 
 @pytest.fixture
@@ -127,5 +140,28 @@ def glm_logit_sparse_1k():
 
 
 @pytest.fixture
+def glm_logit_sparse_1k_fresh(glm_logit_sparse_1k):
+    est, X_test, name = glm_logit_sparse_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def glm_logit_sparse_100k():
+    return _fit_estimator("glm_logit", "sparse", 100_000)
+
+
+@pytest.fixture
+def glm_logit_sparse_100k_fresh(glm_logit_sparse_100k):
+    est, X_test, name = glm_logit_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
 def glm_logit_sparse_1m():
     return _fit_estimator("glm_logit", "sparse", 1_000_000)
+
+
+@pytest.fixture
+def glm_logit_sparse_1m_fresh(glm_logit_sparse_1m):
+    est, X_test, name = glm_logit_sparse_1m
+    return lambda: (copy.deepcopy(est), X_test, name)
