@@ -119,6 +119,156 @@ def compute_glm_weights_and_working_response(
     return GLMWeights(W, z)  # type: ignore
 
 
+def _eval_link(link: LinkFunction, eta: NDArray[np.float64]) -> LinkOutput:
+    """Evaluate link function and derivative."""
+    if link == "logit":
+        return logit_link_and_derivative(eta)
+    elif link == "log":
+        return log_link_and_derivative(eta)
+    else:
+        raise ValueError(f"Unknown link function: {link}")
+
+
+def _irls_dense(
+    X: NDArray[np.float64],
+    y: NDArray[np.float64],
+    prior_mean: NDArray[np.float64],
+    prior_precision: NDArray[np.float64],
+    *,
+    link: LinkFunction,
+    effective_weights: NDArray[np.float64],
+    prior_decay: float,
+    n_iter: int,
+    tol: float,
+) -> GaussianPosterior:
+    """Dense IRLS loop with pre-allocated buffers and fused BLAS calls."""
+    n_samples, n_features = X.shape
+
+    # Precompute prior contributions
+    no_decay = prior_decay == 1.0
+    prior_precision_scaled = (
+        prior_precision if no_decay else prior_decay * prior_precision
+    )
+    prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
+
+    # F-order copy of prior precision for dsyrk accumulation buffer
+    prior_prec_F = np.asfortranarray(prior_precision_scaled)
+
+    # Pre-allocate reusable buffers
+    X_weighted = np.empty_like(X)
+    W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
+    Wz_buf = np.empty(n_samples, dtype=np.float64)
+    diff_buf = np.empty(n_features, dtype=np.float64)
+    precision_buf = np.empty_like(prior_prec_F)
+    eta_buf = np.empty_like(prior_eta_scaled)
+
+    coef = prior_mean.copy()
+    coef_old = coef
+    posterior_precision = prior_prec_F
+
+    for iteration in range(n_iter):
+        if iteration > 0 and n_iter > 1:
+            coef_old = coef.copy()
+
+        eta = cast(NDArray[np.float64], X @ coef)
+        link_out = _eval_link(link, eta)
+        glm_weights = compute_glm_weights_and_working_response(
+            y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
+        )
+
+        # Fused X^T W X + prior via dsyrk(beta=1, c=prior_copy)
+        np.sqrt(glm_weights.W, out=W_sqrt_buf)
+        np.multiply(X, W_sqrt_buf[:, np.newaxis], out=X_weighted)
+        np.copyto(precision_buf, prior_prec_F)
+        posterior_precision = dsyrk(
+            1.0, X_weighted, trans=1, beta=1.0, c=precision_buf, overwrite_c=True
+        )
+
+        # Fused X^T @ (W*z) + prior_eta via dgemv(beta=1, y=prior_copy)
+        np.multiply(glm_weights.W, glm_weights.z, out=Wz_buf)
+        np.copyto(eta_buf, prior_eta_scaled)
+        posterior_eta = dgemv(
+            1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
+        )
+
+        coef = cho_solve(
+            cho_factor(posterior_precision, lower=False, check_finite=False),
+            posterior_eta,
+            check_finite=False,
+        )
+
+        if iteration > 0 and n_iter > 1:
+            np.subtract(coef, coef_old, out=diff_buf)
+            np.abs(diff_buf, out=diff_buf)
+            if diff_buf.max() < tol:
+                break
+
+    return GaussianPosterior(coef, cast(NDArray[np.float64], posterior_precision), None)
+
+
+def _irls_sparse(
+    X: csc_array,
+    y: NDArray[np.float64],
+    prior_mean: NDArray[np.float64],
+    prior_precision: csc_array,
+    *,
+    link: LinkFunction,
+    effective_weights: NDArray[np.float64],
+    prior_decay: float,
+    n_iter: int,
+    tol: float,
+) -> GaussianPosterior:
+    """Sparse IRLS loop using CHOLMOD/SuperLU factorization."""
+    from ._sparse_bayesian_linear_regression import create_sparse_factor
+
+    # Precompute prior contributions
+    no_decay = prior_decay == 1.0
+    prior_precision_scaled = (
+        prior_precision if no_decay else prior_decay * prior_precision
+    )
+    prior_eta_scaled = (
+        prior_precision @ prior_mean
+        if no_decay
+        else prior_decay * (prior_precision @ prior_mean)
+    )
+
+    coef = prior_mean.copy()
+    coef_old = coef
+    sparse_factor = None
+    posterior_precision = prior_precision
+
+    for iteration in range(n_iter):
+        if iteration > 0 and n_iter > 1:
+            coef_old = coef.copy()
+
+        eta = cast(NDArray[np.float64], X @ coef)
+        link_out = _eval_link(link, eta)
+        glm_weights = compute_glm_weights_and_working_response(
+            y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
+        )
+
+        # X^T W X via element-wise row scaling (avoids diags construction)
+        XW = X.multiply(glm_weights.W.reshape(-1, 1)).tocsc()
+        posterior_precision = csc_array(X.T @ XW)
+        posterior_precision += prior_precision_scaled
+
+        likelihood_eta = X.T @ (glm_weights.W * glm_weights.z)
+        posterior_eta = prior_eta_scaled + likelihood_eta
+
+        if sparse_factor is None:
+            sparse_factor = create_sparse_factor(posterior_precision)
+        else:
+            sparse_factor = sparse_factor.refactorize(posterior_precision)
+        coef = sparse_factor.solve(posterior_eta)
+
+        if iteration > 0 and n_iter > 1:
+            coef_change = np.max(np.abs(coef - coef_old))
+            if coef_change < tol:
+                break
+
+    return GaussianPosterior(coef, posterior_precision, sparse_factor)
+
+
 def update_gaussian_posterior_laplace(
     X: ArrayType,
     y: NDArray[np.float64],
@@ -150,38 +300,6 @@ def update_gaussian_posterior_laplace(
         p(θ|y,X) ≈ N(θ|θ_MAP, H⁻¹)
     where H is the Hessian of -log p(θ|y,X) at θ_MAP.
 
-    Benefits of MAP/Laplace
-    -----------------------
-    - Fast: One Newton step per update (vs. quadrature integration)
-    - Scalable: Handles batch updates naturally
-    - Proven: Standard in production systems (Google, Meta, etc.)
-    - Stable: Well-understood optimization problem
-    - Natural parameters: Updates are additive
-
-    Drawbacks of MAP/Laplace
-    ------------------------
-    - Point estimate: Only considers curvature at mode
-    - Overconfident: Can underestimate uncertainty away from mode
-    - No skewness: Forces symmetric Gaussian approximation
-    - Mode ≠ Mean: For skewed posteriors, MAP is biased
-    - Poor for multimodal: Only captures one mode
-
-    When to Use
-    -----------
-    Good for:
-    - Large datasets (CLT makes posterior more Gaussian)
-    - Batch processing (sees all data at once)
-    - Minibatch updates (fast convergence)
-    - Well-specified models
-    - When computational speed is critical
-
-
-    Implementation Note
-    -------------------
-    We use one step of Newton's method (IRLS) starting from the prior mean.
-    For well-specified problems, this is often sufficient. For difficult
-    problems, multiple iterations might be needed (not implemented here).
-
     Parameters
     ----------
     X : array-like of shape (n_samples, n_features)
@@ -212,149 +330,48 @@ def update_gaussian_posterior_laplace(
         Convergence tolerance for coefficient change. Only used if n_iter > 1.
         Convergence when: ||coef_new - coef_old||_∞ < tol
 
-
     Returns
     -------
     GaussianPosterior
         posterior.mean : MAP estimate
         posterior.precision : Hessian at MAP (approximate posterior precision)
     """
-    if sparse:
-        X_sparse = csc_array(X)
-
     assert X.shape is not None, "X must be a 2D array"
     n_samples = X.shape[0]
-    n_features = X.shape[1]
 
     # Fast path: no data means posterior == prior
     if n_samples == 0:
         return GaussianPosterior(prior_mean.copy(), prior_precision.copy(), None)
 
-    # Apply learning rate decay to sample weights
     effective_weights = compute_effective_weights(
         n_samples, sample_weight, learning_rate
     )
     prior_decay = learning_rate**n_samples
 
-    # Precompute prior contributions (these don't change in the loop)
-    no_decay = prior_decay == 1.0
-    if no_decay:
-        prior_precision_scaled = prior_precision
-    else:
-        prior_precision_scaled = prior_decay * prior_precision
     if sparse:
-        if no_decay:
-            prior_eta_scaled = prior_precision @ prior_mean
-        else:
-            prior_eta_scaled = prior_decay * (prior_precision @ prior_mean)
-    else:
-        # dsymv: symmetric matvec reading only upper triangle
-        prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
-
-        # F-order copy of prior precision for dsyrk accumulation buffer
-        prior_prec_F = np.asfortranarray(prior_precision_scaled)
-
-        # Pre-allocate reusable buffers for the dense IRLS loop
-        X_weighted = np.empty_like(X)
-        W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
-        Wz_buf = np.empty(n_samples, dtype=np.float64)
-        diff_buf = np.empty(n_features, dtype=np.float64)
-        precision_buf = np.empty_like(prior_prec_F)
-        eta_buf = np.empty_like(prior_eta_scaled)
-
-    # Initialize at prior mean
-    coef = prior_mean.copy()
-
-    # IRLS iterations
-    for iteration in range(n_iter):
-        # Store old coefficients for convergence check
-        if iteration > 0 and n_iter > 1:
-            coef_old = coef.copy()
-
-        # Compute current predictions
-        eta = X @ coef
-
-        # Get mean and derivative from link function
-        if link == "logit":
-            link_out = logit_link_and_derivative(eta)
-        elif link == "log":
-            link_out = log_link_and_derivative(eta)
-        else:
-            raise ValueError(f"Unknown link function: {link}")
-
-        # Compute GLM weights and working response
-        glm_weights = compute_glm_weights_and_working_response(
-            y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
+        return _irls_sparse(
+            csc_array(X),
+            y,
+            np.asarray(prior_mean),
+            csc_array(prior_precision),
+            link=link,
+            effective_weights=effective_weights,
+            prior_decay=prior_decay,
+            n_iter=n_iter,
+            tol=tol,
         )
-
-        # Likelihood contribution + combine with prior
-        if sparse:
-            from scipy.sparse import diags
-
-            # X^T W X via X^T @ (diag(W) @ X) — avoids sqrt
-            W_diag = diags(glm_weights.W, format="csc")
-            XW = W_diag @ X_sparse  # type: ignore
-            posterior_precision = csc_array(X_sparse.T @ XW)  # type: ignore
-            # In-place addition of prior to avoid allocating a third sparse matrix
-            posterior_precision += prior_precision_scaled
-
-            likelihood_eta = X_sparse.T @ (glm_weights.W * glm_weights.z)  # type: ignore
-            posterior_eta = prior_eta_scaled + likelihood_eta
-        else:
-            # Reuse buffers: sqrt(W) and X_weighted
-            np.sqrt(glm_weights.W, out=W_sqrt_buf)
-            np.multiply(X, W_sqrt_buf[:, np.newaxis], out=X_weighted)
-
-            # posterior_precision = 1.0 * X_w^T @ X_w + 1.0 * prior_copy
-            np.copyto(precision_buf, prior_prec_F)
-            posterior_precision = dsyrk(
-                1.0, X_weighted, trans=1, beta=1.0, c=precision_buf, overwrite_c=True
-            )
-
-            # posterior_eta = 1.0 * X^T @ Wz + 1.0 * prior_eta_copy
-            np.multiply(glm_weights.W, glm_weights.z, out=Wz_buf)
-            np.copyto(eta_buf, prior_eta_scaled)
-            posterior_eta = dgemv(
-                1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
-            )
-
-        # Solve for new coefficients
-        if sparse:
-            from ._sparse_bayesian_linear_regression import create_sparse_factor
-
-            assert isinstance(posterior_precision, csc_array)
-            if iteration == 0:
-                # First iteration: full symbolic + numeric factorization
-                sparse_factor = create_sparse_factor(posterior_precision)
-            else:
-                # Reuse symbolic analysis, numeric refactorization only
-                sparse_factor = sparse_factor.refactorize(posterior_precision)  # type: ignore[possibly-undefined]
-            coef = sparse_factor.solve(posterior_eta)
-        else:
-            # cho_factor(lower=False) reads only upper triangle,
-            # which is correct from dsyrk + symmetric prior
-            coef = cho_solve(
-                cho_factor(posterior_precision, lower=False, check_finite=False),
-                posterior_eta,
-                check_finite=False,
-            )
-
-        # Check convergence if n_iter > 1
-        if iteration > 0 and n_iter > 1:
-            if sparse:
-                coef_change = np.max(np.abs(coef - coef_old))  # type: ignore
-            else:
-                np.subtract(coef, coef_old, out=diff_buf)  # type: ignore
-                np.abs(diff_buf, out=diff_buf)
-                coef_change = diff_buf.max()
-            if coef_change < tol:
-                break
-
-    return GaussianPosterior(
-        coef,
-        posterior_precision,  # type: ignore
-        sparse_factor if sparse else None,  # type: ignore[possibly-undefined]
-    )
+    else:
+        return _irls_dense(
+            np.asarray(X),
+            y,
+            np.asarray(prior_mean),
+            np.asarray(prior_precision),
+            link=link,
+            effective_weights=effective_weights,
+            prior_decay=prior_decay,
+            n_iter=n_iter,
+            tol=tol,
+        )
 
 
 class PosteriorApproximator(Protocol):
