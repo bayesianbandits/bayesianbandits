@@ -191,11 +191,8 @@ def _irls_dense(
             1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
         )
 
-        coef = cho_solve(
-            cho_factor(posterior_precision, lower=False, check_finite=False),
-            posterior_eta,
-            check_finite=False,
-        )
+        cho = cho_factor(posterior_precision, lower=False, check_finite=False)
+        coef = cho_solve(cho, posterior_eta, check_finite=False)
 
         if iteration > 0 and n_iter > 1:
             np.subtract(coef, coef_old, out=diff_buf)
@@ -203,7 +200,7 @@ def _irls_dense(
             if diff_buf.max() < tol:
                 break
 
-    return GaussianPosterior(coef, cast(NDArray[np.float64], posterior_precision), None)
+    return GaussianPosterior(coef, cast(NDArray[np.float64], posterior_precision), cho)
 
 
 def _irls_sparse(
