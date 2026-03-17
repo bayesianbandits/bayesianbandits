@@ -10,7 +10,7 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import Optional, Union, cast
+from typing import Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -22,7 +22,6 @@ from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
     SparseFactor,
-    create_sparse_factor,
 )
 
 _LOG_2PI = math.log(2.0 * math.pi)
@@ -109,42 +108,6 @@ def _diagonal_trace_approx(
         assert isinstance(precision, np.ndarray)
         diag = np.diag(precision).astype(np.float64)
     return float(np.sum(1.0 / diag))
-
-
-def logdet(
-    precision: Union[NDArray[np.float64], csc_array],
-    factor: Optional[SparseFactor] = None,
-    sparse: bool = False,
-) -> float:
-    """Compute log-determinant of a precision matrix.
-
-    Parameters
-    ----------
-    precision : dense or sparse matrix
-        The precision (or any SPD) matrix.
-    factor : SparseFactor, optional
-        Pre-computed sparse factorization. If None and sparse=True,
-        a new factorization is created.
-    sparse : bool
-        Whether to use sparse computation.
-
-    Returns
-    -------
-    float
-        log|precision|
-    """
-    if sparse:
-        if factor is None:
-            if not issparse(precision):
-                raise TypeError("precision must be sparse when sparse=True")
-            factor = create_sparse_factor(cast(csc_array, precision))
-        return factor.logdet()
-    else:
-        assert isinstance(precision, np.ndarray)
-        sign, ld = np.linalg.slogdet(precision)
-        if sign <= 0:
-            raise ValueError("Precision matrix is not positive definite")
-        return float(ld)
 
 
 def _factorization_stats(

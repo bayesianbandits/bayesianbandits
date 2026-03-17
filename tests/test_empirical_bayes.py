@@ -15,7 +15,6 @@ from bayesianbandits._empirical_bayes import (
     _takahashi_diagonal,
     _takahashi_trace,
     accumulate_sufficient_stats,
-    logdet,
     mackay_update_glm,
     mackay_update_nig,
     mackay_update_normal_online,
@@ -221,39 +220,7 @@ def regression_data() -> tuple[NDArray[np.float64], NDArray[np.float64], float, 
 
 
 # ---------------------------------------------------------------------------
-# 1. logdet correctness
-# ---------------------------------------------------------------------------
-
-
-class TestLogdet:
-    def test_dense_matches_slogdet(self, small_spd_matrix: NDArray[np.float64]) -> None:
-        expected = float(np.linalg.slogdet(small_spd_matrix)[1])
-        result = logdet(small_spd_matrix, sparse=False)
-        np.testing.assert_allclose(result, expected, atol=1e-10)
-
-    def test_sparse_matches_dense(self, small_spd_matrix: NDArray[np.float64]) -> None:
-        dense_ld = logdet(small_spd_matrix, sparse=False)
-        sparse_prec = csc_array(small_spd_matrix)
-        sparse_ld = logdet(sparse_prec, sparse=True)
-        np.testing.assert_allclose(sparse_ld, dense_ld, atol=1e-10)
-
-    def test_sparse_with_precomputed_factor(
-        self, small_spd_matrix: NDArray[np.float64]
-    ) -> None:
-        sparse_prec = csc_array(small_spd_matrix)
-        factor = create_sparse_factor(sparse_prec)
-        result = logdet(sparse_prec, factor=factor, sparse=True)
-        expected = float(np.linalg.slogdet(small_spd_matrix)[1])
-        np.testing.assert_allclose(result, expected, atol=1e-10)
-
-    def test_not_pd_raises(self) -> None:
-        bad = np.array([[-1.0, 0.0], [0.0, 1.0]])
-        with pytest.raises(ValueError, match="not positive definite"):
-            logdet(bad, sparse=False)
-
-
-# ---------------------------------------------------------------------------
-# 2. ScaledSparseFactor logdet
+# 1. ScaledSparseFactor logdet
 # ---------------------------------------------------------------------------
 
 
@@ -690,18 +657,6 @@ class TestSufficientStats:
 
 
 class TestSparseDenseParity:
-    @pytest.mark.parametrize("sparse", [True, False])
-    def test_logdet_parity(
-        self, small_spd_matrix: NDArray[np.float64], sparse: bool
-    ) -> None:
-        if sparse:
-            prec = csc_array(small_spd_matrix)
-            result = logdet(prec, sparse=True)
-        else:
-            result = logdet(small_spd_matrix, sparse=False)
-        expected = float(np.linalg.slogdet(small_spd_matrix)[1])
-        np.testing.assert_allclose(result, expected, atol=1e-10)
-
     @pytest.mark.parametrize("sparse", [True, False])
     def test_mackay_update_nig_parity(self, sparse: bool) -> None:
         rng = np.random.default_rng(77)
@@ -1199,10 +1154,6 @@ class TestGuardClauses:
 
 
 class TestErrorPaths:
-    def test_logdet_sparse_with_dense_raises_typeerror(self) -> None:
-        with pytest.raises(TypeError, match="precision must be sparse"):
-            logdet(np.eye(3), sparse=True)
-
     def test_mackay_glm_unknown_link_raises(self) -> None:
         rng = np.random.default_rng(42)
         p = 3
