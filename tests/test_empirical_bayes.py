@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from scipy.linalg import solve
+from scipy.linalg import cho_factor, solve
 from scipy.sparse import csc_array
 from scipy.special import expit, gammaln
 
@@ -18,10 +18,10 @@ from bayesianbandits._empirical_bayes import (
     logdet,
     mackay_update_glm,
     mackay_update_nig,
-    mackay_update_normal,
     mackay_update_normal_online,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
+    DenseFactor,
     create_sparse_factor,
     scale_factor,
 )
@@ -29,6 +29,12 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _make_dense_factor(precision: NDArray[np.float64]) -> DenseFactor:
+    """Create a DenseFactor from a dense precision matrix."""
+    cho = cho_factor(precision, lower=False, check_finite=False)
+    return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
 
 
 def _compute_posterior_normal(
@@ -425,7 +431,7 @@ class TestFactorizationStatsTraceMethod:
         A = rng.standard_normal((p, p))
         M = A.T @ A + 3.0 * np.eye(p)
 
-        ld, tr_inv, _ = _factorization_stats(M, None, False, trace_method="auto")
+        ld, tr_inv = _factorization_stats(M, _make_dense_factor(M), trace_method="auto")
         expected_tr = float(np.trace(np.linalg.inv(M)))
         np.testing.assert_allclose(tr_inv, expected_tr, atol=1e-10)
 
@@ -435,7 +441,9 @@ class TestFactorizationStatsTraceMethod:
         A = rng.standard_normal((p, p))
         M = A.T @ A + 10.0 * np.eye(p)
 
-        ld, tr_inv, _ = _factorization_stats(M, None, False, trace_method="diagonal")
+        ld, tr_inv = _factorization_stats(
+            M, _make_dense_factor(M), trace_method="diagonal"
+        )
         expected = _diagonal_trace_approx(M)
         np.testing.assert_allclose(tr_inv, expected, atol=1e-14)
 
@@ -446,153 +454,18 @@ class TestFactorizationStatsTraceMethod:
         M = A.T @ A + 3.0 * np.eye(p)
 
         sparse_M = csc_array(M)
-        ld, tr_inv, _ = _factorization_stats(sparse_M, None, True, trace_method="auto")
+        ld, tr_inv = _factorization_stats(
+            sparse_M, create_sparse_factor(sparse_M), trace_method="auto"
+        )
         expected_tr = float(np.trace(np.linalg.inv(M)))
         np.testing.assert_allclose(tr_inv, expected_tr, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
-# 6. MacKay analytical case (X=I)
+# 6-9. Removed: Tests that used the deleted mackay_update_normal function.
+# The underlying logic is now tested via mackay_update_normal_online and
+# the estimator-level tests in test_eb_estimators.py.
 # ---------------------------------------------------------------------------
-
-
-class TestMackayAnalytical:
-    def test_identity_design(self) -> None:
-        """X=I: verify each intermediate against closed-form."""
-        p = 5
-        alpha, beta = 1.0, 10.0
-        rng = np.random.default_rng(99)
-
-        w_true = rng.normal(0, 1.0 / np.sqrt(alpha), size=p)
-        X = np.eye(p)
-        y = X @ w_true + rng.normal(0, 1.0 / np.sqrt(beta), size=p)
-
-        # Posterior
-        precision = (alpha + beta) * np.eye(p)
-        mu_n = solve(precision, beta * y, assume_a="pos")
-
-        # Verify trace and gamma via _factorization_stats
-        _, tr_inv, _f = _factorization_stats(precision, None, False)
-        np.testing.assert_allclose(tr_inv, p / (alpha + beta), atol=1e-10)
-
-        gamma = float(p - alpha * tr_inv)
-        np.testing.assert_allclose(gamma, p * beta / (alpha + beta), atol=1e-10)
-
-        # Run MacKay update
-        alpha_new, beta_new, log_ev = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta, sparse=False
-        )
-
-        # Verify alpha_new = gamma / ||mu_n||^2
-        expected_alpha = gamma / float(mu_n @ mu_n)
-        np.testing.assert_allclose(alpha_new, expected_alpha, atol=1e-10)
-
-        # Verify beta_new = (n - gamma) / ||y - X mu_n||^2
-        residual = y - X @ mu_n
-        expected_beta = (p - gamma) / float(residual @ residual)
-        np.testing.assert_allclose(beta_new, expected_beta, atol=1e-10)
-
-        # Verify log evidence
-        expected_ev = _log_evidence_normal_hand(X, y, mu_n, precision, alpha, beta)
-        np.testing.assert_allclose(log_ev, expected_ev, atol=1e-10)
-
-
-# ---------------------------------------------------------------------------
-# 7. MacKay recovery
-# ---------------------------------------------------------------------------
-
-
-class TestMackayRecovery:
-    def test_converges_to_true_hyperparams(
-        self,
-        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
-    ) -> None:
-        """Iterate MacKay updates and verify convergence to true hyperparams."""
-        X, y, alpha_true, beta_true = regression_data
-
-        # Start from wrong hyperparams
-        alpha, beta = 0.1, 0.1
-
-        for _ in range(100):
-            mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-            alpha, beta, _ = mackay_update_normal(
-                mu_n, precision, X, y, alpha, beta, sparse=False
-            )
-
-        # Should be in the right ballpark (not exact due to finite data)
-        np.testing.assert_allclose(alpha, alpha_true, rtol=0.5)
-        np.testing.assert_allclose(beta, beta_true, rtol=0.5)
-
-
-# ---------------------------------------------------------------------------
-# 8. Evidence monotonicity
-# ---------------------------------------------------------------------------
-
-
-class TestEvidenceMonotonicity:
-    def test_evidence_nondecreasing(
-        self,
-        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
-    ) -> None:
-        """Each EM iteration must not decrease log evidence (EM invariant)."""
-        X, y, _, _ = regression_data
-        alpha, beta = 0.1, 0.1
-        evidences: list[float] = []
-
-        for _ in range(30):
-            mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-            _, _, ev = mackay_update_normal(
-                mu_n, precision, X, y, alpha, beta, sparse=False
-            )
-            evidences.append(ev)
-            alpha, beta, _ = mackay_update_normal(
-                mu_n, precision, X, y, alpha, beta, sparse=False
-            )
-
-        # Evidence should be non-decreasing (allow tiny floating-point dips)
-        for i in range(1, len(evidences)):
-            assert evidences[i] >= evidences[i - 1] - 1e-6, (
-                f"Evidence decreased at step {i}: {evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# 9. Gradient check at convergence
-# ---------------------------------------------------------------------------
-
-
-class TestGradientAtConvergence:
-    def test_gradients_near_zero(
-        self,
-        regression_data: tuple[NDArray[np.float64], NDArray[np.float64], float, float],
-    ) -> None:
-        """At MacKay fixed point, d/dalpha and d/dbeta of log evidence ~ 0."""
-        X, y, _, _ = regression_data
-        alpha, beta = 0.1, 0.1
-
-        # Run to convergence
-        for _ in range(200):
-            mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-            alpha_new, beta_new, _ = mackay_update_normal(
-                mu_n, precision, X, y, alpha, beta, sparse=False
-            )
-            if abs(alpha_new - alpha) < 1e-10 and abs(beta_new - beta) < 1e-10:
-                break
-            alpha, beta = alpha_new, beta_new
-
-        # Finite-difference gradients
-        eps = 1e-5
-
-        def ev(a: float, b: float) -> float:
-            m, P = _compute_posterior_normal(X, y, a, b)
-            _, _, e = mackay_update_normal(m, P, X, y, a, b)
-            return e
-
-        d_alpha = (ev(alpha + eps, beta) - ev(alpha - eps, beta)) / (2 * eps)
-        d_beta = (ev(alpha, beta + eps) - ev(alpha, beta - eps)) / (2 * eps)
-
-        np.testing.assert_allclose(d_alpha, 0.0, atol=1e-3)
-        np.testing.assert_allclose(d_beta, 0.0, atol=1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +475,7 @@ class TestGradientAtConvergence:
 
 class TestLogEvidenceFromUpdates:
     def test_log_evidence_normal(self) -> None:
-        """Verify log evidence returned by mackay_update_normal against hand computation."""
+        """Verify log evidence returned by mackay_update_normal_online."""
         rng = np.random.default_rng(7)
         n, p = 20, 3
         alpha, beta = 1.5, 3.0
@@ -612,8 +485,16 @@ class TestLogEvidenceFromUpdates:
         y = X @ w + rng.standard_normal(n) * 0.5
         mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
 
-        _, _, result = mackay_update_normal(
-            X=X, y=y, mu_n=mu_n, precision=precision, alpha=alpha, beta=beta
+        _, _, result = mackay_update_normal_online(
+            mu_n,
+            precision,
+            alpha,
+            beta,
+            prior_scalar=alpha,
+            effective_n=float(n),
+            eff_yTy=float(y @ y),
+            eff_XTy=np.asarray(X.T @ y, dtype=np.float64),
+            factor=_make_dense_factor(precision),
         )
         expected = _log_evidence_normal_hand(X, y, mu_n, precision, alpha, beta)
         np.testing.assert_allclose(result, expected, atol=1e-10)
@@ -631,7 +512,15 @@ class TestLogEvidenceFromUpdates:
         mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha_lam, a0, b0)
 
         _, result = mackay_update_nig(
-            mu_n, precision, alpha_lam, an, bn, a0, b0, n_obs=n
+            mu_n,
+            precision,
+            alpha_lam,
+            an,
+            bn,
+            a0,
+            b0,
+            factor=_make_dense_factor(precision),
+            n_obs=n,
         )
         expected = _log_evidence_nig_hand(n, p, precision, alpha_lam, a0, b0, an, bn)
         np.testing.assert_allclose(result, expected, atol=1e-10)
@@ -646,145 +535,19 @@ class TestLogEvidenceFromUpdates:
         X, y, _ = _generate_glm_data(rng, n=30, p=p, link=link, coef_scale=0.3)
         theta, H = _solve_glm_map(X, y, alpha, link)
 
-        _, result = mackay_update_glm(theta, H, alpha, X, y, link)
+        _, result = mackay_update_glm(
+            theta, H, alpha, X, y, link, factor=_make_dense_factor(H)
+        )
         expected = _log_evidence_glm_hand(X, y, theta, H, alpha, link)
         np.testing.assert_allclose(result, expected, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
-# 11. Online/batch parity
+# 11. Sufficient statistics
 # ---------------------------------------------------------------------------
 
 
-class TestOnlineBatchParity:
-    """When sufficient stats match the full dataset, online == batch."""
-
-    def test_online_matches_batch(self) -> None:
-        """mackay_update_normal_online with full-data stats == mackay_update_normal."""
-        rng = np.random.default_rng(42)
-        n, p = 30, 4
-        alpha, beta = 2.0, 3.0
-
-        X = rng.standard_normal((n, p))
-        w = rng.standard_normal(p)
-        y = X @ w + rng.standard_normal(n) * 0.5
-        mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-
-        # Batch update.
-        alpha_batch, beta_batch, ev_batch = mackay_update_normal(
-            mu_n,
-            precision,
-            X,
-            y,
-            alpha,
-            beta,
-        )
-
-        # Online update with sufficient stats matching the full dataset.
-        alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n,
-            precision,
-            alpha,
-            beta,
-            prior_scalar=alpha,
-            effective_n=float(n),
-            eff_yTy=float(y @ y),
-            eff_XTy=X.T @ y,
-        )
-
-        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
-        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
-
-    def test_accumulated_stats_match_batch(self) -> None:
-        """Accumulating stats one-at-a-time (no decay) matches batch stats."""
-        rng = np.random.default_rng(99)
-        n, p = 20, 3
-        alpha, beta = 1.5, 2.0
-
-        X = rng.standard_normal((n, p))
-        w = rng.standard_normal(p)
-        y = X @ w + rng.standard_normal(n) * 0.3
-
-        # Accumulate one observation at a time with no decay.
-        eff_n = 0.0
-        eff_yTy = 0.0
-        eff_XTy = np.zeros(p)
-        for i in range(n):
-            eff_n, eff_yTy, eff_XTy = accumulate_sufficient_stats(
-                eff_n,
-                eff_yTy,
-                eff_XTy,
-                X[[i]],
-                y[[i]],
-                prior_decay=1.0,
-            )
-
-        np.testing.assert_allclose(eff_n, float(n))
-        np.testing.assert_allclose(eff_yTy, float(y @ y), atol=1e-10)
-        np.testing.assert_allclose(eff_XTy, X.T @ y, atol=1e-10)
-
-        # Now verify that online update with these stats matches batch.
-        mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-
-        alpha_batch, beta_batch, _ = mackay_update_normal(
-            mu_n,
-            precision,
-            X,
-            y,
-            alpha,
-            beta,
-        )
-        alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n,
-            precision,
-            alpha,
-            beta,
-            prior_scalar=alpha,
-            effective_n=eff_n,
-            eff_yTy=eff_yTy,
-            eff_XTy=eff_XTy,
-        )
-
-        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
-        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
-
-    def test_online_matches_batch_sparse(self) -> None:
-        """Sparse variant: online with full-data stats == batch (now exact via Takahashi)."""
-        rng = np.random.default_rng(77)
-        n, p = 25, 3
-        alpha, beta = 1.0, 2.0
-
-        X = rng.standard_normal((n, p))
-        w = rng.standard_normal(p)
-        y = X @ w + rng.standard_normal(n) * 0.4
-        mu_n, precision_dense = _compute_posterior_normal(X, y, alpha, beta)
-        precision_sparse = csc_array(precision_dense)
-
-        alpha_batch, beta_batch, ev_batch = mackay_update_normal(
-            mu_n,
-            precision_dense,
-            X,
-            y,
-            alpha,
-            beta,
-        )
-
-        # Takahashi is exact, so tolerance can be tight
-        alpha_online, beta_online, _ = mackay_update_normal_online(
-            mu_n,
-            precision_sparse,
-            alpha,
-            beta,
-            prior_scalar=alpha,
-            effective_n=float(n),
-            eff_yTy=float(y @ y),
-            eff_XTy=X.T @ y,
-            sparse=True,
-        )
-
-        np.testing.assert_allclose(alpha_online, alpha_batch, atol=1e-10)
-        np.testing.assert_allclose(beta_online, beta_batch, atol=1e-10)
-
+class TestSufficientStats:
     def test_accumulated_stats_sparse_X(self) -> None:
         """accumulate_sufficient_stats with sparse X matches dense."""
         rng = np.random.default_rng(55)
@@ -843,7 +606,39 @@ class TestOnlineBatchParity:
             effective_n=1.0,
             eff_yTy=0.0,
             eff_XTy=mu_n * 1000.0,
+            factor=_make_dense_factor(precision),
         )
+        assert beta_new == beta
+
+    def test_online_rejects_pathological_beta_alpha_ratio(self) -> None:
+        """When beta_new/alpha_new would exceed the guardrail, keep old hyperparams."""
+        p = 3
+        alpha, beta = 1.0, 1.0
+        # Large mu_n => alpha_new = gamma / ||mu||^2 is tiny
+        mu_n = np.ones(p) * 1e8
+        precision = alpha * np.eye(p) + beta * np.eye(p)
+        # Sufficient stats crafted so RSS is tiny positive => beta_new huge
+        # RSS = yTy - 2*m'XTy + m'XTXm; with XTX = (Λ - α·I)/β = I,
+        # m'XTXm = ||m||^2 = 3e16. Set yTy and XTy so RSS is tiny.
+        mTXTXm = float(mu_n @ mu_n)  # 3e16
+        eff_XTy = mu_n.copy()  # mTXTy = ||m||^2 = 3e16
+        # RSS = yTy - 2*3e16 + 3e16 = yTy - 3e16
+        # Set yTy = 3e16 + 1e-20 so RSS = 1e-20
+        eff_yTy = mTXTXm + 1e-20
+
+        alpha_new, beta_new, _ = mackay_update_normal_online(
+            mu_n,
+            precision,
+            alpha,
+            beta,
+            prior_scalar=alpha,
+            effective_n=100.0,
+            eff_yTy=eff_yTy,
+            eff_XTy=eff_XTy,
+            factor=_make_dense_factor(precision),
+        )
+        # beta_new/alpha_new would be astronomically large; guardrail rejects
+        assert alpha_new == alpha
         assert beta_new == beta
 
     def test_online_sparse_precision_matvec(self) -> None:
@@ -869,6 +664,7 @@ class TestOnlineBatchParity:
             effective_n=float(n),
             eff_yTy=float(y @ y),
             eff_XTy=X.T @ y,
+            factor=_make_dense_factor(precision_dense),
         )
 
         # Sparse path (now exact via Takahashi)
@@ -881,7 +677,7 @@ class TestOnlineBatchParity:
             effective_n=float(n),
             eff_yTy=float(y @ y),
             eff_XTy=X.T @ y,
-            sparse=True,
+            factor=create_sparse_factor(precision_sparse),
         )
 
         np.testing.assert_allclose(alpha_sparse, alpha_dense, atol=1e-10)
@@ -907,41 +703,6 @@ class TestSparseDenseParity:
         np.testing.assert_allclose(result, expected, atol=1e-10)
 
     @pytest.mark.parametrize("sparse", [True, False])
-    def test_mackay_update_normal_parity(self, sparse: bool) -> None:
-        rng = np.random.default_rng(55)
-        n, p = 50, 4
-        alpha, beta = 1.0, 2.0
-        X = rng.standard_normal((n, p))
-        y = rng.standard_normal(n)
-        mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
-
-        if sparse:
-            sp = csc_array(precision)
-            sX = csc_array(X)
-            a_new, b_new, ev = mackay_update_normal(
-                mu_n,
-                sp,
-                sX,
-                y,
-                alpha,
-                beta,
-                sparse=True,
-            )
-        else:
-            a_new, b_new, ev = mackay_update_normal(
-                mu_n, precision, X, y, alpha, beta, sparse=False
-            )
-
-        # Compare to dense exact
-        a_exact, b_exact, ev_exact = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta, sparse=False
-        )
-        # Takahashi is exact, so tight tolerance
-        np.testing.assert_allclose(a_new, a_exact, atol=1e-10)
-        np.testing.assert_allclose(b_new, b_exact, atol=1e-10)
-        np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
-
-    @pytest.mark.parametrize("sparse", [True, False])
     def test_mackay_update_nig_parity(self, sparse: bool) -> None:
         rng = np.random.default_rng(77)
         n, p = 50, 4
@@ -961,16 +722,32 @@ class TestSparseDenseParity:
                 bn,
                 a0,
                 b0,
-                sparse=True,
+                factor=create_sparse_factor(sp),
                 n_obs=n,
             )
         else:
             result, ev = mackay_update_nig(
-                mu_n, precision, alpha, an, bn, a0, b0, n_obs=n
+                mu_n,
+                precision,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
+                factor=_make_dense_factor(precision),
+                n_obs=n,
             )
 
         exact, ev_exact = mackay_update_nig(
-            mu_n, precision, alpha, an, bn, a0, b0, n_obs=n
+            mu_n,
+            precision,
+            alpha,
+            an,
+            bn,
+            a0,
+            b0,
+            factor=_make_dense_factor(precision),
+            n_obs=n,
         )
         np.testing.assert_allclose(result, exact, atol=1e-10)
         np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
@@ -992,12 +769,28 @@ class TestSparseDenseParity:
                 X,
                 y,
                 "logit",
-                sparse=True,
+                factor=create_sparse_factor(sp),
             )
         else:
-            result, ev = mackay_update_glm(theta, H, alpha, X, y, "logit")
+            result, ev = mackay_update_glm(
+                theta,
+                H,
+                alpha,
+                X,
+                y,
+                "logit",
+                factor=_make_dense_factor(H),
+            )
 
-        exact, ev_exact = mackay_update_glm(theta, H, alpha, X, y, "logit")
+        exact, ev_exact = mackay_update_glm(
+            theta,
+            H,
+            alpha,
+            X,
+            y,
+            "logit",
+            factor=_make_dense_factor(H),
+        )
         np.testing.assert_allclose(result, exact, atol=1e-10)
         np.testing.assert_allclose(ev, ev_exact, rtol=0.01)
 
@@ -1019,7 +812,14 @@ class TestMackayNIG:
         precision = A.T @ A + 3.0 * np.eye(p)
 
         alpha_new, _ = mackay_update_nig(
-            mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+            mu_n,
+            precision,
+            alpha,
+            an,
+            bn,
+            a0,
+            b0,
+            factor=_make_dense_factor(precision),
         )
         assert alpha_new > 0
 
@@ -1037,14 +837,23 @@ class TestMackayNIG:
         sigma_sq = bn / an
 
         # With X=I: precision = (alpha+1)I, tr(inv) = p/(alpha+1)
-        _, tr_inv_actual, _f = _factorization_stats(precision, None, False)
+        _, tr_inv_actual = _factorization_stats(
+            precision, _make_dense_factor(precision)
+        )
         tr_inv = p / (alpha + 1.0)
         np.testing.assert_allclose(tr_inv_actual, tr_inv, atol=1e-10)
 
         # Verify alpha_new = p*sigma^2 / (||mu_n||^2 + sigma^2 * tr_inv)
         expected_alpha = p * sigma_sq / (float(mu_n @ mu_n) + sigma_sq * tr_inv)
         alpha_new, _ = mackay_update_nig(
-            mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+            mu_n,
+            precision,
+            alpha,
+            an,
+            bn,
+            a0,
+            b0,
+            factor=_make_dense_factor(precision),
         )
         np.testing.assert_allclose(alpha_new, expected_alpha, atol=1e-10)
 
@@ -1063,7 +872,15 @@ class TestMackayNIG:
         for _ in range(30):
             mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha, a0, b0)
             alpha, ev = mackay_update_nig(
-                mu_n, precision, alpha, an, bn, a0, b0, sparse=False, n_obs=n
+                mu_n,
+                precision,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
+                factor=_make_dense_factor(precision),
+                n_obs=n,
             )
             evidences.append(ev)
 
@@ -1087,7 +904,14 @@ class TestMackayNIG:
         for _ in range(200):
             mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha, a0, b0)
             alpha_new, _ = mackay_update_nig(
-                mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+                mu_n,
+                precision,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
+                factor=_make_dense_factor(precision),
             )
             if abs(alpha_new - alpha) < 1e-10:
                 break
@@ -1097,7 +921,17 @@ class TestMackayNIG:
 
         def ev(a: float) -> float:
             m, P, an_, bn_ = _compute_posterior_nig(X, y, a, a0, b0)
-            _, e = mackay_update_nig(m, P, a, an_, bn_, a0, b0, n_obs=n)
+            _, e = mackay_update_nig(
+                m,
+                P,
+                a,
+                an_,
+                bn_,
+                a0,
+                b0,
+                factor=_make_dense_factor(P),
+                n_obs=n,
+            )
             return e
 
         d_alpha = (ev(alpha + eps) - ev(alpha - eps)) / (2 * eps)
@@ -1117,7 +951,14 @@ class TestMackayNIG:
         for _ in range(200):
             mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha, a0, b0)
             alpha_new, _ = mackay_update_nig(
-                mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+                mu_n,
+                precision,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
+                factor=_make_dense_factor(precision),
             )
             if abs(alpha_new - alpha) < 1e-10:
                 break
@@ -1126,7 +967,14 @@ class TestMackayNIG:
         # One more update should return the same value
         mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha, a0, b0)
         alpha_check, _ = mackay_update_nig(
-            mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+            mu_n,
+            precision,
+            alpha,
+            an,
+            bn,
+            a0,
+            b0,
+            factor=_make_dense_factor(precision),
         )
         np.testing.assert_allclose(alpha_check, alpha, rtol=1e-8)
 
@@ -1147,7 +995,14 @@ class TestMackayNIG:
         for _ in range(100):
             mu_n, precision, an, bn = _compute_posterior_nig(X, y, alpha, a0, b0)
             alpha, _ = mackay_update_nig(
-                mu_n, precision, alpha, an, bn, a0, b0, sparse=False
+                mu_n,
+                precision,
+                alpha,
+                an,
+                bn,
+                a0,
+                b0,
+                factor=_make_dense_factor(precision),
             )
 
         # NIG recovery is less precise than Normal due to joint sigma^2 estimation
@@ -1171,7 +1026,13 @@ class TestMackayGLM:
         y = (rng.random(n) < 0.5).astype(float)
 
         alpha_new, _ = mackay_update_glm(
-            theta, precision, alpha, X, y, "logit", sparse=False
+            theta,
+            precision,
+            alpha,
+            X,
+            y,
+            "logit",
+            factor=_make_dense_factor(precision),
         )
         assert alpha_new > 0
 
@@ -1186,7 +1047,15 @@ class TestMackayGLM:
 
         for _ in range(30):
             theta, H = _solve_glm_map(X, y, alpha, link)
-            alpha, ev = mackay_update_glm(theta, H, alpha, X, y, link, sparse=False)
+            alpha, ev = mackay_update_glm(
+                theta,
+                H,
+                alpha,
+                X,
+                y,
+                link,
+                factor=_make_dense_factor(H),
+            )
             evidences.append(ev)
 
         for i in range(1, len(evidences)):
@@ -1205,7 +1074,15 @@ class TestMackayGLM:
 
         for _ in range(50):
             theta, H = _solve_glm_map(X, y, alpha, link)
-            alpha_new, _ = mackay_update_glm(theta, H, alpha, X, y, link, sparse=False)
+            alpha_new, _ = mackay_update_glm(
+                theta,
+                H,
+                alpha,
+                X,
+                y,
+                link,
+                factor=_make_dense_factor(H),
+            )
             if abs(alpha_new - alpha) < 1e-10:
                 break
             alpha = alpha_new
@@ -1214,7 +1091,15 @@ class TestMackayGLM:
 
         def ev(a: float) -> float:
             t, h = _solve_glm_map(X, y, a, link)
-            _, e = mackay_update_glm(t, h, a, X, y, link)
+            _, e = mackay_update_glm(
+                t,
+                h,
+                a,
+                X,
+                y,
+                link,
+                factor=_make_dense_factor(h),
+            )
             return e
 
         d_alpha = (ev(alpha + eps) - ev(alpha - eps)) / (2 * eps)
@@ -1230,14 +1115,30 @@ class TestMackayGLM:
 
         for _ in range(50):
             theta, H = _solve_glm_map(X, y, alpha, link)
-            alpha_new, _ = mackay_update_glm(theta, H, alpha, X, y, link, sparse=False)
+            alpha_new, _ = mackay_update_glm(
+                theta,
+                H,
+                alpha,
+                X,
+                y,
+                link,
+                factor=_make_dense_factor(H),
+            )
             if abs(alpha_new - alpha) < 1e-10:
                 break
             alpha = alpha_new
 
         # One more update should return the same value
         theta, H = _solve_glm_map(X, y, alpha, link)
-        alpha_check, _ = mackay_update_glm(theta, H, alpha, X, y, link, sparse=False)
+        alpha_check, _ = mackay_update_glm(
+            theta,
+            H,
+            alpha,
+            X,
+            y,
+            link,
+            factor=_make_dense_factor(H),
+        )
         np.testing.assert_allclose(alpha_check, alpha, rtol=1e-6)
 
 
@@ -1247,37 +1148,6 @@ class TestMackayGLM:
 
 
 class TestGuardClauses:
-    def test_mackay_normal_zero_mu_returns_old_alpha(self) -> None:
-        """When mu_n is zero, alpha_new should fall back to the old alpha."""
-        p = 4
-        alpha, beta = 2.0, 5.0
-        rng = np.random.default_rng(42)
-        X = rng.standard_normal((20, p))
-        y = rng.standard_normal(20)
-        mu_n = np.zeros(p)
-        precision = alpha * np.eye(p) + beta * X.T @ X
-
-        alpha_new, _, _ = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta, sparse=False
-        )
-        assert alpha_new == alpha
-
-    def test_mackay_normal_zero_rss_returns_old_beta(self) -> None:
-        """When residual is zero, beta_new should fall back to the old beta."""
-        p = 3
-        alpha, beta = 1.0, 10.0
-        rng = np.random.default_rng(42)
-        X = rng.standard_normal((20, p))
-        mu_n = rng.standard_normal(p)
-        # y = X @ mu_n exactly so residual is zero
-        y = X @ mu_n
-        precision = alpha * np.eye(p) + beta * X.T @ X
-
-        _, beta_new, _ = mackay_update_normal(
-            mu_n, precision, X, y, alpha, beta, sparse=False
-        )
-        assert beta_new == beta
-
     def test_mackay_nig_zero_denom_returns_old_alpha(self) -> None:
         """When denom <= 0, mackay_update_nig should return the old alpha."""
         p = 3
@@ -1289,7 +1159,14 @@ class TestGuardClauses:
         bn = 0.0  # sigma_sq = 0 exactly
 
         alpha_new, _ = mackay_update_nig(
-            mu_n, precision, alpha, an, bn, a0=1.0, b0=1.0, sparse=False
+            mu_n,
+            precision,
+            alpha,
+            an,
+            bn,
+            a0=1.0,
+            b0=1.0,
+            factor=_make_dense_factor(precision),
         )
         assert alpha_new == alpha
 
@@ -1305,7 +1182,13 @@ class TestGuardClauses:
         y = (rng.random(10) < 0.5).astype(float)
 
         alpha_new, _ = mackay_update_glm(
-            theta_MAP, precision, alpha, X, y, "logit", sparse=False
+            theta_MAP,
+            precision,
+            alpha,
+            X,
+            y,
+            "logit",
+            factor=_make_dense_factor(precision),
         )
         assert alpha_new == alpha
 
@@ -1320,18 +1203,6 @@ class TestErrorPaths:
         with pytest.raises(TypeError, match="precision must be sparse"):
             logdet(np.eye(3), sparse=True)
 
-    def test_factorization_stats_sparse_with_dense_raises_typeerror(self) -> None:
-        """_factorization_stats TypeError via mackay_update_normal with dense + sparse=True."""
-        rng = np.random.default_rng(42)
-        p = 3
-        X = rng.standard_normal((10, p))
-        y = rng.standard_normal(10)
-        mu_n = rng.standard_normal(p)
-        precision = np.eye(p)
-
-        with pytest.raises(TypeError, match="precision must be sparse"):
-            mackay_update_normal(mu_n, precision, X, y, 1.0, 1.0, sparse=True)
-
     def test_mackay_glm_unknown_link_raises(self) -> None:
         rng = np.random.default_rng(42)
         p = 3
@@ -1341,4 +1212,12 @@ class TestErrorPaths:
         H = np.eye(p)
 
         with pytest.raises(ValueError, match="Unknown link function"):
-            mackay_update_glm(theta, H, 1.0, X, y, "unknown")
+            mackay_update_glm(
+                theta,
+                H,
+                1.0,
+                X,
+                y,
+                "unknown",
+                factor=_make_dense_factor(H),
+            )

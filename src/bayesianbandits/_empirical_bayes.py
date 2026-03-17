@@ -14,16 +14,29 @@ from typing import Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import solve_triangular
 from scipy.sparse import csc_array, issparse
 from scipy.special import gammaln
 
 from ._sparse_bayesian_linear_regression import (
+    DenseFactor,
+    PrecisionFactor,
     SparseFactor,
     create_sparse_factor,
 )
 
 _LOG_2PI = math.log(2.0 * math.pi)
+
+# Guardrails for MacKay hyperparameter updates.
+# In the underdetermined regime (p >> n), MacKay can drive α→0 and β→∞.
+# The precision matrix α·I + β·X^T X then has smallest eigenvalue ≈ α
+# (in the null space of X) while the largest is ≈ β·λ_max(X^T X), giving
+# a condition number of β/α · λ_max.  When this exceeds ~1/eps ≈ 1e16,
+# Cholesky fails numerically even though the matrix is theoretically PD.
+#
+# We reject the update entirely (keep current α, β) when β/α would
+# produce such ill-conditioning.  Once enough data arrives (n ≥ p),
+# the updates become well-behaved and start flowing normally.
+_MAX_BETA_ALPHA_RATIO = 1e10
 
 
 def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
@@ -133,117 +146,37 @@ def logdet(
         return float(ld)
 
 
-def _dense_cholesky_stats(
-    precision: NDArray[np.float64],
-) -> tuple[float, float]:
-    """Returns (logdet, trace_of_inverse) from one Cholesky.
-
-    Math: logdet = 2·sum(log(diag(L))), tr(A^-1) = ||L^-1||^2_F.
-    """
-    L = np.linalg.cholesky(precision)
-    ld = 2.0 * float(np.sum(np.log(np.diag(L))))
-    L_inv = solve_triangular(L, np.eye(L.shape[0]), lower=True, check_finite=False)
-    tr_inv = float(np.sum(L_inv**2))
-    return ld, tr_inv
-
-
 def _factorization_stats(
     precision: Union[NDArray[np.float64], csc_array],
-    factor: Optional[SparseFactor],
-    sparse: bool,
+    factor: PrecisionFactor,
     trace_method: str = "auto",
-) -> tuple[float, float, Optional[SparseFactor]]:
-    """Return (logdet, trace_inverse, factor) from a single factorization.
-
-    The factor is returned so callers can cache it and avoid redundant
-    refactorizations.  For dense or ``"diagonal"`` paths the returned
-    factor is the same as the input (possibly ``None``).
+) -> tuple[float, float]:
+    """Return (logdet, trace_inverse) from a factorization.
 
     Parameters
     ----------
     precision : dense or sparse matrix
-    factor : pre-computed sparse factorization (optional)
-    sparse : whether to use sparse computation
+    factor : pre-computed factorization (DenseFactor or SparseFactor)
     trace_method : ``"auto"`` uses Takahashi recursion for sparse and
-        exact Cholesky for dense.  ``"diagonal"`` uses the fast
-        O(p) approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
+        Cholesky for dense.  ``"diagonal"`` uses the fast O(p)
+        approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
     """
     if trace_method == "diagonal":
         tr_inv = _diagonal_trace_approx(precision)
-        ld = logdet(precision, factor=factor, sparse=sparse)
-        return ld, tr_inv, factor
+        if isinstance(factor, DenseFactor):
+            ld = factor.logdet()
+        else:
+            ld = factor.logdet()
+        return ld, tr_inv
 
     # trace_method == "auto" (default)
-    if sparse:
-        if factor is None:
-            if not issparse(precision):
-                raise TypeError("precision must be sparse when sparse=True")
-            factor = create_sparse_factor(cast(csc_array, precision))
+    if isinstance(factor, DenseFactor):
+        ld = factor.logdet()
+        tr_inv = factor.trace_inv()
+    else:
         ld = factor.logdet()
         tr_inv = _takahashi_trace(factor)
-    else:
-        assert isinstance(precision, np.ndarray)
-        ld, tr_inv = _dense_cholesky_stats(precision)
-    return ld, tr_inv, factor
-
-
-def mackay_update_normal(
-    mu_n: NDArray[np.float64],
-    precision: Union[NDArray[np.float64], csc_array],
-    X: Union[NDArray[np.float64], csc_array],
-    y: NDArray[np.float64],
-    alpha: float,
-    beta: float,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
-    trace_method: str = "auto",
-) -> tuple[float, float, float]:
-    """MacKay update for NormalRegressor.
-
-    Returns (α_new, β_new, log_evidence) where:
-        γ = p − α·tr(Λₙ⁻¹)
-        α_new = γ / ‖μₙ‖²
-        β_new = (n − γ) / ‖y − Xμₙ‖²
-
-    log p(y|X,α,β) = p/2·log(α) + n/2·log(β) - ½·log|Λₙ|
-                     - ½[β‖y-Xμₙ‖² + α‖μₙ‖²] - n/2·log(2π)
-
-    References
-    ----------
-    .. [1] Bishop, C. M. (2006). Pattern Recognition and Machine Learning,
-       §3.5.1–§3.5.2, Eqs 3.86, 3.92, 3.95.
-    .. [2] MacKay, D. J. C. (1992). "Bayesian Interpolation",
-       Neural Computation 4(3), 415-447.
-    """
-    n = y.shape[0]
-    p = cast(tuple[int, int], precision.shape)[0]
-
-    residual = y - X @ mu_n
-    rss = float(residual @ residual)
-    mu_norm_sq = float(mu_n @ mu_n)
-
-    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
-
-    # gamma is the effective number of well-determined parameters,
-    # bounded by (0, min(n, p)].  Clamping prevents negative or zero
-    # alpha when the problem is underdetermined.  We use a small
-    # positive floor (not zero) so alpha_new stays positive — a zero
-    # alpha would destroy the prior component in _correct_precision.
-    _EPS = 1e-8
-    gamma = float(np.clip(p - alpha * tr_inv, _EPS, min(n, p)))
-    alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
-    denom = n - gamma
-    beta_new = denom / rss if rss > 0 and denom > 0 else beta
-
-    log_ev = float(
-        0.5 * p * math.log(alpha)
-        + 0.5 * n * math.log(beta)
-        - 0.5 * ld
-        - 0.5 * (beta * rss + alpha * mu_norm_sq)
-        - 0.5 * n * _LOG_2PI
-    )
-
-    return alpha_new, beta_new, log_ev
+    return ld, tr_inv
 
 
 def accumulate_sufficient_stats(
@@ -292,26 +225,19 @@ def mackay_update_normal_online(
     effective_n: float,
     eff_yTy: float,
     eff_XTy: NDArray[np.float64],
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
+    factor: PrecisionFactor,
     trace_method: str = "auto",
-) -> tuple[float, float, Optional[SparseFactor]]:
+) -> tuple[float, float, float]:
     """MacKay update using accumulated sufficient statistics for beta.
 
-    The standard ``mackay_update_normal`` computes beta from the passed
-    (X, y) only.  In the online setting that is typically a single
-    observation — far too noisy for a reliable estimate.
-
-    Instead, this variant uses decayed sufficient statistics
-    (effective_n, yᵀy, Xᵀy) and recovers XᵀX from the precision matrix:
+    Uses decayed sufficient statistics (effective_n, yᵀy, Xᵀy) and
+    recovers XᵀX from the precision matrix:
 
         XᵀX_decayed = (Λ − prior_scalar·I) / β
 
     to compute RSS under the current posterior mean:
 
         RSS = yᵀy − 2·mᵀ·Xᵀy + mᵀ·XᵀX·m
-
-    Alpha is updated identically to ``mackay_update_normal``.
 
     Parameters
     ----------
@@ -323,24 +249,24 @@ def mackay_update_normal_online(
     effective_n : decayed effective sample size
     eff_yTy : decayed yᵀy
     eff_XTy : decayed Xᵀy
-    sparse, factor : factorization parameters
+    factor : pre-computed factorization
+    trace_method : method for computing tr(Λ⁻¹)
 
     Returns
     -------
-    (alpha_new, beta_new, factor)
+    (alpha_new, beta_new, log_evidence)
     """
     p = cast(tuple[int, int], precision.shape)[0]
     mu_norm_sq = float(mu_n @ mu_n)
 
-    # Single factorization for trace estimate.
-    _, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
+    ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
     # gamma is the effective number of well-determined parameters,
     # bounded by (0, min(effective_n, p)].
     _EPS = 1e-8
     gamma = float(np.clip(p - alpha * tr_inv, _EPS, min(effective_n, p)))
 
-    # Alpha update (same as mackay_update_normal).
+    # Alpha update.
     alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
 
     # Beta update from sufficient statistics.
@@ -359,7 +285,20 @@ def mackay_update_normal_online(
     else:
         beta_new = beta
 
-    return alpha_new, beta_new, factor
+    # Reject pathological updates.
+    if beta_new / alpha_new > _MAX_BETA_ALPHA_RATIO:
+        alpha_new = alpha
+        beta_new = beta
+
+    log_ev = float(
+        0.5 * p * math.log(alpha)
+        + 0.5 * effective_n * math.log(beta)
+        - 0.5 * ld
+        - 0.5 * (beta * rss + alpha * mu_norm_sq)
+        - 0.5 * effective_n * _LOG_2PI
+    )
+
+    return alpha_new, beta_new, log_ev
 
 
 def mackay_update_nig(
@@ -370,8 +309,7 @@ def mackay_update_nig(
     bn: float,
     a0: float,
     b0: float,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
+    factor: PrecisionFactor,
     n_obs: int = 0,
     trace_method: str = "auto",
 ) -> tuple[float, float]:
@@ -405,7 +343,7 @@ def mackay_update_nig(
     sigma_sq = bn / an
     mu_norm_sq = float(mu_n @ mu_n)
 
-    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
+    ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
     denom = mu_norm_sq + sigma_sq * tr_inv
     alpha_new = float(p * sigma_sq / denom) if denom > 0 else alpha
@@ -433,8 +371,7 @@ def mackay_update_glm(
     X: Union[NDArray[np.float64], csc_array],
     y: NDArray[np.float64],
     link: str,
-    sparse: bool = False,
-    factor: Optional[SparseFactor] = None,
+    factor: PrecisionFactor,
     trace_method: str = "auto",
 ) -> tuple[float, float]:
     """MacKay update for BayesianGLM.
@@ -465,7 +402,7 @@ def mackay_update_glm(
     p = cast(tuple[int, int], precision.shape)[0]
     theta_norm_sq = float(theta_MAP @ theta_MAP)
 
-    ld, tr_inv, factor = _factorization_stats(precision, factor, sparse, trace_method)
+    ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
     gamma = float(p - alpha * tr_inv)
     alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha

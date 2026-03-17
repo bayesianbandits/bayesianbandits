@@ -7,68 +7,25 @@ from typing import Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import cho_factor, cho_solve
+from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
 from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
-    mackay_update_normal,
     mackay_update_normal_online,
 )
 from ._estimators import NormalRegressor, _invalidate_cached_properties
-from ._sparse_bayesian_linear_regression import create_sparse_factor
+from ._sparse_bayesian_linear_regression import (
+    DenseFactor,
+    PrecisionFactor,
+    create_sparse_factor,
+)
 
 
-class _EmpiricalBayesMixin:
-    """Mixin providing the empirical Bayes fit loop.
-
-    Subclasses must implement ``_eb_mackay_step(X, y) -> float``
-    which runs one MacKay update (mutating hyperparams) and returns
-    log evidence.
-    """
-
-    def _eb_mackay_step(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-    ) -> float:
-        raise NotImplementedError
-
-    def _eb_fit(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> None:
-        prev_evidence = -math.inf
-        n_eb_iter: int = self.n_eb_iter  # type: ignore[attr-defined]
-        eb_tol: float = self.eb_tol  # type: ignore[attr-defined]
-
-        converged = False
-        iterations = 0
-
-        for i in range(n_eb_iter):
-            self._initialize_prior(X)  # type: ignore[attr-defined]
-            self._fit_helper(X, y, sample_weight)  # type: ignore[attr-defined]
-            log_ev = self._eb_mackay_step(X, y)
-            iterations = i + 1
-
-            if abs(log_ev - prev_evidence) < eb_tol:
-                converged = True
-                break
-            prev_evidence = log_ev
-
-        # Final refit with converged hyperparams
-        self._initialize_prior(X)  # type: ignore[attr-defined]
-        self._fit_helper(X, y, sample_weight)  # type: ignore[attr-defined]
-
-        self.log_evidence_ = log_ev if n_eb_iter > 0 else -math.inf  # type: ignore[possibly-undefined]
-        self.n_eb_iterations_ = iterations
-        self.eb_converged_ = converged
-
-
-class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
+class EmpiricalBayesNormalRegressor(NormalRegressor):
     """Bayesian linear regression with empirical Bayes hyperparameter tuning.
 
     Extends :class:`NormalRegressor` with automatic optimization of the
@@ -237,29 +194,9 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         self.eb_tol = eb_tol
         self.trace_method = trace_method
 
-    def _eb_mackay_step(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-    ) -> float:
-        alpha_new, beta_new, log_ev = mackay_update_normal(
-            self.coef_,
-            self.cov_inv_,
-            X,
-            y,
-            self.alpha,
-            self.beta,
-            sparse=self.sparse,
-            factor=getattr(self, "_factor", None),
-            trace_method=self.trace_method,
-        )
-        self.alpha = alpha_new
-        self.beta = beta_new
-        return log_ev
-
     def _eb_mackay_step_online(self) -> None:
         """MacKay step using accumulated sufficient statistics for beta."""
-        alpha_new, beta_new, factor = mackay_update_normal_online(
+        alpha_new, beta_new, _ = mackay_update_normal_online(
             self.coef_,
             self.cov_inv_,
             self.alpha,
@@ -268,14 +205,11 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
             self._effective_n,
             self._eff_yTy,
             self._eff_XTy,
-            sparse=self.sparse,
-            factor=getattr(self, "_factor", None),
+            factor=self._precision_factor,
             trace_method=self.trace_method,
         )
         self.alpha = alpha_new
         self.beta = beta_new
-        if factor is not None:
-            self._factor = factor
 
     def _accumulate_stats(
         self,
@@ -336,10 +270,59 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         )
 
         if self.n_eb_iter > 0:
-            self._eb_fit(X_fit, y, sample_weight)
-        else:
+            # Sufficient stats are constant during batch fitting (no decay)
+            effective_n = float(y.shape[0])
+            eff_yTy = float(y @ y)
+            if isinstance(X_fit, csc_array):
+                eff_XTy = np.asarray(X_fit.T @ y, dtype=np.float64).ravel()
+            else:
+                eff_XTy = np.asarray(X_fit.T @ y, dtype=np.float64)
+
+            prev_evidence = -math.inf
+            converged = False
+            iterations = 0
+            log_ev = -math.inf
+
+            for i in range(self.n_eb_iter):
+                self._initialize_prior(X_fit)
+                self._fit_helper(X_fit, y, sample_weight)
+                # After fresh fit: Λ = α·I + β·XᵀX
+                self._prior_scalar = self.alpha
+
+                alpha_new, beta_new, log_ev = mackay_update_normal_online(
+                    self.coef_,
+                    self.cov_inv_,
+                    self.alpha,
+                    self.beta,
+                    self._prior_scalar,
+                    effective_n,
+                    eff_yTy,
+                    eff_XTy,
+                    factor=self._precision_factor,
+                    trace_method=self.trace_method,
+                )
+                self.alpha = alpha_new
+                self.beta = beta_new
+                iterations = i + 1
+
+                if abs(log_ev - prev_evidence) < self.eb_tol:
+                    converged = True
+                    break
+                prev_evidence = log_ev
+
+            # Final refit with converged hyperparams
             self._initialize_prior(X_fit)
             self._fit_helper(X_fit, y, sample_weight)
+
+            self.log_evidence_ = log_ev
+            self.n_eb_iterations_ = iterations
+            self.eb_converged_ = converged
+        else:
+            self._initialize_prior(X_fit)
+            self._fit_helper(X_fit, y)
+            self.log_evidence_ = -math.inf
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
 
         # After fit, the precision matrix is consistent with self.alpha.
         self._prior_scalar = self.alpha
@@ -397,6 +380,8 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
                 self.cov_inv_[diag_idx] += diag_correction
 
         self._prior_scalar = new_prior_scalar
+        if "_precision_factor" in self.__dict__:
+            del self._precision_factor
 
     def _reinject_prior(self, prior_reinjection: float) -> None:
         """Add stabilized prior re-injection to the precision diagonal.
@@ -414,8 +399,8 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         else:
             diag_idx = np.diag_indices_from(self.cov_inv_)
             self.cov_inv_[diag_idx] += prior_reinjection
-        if hasattr(self, "_factor"):
-            del self._factor
+        if "_precision_factor" in self.__dict__:
+            del self._precision_factor
 
     @_invalidate_cached_properties
     def _fit_helper(
@@ -459,42 +444,64 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         prior_decay = self.learning_rate ** X.shape[0]
 
         if self.sparse:
-            from scipy.sparse import diags as sp_diags
-
-            W_sqrt = sp_diags(np.sqrt(effective_weights), format="csc")
-            X_weighted = W_sqrt @ X
+            # Element-wise scaling; absorb beta into weights
+            assert isinstance(X, csc_array)
+            w_sqrt = np.sqrt(self.beta * effective_weights)
+            X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             cov_inv = cast(
                 csc_array,
-                prior_decay * self.cov_inv_ + self.beta * (X_weighted.T @ X_weighted),
+                prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted,
             )
             # Fold in the prior reinjection
             cov_inv.setdiag(cov_inv.diagonal() + reinjection)
         else:
-            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
-            cov_inv = prior_decay * self.cov_inv_ + self.beta * (
-                X_weighted.T @ X_weighted
+            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X * w_sqrt[:, np.newaxis]
+            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
+            # Add reinjection to diagonal before dsyrk (it preserves diagonal)
+            diag_idx = np.diag_indices_from(prior_scaled)
+            prior_scaled[diag_idx] += reinjection
+            cov_inv = dsyrk(
+                self.beta,
+                X_weighted,
+                trans=1,
+                beta=1.0,
+                c=prior_scaled,
+                overwrite_c=True,
             )
-            cov_inv = cast(NDArray[np.float64], cov_inv)
-            diag_idx = np.diag_indices_from(cov_inv)
-            cov_inv[diag_idx] += reinjection
+            # Symmetrize (dsyrk only fills upper triangle)
+            il = np.tril_indices(cov_inv.shape[0], -1)
+            cov_inv[il] = cov_inv[il[1], il[0]]
 
+        # Apply weights to y for the linear term
         y_weighted = y * effective_weights
-        eta = prior_decay * self.cov_inv_ @ self.coef_ + self.beta * X.T @ y_weighted
-        eta = cast(NDArray[np.float64], eta)
 
         if self.sparse:
-            assert isinstance(cov_inv, csc_array)
-            factor = (
-                self._factor.refactorize(cov_inv)
-                if hasattr(self, "_factor")
-                else create_sparse_factor(cov_inv)
+            # Scale vectors instead of sparse matrices
+            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ (
+                self.beta * y_weighted
             )
+            eta = cast(NDArray[np.float64], eta)
+            assert isinstance(cov_inv, csc_array)
+            factor: PrecisionFactor = create_sparse_factor(cov_inv)
             coef = factor.solve(eta)
-            self._factor = factor
+            self._precision_factor = factor
         else:
-            from scipy.linalg import solve
-
-            coef = solve(cov_inv, eta, check_finite=False, assume_a="pos")
+            # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
+            # Accumulate into one buffer via dsymv then dgemv
+            eta = dsymv(
+                prior_decay,
+                self.cov_inv_,
+                self.coef_,
+            )
+            eta = dgemv(
+                self.beta, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True
+            )
+            # Cache the Cholesky factor for reuse in cov_/sample
+            cho = cho_factor(cov_inv, lower=False, check_finite=False)
+            self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            coef = cho_solve(cho, eta, check_finite=False)
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
@@ -546,8 +553,8 @@ class EmpiricalBayesNormalRegressor(_EmpiricalBayesMixin, NormalRegressor):
         # permutation can cause catastrophic fill-in (O(n^2) instead
         # of O(nnz)).  Reuse is only safe inside the EB loop where X
         # is fixed.
-        if hasattr(self, "_factor"):
-            del self._factor
+        if "_precision_factor" in self.__dict__:
+            del self._precision_factor
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
         prior_decay = self.learning_rate**n_samples
