@@ -14,7 +14,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     SparseSolver,
     create_sparse_factor,
     multivariate_normal_sample_from_sparse_precision,
-    multivariate_t_sample_from_sparse_precision,
+    multivariate_t_sample_from_precision,
     scale_factor,
 )
 
@@ -144,7 +144,7 @@ class TestSparseFactor:
         factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         scipy_cov = Covariance.from_precision(precision_matrix)
 
-        sparse_samples = multivariate_t_sample_from_sparse_precision(
+        sparse_samples = multivariate_t_sample_from_precision(
             loc=None, factor=factor, size=80000, random_state=0, df=300
         )
         scipy_samples = multivariate_t_sample_from_covariance(
