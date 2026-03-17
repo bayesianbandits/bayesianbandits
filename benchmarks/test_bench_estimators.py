@@ -6,7 +6,11 @@ from scipy.sparse import csc_array
 from scipy.sparse import random as sparse_random
 
 from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
-from bayesianbandits._estimators import BayesianGLM, NormalRegressor
+from bayesianbandits._estimators import (
+    BayesianGLM,
+    NormalInverseGammaRegressor,
+    NormalRegressor,
+)
 
 # -- normal dense 100 ---------------------------------------------------------
 
@@ -686,6 +690,194 @@ def test_partial_fit_eb_normal_sparse_100k(benchmark, eb_normal_sparse_100k_fres
 def test_decay_eb_normal_sparse_100k(benchmark, eb_normal_sparse_100k_fresh):
     def run():
         est, X, _ = eb_normal_sparse_100k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- nig dense 100 ------------------------------------------------------------
+
+
+def test_fit_nig_dense_100(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 100))
+    y = rng.standard_normal(200)
+
+    def run():
+        est = NormalInverseGammaRegressor(sparse=False)
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_nig_dense_100(benchmark, nig_dense_100):
+    est, X, _ = nig_dense_100
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_nig_dense_100(benchmark, nig_dense_100):
+    est, X, _ = nig_dense_100
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_nig_dense_100(benchmark, nig_dense_100):
+    est, X, _ = nig_dense_100
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_nig_dense_100(benchmark, nig_dense_100_fresh):
+    def run():
+        est, X, _ = nig_dense_100_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_nig_dense_100(benchmark, nig_dense_100_fresh):
+    def run():
+        est, X, _ = nig_dense_100_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- nig dense 1k -------------------------------------------------------------
+
+
+def test_fit_nig_dense_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 1000))
+    y = rng.standard_normal(200)
+
+    def run():
+        est = NormalInverseGammaRegressor(sparse=False)
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_nig_dense_1k(benchmark, nig_dense_1k):
+    est, X, _ = nig_dense_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_nig_dense_1k(benchmark, nig_dense_1k):
+    est, X, _ = nig_dense_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_nig_dense_1k(benchmark, nig_dense_1k):
+    est, X, _ = nig_dense_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_nig_dense_1k(benchmark, nig_dense_1k_fresh):
+    def run():
+        est, X, _ = nig_dense_1k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_nig_dense_1k(benchmark, nig_dense_1k_fresh):
+    def run():
+        est, X, _ = nig_dense_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- nig sparse 1k ------------------------------------------------------------
+
+
+def test_fit_nig_sparse_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = csc_array(sparse_random(200, 1000, density=0.01, random_state=42))
+    y = rng.standard_normal(200)
+
+    def run():
+        est = NormalInverseGammaRegressor(sparse=True)
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_nig_sparse_1k(benchmark, nig_sparse_1k):
+    est, X, _ = nig_sparse_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_nig_sparse_1k(benchmark, nig_sparse_1k):
+    est, X, _ = nig_sparse_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_nig_sparse_1k(benchmark, nig_sparse_1k):
+    est, X, _ = nig_sparse_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_nig_sparse_1k(benchmark, nig_sparse_1k_fresh):
+    def run():
+        est, X, _ = nig_sparse_1k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_nig_sparse_1k(benchmark, nig_sparse_1k_fresh):
+    def run():
+        est, X, _ = nig_sparse_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- nig sparse 100k ----------------------------------------------------------
+
+
+def test_fit_nig_sparse_100k(benchmark):
+    X = csc_array(sparse_random(200, 100_000, density=0.0001, random_state=42))
+    rng = np.random.default_rng(42)
+    y = rng.standard_normal(200)
+
+    def run():
+        est = NormalInverseGammaRegressor(sparse=True)
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_nig_sparse_100k(benchmark, nig_sparse_100k):
+    est, X, _ = nig_sparse_100k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_nig_sparse_100k(benchmark, nig_sparse_100k):
+    est, X, _ = nig_sparse_100k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_nig_sparse_100k(benchmark, nig_sparse_100k):
+    est, X, _ = nig_sparse_100k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_nig_sparse_100k(benchmark, nig_sparse_100k_fresh):
+    def run():
+        est, X, _ = nig_sparse_100k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_nig_sparse_100k(benchmark, nig_sparse_100k_fresh):
+    def run():
+        est, X, _ = nig_sparse_100k_fresh()
         est.decay(X, decay_rate=0.99)
 
     benchmark(run)
