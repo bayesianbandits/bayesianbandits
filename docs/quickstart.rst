@@ -5,62 +5,47 @@ Quick Start
 We have two ad creatives for the same product. They earn different revenue per
 click, but they also have different costs per impression — so the one with the
 highest gross revenue isn't necessarily the most profitable. We want a bandit
-that learns to maximize *profit* (revenue minus cost) rather than raw revenue.
+that learns to maximize *profit* (revenue minus cost) per impression.
 
 Setup
 =====
-
-Each arm's learner models raw revenue. The ``reward_function`` transforms those
-samples into profit before the policy compares them — the bandit explores in
-revenue-space but decides in profit-space.
 
 .. code-block:: python
 
     import numpy as np
     from bayesianbandits import Agent, Arm, NormalInverseGammaRegressor, ThompsonSampling
 
-    costs = {"ad_a": 0.35, "ad_b": 0.10}
-
     agent = Agent(
         arms=[
-            Arm(
-                "ad_a",
-                learner=NormalInverseGammaRegressor(),
-                reward_function=lambda revenue: revenue - costs["ad_a"],
-            ),
-            Arm(
-                "ad_b",
-                learner=NormalInverseGammaRegressor(),
-                reward_function=lambda revenue: revenue - costs["ad_b"],
-            ),
+            Arm("ad_a", learner=NormalInverseGammaRegressor()),
+            Arm("ad_b", learner=NormalInverseGammaRegressor()),
         ],
         policy=ThompsonSampling(),
     )
 
 Each ``Arm`` wraps a Bayesian model — here, a normal-inverse-gamma regression
-that learns the mean and variance of each ad's revenue. ``ThompsonSampling``
-draws from these posteriors, applies each arm's reward function, and picks the
-arm with the highest profit sample. Early on, the posteriors are wide and the
-agent explores. As data comes in, they tighten and the agent exploits.
+that learns the mean and variance of each ad's profit. ``ThompsonSampling``
+draws from these posteriors and picks the arm with the highest sample. Early on,
+the posteriors are wide and the agent explores. As data comes in, they tighten
+and the agent exploits.
 
 The pull-update loop
 ====================
 
 The whole API is two methods: ``pull()`` to pick an arm, and ``update()`` to
-teach the agent what happened. You always update with the raw observation
-(revenue) — the reward function is only used internally for decision-making.
+teach the agent what happened.
 
 .. code-block:: python
 
     (choice,) = agent.pull()
 
-    # observe revenue for whichever ad we served
-    revenue = get_revenue(choice)
+    # compute profit for whichever ad we served
+    profit = get_revenue(choice) - get_cost(choice)
 
-    agent.update(np.array([revenue]))
+    agent.update(np.array([profit]))
 
 That's one round. In production you'd run this continuously — on each
-impression, pull an arm, serve the ad, observe the revenue, update the model.
+impression, pull an arm, serve the ad, observe the profit, update the model.
 
 A simulation
 ============
@@ -73,12 +58,13 @@ per click on average ($0.50 vs $0.40), but it costs much more per impression
 
     rng = np.random.default_rng(42)
     true_revenue = {"ad_a": 0.50, "ad_b": 0.40}
+    cost = {"ad_a": 0.35, "ad_b": 0.10}
 
     choices = []
     for _ in range(500):
         (choice,) = agent.pull()
-        revenue = rng.normal(true_revenue[choice], scale=0.1)
-        agent.update(np.array([revenue]))
+        profit = rng.normal(true_revenue[choice], scale=0.1) - cost[choice]
+        agent.update(np.array([profit]))
         choices.append(choice)
 
 .. code-block:: python
@@ -93,7 +79,7 @@ occasionally — Thompson sampling never stops exploring entirely, which is what
 you want if the underlying rates might change.
 
 Under the hood, the ``NormalInverseGammaRegressor`` maintains a conjugate
-posterior over both the mean and the noise variance of each arm's revenue. Each
+posterior over both the mean and the noise variance of each arm's profit. Each
 ``update()`` is a rank-1 precision update, not a refit — so the computational
 cost per observation is constant regardless of how much data you've seen.
 

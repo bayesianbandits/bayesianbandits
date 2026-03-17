@@ -11,22 +11,12 @@ from bayesianbandits import (
     ThompsonSampling,
 )
 
-costs = {"ad_a": 0.35, "ad_b": 0.10}
-
 
 def _make_agent():
     return Agent(
         arms=[
-            Arm(
-                "ad_a",
-                learner=NormalInverseGammaRegressor(),
-                reward_function=lambda revenue: revenue - costs["ad_a"],
-            ),
-            Arm(
-                "ad_b",
-                learner=NormalInverseGammaRegressor(),
-                reward_function=lambda revenue: revenue - costs["ad_b"],
-            ),
+            Arm("ad_a", learner=NormalInverseGammaRegressor()),
+            Arm("ad_b", learner=NormalInverseGammaRegressor()),
         ],
         policy=ThompsonSampling(),
     )
@@ -36,10 +26,9 @@ def test_quickstart_setup_and_pull_update():
     """Setup + pull-update loop from the quick-start guide."""
     agent = _make_agent()
 
-    # pull-update loop (one round)
     (choice,) = agent.pull()
     assert choice in ("ad_a", "ad_b")
-    agent.update(np.array([0.5]))
+    agent.update(np.array([0.15]))
 
 
 def test_quickstart_simulation():
@@ -48,12 +37,13 @@ def test_quickstart_simulation():
 
     rng = np.random.default_rng(42)
     true_revenue = {"ad_a": 0.50, "ad_b": 0.40}
+    cost = {"ad_a": 0.35, "ad_b": 0.10}
 
     choices = []
     for _ in range(500):
         (choice,) = agent.pull()
-        revenue = rng.normal(true_revenue[choice], scale=0.1)
-        agent.update(np.array([revenue]))
+        profit = rng.normal(true_revenue[choice], scale=0.1) - cost[choice]
+        agent.update(np.array([profit]))
         choices.append(choice)
 
     counts = Counter(choices)
