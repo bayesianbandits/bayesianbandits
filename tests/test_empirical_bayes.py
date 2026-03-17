@@ -610,6 +610,37 @@ class TestSufficientStats:
         )
         assert beta_new == beta
 
+    def test_online_rejects_pathological_beta_alpha_ratio(self) -> None:
+        """When beta_new/alpha_new would exceed the guardrail, keep old hyperparams."""
+        p = 3
+        alpha, beta = 1.0, 1.0
+        # Large mu_n => alpha_new = gamma / ||mu||^2 is tiny
+        mu_n = np.ones(p) * 1e8
+        precision = alpha * np.eye(p) + beta * np.eye(p)
+        # Sufficient stats crafted so RSS is tiny positive => beta_new huge
+        # RSS = yTy - 2*m'XTy + m'XTXm; with XTX = (Λ - α·I)/β = I,
+        # m'XTXm = ||m||^2 = 3e16. Set yTy and XTy so RSS is tiny.
+        mTXTXm = float(mu_n @ mu_n)  # 3e16
+        eff_XTy = mu_n.copy()  # mTXTy = ||m||^2 = 3e16
+        # RSS = yTy - 2*3e16 + 3e16 = yTy - 3e16
+        # Set yTy = 3e16 + 1e-20 so RSS = 1e-20
+        eff_yTy = mTXTXm + 1e-20
+
+        alpha_new, beta_new, _ = mackay_update_normal_online(
+            mu_n,
+            precision,
+            alpha,
+            beta,
+            prior_scalar=alpha,
+            effective_n=100.0,
+            eff_yTy=eff_yTy,
+            eff_XTy=eff_XTy,
+            factor=_make_dense_factor(precision),
+        )
+        # beta_new/alpha_new would be astronomically large; guardrail rejects
+        assert alpha_new == alpha
+        assert beta_new == beta
+
     def test_online_sparse_precision_matvec(self) -> None:
         """mackay_update_normal_online handles sparse precision @ dense mu_n."""
         rng = np.random.default_rng(88)
