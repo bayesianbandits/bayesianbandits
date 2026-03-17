@@ -224,14 +224,22 @@ class DenseFactor:
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Compute U^{-1} z, producing samples from N(0, Λ^{-1})."""
-        return self._U_inv @ z
+        return cast(NDArray[np.float64], self._U_inv @ z)
+
+    def logdet(self) -> float:
+        """log|Λ| = 2·sum(log(diag(U)))."""
+        return 2.0 * float(np.sum(np.log(np.diag(self._U))))
+
+    def trace_inv(self) -> float:
+        """tr(Λ⁻¹) = ||U⁻¹||²_F."""
+        return float(np.sum(self._U_inv**2))
 
 
 PrecisionFactor = SparseFactor | DenseFactor
 
 
 def scale_factor(factor: SparseFactor, scale: float) -> SparseFactor:
-    """Scale a factor by a scalar, composing rather than nesting."""
+    """Scale a sparse factor by a scalar, composing rather than nesting."""
     if scale == 1.0:
         return factor
     if isinstance(factor, ScaledSparseFactor):

@@ -37,6 +37,7 @@ from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     CholmodSparseFactor,
     DenseFactor,
+    PrecisionFactor,
     ScaledSparseFactor,
     SparseFactor,
     SuperLUSparseFactor,
@@ -795,7 +796,7 @@ def _invalidate_cached_properties(
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
     @wraps(func)
     def wrapper(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
-        for attr in ("shape_", "cov_", "_dense_factor"):
+        for attr in ("shape_", "cov_"):
             try:
                 delattr(self, attr)
             except AttributeError:
@@ -932,7 +933,7 @@ scipy.sparse.csc_array
     def __getstate__(self) -> Any:
         # Exclude cached C extension objects that cannot be pickled
         state = super().__getstate__()  # type: ignore
-        state.pop("_factor", None)
+        state.pop("_precision_factor", None)
         return state
 
     def fit(
@@ -997,6 +998,22 @@ scipy.sparse.csc_array
             self.cov_inv_ = np.eye(self.n_features_) * self.alpha
 
     @cached_property
+    def _precision_factor(self) -> PrecisionFactor:
+        """Factorization of the precision matrix (cached).
+
+        Returns a ``DenseFactor`` (dense) or ``SparseFactor`` (sparse).
+        Lazily computed on first access; eagerly set by ``_fit_helper``
+        when the factorization is a free byproduct of the solve.
+        Invalidated by ``_invalidate_cached_properties``.
+        """
+        if self.sparse:
+            assert isinstance(self.cov_inv_, csc_array)
+            return create_sparse_factor(self.cov_inv_)
+        else:
+            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+            return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+
+    @cached_property
     def cov_(self) -> Union[Covariance, SparseFactor]:
         """Posterior covariance matrix (cached, lazily computed).
 
@@ -1010,17 +1027,12 @@ scipy.sparse.csc_array
            For dense models, this is an :math:`O(p^3)` computation
            with :math:`O(p^2)` memory.
         """
+        factor = self._precision_factor
         if self.sparse:
-            if hasattr(self, "_factor"):
-                return self._factor
-            assert isinstance(self.cov_inv_, csc_array)
-            return create_sparse_factor(self.cov_inv_)
+            assert isinstance(factor, SparseFactor)
+            return factor
         else:
-            if hasattr(self, "_dense_factor"):
-                factor = self._dense_factor
-            else:
-                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            assert isinstance(factor, DenseFactor)
             cov = factor.solve(np.eye(self.n_features_))
         return Covariance.from_cholesky(cholesky(cov, lower=True))
 
@@ -1094,9 +1106,9 @@ scipy.sparse.csc_array
             )
             eta = cast(NDArray[np.float64], eta)
             assert isinstance(cov_inv, csc_array)
-            factor = create_sparse_factor(cov_inv)
+            factor: PrecisionFactor = create_sparse_factor(cov_inv)
             coef = factor.solve(eta)
-            self._factor = factor
+            self._precision_factor = factor
         else:
             # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
             # Accumulate into one buffer via dsymv then dgemv
@@ -1110,7 +1122,7 @@ scipy.sparse.csc_array
             )
             # Cache the Cholesky factor for reuse in cov_/sample
             cho = cho_factor(cov_inv, lower=False, check_finite=False)
-            self._dense_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
             coef = cho_solve(cho, eta, check_finite=False)
 
         self.cov_inv_ = cov_inv
@@ -1243,25 +1255,10 @@ scipy.sparse.csc_array
             X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        # Sample w ~ N(coef_, Λ^{-1}) via triangular solve against the
-        # Cholesky factor of the precision.  Both dense (DenseFactor) and
-        # sparse (CHOLMOD/SuperLU) paths use the same colorize interface.
-        if self.sparse:
-            factor = self.cov_
-            assert isinstance(
-                factor, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
-            )
-        else:
-            if hasattr(self, "_dense_factor"):
-                factor = self._dense_factor
-            else:
-                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
-
         samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
                 self.coef_,
-                factor,
+                self._precision_factor,
                 size=size,
                 random_state=self.random_state_,
             )
@@ -1312,8 +1309,10 @@ scipy.sparse.csc_array
         # increasing the prior variance, we do not need to update the
         # mean.
         self.cov_inv_ = prior_decay * self.cov_inv_
-        if self.sparse and hasattr(self, "_factor"):
-            self._factor = scale_factor(self._factor, prior_decay)
+        if self.sparse and "_precision_factor" in self.__dict__:
+            factor = self._precision_factor
+            assert isinstance(factor, SparseFactor)
+            self._precision_factor = scale_factor(factor, prior_decay)
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -1571,7 +1570,7 @@ scipy.sparse.csc_array
             m_n = factor.solve(
                 prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
             )
-            self._factor = factor
+            self._precision_factor = factor
         else:
             # Update the mean vector
             m_n = solve(
@@ -1602,11 +1601,9 @@ scipy.sparse.csc_array
     @cached_property
     def shape_(self) -> Union[Covariance, SparseFactor]:
         if self.sparse:
-            if hasattr(self, "_factor"):
-                return scale_factor(self._factor, float(self.a_ / self.b_))
-            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
-            assert isinstance(shape_inv_, csc_array)
-            return create_sparse_factor(shape_inv_)
+            factor = self._precision_factor
+            assert isinstance(factor, SparseFactor)
+            return scale_factor(factor, float(self.a_ / self.b_))
         else:
             shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
             shape = solve(
@@ -1743,8 +1740,10 @@ scipy.sparse.csc_array
         self.cov_inv_ = prior_decay * self.cov_inv_
         self.a_ = prior_decay * self.a_
         self.b_ = prior_decay * self.b_
-        if self.sparse and hasattr(self, "_factor"):
-            self._factor = scale_factor(self._factor, prior_decay)
+        if self.sparse and "_precision_factor" in self.__dict__:
+            factor = self._precision_factor
+            assert isinstance(factor, SparseFactor)
+            self._precision_factor = scale_factor(factor, prior_decay)
 
 
 def multivariate_t_sample_from_covariance(
@@ -1991,8 +1990,18 @@ scipy.sparse.csc_array
     def __getstate__(self) -> Any:
         # Exclude cached C extension objects that cannot be pickled
         state = super().__getstate__()  # type: ignore
-        state.pop("_factor", None)
+        state.pop("_precision_factor", None)
         return state
+
+    @cached_property
+    def _precision_factor(self) -> PrecisionFactor:
+        """Factorization of the precision matrix (cached)."""
+        if self.sparse:
+            assert isinstance(self.cov_inv_, csc_array)
+            return create_sparse_factor(self.cov_inv_)
+        else:
+            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+            return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
 
     @cached_property
     def cov_(self) -> Union[Covariance, SparseFactor]:
@@ -2009,17 +2018,12 @@ scipy.sparse.csc_array
            :math:`O(p^2)` memory. For high-dimensional problems, prefer
            ``sparse=True`` or avoid accessing this property directly.
         """
+        factor = self._precision_factor
         if self.sparse:
-            if hasattr(self, "_factor"):
-                return self._factor
-            assert isinstance(self.cov_inv_, csc_array)
-            return create_sparse_factor(self.cov_inv_)
+            assert isinstance(factor, SparseFactor)
+            return factor
         else:
-            if hasattr(self, "_dense_factor"):
-                factor = self._dense_factor
-            else:
-                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            assert isinstance(factor, DenseFactor)
             cov = factor.solve(np.eye(self.n_features_))
             return Covariance.from_cholesky(cholesky(cov, lower=True))
 
@@ -2045,10 +2049,12 @@ scipy.sparse.csc_array
         self.cov_inv_ = posterior.precision
         if posterior.factor is not None:
             if self.sparse:
-                self._factor = posterior.factor
+                self._precision_factor = posterior.factor
             else:
                 cho = posterior.factor
-                self._dense_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+                self._precision_factor = DenseFactor(
+                    _U=cho[0], _n_features=cho[0].shape[0]
+                )
 
     def fit(
         self,
@@ -2236,24 +2242,10 @@ scipy.sparse.csc_array
             X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        # Sample w ~ N(coef_, Λ^{-1}) via triangular solve against the
-        # Cholesky factor of the precision (dense or sparse).
-        if self.sparse:
-            factor = self.cov_
-            assert isinstance(
-                factor, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
-            )
-        else:
-            if hasattr(self, "_dense_factor"):
-                factor = self._dense_factor
-            else:
-                cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-                factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
-
         param_samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
                 self.coef_,
-                factor,
+                self._precision_factor,
                 size=size,
                 random_state=self.random_state_,
             )
@@ -2311,5 +2303,7 @@ scipy.sparse.csc_array
         prior_decay = decay_rate ** X.shape[0]
 
         self.cov_inv_ = prior_decay * self.cov_inv_
-        if self.sparse and hasattr(self, "_factor"):
-            self._factor = scale_factor(self._factor, prior_decay)
+        if self.sparse and "_precision_factor" in self.__dict__:
+            factor = self._precision_factor
+            assert isinstance(factor, SparseFactor)
+            self._precision_factor = scale_factor(factor, prior_decay)
