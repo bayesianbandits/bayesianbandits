@@ -1569,7 +1569,7 @@ def test_normal_inverse_gamma_scaled_factor_solve(sparse: bool) -> None:
     reg.fit(sp.csc_array(X), y)
 
     scale = float(reg.a_ / reg.b_)
-    scaled_factor = scale_factor(reg._factor, scale)
+    scaled_factor = scale_factor(reg._precision_factor, scale)
 
     # Compare against direct factorization of the scaled precision
     direct_factor = create_sparse_factor(reg.cov_inv_ * scale)
@@ -1621,10 +1621,10 @@ def test_normal_inverse_gamma_scale_factor_identity(sparse: bool) -> None:
     reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42, learning_rate=1.0)
     reg.fit(sp.csc_array(X), y)
 
-    original_factor = reg._factor
+    original_factor = reg._precision_factor
 
     # learning_rate=1.0 means prior_decay = 1.0^N = 1.0, so scale_factor
     # should return the original factor unchanged
     reg.decay(sp.csc_array(X))
 
-    assert reg._factor is original_factor
+    assert reg._precision_factor is original_factor
