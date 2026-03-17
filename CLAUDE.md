@@ -4,7 +4,7 @@
 
 - **Install dependencies**: `uv sync`
 - **Run tests**: `uv run pytest`
-- **Run tests with coverage** (matches CI): `uv run pytest --cov=./ --cov-report=term-missing`
+- **Run tests with coverage** (matches CI): `uv run pytest tests --cov=./ --cov-report=term-missing`
 - **Type checking**: `uv run pyright`
 
 ## Linting and Formatting
