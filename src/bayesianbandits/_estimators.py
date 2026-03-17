@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
-from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore
+from scipy.linalg.blas import dsymv  # type: ignore
 from scipy.sparse import csc_array, diags, eye
 from scipy.special import expit
 from scipy.stats import (
@@ -26,6 +26,7 @@ from sklearn.utils.validation import (
 )
 from typing_extensions import Concatenate, ParamSpec, Self
 
+from ._blas_helpers import compute_eta_dense, update_precision_dense
 from ._gaussian import (
     LaplaceApproximator,
     LinkFunction,
@@ -1078,19 +1079,9 @@ scipy.sparse.csc_array
             # For dense matrices, use broadcasting for efficiency
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            # Fused X^T W X + prior via dsyrk (upper triangle only)
             prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
-            cov_inv = dsyrk(
-                self.beta,
-                X_weighted,
-                trans=1,
-                beta=1.0,
-                c=prior_scaled,
-                overwrite_c=True,
-            )
-            # Symmetrize (dsyrk only fills upper triangle)
-            il = np.tril_indices(cov_inv.shape[0], -1)
-            cov_inv[il] = cov_inv[il[1], il[0]]
+            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
@@ -1107,14 +1098,8 @@ scipy.sparse.csc_array
             self._precision_factor = factor
         else:
             # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
-            # Accumulate into one buffer via dsymv then dgemv
-            eta = dsymv(
-                prior_decay,
-                self.cov_inv_,
-                self.coef_,
-            )
-            eta = dgemv(
-                self.beta, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True
+            eta = compute_eta_dense(
+                prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
             # Cache the Cholesky factor for reuse in cov_/sample
             cho = cho_factor(cov_inv, lower=False, check_finite=False)
@@ -1558,14 +1543,9 @@ scipy.sparse.csc_array
         else:
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            # Fused X^T W X + prior via dsyrk (upper triangle only)
             prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
-            V_n = dsyrk(
-                1.0, X_weighted, trans=1, beta=1.0, c=prior_scaled, overwrite_c=True
-            )
-            # Symmetrize (dsyrk only fills upper triangle)
-            il = np.tril_indices(V_n.shape[0], -1)
-            V_n[il] = V_n[il[1], il[0]]
+            V_n = update_precision_dense(1.0, X_weighted, prior_scaled)
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
@@ -1580,9 +1560,9 @@ scipy.sparse.csc_array
             self._precision_factor = factor
         else:
             # eta = prior_decay * cov_inv_ @ coef_ + X^T @ y_weighted
-            # Accumulate into one buffer via dsymv then dgemv
-            eta = dsymv(prior_decay, self.cov_inv_, self.coef_)
-            eta = dgemv(1.0, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True)
+            eta = compute_eta_dense(
+                prior_decay, self.cov_inv_, self.coef_, 1.0, X, y_weighted
+            )
             # Cache the Cholesky factor for reuse in shape_/sample
             cho = cho_factor(V_n, lower=False, check_finite=False)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])

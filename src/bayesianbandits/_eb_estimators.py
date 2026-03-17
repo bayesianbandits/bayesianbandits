@@ -8,11 +8,11 @@ from typing import Any, Optional, Union, cast
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import cho_factor, cho_solve
-from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
 from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
+from ._blas_helpers import compute_eta_dense, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
     mackay_update_normal_online,
@@ -455,24 +455,14 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             # Fold in the prior reinjection
             cov_inv.setdiag(cov_inv.diagonal() + reinjection)
         else:
-            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            # Fused X^T W X + prior via dsyrk (upper triangle only)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
             prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
-            # Add reinjection to diagonal before dsyrk (it preserves diagonal)
+            # Add reinjection to diagonal before dsyrk
             diag_idx = np.diag_indices_from(prior_scaled)
             prior_scaled[diag_idx] += reinjection
-            cov_inv = dsyrk(
-                self.beta,
-                X_weighted,
-                trans=1,
-                beta=1.0,
-                c=prior_scaled,
-                overwrite_c=True,
-            )
-            # Symmetrize (dsyrk only fills upper triangle)
-            il = np.tril_indices(cov_inv.shape[0], -1)
-            cov_inv[il] = cov_inv[il[1], il[0]]
+            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
@@ -489,14 +479,8 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             self._precision_factor = factor
         else:
             # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
-            # Accumulate into one buffer via dsymv then dgemv
-            eta = dsymv(
-                prior_decay,
-                self.cov_inv_,
-                self.coef_,
-            )
-            eta = dgemv(
-                self.beta, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True
+            eta = compute_eta_dense(
+                prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
             # Cache the Cholesky factor for reuse in cov_/sample
             cho = cho_factor(cov_inv, lower=False, check_finite=False)

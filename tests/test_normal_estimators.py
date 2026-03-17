@@ -1195,7 +1195,10 @@ class TestDenseVsSparseLearnedPrecisionMatrix:
         assert isinstance(sparse_clf.cov_inv_, sp.csc_array)
         assert isinstance(dense_clf.cov_inv_, np.ndarray)
 
-        assert_almost_equal(sparse_clf.cov_inv_.toarray(), dense_clf.cov_inv_)  # type: ignore
+        # Dense precision is upper-triangle-only; compare upper triangles.
+        sparse_full = sparse_clf.cov_inv_.toarray()  # type: ignore
+        iu = np.triu_indices(dense_clf.cov_inv_.shape[0])
+        assert_almost_equal(sparse_full[iu], dense_clf.cov_inv_[iu])
         assert_almost_equal(sparse_clf.coef_, dense_clf.coef_)
 
     def test_learned_precision_matrix_is_identical_normal_inverse_gamma(
@@ -1209,7 +1212,10 @@ class TestDenseVsSparseLearnedPrecisionMatrix:
         assert isinstance(sparse_clf.cov_inv_, sp.csc_array)
         assert isinstance(dense_clf.cov_inv_, np.ndarray)
 
-        assert_almost_equal(sparse_clf.cov_inv_.toarray(), dense_clf.cov_inv_)  # type: ignore
+        # Dense precision is upper-triangle-only; compare upper triangles.
+        sparse_full = sparse_clf.cov_inv_.toarray()  # type: ignore
+        iu = np.triu_indices(dense_clf.cov_inv_.shape[0])
+        assert_almost_equal(sparse_full[iu], dense_clf.cov_inv_[iu])
         assert_almost_equal(sparse_clf.coef_, dense_clf.coef_)
 
 
