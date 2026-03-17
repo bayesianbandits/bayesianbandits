@@ -14,7 +14,6 @@ from typing import Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import solve_triangular
 from scipy.sparse import csc_array, issparse
 from scipy.special import gammaln
 
@@ -145,20 +144,6 @@ def logdet(
         if sign <= 0:
             raise ValueError("Precision matrix is not positive definite")
         return float(ld)
-
-
-def _dense_cholesky_stats(
-    precision: NDArray[np.float64],
-) -> tuple[float, float]:
-    """Returns (logdet, trace_of_inverse) from one Cholesky.
-
-    Math: logdet = 2·sum(log(diag(L))), tr(A^-1) = ||L^-1||^2_F.
-    """
-    L = np.linalg.cholesky(precision)
-    ld = 2.0 * float(np.sum(np.log(np.diag(L))))
-    L_inv = solve_triangular(L, np.eye(L.shape[0]), lower=True, check_finite=False)
-    tr_inv = float(np.sum(L_inv**2))
-    return ld, tr_inv
 
 
 def _factorization_stats(

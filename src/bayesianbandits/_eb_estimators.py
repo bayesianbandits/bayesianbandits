@@ -21,7 +21,6 @@ from ._estimators import NormalRegressor, _invalidate_cached_properties
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
-    SparseFactor,
     create_sparse_factor,
 )
 
@@ -485,11 +484,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             )
             eta = cast(NDArray[np.float64], eta)
             assert isinstance(cov_inv, csc_array)
-            cached = self.__dict__.get("_precision_factor")
-            if isinstance(cached, SparseFactor):
-                factor: PrecisionFactor = cached.refactorize(cov_inv)
-            else:
-                factor = create_sparse_factor(cov_inv)
+            factor: PrecisionFactor = create_sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
