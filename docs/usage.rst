@@ -12,9 +12,14 @@ Start here if you're new to multi-armed bandits or this library.
 .. toctree::
     :maxdepth: 1
 
+    quickstart
     notebooks/demo
 
-**What you'll learn**: Your first bandit with Thompson sampling. Covers the basic pull-update cycle and core concepts like exploration vs exploitation.
+**Quick Start** (``quickstart``): Get a working bandit in 5 minutes — the
+fastest path from zero to a bandit that learns.
+
+**Full Tutorial** (``demo``): A deeper dive into Thompson sampling with binary
+outcomes, custom reward functions, batch updates, and model persistence.
 
 Core Concepts
 =============
