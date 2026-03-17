@@ -17,6 +17,7 @@ from numpy.typing import NDArray
 from scipy.sparse import csc_array, issparse
 from scipy.special import gammaln
 
+from ._blas_helpers import dsymv
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
@@ -274,7 +275,13 @@ def mackay_update_normal_online(
     m = mu_n
     mTXTy = float(m @ eff_XTy)
 
-    XTX_m = precision @ m - prior_scalar * m
+    # dsymv reads only the upper triangle (safe for upper-triangle-only
+    # dense precision matrices produced by dsyrk).
+    if issparse(precision):
+        prec_m = precision @ m
+    else:
+        prec_m = dsymv(1.0, precision, m)
+    XTX_m = prec_m - prior_scalar * m
     mTXTXm = float(m @ XTX_m) / beta
 
     rss = eff_yTy - 2.0 * mTXTy + mTXTXm
