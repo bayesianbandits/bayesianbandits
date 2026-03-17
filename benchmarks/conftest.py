@@ -241,3 +241,50 @@ def eb_normal_sparse_100k():
 def eb_normal_sparse_100k_fresh(eb_normal_sparse_100k):
     est, X_test, name = eb_normal_sparse_100k
     return lambda: (copy.deepcopy(est), X_test, name)
+
+
+# -- NIG fixtures -------------------------------------------------------------
+
+
+@pytest.fixture
+def nig_dense_100():
+    return _fit_estimator("nig", "dense", 100)
+
+
+@pytest.fixture
+def nig_dense_100_fresh(nig_dense_100):
+    est, X_test, name = nig_dense_100
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def nig_dense_1k():
+    return _fit_estimator("nig", "dense", 1_000)
+
+
+@pytest.fixture
+def nig_dense_1k_fresh(nig_dense_1k):
+    est, X_test, name = nig_dense_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def nig_sparse_1k():
+    return _fit_estimator("nig", "sparse", 1_000)
+
+
+@pytest.fixture
+def nig_sparse_1k_fresh(nig_sparse_1k):
+    est, X_test, name = nig_sparse_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def nig_sparse_100k():
+    return _fit_estimator("nig", "sparse", 100_000)
+
+
+@pytest.fixture
+def nig_sparse_100k_fresh(nig_sparse_100k):
+    est, X_test, name = nig_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)

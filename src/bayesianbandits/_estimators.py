@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.linalg import cho_factor, cho_solve, cholesky, solve
+from scipy.linalg import cho_factor, cho_solve, cholesky
 from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore
 from scipy.sparse import csc_array, diags, eye
 from scipy.special import expit
@@ -15,7 +15,6 @@ from scipy.stats import (
     dirichlet,
     gamma,
     multivariate_normal,
-    multivariate_t,
 )
 from scipy.stats._multivariate import _squeeze_output
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
@@ -35,15 +34,12 @@ from ._gaussian import (
 )
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
-    CholmodSparseFactor,
     DenseFactor,
     PrecisionFactor,
-    ScaledSparseFactor,
     SparseFactor,
-    SuperLUSparseFactor,
     create_sparse_factor,
     multivariate_normal_sample_from_precision,
-    multivariate_t_sample_from_sparse_precision,
+    multivariate_t_sample_from_precision,
     scale_factor,
 )
 
@@ -1309,10 +1305,13 @@ scipy.sparse.csc_array
         # increasing the prior variance, we do not need to update the
         # mean.
         self.cov_inv_ = prior_decay * self.cov_inv_
-        if self.sparse and "_precision_factor" in self.__dict__:
-            factor = self._precision_factor
-            assert isinstance(factor, SparseFactor)
-            self._precision_factor = scale_factor(factor, prior_decay)
+        if "_precision_factor" in self.__dict__:
+            if self.sparse:
+                factor = self._precision_factor
+                assert isinstance(factor, SparseFactor)
+                self._precision_factor = scale_factor(factor, prior_decay)
+            else:
+                del self._precision_factor
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -1551,45 +1550,63 @@ scipy.sparse.csc_array
 
         # Update the inverse covariance matrix with weights
         if self.sparse:
-            from scipy.sparse import diags
-
-            W_sqrt = diags(np.sqrt(effective_weights), format="csc")
-            X_weighted = W_sqrt @ X
+            # Element-wise scaling avoids constructing a diagonal matrix
+            assert isinstance(X, csc_array)
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
         else:
-            X_weighted = X * np.sqrt(effective_weights)[:, np.newaxis]
-            V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X * w_sqrt[:, np.newaxis]
+            # Fused X^T W X + prior via dsyrk (upper triangle, ~2x faster)
+            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
+            V_n = dsyrk(
+                1.0, X_weighted, trans=1, beta=1.0, c=prior_scaled, overwrite_c=True
+            )
+            # Symmetrize (dsyrk only fills upper triangle)
+            il = np.tril_indices(V_n.shape[0], -1)
+            V_n[il] = V_n[il[1], il[0]]
 
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
 
         if self.sparse:
-            # Update the mean vector
+            # Scale vectors instead of sparse matrices to avoid copies
+            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ y_weighted
+            eta = cast(NDArray[np.float64], eta)
             assert isinstance(V_n, csc_array)
-            factor = create_sparse_factor(V_n)
-            m_n = factor.solve(
-                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted
-            )
+            factor: PrecisionFactor = create_sparse_factor(V_n)
+            m_n = factor.solve(eta)
             self._precision_factor = factor
         else:
-            # Update the mean vector
-            m_n = solve(
-                V_n,
-                prior_decay * self.cov_inv_ @ self.coef_ + X.T @ y_weighted,
-                check_finite=False,
-                assume_a="pos",
-            )
+            # eta = prior_decay * cov_inv_ @ coef_ + X^T @ y_weighted
+            # Accumulate into one buffer via dsymv then dgemv
+            eta = dsymv(prior_decay, self.cov_inv_, self.coef_)
+            eta = dgemv(1.0, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True)
+            # Cache the Cholesky factor for reuse in shape_/sample
+            cho = cho_factor(V_n, lower=False, check_finite=False)
+            self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+            m_n = cho_solve(cho, eta, check_finite=False)
 
         # Update the shape and rate parameters of the variance
         # For a_n: sum of effective weights
         a_n = prior_decay * self.a_ + 0.5 * effective_weights.sum()
 
         # For b_n: weighted residual sum of squares
+        # Use matvec + dot to compute quadratic forms efficiently
         weighted_y_squared = y.T @ (y * effective_weights)
+        if self.sparse:
+            cov_inv_coef = self.cov_inv_ @ self.coef_
+            prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
+            Vn_mn = V_n @ m_n
+            posterior_quad = m_n.dot(Vn_mn)
+        else:
+            cov_inv_coef = dsymv(1.0, self.cov_inv_, self.coef_)
+            prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
+            Vn_mn = dsymv(1.0, V_n, m_n)
+            posterior_quad = m_n.dot(Vn_mn)
         b_n = prior_decay * self.b_ + 0.5 * (
-            weighted_y_squared
-            + prior_decay * self.coef_.T @ self.cov_inv_ @ self.coef_
-            - m_n.T @ V_n @ m_n
+            weighted_y_squared + prior_quad - posterior_quad
         )
 
         # Posteriors become priors for the next batch
@@ -1599,20 +1616,24 @@ scipy.sparse.csc_array
         self.b_ = b_n
 
     @cached_property
-    def shape_(self) -> Union[Covariance, SparseFactor]:
+    def shape_(self) -> PrecisionFactor:
+        """Precision of the shape matrix for the multivariate t posterior.
+
+        The shape covariance is (b/a)·Λ⁻¹, so the shape precision is
+        (a/b)·Λ.  For dense models this is represented as a DenseFactor
+        with U_scaled = √(a/b)·U (zero extra factorizations); for sparse
+        models it wraps the existing SparseFactor via ``scale_factor``.
+        """
         if self.sparse:
             factor = self._precision_factor
             assert isinstance(factor, SparseFactor)
             return scale_factor(factor, float(self.a_ / self.b_))
         else:
-            shape_inv_ = self.cov_inv_ * (self.a_ / self.b_)
-            shape = solve(
-                shape_inv_,
-                np.eye(self.n_features_),
-                check_finite=False,
-                assume_a="pos",
-            )
-            return Covariance.from_cholesky(cholesky(shape, lower=True))
+            factor = self._precision_factor
+            assert isinstance(factor, DenseFactor)
+            scale = np.sqrt(self.a_ / self.b_)
+            U_scaled = np.triu(scale * factor._U)
+            return DenseFactor(_U=U_scaled, _n_features=factor._n_features)
 
     def sample(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -1657,30 +1678,16 @@ scipy.sparse.csc_array
         )
         df = 2 * self.a_
 
-        # Sparse sampling is not supported by scipy, so we use our own implementation
-        if self.sparse:
-            shape = self.shape_
-            assert isinstance(
-                shape, (CholmodSparseFactor, SuperLUSparseFactor, ScaledSparseFactor)
-            )
-            samples = multivariate_t_sample_from_sparse_precision(
-                self.coef_, shape, df, size, self.random_state_
-            )
-
-        else:
-            shape = self.shape_
-            assert isinstance(shape, Covariance)
-            _, loc, _, df = multivariate_t._process_parameters(
-                self.coef_, shape.covariance, df
-            )
-
-            samples = multivariate_t_sample_from_covariance(
-                loc,
-                shape,
-                df,
-                size,
-                self.random_state_,
-            )
+        # Sample from multivariate t via precision parameterization
+        # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
+        # whose precision is (a/b)·Λ, i.e. shape cov = (b/a)·Λ⁻¹
+        samples = multivariate_t_sample_from_precision(
+            self.coef_,
+            self.shape_,
+            df,
+            size,
+            self.random_state_,  # type: ignore[arg-type]
+        )
 
         if self.n_features_ == 1:
             samples = np.expand_dims(samples, -1)
@@ -1740,10 +1747,13 @@ scipy.sparse.csc_array
         self.cov_inv_ = prior_decay * self.cov_inv_
         self.a_ = prior_decay * self.a_
         self.b_ = prior_decay * self.b_
-        if self.sparse and "_precision_factor" in self.__dict__:
-            factor = self._precision_factor
-            assert isinstance(factor, SparseFactor)
-            self._precision_factor = scale_factor(factor, prior_decay)
+        if "_precision_factor" in self.__dict__:
+            if self.sparse:
+                factor = self._precision_factor
+                assert isinstance(factor, SparseFactor)
+                self._precision_factor = scale_factor(factor, prior_decay)
+            else:
+                del self._precision_factor
 
 
 def multivariate_t_sample_from_covariance(
@@ -2303,7 +2313,10 @@ scipy.sparse.csc_array
         prior_decay = decay_rate ** X.shape[0]
 
         self.cov_inv_ = prior_decay * self.cov_inv_
-        if self.sparse and "_precision_factor" in self.__dict__:
-            factor = self._precision_factor
-            assert isinstance(factor, SparseFactor)
-            self._precision_factor = scale_factor(factor, prior_decay)
+        if "_precision_factor" in self.__dict__:
+            if self.sparse:
+                factor = self._precision_factor
+                assert isinstance(factor, SparseFactor)
+                self._precision_factor = scale_factor(factor, prior_decay)
+            else:
+                del self._precision_factor

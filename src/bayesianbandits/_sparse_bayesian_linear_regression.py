@@ -330,9 +330,9 @@ multivariate_normal_sample_from_sparse_precision = (
 )
 
 
-def multivariate_t_sample_from_sparse_precision(
+def multivariate_t_sample_from_precision(
     loc: Union[csc_array, NDArray[np.float64], None],
-    factor: SparseFactor,
+    factor: PrecisionFactor,
     df: float = 1.0,
     size: int = 1,
     random_state: Union[int, None, np.random.Generator] = None,
@@ -345,7 +345,7 @@ def multivariate_t_sample_from_sparse_precision(
     ----------
     loc : array_like
         Mean of the distribution.
-    factor : SparseFactor
+    factor : PrecisionFactor
         Factored precision (inverse shape) matrix.
     df : int or float, optional
         Degrees of freedom of the distribution. Default is 1.
