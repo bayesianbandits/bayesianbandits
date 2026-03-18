@@ -141,6 +141,6 @@ class TestReseedProducesNewState:
             assert arm.learner.random_state is agent.rng
 
 
-class _NoopTransformer:
+class _NoopTransformer:  # pragma: no cover
     def transform(self, X):
         return X
