@@ -86,8 +86,8 @@ Where to go from here
 =====================
 
 **Custom reward functions** (profit = revenue - cost)
-    :doc:`howto/reward-functions` shows how to write reward functions for
-    :class:`~bayesianbandits.DirichletClassifier` and other estimators.
+    :doc:`howto/reward-functions` shows how to write reward functions that
+    turn probability or revenue samples into profit.
 
 **Using context features** (user demographics, item attributes)
     :doc:`Linear Bandits <notebooks/linear-bandits>` covers per-arm contextual
