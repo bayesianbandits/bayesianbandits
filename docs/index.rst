@@ -6,11 +6,12 @@
 Welcome to bayesianbandits's documentation!
 ===========================================
 
-`bayesianbandits` is a Python package for Bayesian bandits. It provides a
-simple, Pythonic interface to implement and different algorithms to solve multi-armed
-bandit problems. To facilitate this, it provides a number of different Bayesian and 
-recursive Bayesian estimators to represent the knowledge of the reward distribution
-of each arm.
+`bayesianbandits` is a Python library for multi-armed bandits with Bayesian
+learning. It provides conjugate estimators (binary, continuous, count rewards),
+three agent types (classic, contextual, shared-learner), and exploration
+policies (Thompson sampling, UCB, epsilon-greedy, EXP3) — all with O(1)
+online updates and a two-method API: ``pull()`` to decide, ``update()`` to
+learn.
 
 If you have any questions or suggestions, please feel free to open an issue
 on the project page on GitHub or contact me at <rishi@kulkarni.science>.

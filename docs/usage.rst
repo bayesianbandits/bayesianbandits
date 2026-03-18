@@ -12,14 +12,14 @@ Start here if you're new to multi-armed bandits or this library.
 .. toctree::
     :maxdepth: 1
 
+    introduction
     quickstart
-    notebooks/demo
 
-**Quick Start** (``quickstart``): Get a working bandit in 5 minutes — the
+**Introduction** (``introduction``): Why multi-armed bandits, why Bayesian,
+and which estimator / agent / policy combination to use.
+
+**Quick Start** (``quickstart``): Get a working bandit in 5 minutes. The
 fastest path from zero to a bandit that learns.
-
-**Full Tutorial** (``demo``): A deeper dive into Thompson sampling with binary
-outcomes, custom reward functions, batch updates, and model persistence.
 
 Core Concepts
 =============
@@ -29,8 +29,11 @@ Essential techniques for effective bandit implementation.
 .. toctree::
     :maxdepth: 1
 
+    notebooks/demo
     notebooks/counts
     notebooks/linear-bandits
+
+**Binary Outcomes** (`demo`): Thompson sampling with binary rewards (click / no click), custom reward functions, batch updates, and model persistence.
 
 **Bayesian Updating** (`counts`): Understanding how bandits learn from rewards using conjugate priors and posterior distributions.
 
@@ -72,40 +75,3 @@ Handle challenging real-world conditions.
 
 **Historical Data** (`offline-learning`): Bootstrap bandits using existing data before deploying online.
 
-Agent Types Guide
-=================
-
-Choose the right agent for your use case:
-
-**Agent**
-    Non-contextual bandits where all users/items are identical. Use for simple A/B testing.
-
-**ContextualAgent** 
-    Contextual bandits with separate models per arm. Use when arms are completely different (e.g., different product categories).
-
-**LipschitzContextualAgent**
-    The most general agent: a single shared model with a configurable design matrix. Can express non-contextual, disjoint, hybrid, or Lipschitz bandits depending on how the arm featurizer constructs the design matrix. See the ``hybrid-bandits`` tutorial for examples.
-
-Pipeline Integration
-====================
-
-Integrate with sklearn preprocessing pipelines:
-
-.. code-block:: python
-
-    from bayesianbandits.pipelines import AgentPipeline
-    from sklearn.preprocessing import StandardScaler
-    
-    # Preprocess contexts before bandit sees them
-    pipeline = AgentPipeline([
-        ('scaler', StandardScaler()),
-        ('agent', ContextualAgent(arms, policy))
-    ])
-    
-    # Or preprocess features within learners
-    from bayesianbandits.pipelines import LearnerPipeline
-    
-    learner = LearnerPipeline([
-        ('preprocessor', StandardScaler()),
-        ('regressor', NormalRegressor())
-    ])
