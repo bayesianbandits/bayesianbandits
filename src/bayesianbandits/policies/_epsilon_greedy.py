@@ -64,7 +64,7 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
 
     **Applicability to this library.** The classical analysis assumes
     stationary rewards and empirical sample means with known concentration
-    properties. This implementation replaces the empirical mean with a
+    properties [1]_. This implementation replaces the empirical mean with a
     Bayesian posterior mean (which may use approximate inference) and
     supports contextual features and variance-increasing decay for
     non-stationarity. Under these modifications the formal bounds do not
