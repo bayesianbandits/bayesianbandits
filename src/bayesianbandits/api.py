@@ -55,6 +55,7 @@ Policy Functions
 
 from typing import (
     Any,
+    Dict,
     Generic,
     List,
     Optional,
@@ -284,8 +285,8 @@ class ContextualAgent(Generic[ContextType, TokenType]):
     ):
         self.policy: PolicyProtocol[ContextType, TokenType] = policy
 
-        self.rng: np.random.Generator = np.random.default_rng(random_seed)
         self._arms: List[Arm[ContextType, TokenType]] = []
+        self.rng = random_seed
         for arm in arms:
             self.add_arm(arm)
 
@@ -293,6 +294,22 @@ class ContextualAgent(Generic[ContextType, TokenType]):
             raise ValueError("At least one arm is required.")
 
         self.arm_to_update = arms[0]
+
+    @property
+    def rng(self) -> np.random.Generator:
+        return self._rng
+
+    @rng.setter
+    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
+        self._rng = np.random.default_rng(value)
+        for arm in self._arms:
+            assert arm.learner is not None
+            arm.learner.random_state = self._rng
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        if "rng" in state and "_rng" not in state:
+            state["_rng"] = state.pop("rng")
+        self.__dict__.update(state)
 
     @property
     def arms(self) -> List[Arm[ContextType, TokenType]]:
@@ -593,6 +610,10 @@ class Agent(Generic[TokenType]):
     @property
     def rng(self) -> np.random.Generator:
         return self._inner.rng
+
+    @rng.setter
+    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
+        self._inner.rng = value
 
     @property
     def arm_to_update(self) -> Arm[NDArray[np.float64], TokenType]:
@@ -986,14 +1007,11 @@ class LipschitzContextualAgent(Generic[TokenType]):
         self.policy: PolicyProtocol[Any, TokenType] = policy
         self.arm_featurizer: ArmFeaturizer[TokenType] = arm_featurizer
         self.learner: Learner[Any] = learner
-        self.rng: np.random.Generator = np.random.default_rng(random_seed)
         self.batch_reward_function = batch_reward_function
 
-        # Set random state on learner
-        self.learner.random_state = self.rng
-
-        # Initialize arms and set shared learner
+        # Initialize arms list before rng setter (which iterates _arms)
         self.arms: List[Arm[Any, TokenType]] = []
+        self.rng = random_seed
         for arm in arms:
             self.add_arm(arm)
 
@@ -1017,6 +1035,20 @@ class LipschitzContextualAgent(Generic[TokenType]):
                 )
 
         self.arm_to_update: Arm[Any, TokenType] = self.arms[0]
+
+    @property
+    def rng(self) -> np.random.Generator:
+        return self._rng
+
+    @rng.setter
+    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
+        self._rng = np.random.default_rng(value)
+        self.learner.random_state = self._rng
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        if "rng" in state and "_rng" not in state:
+            state["_rng"] = state.pop("rng")
+        self.__dict__.update(state)
 
     def _check_identity_optimization(self) -> None:
         """Update batch_reward_function based on current arms."""
