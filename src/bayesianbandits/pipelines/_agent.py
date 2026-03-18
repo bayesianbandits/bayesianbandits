@@ -226,6 +226,11 @@ class ContextualAgentPipeline(Generic[ContextType, TokenType]):
         """Get the random generator from the wrapped agent."""
         return self._agent.rng
 
+    @rng.setter
+    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
+        """Set the random generator on the wrapped agent."""
+        self._agent.rng = value
+
     def __repr__(self) -> str:
         """String representation."""
         steps_repr = [
@@ -390,6 +395,11 @@ class NonContextualAgentPipeline(Generic[TokenType]):
     def rng(self) -> np.random.Generator:
         """Get the random generator from the wrapped agent."""
         return self._agent.rng
+
+    @rng.setter
+    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
+        """Set the random generator on the wrapped agent."""
+        self._agent.rng = value
 
     def __repr__(self) -> str:
         """String representation."""
