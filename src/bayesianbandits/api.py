@@ -193,19 +193,6 @@ class ContextualAgent(Generic[ContextType, TokenType]):
         Controls the random number generator shared by the policy and
         all learners. Pass an int for reproducible results across calls.
 
-    Attributes
-    ----------
-    arms : List[Arm[ContextType, TokenType]]
-        Current list of arms.
-    arm_to_update : Arm[ContextType, TokenType]
-        Arm that will receive the next ``update`` call. Automatically
-        set to the last pulled arm (when ``top_k`` is None), or must be
-        set explicitly via :meth:`select_for_update`.
-    policy : PolicyProtocol[ContextType, TokenType]
-        Active policy. Can be replaced at any time.
-    rng : np.random.Generator
-        Shared random number generator.
-
     See Also
     --------
     Agent : Non-contextual (intercept-only) agent.
@@ -216,14 +203,14 @@ class ContextualAgent(Generic[ContextType, TokenType]):
     -----
     **Independent learners.** Each arm owns a separate learner instance
     that is updated only with observations from that arm. This is the
-    standard approach when arms have independent reward distributions.
-    For parameter sharing across arms, see
+    standard approach when arms have independent reward distributions
+    [1]_. For parameter sharing across arms, see
     :class:`LipschitzContextualAgent`.
 
     **Batch contexts.** Both :meth:`pull` and :meth:`update` accept
     matrices with multiple rows, producing one decision or update per
     row. This enables efficient batch serving but requires the user to
-    match rewards to the correct arms when using delayed feedback.
+    match rewards to the correct arms when using delayed feedback [2]_.
 
     **Serialization.** The agent (including all arm learners) is
     pickle-compatible, making it straightforward to persist to a
@@ -521,17 +508,6 @@ class Agent(Generic[TokenType]):
         Controls the random number generator shared by the policy and
         all learners. Pass an int for reproducible results across calls.
 
-    Attributes
-    ----------
-    arms : List[Arm[NDArray[np.float64], TokenType]]
-        Current list of arms.
-    arm_to_update : Arm[NDArray[np.float64], TokenType]
-        Arm that will receive the next ``update`` call.
-    policy : PolicyProtocol[NDArray[np.float64], TokenType]
-        Active policy. Can be replaced at any time.
-    rng : np.random.Generator
-        Shared random number generator.
-
     See Also
     --------
     ContextualAgent : Agent that conditions decisions on a feature
@@ -545,7 +521,8 @@ class Agent(Generic[TokenType]):
     reduces to an intercept-only model. For example,
     :class:`NormalRegressor` becomes a simple Bayesian estimate of the
     mean reward, and :class:`DirichletClassifier` maintains a posterior
-    over class probabilities.
+    over class probabilities. See [1]_ for an empirical comparison of
+    policies in this setting.
 
     References
     ----------
@@ -843,21 +820,6 @@ class LipschitzContextualAgent(Generic[TokenType]):
         Controls the random number generator shared by the policy and
         the learner. Pass an int for reproducible results across calls.
 
-    Attributes
-    ----------
-    arms : List[Arm[Any, TokenType]]
-        Current list of arms, all sharing the same learner instance.
-    arm_to_update : Arm[Any, TokenType]
-        Arm that will receive the next ``update`` call.
-    policy : PolicyProtocol[Any, TokenType]
-        Active policy.
-    arm_featurizer : ArmFeaturizer[TokenType]
-        Vectorized arm feature transformer.
-    learner : Learner
-        Shared learner instance.
-    rng : np.random.Generator
-        Shared random number generator.
-
     See Also
     --------
     ContextualAgent : Independent-learner agent; equivalent to this
@@ -880,7 +842,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
 
     **Design matrix as assumption encoding.** The structure of
     :math:`\\phi(x, a)` is the mechanism by which you encode domain
-    knowledge about the relationship between arms.  A block-diagonal
+    knowledge about the relationship between arms [3]_.  A block-diagonal
     design matrix (one-hot arms interacted with context) yields fully
     independent parameters per arm -- equivalent to
     :class:`ContextualAgent`.  Adding shared columns (e.g. user

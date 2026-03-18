@@ -51,8 +51,8 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     [2]_.
 
     **Applicability to this library.** The bounds above are proven for
-    stationary, non-contextual bandits with exact conjugate posteriors. This
-    library targets anytime, contextual, and potentially non-stationary
+    stationary, non-contextual bandits with exact conjugate posteriors [1]_.
+    This library targets anytime, contextual, and potentially non-stationary
     problems, and the Bayesian learners may use approximate posteriors (e.g.
     Laplace approximations) or variance-increasing decay. Under these
     modifications the classical regret guarantees do not formally apply,

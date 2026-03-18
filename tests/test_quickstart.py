@@ -1,7 +1,5 @@
 """Validate that the code snippets in docs/quickstart.rst keep working."""
 
-from collections import Counter
-
 import numpy as np
 
 from bayesianbandits import (
@@ -46,6 +44,6 @@ def test_quickstart_simulation():
         agent.update(np.array([profit]))
         choices.append(choice)
 
-    counts = Counter(choices)
     # ad_b has higher profit ($0.30 vs $0.15), so it should win
-    assert counts["ad_b"] > counts["ad_a"], f"Expected ad_b to win, got {counts}"
+    frac_b = choices.count("ad_b") / len(choices)
+    assert frac_b > 0.5, f"Expected ad_b to dominate, got {frac_b:.0%}"

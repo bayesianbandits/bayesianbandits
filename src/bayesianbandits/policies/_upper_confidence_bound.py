@@ -61,8 +61,8 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
     holds under mild conditions.
 
     **Applicability to this library.** The bounds above assume stationary
-    rewards, exact conjugate posteriors, and a non-contextual setting. This
-    library uses a fixed quantile level, supports contextual features,
+    rewards, exact conjugate posteriors, and a non-contextual setting [1]_.
+    This library uses a fixed quantile level, supports contextual features,
     approximate posteriors, and variance-increasing decay for
     non-stationarity. Under these modifications the formal guarantees do not
     directly apply, though the optimism-in-the-face-of-uncertainty principle
