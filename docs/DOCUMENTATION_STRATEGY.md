@@ -18,7 +18,7 @@ index.rst                                    (restructured toctree)
 |
 +-- How-To Guides
 |   +-- howto/pipelines.rst                  DONE - Integrating with sklearn transformers
-|   +-- howto/decay.rst                      Choosing and tuning a decay rate
+|   +-- howto/decay.rst                      DONE - Choosing and tuning a decay rate
 |   +-- howto/reward-functions.rst           Writing custom reward functions
 |   |                                        (absorbs demo.ipynb content)
 |   +-- howto/delayed-rewards.rst            Handling delayed rewards
@@ -152,12 +152,15 @@ Cross-reference groups:
 
 Each how-to should be 1-2 pages, task-oriented, with code snippets (not full scenarios).
 
-### `howto/decay.rst` -- Choosing and Tuning a Decay Rate
-- What `learning_rate` does mechanically (precision matrix scaling)
-- Rule of thumb for choosing values (effective window size)
-- When decay alone is enough vs. when to use EB
-- Interaction with `partial_fit` vs. explicit `decay()` calls
-- Code: set up a regressor with decay, show precision matrix evolution
+### `howto/decay.rst` -- Choosing and Tuning a Decay Rate (DONE)
+- Default advice: start with `learning_rate=1.0`, no decay
+- Decouple decay from updates: recsys example, `decay()` on a schedule
+- Note box: what decay does mechanically (precision scaling, re-exploration)
+- Footnote: why n_rows exponent exists, why per-obs decay is often too aggressive
+- Effective window size table (gamma → window)
+- Avoid over-decay: near-singular precision, prior collapse, EB as safety net
+- Cross-reference to delayed-reward notebook (optuna tuning)
+- Tests: `tests/test_howto_decay.py` (5 tests)
 
 ### `howto/pipelines.rst` -- Integrating with sklearn Transformers (DONE)
 - `AgentPipeline` for `Agent`/`ContextualAgent` (per-arm learners): accepts JSON (DictVectorizer), DataFrames (ColumnTransformer), or raw arrays (StandardScaler)
@@ -263,8 +266,8 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 
 ### Tier 1: Highest leverage
 8. ~~`howto/pipelines.rst` + `tests/test_howto_pipelines.py`~~ (DONE)
-9. Docstring audit (policy See Also + Examples)
-10. `howto/decay.rst` + `tests/test_howto_decay.py`
+9. ~~`howto/decay.rst` + `tests/test_howto_decay.py`~~ (DONE)
+10. Docstring audit (policy See Also + Examples)
 11. `howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`
 
 ### Tier 2: Trust-building
