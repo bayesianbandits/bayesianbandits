@@ -35,6 +35,16 @@ index.rst                                    (restructured toctree)
 |   +-- math/glm.rst                         Laplace approximation, IRLS
 |   +-- math/policies.rst                    TS, UCB, epsilon-greedy, EXP3
 |
++-- Explanation
+|   +-- explanation/worldview.rst               Bandits as forecasting under nonstationarity
+|   +-- explanation/decision-theory.rst         Separating inference from decisions
+|   +-- explanation/stabilized-forgetting.rst   Stabilized forgetting + empirical Bayes
+|   +-- explanation/online-mackay.rst           Online evidence maximization
+|   +-- explanation/exp3-bayesian.rst           EXP3 with Bayesian posteriors
+|   +-- explanation/laplace-glm.rst             Laplace GLM in a conjugate framework
+|   +-- explanation/eb-guard-rails.rst          EB numerical safeguards
+|   +-- explanation/why-not-zooming.rst         Regression over zooming for continuous arms
+|
 +-- Examples (Cookbook)                       6 notebooks, down from 9
 |   +-- notebooks/linear-bandits             NIG vs GLM with regret curves
 |   +-- notebooks/hybrid-bandits             Design matrix structures
@@ -68,6 +78,7 @@ Follows the [Diataxis](https://diataxis.fr/) framework. Pages are typed by purpo
 **Explanation** (understanding-oriented, no code)
 
 - **Introduction** (`introduction.rst`): When to use a bandit, why Bayesian, why conjugate models, and a decision guide mapping problem shapes to (estimator, agent, policy) combinations. Prose only. Done.
+- **Explanation pages** (`explanation/*.rst`): Why this library makes the mathematical choices it makes. The reasoning that connects the how-to guides ("do this") to the math reference ("here's the formula"). One page per topic so each can reference its own literature. See Explanation Specifications below.
 
 **Tutorials** (learning-oriented, complete code)
 
@@ -245,6 +256,71 @@ Concise style: state equations, explain parameterization, link to Murphy/Bishop 
 - Epsilon-greedy: exploit with 1-eps, explore uniformly
 - EXP3A: exponential weights, importance weighting, forced exploration
 
+## Explanation Specifications
+
+Each page is prose-heavy, no runnable code. States the decision, the reasoning, references relevant literature, and is honest about what theoretical guarantees (if any) we have.
+
+### `explanation/worldview.rst` -- Bandits as Forecasting Under Nonstationarity
+
+The foundational page. Bandits in the real world are fundamentally forecasting problems — decisions happen in time, the world changes, and you need to act now with what you know. This library interprets bandits through that lens: anytime, contextual, nonstationary.
+
+Touch on:
+- The pull/update/decay loop is a Kalman filter with a decision layer: conjugate updates are the measurement update (incorporate new data for the arm you observed), decay is the prediction step (inject process noise — increase uncertainty on *all* arms every time step, whether observed or not)
+- Decaying all arms isn't a design quirk — it's what the prediction step of a Kalman filter does. Unobserved arms still experience time passing. Their parameters may have drifted, so uncertainty should grow.
+- Why conjugate priors: they give you closed-form Kalman-style updates. No MCMC, no variational inference, no mini-batches. One matrix operation per observation. This is what makes the library fast enough for real-time decisioning.
+- The Bayesian framing unifies exploration and exploitation naturally (Thompson sampling is just acting on your beliefs) and gives you calibrated uncertainty for free
+- Contrast with the textbook view: most bandit theory assumes stationary reward distributions and analyzes regret over a fixed horizon. This library assumes the world is always moving and optimizes for anytime performance.
+
+### `explanation/decision-theory.rst` -- Separating Inference from Decisions
+
+Bayesian decision theory separates two concerns: understanding the world (inference) and deciding how to act on that understanding (utility/loss). This library enforces that separation architecturally.
+
+Touch on:
+- The learner models *what actually happens* (CTR, conversion rate, revenue per click) — it maintains a posterior over the generative process
+- The reward function is a utility function (negative loss) in the decision theory sense. It maps outcomes to *value* — what that outcome is worth to you (profit = revenue - cost, or any arbitrary utility). The library uses "reward function" following bandit convention, but this is the standard Bayesian decision-theoretic separation of posterior from loss.
+- `update()` trains on raw outcomes, not transformed rewards. The posterior stays valid even if your utility function changes (e.g., ad costs change, you redefine success metrics). No retraining needed.
+- The policy (Thompson sampling, UCB, etc.) is a third, separate concern: given the posterior and the utility, *how* do you select an action? This is the decision rule — minimizing expected loss (or equivalently maximizing expected utility/reward).
+- Three orthogonal axes: learner (what do I believe?), reward/utility function (what do I value?), policy (how do I decide?). Changing one doesn't require changing the others.
+- Reference: Berger (1985) *Statistical Decision Theory and Bayesian Analysis*, DeGroot (1970) *Optimal Statistical Decisions*
+
+### `explanation/stabilized-forgetting.rst` -- Stabilized Forgetting + Empirical Bayes
+
+Exponential forgetting (Kulhavy & Zarrop 1993) scales precision by γ^n, which drives the prior contribution toward zero over time — destroying regularization. Stabilized forgetting re-injects (1 - γ^n)α into the precision diagonal so the prior converges to α instead of vanishing. But we're *also* running MacKay EB to learn α. So the stabilization target is itself being updated by the data. Explain why this interaction is safe (EB updates α slowly, stabilization prevents catastrophic prior collapse between updates) and what would go wrong without either piece.
+
+### `explanation/online-mackay.rst` -- Online Evidence Maximization
+
+Textbook MacKay iterates to convergence on a fixed dataset. We do single-step MacKay updates per `partial_fit` call using exact decayed sufficient statistics recovered from the precision matrix. This is not an approximation — given Λ and the accumulated stats, the MacKay update equations are evaluated exactly. The "online" part is the choice to do one step per data arrival, which is natural because new data is imminent. Explain how sufficient statistics are maintained under decay, how X^TX is recovered from the precision matrix, and why this constitutes an exact online extension of MacKay's method.
+
+### `explanation/exp3-bayesian.rst` -- EXP3 with Bayesian Posteriors
+
+EXP3's core contribution is importance weighting to correct for selection-dependent observation — you don't pull arms uniformly, so your reward estimates are biased by your own policy. In an intercept-only model with no decay, the Bayesian posterior mean is just a weighted average of observed rewards — equivalent to EXP3's normalized reward sums. So the Bayesian version isn't a departure from EXP3; it's a natural generalization that reduces to the same thing in the simple case.
+
+Touch on:
+- Equivalence in the intercept-only case: posterior means ≈ normalized reward sums, importance weighting applies the same correction
+- What the generalization buys: regression (condition on context, which standard EXP3 can't do), decay (natural nonstationarity handling), and full posterior uncertainty
+- Importance weighting as correction for non-ignorable missingness: you observe rewards conditional on your selection policy, and conjugate posteriors can't correct for this on their own
+- In adversarial environments: there is no true reward distribution, so the posterior is misspecified — but it still produces useful arm rankings, and the EXP3 selection machinery provides empirical robustness
+- Honest about guarantees: EXP3's regret bound assumes its specific reward tracking, so we lose the formal bound in the extended case, but the debiasing principle still holds
+
+### `explanation/laplace-glm.rst` -- Laplace GLM in a Conjugate Framework
+
+The rest of the library is exact conjugate updates. The GLM uses IRLS for MAP estimation + Laplace approximation for the posterior. Explain why GLMs are worth the approximation cost (flexible likelihoods — logistic, Poisson) and what you give up (posterior is Gaussian at the MAP, not exact). The single-step IRLS option (n_iter=1) is a deliberate trade-off: if the previous posterior is a good initialization, one Newton step is usually sufficient for online updates. Explain when this is and isn't safe.
+
+### `explanation/eb-guard-rails.rst` -- EB Numerical Safeguards
+
+When β/α > 10^10, EB updates are silently rejected. This prevents numerical collapse in the underdetermined regime (p >> n), where MacKay can produce extreme hyperparameter ratios. Explain the failure mode (near-singular precision, garbage posterior), why a hard cutoff is preferable to a soft constraint, and what the user should know (EB is frozen until enough data arrives to make the problem well-determined).
+
+### `explanation/why-not-zooming.rst` -- Regression Over Zooming for Continuous Arms
+
+Lipschitz/continuous-armed bandits classically use zooming or adaptive discretization algorithms that partition the arm space and refine where rewards are promising. This library uses Bayesian regression over the arm space instead. Explain why.
+
+Touch on:
+- Zooming works well in the non-contextual, low-dimensional arm space — partition arm space, refine promising regions
+- Adding context makes zooming intractable: you'd need to partition the joint (arm × context) space, which is combinatorially explosive in any realistic dimension
+- Bayesian regression sidesteps this entirely — the design matrix encodes arm features and context jointly, and the posterior naturally provides adaptive resolution (tight where you have data, wide where you don't)
+- Thompson sampling on the regression posterior gives you exploration for free — no explicit partitioning or confidence-radius bookkeeping needed
+- Trade-off: you assume a parametric relationship (linear or GLM) between (arm, context) and reward, whereas zooming is nonparametric. In practice the parametric assumption is usually fine and buys you generalization across similar arms/contexts.
+
 ## Testing Code Examples
 
 Every how-to guide with code snippets must have a corresponding test file in `tests/`, following the pattern established by `tests/test_quickstart.py`:
@@ -271,11 +347,12 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 11. `howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`
 
 ### Tier 2: Trust-building
-9. `howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`
-10. `math/normal.rst`
-11. `math/empirical-bayes.rst`
-12. `math/policies.rst`
-13. `howto/production.rst` + `tests/test_howto_production.py`
+9. `explanation/*.rst` (8 explanation pages — no test files, prose only)
+10. `howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`
+11. `math/normal.rst`
+12. `math/empirical-bayes.rst`
+13. `math/policies.rst`
+14. `howto/production.rst` + `tests/test_howto_production.py`
 
 ### Tier 3: Completeness
 14. `math/normal-inverse-gamma.rst`, `math/intercept-only.rst`, `math/glm.rst`
