@@ -85,13 +85,9 @@ cost per observation is constant regardless of how much data you've seen.
 Where to go from here
 =====================
 
-**Binary outcomes** (click / no click)
-    The :doc:`Thompson Sampling tutorial <notebooks/demo>` uses
-    :class:`~bayesianbandits.DirichletClassifier` with a custom reward function.
-
-**Count data** (transactions per week)
-    :doc:`Contextual Bandits for Count Data <notebooks/counts>` uses
-    :class:`~bayesianbandits.GammaRegressor` with Upper Confidence Bound.
+**Custom reward functions** (profit = revenue - cost)
+    :doc:`howto/reward-functions` shows how to write reward functions for
+    :class:`~bayesianbandits.DirichletClassifier` and other estimators.
 
 **Using context features** (user demographics, item attributes)
     :doc:`Linear Bandits <notebooks/linear-bandits>` covers per-arm contextual
@@ -100,3 +96,6 @@ Where to go from here
 **Sharing knowledge across arms** (hundreds of products, cold start)
     :doc:`Hybrid Bandits <notebooks/hybrid-bandits>` demonstrates the
     shared-learner approach with :class:`~bayesianbandits.LipschitzContextualAgent`.
+
+**Pipelines and preprocessing** (DataFrames, JSON, sparse features)
+    :doc:`howto/pipelines` covers using sklearn transformers with bandits.
