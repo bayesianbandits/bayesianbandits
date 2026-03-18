@@ -15,7 +15,7 @@ from bayesianbandits import (
     NormalRegressor,
     ThompsonSampling,
 )
-from bayesianbandits._arm import _accepts_context, identity
+from bayesianbandits._arm import _accepts_context, is_identity_function
 
 
 def make_profit_reward(revenue, cost):
@@ -30,7 +30,7 @@ def make_profit_reward(revenue, cost):
 def test_identity_is_default():
     """Arm with no reward_function uses identity."""
     arm = Arm("test", learner=NormalRegressor(alpha=1.0, beta=1.0))
-    assert arm.reward_function is identity
+    assert is_identity_function(arm.reward_function)
 
     X = np.array([[1.0]])
     arm.learner.fit(X, np.array([1.0]))

@@ -156,6 +156,15 @@ class EXP3A:
     >>> # Create agent
     >>> agent = ContextualAgent(arms, policy)
 
+    See Also
+    --------
+    ThompsonSampling : Randomized exploration via posterior sampling.
+        Generally the default choice for stochastic environments.
+    UpperConfidenceBound : Deterministic optimism via posterior quantiles.
+        Explores more aggressively than Thompson sampling for uncertain arms.
+    EpsilonGreedy : Simple exploration via random arm selection.
+        Does not use posterior uncertainty to guide exploration.
+
     Notes
     -----
     **Regret bounds (standard setting).** In the classical non-stochastic

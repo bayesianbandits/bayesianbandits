@@ -43,6 +43,32 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
     samples : int, default=1000
         Number of posterior samples used to estimate the quantile.
 
+    Examples
+    --------
+    Default one-sigma bound:
+
+    >>> from bayesianbandits import Agent, Arm, NormalInverseGammaRegressor
+    >>> from bayesianbandits import UpperConfidenceBound
+    >>>
+    >>> arms = [
+    ...     Arm(f"arm_{i}", learner=NormalInverseGammaRegressor())
+    ...     for i in range(3)
+    ... ]
+    >>> agent = Agent(arms, UpperConfidenceBound())
+
+    More aggressive exploration with a higher quantile:
+
+    >>> agent = Agent(arms, UpperConfidenceBound(alpha=0.95))
+
+    See Also
+    --------
+    ThompsonSampling : Randomized exploration via posterior sampling.
+        Generally the default choice; explores proportionally to uncertainty.
+    EpsilonGreedy : Simple exploration via random arm selection.
+        Does not use posterior uncertainty to guide exploration.
+    EXP3A : Adversarial robustness via importance-weighted updates.
+        Use when reward generation may be adversarial or non-stochastic.
+
     Notes
     -----
     **Regret bounds (standard setting).** Kaufmann et al. (2012) show that

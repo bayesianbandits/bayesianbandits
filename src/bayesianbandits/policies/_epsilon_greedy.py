@@ -45,6 +45,26 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
     samples : int, default=1000
         Number of posterior samples used to estimate the arm means.
 
+    Examples
+    --------
+    >>> from bayesianbandits import Agent, Arm, NormalInverseGammaRegressor
+    >>> from bayesianbandits import EpsilonGreedy
+    >>>
+    >>> arms = [
+    ...     Arm(f"arm_{i}", learner=NormalInverseGammaRegressor())
+    ...     for i in range(3)
+    ... ]
+    >>> agent = Agent(arms, EpsilonGreedy(epsilon=0.1))
+
+    See Also
+    --------
+    ThompsonSampling : Randomized exploration via posterior sampling.
+        Generally the default choice; explores proportionally to uncertainty.
+    UpperConfidenceBound : Deterministic optimism via posterior quantiles.
+        Explores more aggressively than Thompson sampling for uncertain arms.
+    EXP3A : Adversarial robustness via importance-weighted updates.
+        Use when reward generation may be adversarial or non-stochastic.
+
     Notes
     -----
     **Regret bounds (standard setting).** For a :math:`K`-armed stochastic
