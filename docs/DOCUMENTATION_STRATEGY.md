@@ -22,7 +22,7 @@ index.rst                                    (restructured toctree)
 |   +-- howto/reward-functions.rst           Writing custom reward functions
 |   |                                        (absorbs demo.ipynb content)
 |   +-- howto/delayed-rewards.rst            Handling delayed rewards
-|   +-- howto/production.rst                 Deploying a bandit to production
+|   +-- howto/production.rst                 DONE - Deploying a bandit to production
 |   |                                        (absorbs persistence.ipynb content)
 |   +-- howto/sparse.rst                     Working with sparse features / CHOLMOD
 |
@@ -352,7 +352,7 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 11. `math/normal.rst`
 12. `math/empirical-bayes.rst`
 13. `math/policies.rst`
-14. `howto/production.rst` + `tests/test_howto_production.py`
+14. ~~`howto/production.rst` + `tests/test_howto_production.py`~~ (DONE)
 
 ### Tier 3: Completeness
 14. `math/normal-inverse-gamma.rst`, `math/intercept-only.rst`, `math/glm.rst`
