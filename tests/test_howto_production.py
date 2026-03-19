@@ -31,7 +31,7 @@ def test_joblib_roundtrip():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / "agent.pkl"
-        joblib.dump(agent, path)
+        joblib.dump(agent, path, compress=True)
         loaded = joblib.load(path)
 
     # Learned state is preserved
