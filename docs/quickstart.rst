@@ -2,6 +2,10 @@
 Quick Start
 ===========
 
+Install with pip (Python 3.10+)::
+
+    pip install -U bayesianbandits
+
 We have two ad creatives for the same product. They earn different revenue per
 click, but they also have different costs per impression, so the one with the
 highest gross revenue isn't necessarily the most profitable. We want a bandit

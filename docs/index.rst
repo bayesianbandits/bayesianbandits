@@ -1,12 +1,27 @@
 bayesianbandits
 ===============
 
-``bayesianbandits`` is a Python library for multi-armed bandits with Bayesian
-learning. It provides conjugate estimators (binary, continuous, count rewards),
-three agent types (classic, contextual, shared-learner), and exploration
-policies (Thompson sampling, UCB, epsilon-greedy, EXP3) -- all with O(1)
-online updates and a two-method API: ``pull()`` to decide, ``update()`` to
-learn.
+Bayesian multi-armed bandits with conjugate online learning. Sometimes, 
+you need to know your decisions are close to optimal at all times.
+
+**Getting started**
+   New to bandits? The :doc:`introduction <introduction>` explains when
+   you'd use one and how to choose your setup. The :doc:`quickstart`
+   walks through a complete example in 5 minutes.
+
+**How-to guides**
+   Task-oriented recipes: :doc:`pipelines <howto/pipelines>`,
+   :doc:`decay <howto/decay>`, :doc:`reward functions <howto/reward-functions>`,
+   :doc:`delayed rewards <howto/delayed-rewards>`,
+   :doc:`production deployment <howto/production>`,
+   :doc:`sparse features <howto/sparse>`.
+
+**Mathematical reference**
+   Update equations, hyperparameter semantics, and departures from
+   textbook for each estimator family: :doc:`math/index`.
+
+**API reference**
+   Full details on every class and method: :doc:`api`.
 
 .. toctree::
    :maxdepth: 2
