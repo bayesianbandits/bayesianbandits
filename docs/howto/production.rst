@@ -6,8 +6,6 @@ Serialize with joblib
 ----------------------
 
 ``joblib`` is a dependency of scikit-learn, so it's already installed.
-All learned state (posterior parameters, precision matrices, EB
-hyperparameters) is preserved across save/load.
 
 .. note::
 
@@ -38,26 +36,25 @@ hyperparameters) is preserved across save/load.
    # Learned state is preserved
    assert loaded.arms[0].learner.coef_[1][0] == agent.arms[0].learner.coef_[1][0]
 
-Use some form of compression for production. Uncompressed pickles of
-precision matrices can be large, but the learned state compresses
-efficiently: a sparse model with 1M features and 4M nonzeros is a
-couple hundred KB at rest.
+Uncompressed pickles of precision matrices can be large. The learned
+state compresses efficiently: a sparse model with 1M features and 4M
+nonzeros is a couple hundred KB at rest.
 
 
 Reseed the RNG after loading
 -----------------------------
 
 After deserialization, the RNG state is frozen from save time. Every
-copy loaded from the same file replays the same exploration sequence.
-Reseed immediately after loading:
+copy loaded from the same file replays the exact same exploration
+sequence. Reseed immediately after loading:
 
 .. code-block:: python
 
    loaded = joblib.load("agent.pkl")
-   loaded.rng = 123  # any int, Generator, or None
+   loaded.rng = None  # seeds from OS entropy
 
-Setting ``rng`` creates a fresh ``numpy.random.Generator`` and
-propagates it to all arm learners automatically.
+This creates a fresh ``numpy.random.Generator`` and propagates it to
+all arm learners. Pass an ``int`` instead if you need reproducibility.
 
 
 Add and remove arms at runtime

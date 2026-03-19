@@ -19,12 +19,12 @@ index.rst                                    (restructured toctree)
 +-- How-To Guides
 |   +-- howto/pipelines.rst                  DONE - Integrating with sklearn transformers
 |   +-- howto/decay.rst                      DONE - Choosing and tuning a decay rate
-|   +-- howto/reward-functions.rst           Writing custom reward functions
+|   +-- howto/reward-functions.rst           DONE - Writing custom reward functions
 |   |                                        (absorbs demo.ipynb content)
-|   +-- howto/delayed-rewards.rst            Handling delayed rewards
+|   +-- howto/delayed-rewards.rst            DONE - Handling delayed rewards
 |   +-- howto/production.rst                 DONE - Deploying a bandit to production
 |   |                                        (absorbs persistence.ipynb content)
-|   +-- howto/sparse.rst                     Working with sparse features / CHOLMOD
+|   +-- howto/sparse.rst                     DONE - Working with sparse features / CHOLMOD
 |
 +-- Mathematical Reference                   ALL NEW
 |   +-- math/normal.rst                      NormalRegressor: prior, update, decay
@@ -44,6 +44,7 @@ index.rst                                    (restructured toctree)
 |   +-- explanation/laplace-glm.rst             Laplace GLM in a conjugate framework
 |   +-- explanation/eb-guard-rails.rst          EB numerical safeguards
 |   +-- explanation/why-not-zooming.rst         Regression over zooming for continuous arms
+|   +-- explanation/sparse-fill.rst             When sparse mode works (and when it doesn't)
 |
 +-- Examples (Cookbook)                       6 notebooks, down from 9
 |   +-- notebooks/linear-bandits             NIG vs GLM with regret curves
@@ -181,11 +182,12 @@ Each how-to should be 1-2 pages, task-oriented, with code snippets (not full sce
 - Cross-reference to hybrid-bandits notebook for full treatment
 - Tests: `tests/test_howto_pipelines.py` (7 tests)
 
-### `howto/sparse.rst` -- Working with Sparse Features
+### `howto/sparse.rst` -- Working with Sparse Features (DONE)
 - When to enable `sparse=True`
-- CHOLMOD vs. SuperLU backends
-- Memory and performance characteristics
-- Code: sparse context matrix with 1M features
+- CHOLMOD vs. SuperLU backends (why SuperLU is slower: can't exploit SPD structure)
+- Precision matrix fill: hierarchical features keep fill bounded, bag-of-words doesn't
+- Code: sparse context matrix with 10k features
+- Tests: `tests/test_howto_sparse.py` (4 tests)
 
 ### `howto/production.rst` -- Deploying to Production
 - Serialization with joblib (from persistence.ipynb)
@@ -321,6 +323,17 @@ Touch on:
 - Thompson sampling on the regression posterior gives you exploration for free — no explicit partitioning or confidence-radius bookkeeping needed
 - Trade-off: you assume a parametric relationship (linear or GLM) between (arm, context) and reward, whereas zooming is nonparametric. In practice the parametric assumption is usually fine and buys you generalization across similar arms/contexts.
 
+### `explanation/sparse-fill.rst` -- When Sparse Mode Works (and When It Doesn't)
+
+The precision matrix update adds `x^T x` on each observation. Whether the precision matrix stays sparse over time depends on the feature structure.
+
+Touch on:
+- Each observation contributes nonzeros wherever its active features cross. With d_active active features per observation, that's up to d_active^2 new entries.
+- Hierarchical features (country > state > city, one-hot at each level): each observation activates exactly one node per level, so the fill pattern is bounded and predictable. The precision matrix stays sparse indefinitely. This is the ideal use case.
+- Arbitrary sparse features (e.g., bag-of-words): different observations activate different feature subsets. Over time, cross-feature entries accumulate and the precision matrix fills in. Eventually the sparse advantage erodes.
+- The practical question: does `nnz(precision)` grow without bound, or does it plateau? Hierarchical features plateau. Bag-of-words doesn't.
+- Cross-reference to `howto/sparse` for the mechanical setup.
+
 ## Testing Code Examples
 
 Every how-to guide with code snippets must have a corresponding test file in `tests/`, following the pattern established by `tests/test_quickstart.py`:
@@ -343,12 +356,12 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 ### Tier 1: Highest leverage
 8. ~~`howto/pipelines.rst` + `tests/test_howto_pipelines.py`~~ (DONE)
 9. ~~`howto/decay.rst` + `tests/test_howto_decay.py`~~ (DONE)
-10. Docstring audit (policy See Also + Examples)
-11. `howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`
+10. ~~Docstring audit (policy See Also + Examples)~~ (DONE)
+11. ~~`howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`~~ (DONE)
 
 ### Tier 2: Trust-building
 9. `explanation/*.rst` (8 explanation pages — no test files, prose only)
-10. `howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`
+10. ~~`howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`~~ (DONE)
 11. `math/normal.rst`
 12. `math/empirical-bayes.rst`
 13. `math/policies.rst`
@@ -356,7 +369,7 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 
 ### Tier 3: Completeness
 14. `math/normal-inverse-gamma.rst`, `math/intercept-only.rst`, `math/glm.rst`
-15. `howto/sparse.rst` + `tests/test_howto_sparse.py`
+15. ~~`howto/sparse.rst` + `tests/test_howto_sparse.py`~~ (DONE)
 16. Remove cut notebooks from repo, update cross-references
 17. `changelog.rst`
 
