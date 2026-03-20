@@ -679,10 +679,8 @@ def batch_sample_arms(
     else:
         samples = samples.reshape(size, n_arms, n_contexts).transpose(1, 2, 0)
 
-    # Apply reward functions if non-identity
-    # Check using function identity rather than name comparison
-    identity_func = arms[0].reward_function if arms else None
-    if identity_func and all(arm.reward_function is identity_func for arm in arms):
+    # Skip reward function application if all arms use identity
+    if all(is_identity_function(arm.reward_function) for arm in arms):
         return samples
 
     # Pre-allocate result array
