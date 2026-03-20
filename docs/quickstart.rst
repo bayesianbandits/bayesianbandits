@@ -2,6 +2,10 @@
 Quick Start
 ===========
 
+Install with pip (Python 3.10+)::
+
+    pip install -U bayesianbandits
+
 We have two ad creatives for the same product. They earn different revenue per
 click, but they also have different costs per impression, so the one with the
 highest gross revenue isn't necessarily the most profitable. We want a bandit
@@ -74,29 +78,22 @@ per click on average ($0.50 vs $0.40), but it costs much more per impression
 
 Ad A has higher revenue, but ad B has higher profit ($0.30 vs $0.15). The
 agent figures this out and shifts traffic accordingly. It still pulls ad A
-occasionally. Thompson sampling never stops exploring entirely, which is what
-you want if the underlying rates might change.
+occasionally because Thompson sampling never stops exploring.
 
-Under the hood, the :class:`~bayesianbandits.NormalInverseGammaRegressor` maintains a conjugate
-posterior over both the mean and the noise variance of each arm's profit. Each
-``update()`` is a rank-1 precision update, not a refit, so the computational
-cost per observation is constant regardless of how much data you've seen.
+Each ``update()`` is a rank-1 precision update to a conjugate posterior, not a
+refit. Computational cost per observation is constant regardless of how much
+data you've seen.
 
 Where to go from here
 =====================
 
-**Binary outcomes** (click / no click)
-    The :doc:`Thompson Sampling tutorial <notebooks/demo>` uses
-    :class:`~bayesianbandits.DirichletClassifier` with a custom reward function.
+If your reward isn't the raw outcome (e.g. profit = revenue - cost), see
+:doc:`howto/reward-functions`.
 
-**Count data** (transactions per week)
-    :doc:`Contextual Bandits for Count Data <notebooks/counts>` uses
-    :class:`~bayesianbandits.GammaRegressor` with Upper Confidence Bound.
+For contextual models with per-arm learners, see the
+:doc:`linear bandits notebook <notebooks/linear-bandits>`. For a shared
+learner across many arms, see
+:doc:`hybrid bandits <notebooks/hybrid-bandits>`.
 
-**Using context features** (user demographics, item attributes)
-    :doc:`Linear Bandits <notebooks/linear-bandits>` covers per-arm contextual
-    models with :class:`~bayesianbandits.ContextualAgent`.
-
-**Sharing knowledge across arms** (hundreds of products, cold start)
-    :doc:`Hybrid Bandits <notebooks/hybrid-bandits>` demonstrates the
-    shared-learner approach with :class:`~bayesianbandits.LipschitzContextualAgent`.
+:doc:`howto/pipelines` covers integrating sklearn transformers (DataFrames,
+JSON, sparse features) with bandits.

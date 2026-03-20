@@ -1,33 +1,39 @@
-.. bayesianbandits documentation master file, created by
-   sphinx-quickstart on Fri Feb 24 11:39:20 2023.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+bayesianbandits
+===============
 
-Welcome to bayesianbandits's documentation!
-===========================================
+Bayesian multi-armed bandits with conjugate online learning. Sometimes, 
+you need to know your decisions are close to optimal at all times.
 
-`bayesianbandits` is a Python library for multi-armed bandits with Bayesian
-learning. It provides conjugate estimators (binary, continuous, count rewards),
-three agent types (classic, contextual, shared-learner), and exploration
-policies (Thompson sampling, UCB, epsilon-greedy, EXP3) — all with O(1)
-online updates and a two-method API: ``pull()`` to decide, ``update()`` to
-learn.
+**Getting started**
+   New to bandits? The :doc:`introduction <introduction>` explains when
+   you'd use one and how to choose your setup. The :doc:`quickstart`
+   walks through a complete example in 5 minutes.
 
-If you have any questions or suggestions, please feel free to open an issue
-on the project page on GitHub or contact me at <rishi@kulkarni.science>.
+**How-to guides**
+   Task-oriented recipes: :doc:`pipelines <howto/pipelines>`,
+   :doc:`decay <howto/decay>`, :doc:`reward functions <howto/reward-functions>`,
+   :doc:`delayed rewards <howto/delayed-rewards>`,
+   :doc:`production deployment <howto/production>`,
+   :doc:`sparse features <howto/sparse>`.
+
+**Explanation**
+   Why this library makes the choices it does: :doc:`explanation/index`.
+
+**Mathematical reference**
+   Update equations, hyperparameter semantics, and departures from
+   textbook for each estimator family: :doc:`math/index`.
+
+**API reference**
+   Full details on every class and method: :doc:`api`.
 
 .. toctree::
-   :maxdepth: 3
-   :caption: Contents:
+   :maxdepth: 2
+   :hidden:
 
-   installation
-   usage
+   getting-started
+   howto/index
+   explanation/index
+   math/index
+   examples
    api
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   changelog

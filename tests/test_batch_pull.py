@@ -385,46 +385,23 @@ class TestIntegration:
     """Integration tests with mocked pandas/scipy"""
 
     def test_with_mocked_pandas(self, monkeypatch):
-        # Mock pandas availability
+        # Mock pandas availability without reloading the module (reload
+        # breaks class identity and causes pickle failures in other tests).
         mock_pd = MockPandasModule()
 
-        # Mock importlib.util.find_spec to indicate pandas is available
-        mock_spec = Mock()
-        monkeypatch.setattr(
-            "importlib.util.find_spec",
-            lambda name: mock_spec if name == "pandas" else None,
-        )
+        monkeypatch.setattr("bayesianbandits._arm.HAS_PANDAS", True)
+        monkeypatch.setitem(sys.modules, "pandas", mock_pd)
 
-        # Mock the pandas import inside stack_features
-        # We need to patch the module in sys.modules before the import happens
-        original_modules = sys.modules.copy()
-        sys.modules["pandas"] = mock_pd  # type: ignore[assignment]
-        monkeypatch.setattr("sys.modules", sys.modules)
-
-        # Force re-evaluation of HAS_PANDAS by reimporting the module
-        from importlib import reload
-
-        import bayesianbandits._arm
-
-        reload(bayesianbandits._arm)
         from bayesianbandits._arm import stack_features
 
-        try:
-            # Create DataFrames
-            dfs = [
-                mock_pd.DataFrame([[1, 2], [3, 4]]),
-                mock_pd.DataFrame([[5, 6], [7, 8]]),
-            ]
+        dfs = [
+            mock_pd.DataFrame([[1, 2], [3, 4]]),
+            mock_pd.DataFrame([[5, 6], [7, 8]]),
+        ]
 
-            result = stack_features(dfs)
-            assert hasattr(result, "data")
-            assert result.data.shape == (4, 2)
-        finally:
-            # Restore original modules
-            sys.modules.clear()
-            sys.modules.update(original_modules)
-            # Reload to restore original state
-            reload(bayesianbandits._arm)
+        result = stack_features(dfs)
+        assert hasattr(result, "data")
+        assert result.data.shape == (4, 2)
 
     def test_with_mocked_scipy(self, monkeypatch):
         # Mock scipy availability

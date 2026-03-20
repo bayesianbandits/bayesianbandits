@@ -21,6 +21,7 @@ extensions = [
     "sphinx.ext.autodoc.typehints",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
+    "sphinx.ext.mathjax",
     "nbsphinx",
 ]
 intersphinx_mapping = {
@@ -40,7 +41,11 @@ napoleon_custom_sections = [("Subclass Parameters", "params_style")]
 autosummary_generate = True
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+]
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -48,7 +53,11 @@ exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
+html_short_title = "bayesianbandits"
 html_theme_options = {
+    "logo": {
+        "text": "bayesianbandits",
+    },
     "icon_links": [
         {
             "name": "GitHub",

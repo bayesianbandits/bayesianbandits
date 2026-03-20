@@ -34,6 +34,26 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     where :math:`g_a` is the reward function (possibly context-dependent) and
     :math:`\\mathcal{D}_a` is the data observed for arm :math:`a`.
 
+    Examples
+    --------
+    >>> from bayesianbandits import Agent, Arm, NormalInverseGammaRegressor
+    >>> from bayesianbandits import ThompsonSampling
+    >>>
+    >>> arms = [
+    ...     Arm(f"arm_{i}", learner=NormalInverseGammaRegressor())
+    ...     for i in range(3)
+    ... ]
+    >>> agent = Agent(arms, ThompsonSampling())
+
+    See Also
+    --------
+    UpperConfidenceBound : Deterministic optimism via posterior quantiles.
+        Explores more aggressively than Thompson sampling for uncertain arms.
+    EpsilonGreedy : Simple exploration via random arm selection.
+        Does not use posterior uncertainty to guide exploration.
+    EXP3A : Adversarial robustness via importance-weighted updates.
+        Use when reward generation may be adversarial or non-stochastic.
+
     Notes
     -----
     **Regret bounds (standard setting).** For the :math:`K`-armed stochastic
