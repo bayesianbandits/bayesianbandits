@@ -116,19 +116,15 @@ that penalizes underperformance more than overperformance:
        return np.where(diff < 0, penalty * diff, diff)
 
 Other examples: threshold utility (``np.maximum(samples - threshold, 0)``),
-diminishing returns (``np.log1p(samples)``). The learner still trains
-on raw outcomes; only the policy's selection step sees the transformed
-values.
+diminishing returns (``np.log1p(samples)``).
 
 
 Batch reward functions for shared-learner bandits
 -------------------------------------------------
 
-If the shared learner already models the quantity you want to maximize
-(e.g. profit), identity works fine and you don't need any of this.
-Batch reward functions exist for the case where the learner models
-one thing (revenue) but you need to transform it per-arm (multiply by
-a margin that differs across products).
+When the learner models one thing (revenue) but you need to transform
+it per-arm (multiply by a margin that differs across products), use a
+batch reward function.
 
 With :class:`~bayesianbandits.LipschitzContextualAgent` and many
 arms, processing rewards one arm at a time is inefficient. A batch

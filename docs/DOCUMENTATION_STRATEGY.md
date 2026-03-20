@@ -346,32 +346,37 @@ Every how-to guide with code snippets must have a corresponding test file in `te
 
 ### Tier 0: Foundation (DONE)
 1. ~~Update `docs/DOCUMENTATION_STRATEGY.md`~~
-2. ~~Restructure `docs/index.rst` toctree~~ (hub-and-spoke: section index pages for clean navbar)
+2. ~~Restructure `docs/index.rst` toctree~~
 3. ~~Add `sphinx.ext.mathjax` to `docs/conf.py`~~
 4. ~~Create `docs/howto/` and `docs/math/` directories~~
 5. ~~Exclude cut notebooks in `conf.py`, remove `usage.rst`~~
 6. ~~Fix `quickstart.rst` cross-references to cut notebooks~~
 7. ~~Shorten navbar title via `html_short_title` and `logo.text`~~
 
-### Tier 1: Highest leverage
-8. ~~`howto/pipelines.rst` + `tests/test_howto_pipelines.py`~~ (DONE)
-9. ~~`howto/decay.rst` + `tests/test_howto_decay.py`~~ (DONE)
-10. ~~Docstring audit (policy See Also + Examples)~~ (DONE)
-11. ~~`howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`~~ (DONE)
+### Tier 1: Highest leverage (DONE)
+8. ~~`howto/pipelines.rst` + `tests/test_howto_pipelines.py`~~
+9. ~~`howto/decay.rst` + `tests/test_howto_decay.py`~~
+10. ~~Docstring audit (policy See Also + Examples)~~
+11. ~~`howto/reward-functions.rst` + `tests/test_howto_reward_functions.py`~~
 
-### Tier 2: Trust-building
-9. `explanation/*.rst` (8 explanation pages — no test files, prose only)
-10. ~~`howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`~~ (DONE)
-11. `math/normal.rst`
-12. `math/empirical-bayes.rst`
-13. `math/policies.rst`
-14. ~~`howto/production.rst` + `tests/test_howto_production.py`~~ (DONE)
+### Tier 2: Trust-building (DONE except explanation pages)
+9. `explanation/*.rst` (8 explanation pages, prose only)
+10. ~~`howto/delayed-rewards.rst` + `tests/test_howto_delayed_rewards.py`~~
+11. ~~`math/normal.rst`~~
+12. ~~`math/empirical-bayes.rst`~~
+13. ~~`math/policies.rst`~~
+14. ~~`howto/production.rst` + `tests/test_howto_production.py`~~
 
-### Tier 3: Completeness
-14. `math/normal-inverse-gamma.rst`, `math/intercept-only.rst`, `math/glm.rst`
-15. ~~`howto/sparse.rst` + `tests/test_howto_sparse.py`~~ (DONE)
+### Tier 3: Completeness (DONE except cleanup)
+14. ~~`math/normal-inverse-gamma.rst`, `math/intercept-only.rst`, `math/glm.rst`~~
+15. ~~`howto/sparse.rst` + `tests/test_howto_sparse.py`~~
 16. Remove cut notebooks from repo, update cross-references
 17. `changelog.rst`
+
+### Remaining work
+- 8 explanation pages (`explanation/*.rst`): prose-only, no tests
+- Remove cut notebooks from repo
+- `changelog.rst`
 
 ## Verification
 
