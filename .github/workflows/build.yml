@@ -52,3 +52,23 @@ jobs:
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
+
+  publish:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs: [build-sdist, build-wheels]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Publish to PyPI
+        run: uv publish dist/*
