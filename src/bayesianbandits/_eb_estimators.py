@@ -319,7 +319,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             self.eb_converged_ = converged
         else:
             self._initialize_prior(X_fit)
-            self._fit_helper(X_fit, y)
+            self._fit_helper(X_fit, y, sample_weight)
             self.log_evidence_ = -math.inf
             self.n_eb_iterations_ = 0
             self.eb_converged_ = False
