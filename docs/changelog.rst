@@ -1,8 +1,8 @@
 Changelog
 =========
 
-Unreleased
-----------
+1.3.0rc1 (2026-03-20)
+---------------------
 
 **New features**
 
@@ -38,6 +38,8 @@ Unreleased
 
 **Infrastructure**
 
+- Cross-platform wheel builds via cibuildwheel (Linux x86_64/aarch64, macOS
+  arm64, Windows x86_64)
 - Migrated from black + flake8 to ruff (#215)
 - NumPy 2.0 dependency, scikit-sparse 0.5.0 (#188, #205)
 - Pickling support fix for BayesianGLM (#196)

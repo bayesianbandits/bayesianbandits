@@ -10,7 +10,7 @@
 project = "bayesianbandits"
 copyright = "2023, Rishi Kulkarni"
 author = "Rishi Kulkarni"
-release = "1.2.0"
+release = "1.3.0rc1"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
