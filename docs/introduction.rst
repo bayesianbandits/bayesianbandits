@@ -23,18 +23,14 @@ Why Bayesian
 The bandit problem has a natural Bayesian structure. You maintain *beliefs*
 about how good each option is (a posterior distribution over parameters). You
 have a *policy* for acting on those beliefs (Thompson sampling, UCB, etc.).
-You observe an outcome (the likelihood), and you update your beliefs (Bayes'
-rule). This isn't bolting Bayesian methods onto a bandit; it's recognizing
-that the problem *is* Bayesian. The posterior is your state; the policy is
-your decision rule.
+You observe an outcome, and you update your beliefs via Bayes' rule. The
+posterior is your state; the policy is your decision rule.
 
-Real bandit problems are generally anytime (no known horizon), contextual
-(decisions depend on who and what), and nonstationary (the world drifts). The
-Bayesian framework gives you tools for all three. Posteriors quantify
-uncertainty for exploration without a fixed sample-size calculation.
-Conditioning on covariates is just regression. And discounting old
-observations through the prior is a natural mechanism for tracking a changing
-environment.
+Real bandit problems are anytime (no known horizon), contextual (decisions
+depend on who and what), and nonstationary (the world drifts). Posteriors
+quantify uncertainty for exploration without a fixed sample-size calculation.
+Conditioning on covariates is just regression. Discounting old observations
+through the prior lets you track a changing environment.
 
 Why conjugate models
 ====================
@@ -56,15 +52,13 @@ and throughput in production.
 Choosing your setup
 ===================
 
-Building a bandit requires three independent choices: what model fits your
-reward, what agent structure fits your problem, and what exploration policy
-you prefer. These are orthogonal; pick one from each.
+Building a bandit requires three independent choices: an estimator, an agent,
+and a policy. Pick one from each.
 
-What does your reward look like?
---------------------------------
+Estimator: what does your reward look like?
+-------------------------------------------
 
-This picks your **estimator** (the Bayesian model inside each arm). The
-choice depends on your outcome type and whether you have covariates.
+The estimator is the Bayesian model inside each arm.
 
 **Intercept-only models** (no covariates, one parameter per arm)
 
@@ -97,12 +91,10 @@ limits their usefulness in production.
 :class:`~bayesianbandits.EmpiricalBayesNormalRegressor`
     Extends :class:`~bayesianbandits.NormalRegressor` with automatic
     hyperparameter tuning via MacKay's evidence maximization. Learns both the
-    prior precision and noise precision from data, eliminating sensitivity to
-    initial hyperparameter choices. Similar to assuming that all the coefficients
-    come from a common distribution and learning its parameters. With decay
-    enabled, uses stabilized forgetting (Kulhavy & Zarrop) to continuously draw
-    coefficients back toward the learned hyperprior rather than simply
-    discounting old observations.
+    prior precision and noise precision from data, so you don't need to get the
+    initial values right. With decay enabled, uses stabilized forgetting
+    (Kulhavy & Zarrop) to keep regularization active rather than letting the
+    prior wash out.
 
 **Generalized linear models** (non-normal outcomes with covariates)
 
@@ -111,21 +103,18 @@ limits their usefulness in production.
     squares. Supports logit link (binary outcomes) and log link (count data).
     Use this when you need covariates for binary or count outcomes.
 
-Do you have context? How many arms?
-------------------------------------
+Agent: do you have context? How many arms?
+------------------------------------------
 
-This picks your **agent** (the structure that holds arms and routes decisions).
-
-The general case is :class:`~bayesianbandits.LipschitzContextualAgent`. It
+The general case is :class:`~bayesianbandits.LipschitzContextualAgent`, which
 uses a single shared learner where the design matrix encodes arm identity,
 context features, and any relationships between arms. How you construct the
 design matrix determines what the bandit can learn: disjoint blocks give you
 independent arms, shared columns let arms borrow strength, and interaction
 terms let context affect arms differently. See the
-:doc:`hybrid bandits tutorial <notebooks/hybrid-bandits>` for examples of
-different design matrix structures.
+:doc:`hybrid bandits tutorial <notebooks/hybrid-bandits>` for examples.
 
-The other two agents are convenience wrappers for common special cases:
+The other two agents are convenience wrappers:
 
 :class:`~bayesianbandits.Agent`
     No context, independent arms. Each arm gets its own learner with an
@@ -135,16 +124,14 @@ The other two agents are convenience wrappers for common special cases:
     Context features, but each arm still gets its own independent learner.
     No cross-arm learning.
 
-How do you want to explore?
-----------------------------
-
-This picks your **policy** (the rule for balancing exploration and exploitation).
+Policy: how do you want to explore?
+------------------------------------
 
 **Thompson sampling** (the default choice)
     :class:`~bayesianbandits.ThompsonSampling` draws a sample from each arm's
-    posterior and picks the highest. It naturally explores more when uncertain
-    and exploits when confident. Never stops exploring entirely, which is what
-    you want if underlying rates might change.
+    posterior and picks the highest. Explores more when uncertain, exploits
+    when confident. Never stops exploring entirely, so it adapts if underlying
+    rates change.
 
 **Upper confidence bound** (explicit optimism)
     :class:`~bayesianbandits.UpperConfidenceBound` picks the arm with the
