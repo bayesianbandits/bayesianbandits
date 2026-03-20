@@ -434,8 +434,8 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
 
     Maintains a separate Gamma posterior over the rate parameter
     :math:`\\lambda` for each unique value of the first feature.
-    Designed for modeling count or positive continuous data where
-    the rate may differ across groups. Supports sample weights (for
+    Designed for modeling count data where the rate may differ
+    across groups. Supports sample weights (for
     importance-weighted updates in adversarial bandit algorithms)
     and online learning via ``partial_fit``.
 
@@ -560,7 +560,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             Training data. Only the first column is used; each unique
             value indexes a separate Gamma posterior.
         y : array-like of shape (n_samples,)
-            Target values (non-negative counts or rates).
+            Target values (non-negative integer counts).
         sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
@@ -653,7 +653,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
             Training data. Only the first column is used; each unique
             value indexes a separate Gamma posterior.
         y : array-like of shape (n_samples,)
-            Target values (non-negative counts or rates).
+            Target values (non-negative integer counts).
         sample_weight : array-like of shape (n_samples,), default=None
             Individual weights for each sample. If None, all samples
             are given weight 1.0.
