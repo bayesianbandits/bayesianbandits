@@ -296,6 +296,31 @@ class TestBatchSampleArms:
         result = batch_sample_arms(arms, X)
         assert result is not None
 
+    def test_shared_custom_reward_function_applied(self, mock_arm_class, mock_model):
+        """All arms sharing the same non-identity reward function must still apply it."""
+        n_arms = 3
+        n_contexts = 2
+
+        def double(x):
+            return x * 2
+
+        mock_model.sample = Mock(
+            return_value=np.ones((n_arms * n_contexts,))
+        )
+
+        arms = []
+        for i in range(n_arms):
+            learner = Mock()
+            learner.transform = Mock(side_effect=lambda X: X)
+            learner.final_estimator = mock_model
+            arms.append(mock_arm_class(i, learner, double))
+
+        X = np.random.randn(n_contexts, 3)
+        result = batch_sample_arms(arms, X)
+        assert result is not None
+        # All raw samples are 1.0; after doubling they should be 2.0
+        np.testing.assert_allclose(result, 2.0)
+
     def test_context_aware_reward_functions(self, mock_arm_class, mock_model):
         # Test context-aware reward functions in batch_sample_arms
         from bayesianbandits._arm import _accepts_context
