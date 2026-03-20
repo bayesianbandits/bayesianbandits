@@ -474,3 +474,21 @@ class TestSampleWeight:
         coef_weighted = model_weighted.coef_
 
         assert not np.allclose(coef_uniform, coef_weighted)
+
+    def test_fit_sample_weight_n_eb_iter_zero(self, regression_data, sparse):
+        """fit() with sample_weight and n_eb_iter=0 must respect weights."""
+        X, y = regression_data
+
+        model_uniform = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=0, sparse=sparse, random_state=42
+        )
+        model_uniform.fit(X, y)
+
+        weights = np.ones(len(y))
+        weights[0] = 100.0
+        model_weighted = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=0, sparse=sparse, random_state=42
+        )
+        model_weighted.fit(X, y, sample_weight=weights)
+
+        assert not np.allclose(model_uniform.coef_, model_weighted.coef_)

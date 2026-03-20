@@ -184,16 +184,8 @@ def identity(x: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def is_identity_function(func: Any) -> bool:
-    """Check if a function is the identity function.
-
-    This handles both direct reference checks and module reloading issues.
-    """
-    return func is identity or (
-        hasattr(func, "__name__")
-        and func.__name__ == "identity"
-        and hasattr(func, "__module__")
-        and func.__module__ == "bayesianbandits._arm"
-    )
+    """Check if a function is the identity function."""
+    return func is identity
 
 
 def batch_identity(
@@ -687,10 +679,8 @@ def batch_sample_arms(
     else:
         samples = samples.reshape(size, n_arms, n_contexts).transpose(1, 2, 0)
 
-    # Apply reward functions if non-identity
-    # Check using function identity rather than name comparison
-    identity_func = arms[0].reward_function if arms else None
-    if identity_func and all(arm.reward_function is identity_func for arm in arms):
+    # Skip reward function application if all arms use identity
+    if all(is_identity_function(arm.reward_function) for arm in arms):
         return samples
 
     # Pre-allocate result array

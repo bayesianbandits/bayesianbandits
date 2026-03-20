@@ -205,20 +205,6 @@ def small_spd_matrix() -> NDArray[np.float64]:
     return A.T @ A + 5.0 * np.eye(5)
 
 
-@pytest.fixture
-def regression_data() -> tuple[NDArray[np.float64], NDArray[np.float64], float, float]:
-    """Generate regression data with known hyperparameters."""
-    rng = np.random.default_rng(123)
-    n, p = 100, 3
-    alpha_true = 2.0
-    beta_true = 5.0
-
-    w_true = rng.normal(0, 1.0 / np.sqrt(alpha_true), size=p)
-    X = rng.standard_normal((n, p))
-    y = X @ w_true + rng.normal(0, 1.0 / np.sqrt(beta_true), size=n)
-    return X, y, alpha_true, beta_true
-
-
 # ---------------------------------------------------------------------------
 # 1. ScaledSparseFactor logdet
 # ---------------------------------------------------------------------------
