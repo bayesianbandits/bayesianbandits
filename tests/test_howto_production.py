@@ -143,7 +143,4 @@ def test_independent_copies_via_load():
         worker_a.update(np.array([5.0]))
 
         # worker_b still has original learned state
-        assert (
-            worker_b.arms[0].learner.coef_[1][0]
-            == agent.arms[0].learner.coef_[1][0]
-        )
+        assert worker_b.arms[0].learner.coef_[1][0] == agent.arms[0].learner.coef_[1][0]

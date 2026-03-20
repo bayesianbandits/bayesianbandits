@@ -55,7 +55,10 @@ def test_batch_update_same_as_sequential():
     # Batch update -- mirrors the RST snippet
     agent_batch = _make_contextual_agent()
     rewards_grouped_by_arm = {
-        token: {"contexts": [X_all[i : i + 1] for i in range(len(y_all))], "rewards": y_all},
+        token: {
+            "contexts": [X_all[i : i + 1] for i in range(len(y_all))],
+            "rewards": y_all,
+        },
     }
     for tk, group in rewards_grouped_by_arm.items():
         X_batch = np.vstack(group["contexts"])
