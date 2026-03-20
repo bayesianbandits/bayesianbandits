@@ -184,16 +184,8 @@ def identity(x: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def is_identity_function(func: Any) -> bool:
-    """Check if a function is the identity function.
-
-    This handles both direct reference checks and module reloading issues.
-    """
-    return func is identity or (
-        hasattr(func, "__name__")
-        and func.__name__ == "identity"
-        and hasattr(func, "__module__")
-        and func.__module__ == "bayesianbandits._arm"
-    )
+    """Check if a function is the identity function."""
+    return func is identity
 
 
 def batch_identity(
