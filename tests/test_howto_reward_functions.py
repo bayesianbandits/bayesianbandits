@@ -45,7 +45,7 @@ def test_binary_outcome_profit_reward():
     reward_fn = make_profit_reward(revenue=50.0, cost=10.0)
 
     learner = BayesianGLM(alpha=1.0, link="logit")
-    arm = Arm("campaign_A", reward_function=reward_fn, learner=learner)
+    Arm("campaign_A", reward_function=reward_fn, learner=learner)
 
     X = np.array([[1.0, 0.0]])
     # BayesianGLM logit samples are in [0, 1] -- probabilities
