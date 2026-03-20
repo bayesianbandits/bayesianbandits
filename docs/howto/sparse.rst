@@ -67,7 +67,7 @@ positive definite and takes advantage of it.
 
 .. code-block:: bash
 
-   pip install scikit-sparse
+   pip install bayesianbandits[cholmod]
 
 If ``scikit-sparse`` is installed, the library uses CHOLMOD
 automatically. No code changes needed. Both backends apply

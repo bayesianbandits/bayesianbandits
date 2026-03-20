@@ -26,13 +26,13 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Install Dependencies
-        run: uv sync --no-group cholmod
+        run: uv sync
 
       - name: Ruff format check
-        run: uv run --no-group cholmod ruff format --check .
+        run: uv run ruff format --check .
 
       - name: Ruff lint
-        run: uv run --no-group cholmod ruff check .
+        run: uv run ruff check .
 
   tests:
     name: Full tests (Linux)
@@ -53,7 +53,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get install -y libsuitesparse-dev
-          uv sync
+          uv sync --extra cholmod
 
       - name: Run tests
         run: uv run pytest tests --cov=./ --cov-report=xml
@@ -83,7 +83,7 @@ jobs:
           python-version-file: ".python-version"
 
       - name: Install Dependencies
-        run: uv sync --no-group cholmod
+        run: uv sync
 
       - name: Run Cython tests
-        run: uv run --no-group cholmod pytest -m cython -v
+        run: uv run pytest -m cython -v
