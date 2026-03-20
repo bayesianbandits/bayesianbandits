@@ -304,9 +304,7 @@ class TestBatchSampleArms:
         def double(x):
             return x * 2
 
-        mock_model.sample = Mock(
-            return_value=np.ones((n_arms * n_contexts,))
-        )
+        mock_model.sample = Mock(return_value=np.ones((n_arms * n_contexts,)))
 
         arms = []
         for i in range(n_arms):
