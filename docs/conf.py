@@ -45,10 +45,6 @@ exclude_patterns = [
     "_build",
     "Thumbs.db",
     ".DS_Store",
-    # Cut notebooks -- content absorbed into howto/math pages (see DOCUMENTATION_STRATEGY.md)
-    "notebooks/demo.ipynb",
-    "notebooks/counts.ipynb",
-    "notebooks/persistence.ipynb",
 ]
 
 

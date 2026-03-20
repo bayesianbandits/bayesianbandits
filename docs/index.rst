@@ -16,6 +16,9 @@ you need to know your decisions are close to optimal at all times.
    :doc:`production deployment <howto/production>`,
    :doc:`sparse features <howto/sparse>`.
 
+**Explanation**
+   Why this library makes the choices it does: :doc:`explanation/index`.
+
 **Mathematical reference**
    Update equations, hyperparameter semantics, and departures from
    textbook for each estimator family: :doc:`math/index`.
@@ -29,6 +32,8 @@ you need to know your decisions are close to optimal at all times.
 
    getting-started
    howto/index
+   explanation/index
    math/index
    examples
    api
+   changelog
