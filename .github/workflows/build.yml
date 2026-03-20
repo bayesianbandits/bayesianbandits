@@ -1,4 +1,4 @@
-name: Test, Build, and Upload
+name: Build wheels
 
 on:
   release:
@@ -6,32 +6,55 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3.3.0
+      - uses: actions/checkout@v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      - uses: actions/upload-artifact@v4
         with:
-          python-version-file: ".python-version"
+          name: sdist
+          path: dist/*.tar.gz
 
-      - name: Install Dependencies
-        run: |
-          sudo apt-get install -y libsuitesparse-dev
-          uv sync
+  build-wheels:
+    name: Wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Run tests
-        run: uv run pytest --cov=./ --cov-report=xml
+      - name: Set up QEMU
+        if: runner.os == 'Linux'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
-      - name: Build and Publish to PyPI
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cibuildwheel
+        run: pip install cibuildwheel
+
+      - name: Build wheels
+        run: cibuildwheel --output-dir wheelhouse
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          uv build
-          uv publish
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
+          CIBW_ARCHS_LINUX: "x86_64 aarch64"
+          CIBW_BUILD_VERBOSITY: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
