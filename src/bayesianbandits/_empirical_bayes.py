@@ -4,6 +4,7 @@ Provides:
 - logdet dispatch (dense/sparse)
 - Factorization stats (logdet + trace of inverse from a single factorization)
 - MacKay update rules for Normal, NIG, and GLM models (each returns log evidence)
+- Minka's fixed-point iteration for Dirichlet-Multinomial (returns log evidence)
 - Online MacKay update with sufficient statistics for streaming settings
 """
 
@@ -15,7 +16,7 @@ from typing import Union, cast
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csc_array, issparse
-from scipy.special import gammaln
+from scipy.special import digamma, gammaln
 
 from ._blas_helpers import dsymv
 from ._sparse_bayesian_linear_regression import (
@@ -397,3 +398,153 @@ def mackay_update_glm(
     log_ev = float(log_lik + log_prior + laplace_correction)
 
     return alpha_new, log_ev
+
+
+def _dirichlet_multinomial_log_evidence(
+    counts: NDArray[np.floating],
+    count_totals: NDArray[np.floating],
+    alpha: NDArray[np.floating],
+) -> float:
+    """Compute Dirichlet-Multinomial marginal log-likelihood.
+
+    Parameters
+    ----------
+    counts : ndarray of shape (G, K)
+        Effective counts per group and class.
+    count_totals : ndarray of shape (G,)
+        Total counts per group (``counts.sum(axis=1)``).
+    alpha : ndarray of shape (K,)
+        Current Dirichlet concentration parameters.
+
+    Returns
+    -------
+    float
+        Log marginal likelihood ``Σ_g [logΓ(α₀) - logΓ(c_g + α₀)
+        + Σ_k (logΓ(c_gk + α_k) - logΓ(α_k))]``.
+    """
+    s = float(alpha.sum())
+    return float(
+        np.sum(
+            gammaln(s)
+            - gammaln(count_totals + s)
+            + np.sum(
+                gammaln(counts + alpha[np.newaxis, :]) - gammaln(alpha[np.newaxis, :]),
+                axis=1,
+            )
+        )
+    )
+
+
+def minka_update_dirichlet_multinomial(
+    posterior_alphas: dict,
+    prior: NDArray[np.float64],
+    n_iter: int = 1,
+    tol: float = 0.0,
+) -> tuple[NDArray[np.float64], float, bool]:
+    """Minka's fixed-point iteration for Dirichlet-Multinomial EB.
+
+    Given G groups with posterior concentration parameters and the current
+    prior, performs ``n_iter`` fixed-point updates to the prior that
+    maximize the Dirichlet-Multinomial marginal likelihood [1]_.
+
+    Uses the (s, m) decomposition: ``α_k = s · m_k`` where ``s = Σ α_k``
+    is the scalar concentration and ``m_k = α_k / s`` is the base measure.
+    The m and s updates are alternated for faster convergence.
+
+    Parameters
+    ----------
+    posterior_alphas : dict mapping group keys to posterior alpha arrays
+        Each value is shape (K,) where K is the number of classes.
+    prior : ndarray of shape (K,)
+        Current prior concentration parameters.
+    n_iter : int, default=1
+        Maximum number of fixed-point iterations to perform.
+    tol : float, default=0.0
+        Early stopping tolerance on change in log evidence between
+        successive iterations. Set to 0 to always run all iterations.
+
+    Returns
+    -------
+    alpha_new : ndarray of shape (K,)
+        Updated prior concentration parameters.
+    log_evidence : float
+        Dirichlet-Multinomial marginal log-likelihood at the new alpha.
+    converged : bool
+        Whether the iteration converged within ``tol``.
+
+    References
+    ----------
+    .. [1] Minka, T. P. (2000; revised 2003, 2012). "Estimating a
+       Dirichlet distribution." Technical report, MIT.
+    """
+    if not posterior_alphas:
+        return prior.copy(), -math.inf, True
+
+    # Stack all posterior alphas: shape (G, K)
+    alpha_matrix = np.array(list(posterior_alphas.values()), dtype=np.float64)
+    # Effective counts: shape (G, K)
+    counts = alpha_matrix - prior[np.newaxis, :]
+    # Total counts per group: shape (G,)
+    count_totals = counts.sum(axis=1)
+
+    # Filter out groups with non-positive total counts (no useful data).
+    valid = count_totals > 0
+    if not np.any(valid):
+        log_ev = _dirichlet_multinomial_log_evidence(counts, count_totals, prior)
+        return prior.copy(), log_ev, True
+    counts = counts[valid]
+    count_totals = count_totals[valid]
+
+    alpha = prior.copy()
+    _EPS = 1e-8
+    prev_ev = -math.inf
+    converged = False
+
+    for _ in range(n_iter):
+        s = float(alpha.sum())
+
+        # --- m update (fix s, update per-component α_k) ---
+        # Numerator per k: Σ_g [ψ(c_gk + α_k) - ψ(α_k)]  shape (K,)
+        numerator_k = (
+            digamma(counts + alpha[np.newaxis, :]) - digamma(alpha[np.newaxis, :])
+        ).sum(axis=0)
+        # Denominator (shared): Σ_g [ψ(c_g + s) - ψ(s)]  scalar
+        denominator = float((digamma(count_totals + s) - digamma(s)).sum())
+
+        if abs(denominator) < _EPS:
+            converged = True
+            break
+
+        # Multiplicative update for each α_k, then extract new m
+        alpha = np.maximum(alpha * numerator_k / denominator, _EPS)
+        m = alpha / alpha.sum()
+
+        # --- s update (fix m, update scalar concentration) ---
+        # Numerator: Σ_g Σ_k m_k [ψ(c_gk + s·m_k) - ψ(s·m_k)]
+        s_alpha = s * m
+        s_numerator = float(
+            np.sum(
+                m[np.newaxis, :]
+                * (
+                    digamma(counts + s_alpha[np.newaxis, :])
+                    - digamma(s_alpha[np.newaxis, :])
+                )
+            )
+        )
+        # Denominator: Σ_g [ψ(c_g + s) - ψ(s)]  (same as above but at new s)
+        s_denominator = float((digamma(count_totals + s) - digamma(s)).sum())
+
+        s_new = max(s * s_numerator / s_denominator, _EPS)
+        alpha = np.maximum(s_new * m, _EPS)
+
+        # Check convergence
+        if tol > 0:
+            ev = _dirichlet_multinomial_log_evidence(counts, count_totals, alpha)
+            if abs(ev - prev_ev) < tol:
+                converged = True
+                prev_ev = ev
+                break
+            prev_ev = ev
+
+    log_ev = _dirichlet_multinomial_log_evidence(counts, count_totals, alpha)
+    return alpha, log_ev, converged

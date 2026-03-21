@@ -108,7 +108,10 @@ such as Laplace approximation for Gaussian posteriors.
 
 from ._arm import Arm
 from ._arm_featurizer import ArmFeaturizer
-from ._eb_estimators import EmpiricalBayesNormalRegressor
+from ._eb_estimators import (
+    EmpiricalBayesDirichletClassifier,
+    EmpiricalBayesNormalRegressor,
+)
 from ._estimators import (
     BayesianGLM,
     DirichletClassifier,
@@ -136,6 +139,7 @@ __all__ = [
     "FunctionArmFeaturizer",
     "BayesianGLM",
     "DirichletClassifier",
+    "EmpiricalBayesDirichletClassifier",
     "EmpiricalBayesNormalRegressor",
     "GammaRegressor",
     "NormalInverseGammaRegressor",

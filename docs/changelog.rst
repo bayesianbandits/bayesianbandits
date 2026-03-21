@@ -6,6 +6,9 @@ Changelog
 
 **New features**
 
+- Empirical Bayes Dirichlet classifier with automatic prior tuning via
+  Minka's fixed-point iteration for the Dirichlet-Multinomial marginal
+  likelihood, with stabilized forgetting
 - Empirical Bayes normal regressor with automatic hyperparameter tuning via
   MacKay's evidence maximization (#200)
 - Kulhavy-Zarrop stabilized forgetting to prevent prior collapse under decay
@@ -29,8 +32,8 @@ Changelog
 - Complete documentation overhaul following Diataxis framework
 - How-to guides: pipelines, decay, reward functions, delayed rewards,
   production deployment, sparse features
-- Mathematical reference: NormalRegressor, NIG, empirical Bayes, intercept-only
-  models, GLM, exploration policies
+- Mathematical reference: NormalRegressor, NIG, empirical Bayes, Dirichlet EB,
+  intercept-only models, GLM, exploration policies
 - Explanation pages: "Knowledge Is Prediction" (worldview), "Separating
   Inference from Decisions" (decision theory)
 - Comprehensive docstrings for all estimators, policies, agents, and arms

@@ -1,4 +1,4 @@
-"""Tests for EmpiricalBayesNormalRegressor."""
+"""Tests for Empirical Bayes estimators."""
 
 import pickle
 from unittest import mock
@@ -7,7 +7,10 @@ import numpy as np
 import pytest
 from sklearn.base import clone
 
-from bayesianbandits import EmpiricalBayesNormalRegressor
+from bayesianbandits import (
+    EmpiricalBayesDirichletClassifier,
+    EmpiricalBayesNormalRegressor,
+)
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 suitespare_envvar_params = [
@@ -492,3 +495,315 @@ class TestSampleWeight:
         model_weighted.fit(X, y, sample_weight=weights)
 
         assert not np.allclose(model_uniform.coef_, model_weighted.coef_)
+
+
+# ---------------------------------------------------------------------------
+# EmpiricalBayesDirichletClassifier
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def dirichlet_data():
+    """Synthetic Dirichlet data: 5 groups, class 0 is more common."""
+    rng = np.random.default_rng(42)
+    X_parts = []
+    y_parts = []
+    for group_id in range(1, 6):
+        n = 30
+        # Class 0 is ~70%, class 1 is ~30%
+        p = rng.dirichlet([7.0, 3.0])
+        ys = rng.choice([0, 1], size=n, p=p)
+        X_parts.append(np.full((n, 1), group_id))
+        y_parts.append(ys)
+    X = np.vstack(X_parts)
+    y = np.concatenate(y_parts)
+    return X, y
+
+
+class TestEBDirichletClassifier:
+    def test_fit_smoke(self, dirichlet_data):
+        """Basic fit produces EB attributes and valid predictions."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X, y)
+
+        assert hasattr(model, "log_evidence_")
+        assert hasattr(model, "n_eb_iterations_")
+        assert hasattr(model, "eb_converged_")
+        assert np.isfinite(model.log_evidence_)
+
+        proba = model.predict_proba(X[:1])
+        assert proba.shape == (1, 2)
+        np.testing.assert_allclose(proba.sum(), 1.0)
+
+    def test_convergence_flag(self, dirichlet_data):
+        """Model converges within tolerance."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, n_eb_iter=1000, eb_tol=1e-4, random_state=42
+        )
+        model.fit(X, y)
+        assert model.eb_converged_
+
+    def test_partial_fit_updates_prior(self, dirichlet_data):
+        """partial_fit performs one Minka step, changing prior_."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X[:30], y[:30])
+        prior_after_fit = model.prior_.copy()
+
+        model.partial_fit(X[30:60], y[30:60])
+        assert not np.allclose(model.prior_, prior_after_fit), (
+            "partial_fit did not update the prior"
+        )
+
+    def test_partial_fit_corrects_posteriors(self, dirichlet_data):
+        """Posteriors are adjusted by new_prior - old_prior."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X, y)
+
+        # Record current state
+        old_prior = model.prior_.copy()
+        old_posteriors = {k: v.copy() for k, v in model.known_alphas_.items()}
+
+        model.partial_fit(X[:30], y[:30])
+
+        # The posterior correction: new_post = old_post + (new_prior - old_prior) + new_counts
+        # At minimum, the prior shift should be reflected
+        prior_delta = model.prior_ - old_prior
+        if np.any(np.abs(prior_delta) > 1e-10):
+            # For groups that didn't receive new data, the shift should match
+            # For groups that did, additional counts are added
+            for key in old_posteriors:
+                diff = model.known_alphas_[key] - old_posteriors[key]
+                # diff should be at least prior_delta (plus any new counts)
+                # Just check it's not zero — correction happened
+                assert np.any(np.abs(diff) > 1e-10)
+
+    def test_n_eb_iter_zero(self, dirichlet_data):
+        """n_eb_iter=0 disables EB; prior stays at initial values."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, n_eb_iter=0, random_state=42
+        )
+        model.fit(X, y)
+
+        assert model.log_evidence_ == -np.inf
+        assert model.n_eb_iterations_ == 0
+        assert not model.eb_converged_
+        # Prior should be unchanged
+        np.testing.assert_array_equal(model.prior_, np.array([1.0, 1.0]))
+
+    def test_decay_stabilized_forgetting(self):
+        """After many decays, alphas converge to prior, not zero."""
+        # Use balanced data so the EB prior doesn't go to extremes
+        rng = np.random.default_rng(99)
+        X_parts, y_parts = [], []
+        for gid in range(1, 4):
+            ys = rng.choice([0, 1], size=30, p=[0.5, 0.5])
+            X_parts.append(np.full((30, 1), gid))
+            y_parts.append(ys)
+        X = np.vstack(X_parts)
+        y = np.concatenate(y_parts)
+
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, learning_rate=0.9, random_state=42
+        )
+        model.fit(X, y)
+        prior_after_fit = model.prior_.copy()
+
+        # Decay ALL groups (pass unique group IDs)
+        group_ids = np.array([[1], [2], [3]])
+        for _ in range(200):
+            model.decay(group_ids)
+
+        # Alphas should converge to prior, not zero
+        for key in list(model.known_alphas_.keys()):
+            np.testing.assert_allclose(
+                model.known_alphas_[key],
+                prior_after_fit,
+                atol=1e-2,
+                rtol=0.05,
+            )
+            # Prior components should be reasonable for balanced data
+            assert np.all(model.known_alphas_[key] > 0.01), (
+                "Alphas decayed to near-zero despite stabilized forgetting"
+            )
+
+    def test_batch_partial_fit_matches_sequential(self):
+        """Batch and sequential partial_fit converge to same base measure.
+
+        Phase 1 diverges the models: one gets 5 groups in a single
+        partial_fit (1 Minka step), the other gets them one group at a
+        time (5 Minka steps). Phase 2 feeds both models the same
+        sequential data, and the base measures converge.
+        """
+        rng = np.random.default_rng(42)
+        true_alpha = np.array([3.0, 1.0])
+        lr = 0.9
+
+        batch_model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, learning_rate=lr, random_state=42
+        )
+        seq_model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, learning_rate=lr, random_state=42
+        )
+
+        # Phase 1: diverge
+        all_X, all_y = [], []
+        for g in range(5):
+            theta = rng.dirichlet(true_alpha)
+            obs = rng.choice([0, 1], size=20, p=theta)
+            X_g = np.full((20, 1), g)
+            all_X.append(X_g)
+            all_y.append(obs)
+            seq_model.partial_fit(X_g, obs)
+        batch_model.partial_fit(np.vstack(all_X), np.concatenate(all_y))
+
+        # Phase 2: converge (same sequential data for both)
+        for g in range(5, 50):
+            theta = rng.dirichlet(true_alpha)
+            obs = rng.choice([0, 1], size=20, p=theta)
+            X_g = np.full((20, 1), g)
+            batch_model.partial_fit(X_g, obs)
+            seq_model.partial_fit(X_g, obs)
+
+        batch_m = batch_model.prior_ / batch_model.prior_.sum()
+        seq_m = seq_model.prior_ / seq_model.prior_.sum()
+        true_m = true_alpha / true_alpha.sum()
+
+        # Both should recover the true base measure
+        np.testing.assert_allclose(
+            batch_m,
+            true_m,
+            atol=0.05,
+            err_msg="Batch model did not recover the true base measure",
+        )
+        np.testing.assert_allclose(
+            seq_m,
+            true_m,
+            atol=0.05,
+            err_msg="Sequential model did not recover the true base measure",
+        )
+
+        # And agree with each other
+        np.testing.assert_allclose(
+            batch_m,
+            seq_m,
+            atol=0.01,
+            err_msg="Base measures did not converge after shared updates",
+        )
+
+    def test_partial_fit_no_negative_counts_under_decay(self):
+        """Stabilized forgetting prevents negative counts with lr < 1."""
+        rng = np.random.default_rng(42)
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0, 2: 1.0}, learning_rate=0.8, random_state=0
+        )
+
+        for i in range(200):
+            g = rng.integers(0, 10)
+            cls = rng.choice([0, 1, 2], p=[0.7, 0.2, 0.1])
+            model.partial_fit(np.array([[g]]), np.array([cls]))
+
+            if i % 3 == 0:
+                model.decay(np.array([[rng.integers(0, 10)]]))
+
+            for key, val in model.known_alphas_.items():
+                if hasattr(val, "__len__"):
+                    counts = val - model.prior_
+                    assert np.all(counts >= -1e-10), (
+                        f"Negative counts at step {i}, group {key}: {counts}"
+                    )
+
+    def test_multiple_groups(self, dirichlet_data):
+        """EB pools information across groups."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X, y)
+
+        # Since class 0 is more common across all groups, the
+        # EB-tuned prior should favor class 0
+        assert model.alphas[0] > model.alphas[1], (
+            f"Expected alpha[0] > alpha[1] for skewed data, got {model.alphas}"
+        )
+
+    def test_get_set_params(self):
+        """sklearn get_params/set_params contract."""
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 1.0, 1: 1.0}, n_eb_iter=5, eb_tol=1e-3
+        )
+        params = model.get_params()
+        assert params["n_eb_iter"] == 5
+        assert params["eb_tol"] == 1e-3
+
+        model.set_params(n_eb_iter=20)
+        assert model.n_eb_iter == 20
+
+    def test_clone(self, dirichlet_data):
+        """sklearn clone produces equivalent estimator."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X, y)
+
+        cloned = clone(model)
+        assert cloned.n_eb_iter == model.n_eb_iter
+        assert not hasattr(cloned, "log_evidence_")
+
+    def test_pickle_roundtrip(self, dirichlet_data):
+        """Fitted model survives pickle/unpickle."""
+        X, y = dirichlet_data
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model.fit(X, y)
+
+        data = pickle.dumps(model)
+        loaded = pickle.loads(data)
+
+        np.testing.assert_array_equal(
+            model.predict_proba(X[:5]),
+            loaded.predict_proba(X[:5]),
+        )
+
+    def test_sample_weight_doubles_equivalent_to_duplicate(self, dirichlet_data):
+        """Weight=2 on each sample produces same posteriors as duplicating data."""
+        X, y = dirichlet_data
+
+        model_dup = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        model_dup.fit(np.vstack([X, X]), np.concatenate([y, y]))
+
+        model_wt = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        weights = 2.0 * np.ones(X.shape[0])
+        model_wt.fit(X, y, sample_weight=weights)
+
+        for key in model_dup.known_alphas_:
+            np.testing.assert_allclose(
+                model_wt.known_alphas_[key],
+                model_dup.known_alphas_[key],
+                rtol=1e-10,
+            )
+
+    def test_sample_weight_shape_mismatch_raises(self, dirichlet_data):
+        """Mismatched sample_weight shape raises ValueError."""
+        X, y = dirichlet_data
+        weights = np.ones(X.shape[0] + 5, dtype=np.float64)
+        model = EmpiricalBayesDirichletClassifier({0: 1.0, 1: 1.0}, random_state=42)
+        with pytest.raises(ValueError, match="sample_weight"):
+            model.fit(X, y, sample_weight=weights)
+
+    def test_decay_before_fit_preserves_prior(self):
+        """Decay on unfitted model: stabilized forgetting gives lr*α + (1-lr)*α = α."""
+        lr = 0.9
+        model = EmpiricalBayesDirichletClassifier(
+            {0: 2.0, 1: 3.0}, learning_rate=lr, random_state=42
+        )
+        model.decay(np.array([[1], [2]]))
+
+        expected = np.array([2.0, 3.0])
+        for key in [1, 2]:
+            np.testing.assert_allclose(
+                model.known_alphas_[key],
+                expected,
+                rtol=1e-12,
+                err_msg="Stabilized decay on fresh prior should be identity",
+            )

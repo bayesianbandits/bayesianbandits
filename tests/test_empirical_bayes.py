@@ -11,6 +11,7 @@ from scipy.special import expit, gammaln
 
 from bayesianbandits._empirical_bayes import (
     _diagonal_trace_approx,
+    _dirichlet_multinomial_log_evidence,
     _factorization_stats,
     _takahashi_diagonal,
     _takahashi_trace,
@@ -18,6 +19,7 @@ from bayesianbandits._empirical_bayes import (
     mackay_update_glm,
     mackay_update_nig,
     mackay_update_normal_online,
+    minka_update_dirichlet_multinomial,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -1158,3 +1160,214 @@ class TestErrorPaths:
                 "unknown",
                 factor=_make_dense_factor(H),
             )
+
+
+# ---------------------------------------------------------------------------
+# Minka Dirichlet-Multinomial
+# ---------------------------------------------------------------------------
+
+
+def _make_dirichlet_groups(
+    rng: np.random.Generator,
+    n_groups: int,
+    n_per_group: int,
+    K: int,
+    true_alpha: NDArray[np.float64],
+) -> dict[int, NDArray[np.float64]]:
+    """Generate synthetic Dirichlet-Multinomial data as posterior alphas.
+
+    For each group, draw a probability vector from Dir(true_alpha),
+    then draw n_per_group multinomial counts.  Return posterior alphas
+    = prior + counts for an arbitrary starting prior.
+    """
+    prior = np.ones(K, dtype=np.float64)  # uniform initial prior
+    posterior_alphas: dict[int, NDArray[np.float64]] = {}
+    for g in range(n_groups):
+        p = rng.dirichlet(true_alpha)
+        counts = rng.multinomial(n_per_group, p).astype(np.float64)
+        posterior_alphas[g] = prior + counts
+    return posterior_alphas
+
+
+class TestMinkaDirichletMultinomial:
+    def test_basic_update(self) -> None:
+        """Returns positive alphas and finite log evidence."""
+        rng = np.random.default_rng(42)
+        prior = np.array([1.0, 1.0, 1.0])
+        posteriors = _make_dirichlet_groups(rng, 10, 20, 3, np.array([2.0, 5.0, 1.0]))
+
+        alpha_new, log_ev, _ = minka_update_dirichlet_multinomial(posteriors, prior)
+
+        assert np.all(alpha_new > 0)
+        assert np.isfinite(log_ev)
+
+    def test_evidence_nondecreasing(self) -> None:
+        """Iterated Minka steps never decrease log evidence."""
+        rng = np.random.default_rng(123)
+        true_alpha = np.array([5.0, 1.0])
+        posteriors = _make_dirichlet_groups(rng, 20, 50, 2, true_alpha)
+        prior = np.ones(2, dtype=np.float64)
+
+        evidences: list[float] = []
+        alpha = prior.copy()
+        for _ in range(30):
+            # Recompute posteriors with current prior
+            current_posteriors = {}
+            for g, post in posteriors.items():
+                counts = post - np.ones(2)  # extract counts from original prior=1
+                current_posteriors[g] = alpha + counts
+            alpha, ev, _ = minka_update_dirichlet_multinomial(
+                current_posteriors, alpha, n_iter=1
+            )
+            evidences.append(ev)
+
+        for i in range(1, len(evidences)):
+            assert evidences[i] >= evidences[i - 1] - 1e-6, (
+                f"Evidence decreased at step {i}: "
+                f"{evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
+            )
+
+    def test_fixed_point_idempotent(self) -> None:
+        """At convergence, one more step returns same alpha."""
+        rng = np.random.default_rng(456)
+        true_alpha = np.array([3.0, 1.0, 2.0])
+        posteriors = _make_dirichlet_groups(rng, 15, 30, 3, true_alpha)
+        prior = np.ones(3, dtype=np.float64)
+
+        # Iterate to convergence with many outer steps
+        alpha = prior.copy()
+        for _ in range(500):
+            current = {g: alpha + (p - prior) for g, p in posteriors.items()}
+            alpha_new, _, _ = minka_update_dirichlet_multinomial(
+                current, alpha, n_iter=1
+            )
+            alpha = alpha_new
+
+        # One more step should be approximately idempotent.
+        # The (s, m) alternation means one step doesn't fully converge,
+        # but the change should be very small.
+        current = {g: alpha + (p - prior) for g, p in posteriors.items()}
+        alpha_check, _, _ = minka_update_dirichlet_multinomial(current, alpha, n_iter=1)
+        np.testing.assert_allclose(alpha_check, alpha, atol=1e-3, rtol=1e-3)
+
+    def test_gradient_at_convergence(self) -> None:
+        """At fixed point, ∂log_ev/∂α_k ≈ 0 (via finite differences)."""
+        rng = np.random.default_rng(789)
+        true_alpha = np.array([4.0, 2.0])
+        posteriors = _make_dirichlet_groups(rng, 20, 40, 2, true_alpha)
+        prior = np.ones(2, dtype=np.float64)
+
+        # Iterate to convergence
+        alpha = prior.copy()
+        for _ in range(100):
+            current = {g: alpha + (p - prior) for g, p in posteriors.items()}
+            alpha_new, _, _ = minka_update_dirichlet_multinomial(
+                current, alpha, n_iter=1
+            )
+            alpha = alpha_new
+
+        # Check gradient via finite differences
+        current = {g: alpha + (p - prior) for g, p in posteriors.items()}
+        counts = np.array(list(current.values())) - alpha[np.newaxis, :]
+        count_totals = counts.sum(axis=1)
+
+        eps = 1e-5
+        for k in range(len(alpha)):
+            alpha_plus = alpha.copy()
+            alpha_plus[k] += eps
+            alpha_minus = alpha.copy()
+            alpha_minus[k] -= eps
+
+            ev_plus = _dirichlet_multinomial_log_evidence(
+                counts, count_totals, alpha_plus
+            )
+            ev_minus = _dirichlet_multinomial_log_evidence(
+                counts, count_totals, alpha_minus
+            )
+            grad_k = (ev_plus - ev_minus) / (2 * eps)
+            assert abs(grad_k) < 0.1, (
+                f"Gradient w.r.t. alpha[{k}] = {grad_k:.6f} at convergence"
+            )
+
+    def test_uniform_counts_preserve_symmetry(self) -> None:
+        """Symmetric counts preserve symmetric prior."""
+        K = 3
+        prior = np.ones(K, dtype=np.float64)
+        # All groups have identical symmetric counts
+        posteriors = {g: prior + np.array([10.0, 10.0, 10.0]) for g in range(5)}
+
+        alpha_new, _, _ = minka_update_dirichlet_multinomial(
+            posteriors, prior, n_iter=10
+        )
+
+        # All components should be equal
+        np.testing.assert_allclose(
+            alpha_new / alpha_new.sum(),
+            np.ones(K) / K,
+            atol=1e-6,
+        )
+
+    def test_skewed_counts_shift_prior(self) -> None:
+        """Skewed counts shift the base measure toward majority class."""
+        prior = np.array([1.0, 1.0])
+        # All groups have mostly class 0
+        posteriors = {g: prior + np.array([50.0, 5.0]) for g in range(10)}
+
+        alpha_new, _, _ = minka_update_dirichlet_multinomial(
+            posteriors, prior, n_iter=10
+        )
+
+        # Prior should shift toward class 0
+        assert alpha_new[0] > alpha_new[1], (
+            f"Expected alpha[0] > alpha[1], got {alpha_new}"
+        )
+
+    def test_empty_posteriors(self) -> None:
+        """Empty dict returns prior unchanged."""
+        prior = np.array([1.0, 2.0, 3.0])
+        alpha_new, log_ev, converged = minka_update_dirichlet_multinomial({}, prior)
+        np.testing.assert_array_equal(alpha_new, prior)
+        assert log_ev == -np.inf
+        assert converged
+
+    def test_zero_count_groups_return_prior_with_evidence(self) -> None:
+        """Groups with posteriors == prior (zero counts) return prior unchanged.
+
+        When all groups have zero effective counts (posterior = prior),
+        there is no data to update from. The function should return the
+        prior unchanged, with log evidence equal to the Dirichlet-Multinomial
+        evidence evaluated at zero counts (which is 0.0 since all
+        gammaln terms cancel).
+        """
+        prior = np.array([2.0, 3.0])
+        # Posteriors equal to prior => zero counts for every group
+        posteriors = {0: prior.copy(), 1: prior.copy(), 2: prior.copy()}
+        alpha_new, log_ev, converged = minka_update_dirichlet_multinomial(
+            posteriors, prior, n_iter=10
+        )
+        np.testing.assert_array_equal(alpha_new, prior)
+        assert converged
+        # Zero counts => all gammaln terms cancel => log_ev = 0
+        assert log_ev == pytest.approx(0.0, abs=1e-12)
+
+    def test_denominator_near_zero_converges_early(self) -> None:
+        """Huge prior concentration with tiny counts triggers early exit.
+
+        When s >> c_g for all groups, ψ(c_g + s) - ψ(s) ≈ 0, making
+        the shared denominator fall below EPS. The function should
+        declare convergence and return a valid result.
+        """
+        # Very large prior so s = sum(prior) >> counts
+        prior = np.array([1e15, 1e15])
+        # Each group has 1 observation: tiny counts relative to s
+        posteriors = {
+            0: prior + np.array([1.0, 0.0]),
+            1: prior + np.array([0.0, 1.0]),
+        }
+        alpha_new, log_ev, converged = minka_update_dirichlet_multinomial(
+            posteriors, prior, n_iter=100
+        )
+        assert converged, "Should converge early when denominator ≈ 0"
+        assert np.isfinite(log_ev)
+        # With negligible data relative to the prior, alpha should barely move
+        np.testing.assert_allclose(alpha_new, prior, rtol=1e-4)

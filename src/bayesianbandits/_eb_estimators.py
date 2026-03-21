@@ -1,4 +1,8 @@
-"""Empirical Bayes estimators via MacKay's evidence maximization."""
+"""Empirical Bayes estimators via evidence maximization.
+
+Provides MacKay's update rules for Normal regression and Minka's
+fixed-point iteration for Dirichlet-Multinomial classification.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +20,14 @@ from ._blas_helpers import compute_eta_dense, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
     mackay_update_normal_online,
+    minka_update_dirichlet_multinomial,
 )
-from ._estimators import NormalRegressor, _invalidate_cached_properties
+from ._estimators import (
+    DirichletClassifier,
+    NormalRegressor,
+    _invalidate_cached_properties,
+)
+from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
@@ -664,3 +674,337 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         super().decay(X, decay_rate=decay_rate)
 
         self._reinject_prior(prior_reinjection)
+
+
+class EmpiricalBayesDirichletClassifier(DirichletClassifier):
+    """Dirichlet-Multinomial classifier with empirical Bayes prior tuning.
+
+    Extends :class:`DirichletClassifier` with automatic optimization of
+    the Dirichlet prior concentration parameters via Minka's fixed-point
+    iteration [1]_ for the Dirichlet-Multinomial marginal likelihood.
+
+    During ``fit``, the prior is iteratively updated to maximize the
+    marginal likelihood across all groups. During ``partial_fit``, a
+    single Minka step is performed using the current group posteriors.
+
+    The prior is decomposed as ``α_k = s · m_k`` where ``s`` is the
+    scalar concentration (prior strength) and ``m_k`` is the base
+    measure (prior shape). The ``m`` and ``s`` updates are alternated
+    for faster convergence.
+
+    When ``learning_rate < 1``, exponential forgetting is applied.
+    Stabilized forgetting re-injects the EB-tuned prior after each
+    decay step, ensuring the prior contribution converges to the tuned
+    value rather than zero.
+
+    Parameters
+    ----------
+    alphas : dict of {int or str: float}
+        Initial prior concentration parameters for each class.
+    n_eb_iter : int, default=10
+        Maximum number of EB iterations during ``fit``.
+    eb_tol : float, default=1e-4
+        Convergence tolerance on change in log marginal likelihood.
+    learning_rate : float, default=1.0
+        Decay rate for sequential updates.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls RNG for ``sample``.
+
+    Attributes
+    ----------
+    log_evidence_ : float
+        Log marginal likelihood at convergence.
+    n_eb_iterations_ : int
+        Number of EB iterations in last ``fit``.
+    eb_converged_ : bool
+        Whether the EB loop converged within ``eb_tol``.
+
+    See Also
+    --------
+    DirichletClassifier : Base estimator without empirical Bayes tuning.
+    EmpiricalBayesNormalRegressor : EB tuning for Normal regression.
+
+    Notes
+    -----
+    **Minka's fixed-point iteration**
+
+    Given G groups with effective counts ``c_gk`` (derived from the
+    difference between posterior and prior concentrations), the
+    per-component update is [1]_:
+
+    .. math::
+
+        \\alpha_k^{\\text{new}} = \\alpha_k \\cdot
+        \\frac{\\sum_g [\\psi(c_{gk} + \\alpha_k) - \\psi(\\alpha_k)]}
+             {\\sum_g [\\psi(c_g + \\alpha_0) - \\psi(\\alpha_0)]}
+
+    where :math:`\\psi` is the digamma function,
+    :math:`\\alpha_0 = \\sum_k \\alpha_k`, and
+    :math:`c_g = \\sum_k c_{gk}`.
+
+    **Stabilized forgetting**
+
+    Every time ``learning_rate`` :math:`\\gamma < 1` causes decay
+    (both in ``partial_fit`` and in ``decay``), the prior is
+    re-injected:
+
+    .. math::
+
+        \\boldsymbol{\\alpha}_g \\leftarrow
+        \\gamma^n \\boldsymbol{\\alpha}_g
+        + (1 - \\gamma^n) \\boldsymbol{\\alpha}^{\\text{prior}}
+
+    This ensures effective counts are
+    :math:`\\gamma^n \\cdot \\text{counts}` and the prior
+    contribution never vanishes.
+
+    References
+    ----------
+    .. [1] Minka, T. P. (2000; revised 2003, 2012). "Estimating a
+       Dirichlet distribution." Technical report, MIT.
+
+    Examples
+    --------
+    Basic classification with EB-tuned prior:
+
+    >>> import numpy as np
+    >>> from bayesianbandits import EmpiricalBayesDirichletClassifier
+    >>> X = np.array([1, 1, 1, 2, 2, 2, 3, 3, 3]).reshape(-1, 1)
+    >>> y = np.array([1, 1, 2, 2, 2, 1, 1, 1, 2])
+    >>> clf = EmpiricalBayesDirichletClassifier(
+    ...     {1: 1, 2: 1}, random_state=0
+    ... )
+    >>> clf.fit(X, y)
+    EmpiricalBayesDirichletClassifier(alphas={1: ..., 2: ...}, random_state=0)
+
+    Misspecified priors converge to the true shape. Here the true
+    DGP is ``Dir(3, 1)`` (75/25 split) but the initial prior
+    heavily favors class 2:
+
+    >>> rng = np.random.default_rng(42)
+    >>> true_alpha = np.array([3.0, 1.0])
+    >>> clf = EmpiricalBayesDirichletClassifier(
+    ...     {1: 1.0, 2: 5.0}, random_state=0
+    ... )
+    >>> for g in range(200):  # doctest: +SKIP
+    ...     theta = rng.dirichlet(true_alpha)
+    ...     obs = rng.choice([1, 2], size=rng.poisson(10) + 1, p=theta)
+    ...     clf.partial_fit(np.full((len(obs), 1), g), obs)
+    >>> # Base measure recovers true shape: m ≈ [0.75, 0.25]
+    """
+
+    def __init__(
+        self,
+        alphas: dict[Union[int, str], float],
+        *,
+        n_eb_iter: int = 10,
+        eb_tol: float = 1e-4,
+        learning_rate: float = 1.0,
+        random_state: Union[int, np.random.Generator, None] = None,
+    ) -> None:
+        super().__init__(
+            alphas=alphas,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
+        self.n_eb_iter = n_eb_iter
+        self.eb_tol = eb_tol
+
+    def _fit_helper(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> None:
+        """Override to add stabilized prior re-injection after decay.
+
+        The base class ``_fit_helper`` decays the existing posterior by
+        ``learning_rate ** n_obs`` when stacking with new observations,
+        but does not re-inject the prior. Without re-injection the prior
+        contribution decays toward zero, breaking the invariant
+        ``known_alphas_[g] - prior_ = decayed_counts``.
+        """
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
+
+        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+            key = group[0].item()
+
+            weighted_arr = arr * weights[:, np.newaxis]
+
+            vals = np.vstack((self.known_alphas_[key], weighted_arr))
+
+            decay_idx = np.flip(np.arange(len(vals)))
+            posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
+
+            # Stabilized forgetting: the prior was decayed by lr^n_obs,
+            # reinject (1 - lr^n_obs) * prior so the prior contribution
+            # converges to prior_ instead of zero.
+            n_obs = len(arr)
+            reinjection = (1 - self.learning_rate**n_obs) * self.prior_
+
+            self.known_alphas_[key] = posterior.sum(axis=0) + reinjection
+
+    def fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """Fit with empirical Bayes hyperparameter tuning.
+
+        Iteratively optimizes the Dirichlet prior concentration
+        parameters by maximizing the Dirichlet-Multinomial marginal
+        likelihood using Minka's fixed-point iteration, then performs
+        a final posterior update with the converged prior.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Class labels.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : EmpiricalBayesDirichletClassifier
+            Fitted estimator with tuned prior.
+        """
+        X, y = check_X_y(X, y, copy=True, ensure_2d=True)
+
+        if self.n_eb_iter > 0:
+            y_encoded = (y[:, np.newaxis] == np.array(list(self.alphas.keys()))).astype(
+                int
+            )
+
+            # Fit once to get the counts, then iterate the prior.
+            # For the Dirichlet-Multinomial, the counts are fixed data,
+            # so we only need to refit the posterior once at the end with
+            # the converged prior — unlike Normal regression where the
+            # posterior depends on the prior precision.
+            self._initialize_prior()
+            self.n_features_ = X.shape[1]
+            self._fit_helper(X, y_encoded, sample_weight)
+
+            # Run Minka iterations on the fixed counts with convergence
+            new_prior, log_ev, converged = minka_update_dirichlet_multinomial(
+                dict(self.known_alphas_),
+                self.prior_,
+                n_iter=self.n_eb_iter,
+                tol=self.eb_tol,
+            )
+
+            for idx, cls_key in enumerate(self.classes_):
+                self.alphas[cls_key] = float(new_prior[idx])
+
+            # Refit with converged prior
+            self._initialize_prior()
+            self.n_features_ = X.shape[1]
+            self._fit_helper(X, y_encoded, sample_weight)
+
+            self.log_evidence_ = log_ev
+            self.n_eb_iterations_ = self.n_eb_iter
+            self.eb_converged_ = converged
+        else:
+            super().fit(X, y, sample_weight)
+            self.log_evidence_ = -math.inf
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+
+        return self
+
+    def partial_fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """Incrementally update and retune hyperparameters.
+
+        Performs a posterior update (via the base class), then runs
+        one Minka fixed-point step to adjust the prior. All group
+        posteriors are corrected to reflect the new prior.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Class labels.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : EmpiricalBayesDirichletClassifier
+            Updated estimator with retuned prior.
+        """
+        result = super().partial_fit(X, y, sample_weight)
+
+        if hasattr(self, "known_alphas_") and len(self.known_alphas_) > 0:
+            old_prior = self.prior_.copy()
+
+            new_prior, log_ev, _ = minka_update_dirichlet_multinomial(
+                dict(self.known_alphas_),
+                self.prior_,
+                n_iter=1,
+            )
+
+            # Correct all group posteriors: shift by the prior change
+            prior_delta = new_prior - old_prior
+            for key in list(self.known_alphas_.keys()):
+                self.known_alphas_[key] = np.asarray(
+                    self.known_alphas_[key] + prior_delta, dtype=np.float64
+                )
+
+            # Update prior_ and alphas dict
+            self.prior_ = new_prior
+            for idx, cls_key in enumerate(self.classes_):
+                self.alphas[cls_key] = float(new_prior[idx])
+
+            self.log_evidence_ = log_ev
+
+        return result
+
+    def decay(
+        self,
+        X: NDArray[Any],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """Decay with stabilized prior re-injection.
+
+        Applies exponential forgetting and re-injects the EB-tuned
+        prior so that the prior contribution converges to ``prior_``
+        rather than zero. This ensures that effective counts
+        (``known_alphas - prior``) remain correct after decay.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, 1)
+            Used to identify which groups to decay.
+        decay_rate : float, default=None
+            Decay factor in (0, 1]. If None, uses ``self.learning_rate``.
+        """
+        if not hasattr(self, "known_alphas_"):
+            self._initialize_prior()
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        for x in X:
+            key = x.item()
+            # Stabilized forgetting: decay + re-inject prior
+            self.known_alphas_[key] = np.asarray(
+                decay_rate * self.known_alphas_[key] + (1 - decay_rate) * self.prior_,
+                dtype=np.float64,
+            )
