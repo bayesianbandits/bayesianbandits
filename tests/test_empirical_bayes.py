@@ -1241,8 +1241,6 @@ class TestMinkaDirichletMultinomial:
             alpha_new, _, _ = minka_update_dirichlet_multinomial(
                 current, alpha, n_iter=1
             )
-            if np.allclose(alpha_new, alpha, atol=1e-12):
-                break
             alpha = alpha_new
 
         # One more step should be approximately idempotent.
@@ -1266,8 +1264,6 @@ class TestMinkaDirichletMultinomial:
             alpha_new, _, _ = minka_update_dirichlet_multinomial(
                 current, alpha, n_iter=1
             )
-            if np.allclose(alpha_new, alpha, atol=1e-12):
-                break
             alpha = alpha_new
 
         # Check gradient via finite differences
