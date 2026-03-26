@@ -1914,6 +1914,19 @@ scipy.sparse.csc_array
     >>> model.predict(X)  # Returns expected counts
     array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
 
+    Poisson rate modeling with varying exposure (e.g., different observation
+    periods). For Poisson with log link, fitting the rate ``y / exposure``
+    with ``sample_weight=exposure`` is mathematically equivalent to using
+    an offset of ``log(exposure)`` in the linear predictor:
+
+    >>> exposure = np.array([1, 2, 5, 10])
+    >>> y_counts = np.array([2, 5, 12, 30])
+    >>> model = BayesianGLM(alpha=1.0, link='log')
+    >>> model.fit(X, y_counts / exposure, sample_weight=exposure)
+    BayesianGLM(link='log')
+    >>> model.predict(X) * exposure  # Scale predicted rates by exposure
+    array([ 1.32755877,  3.52482459, 11.69852952, 31.06097099])
+
     Online learning with fast single-iteration updates:
 
     >>> from bayesianbandits import LaplaceApproximator
