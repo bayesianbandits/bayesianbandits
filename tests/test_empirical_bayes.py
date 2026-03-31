@@ -20,6 +20,7 @@ from bayesianbandits._empirical_bayes import (
     mackay_update_nig,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
+    negbin_update_gamma_poisson,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -1371,3 +1372,67 @@ class TestMinkaDirichletMultinomial:
         assert np.isfinite(log_ev)
         # With negligible data relative to the prior, alpha should barely move
         np.testing.assert_allclose(alpha_new, prior, rtol=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# NegBin Gamma-Poisson
+# ---------------------------------------------------------------------------
+
+
+class TestNegbinGammaPoisson:
+    def test_empty_posteriors(self) -> None:
+        """Empty dict returns prior unchanged."""
+        prior = np.array([2.0, 3.0])
+        prior_new, log_ev, converged = negbin_update_gamma_poisson({}, prior)
+        np.testing.assert_array_equal(prior_new, prior)
+        assert log_ev == -np.inf
+        assert converged
+
+    def test_zero_exposure_groups_return_prior(self) -> None:
+        """Groups with posteriors == prior (zero exposure) return prior unchanged."""
+        prior = np.array([2.0, 3.0])
+        posteriors = {0: prior.copy(), 1: prior.copy()}
+        prior_new, log_ev, converged = negbin_update_gamma_poisson(
+            posteriors, prior, n_iter=10
+        )
+        np.testing.assert_array_equal(prior_new, prior)
+        assert converged
+
+    def test_basic_update(self) -> None:
+        """Returns positive params and finite log evidence."""
+        rng = np.random.default_rng(42)
+        prior = np.array([1.0, 1.0])
+        posteriors = {}
+        for g in range(10):
+            rate = rng.gamma(3.0, 1.0)
+            counts = rng.poisson(rate, size=20)
+            posteriors[g] = prior + np.array([float(counts.sum()), float(len(counts))])
+
+        prior_new, log_ev, _ = negbin_update_gamma_poisson(
+            posteriors, prior, n_iter=10, tol=1e-6
+        )
+        assert np.all(prior_new > 0)
+        assert np.isfinite(log_ev)
+
+    def test_evidence_nondecreasing(self) -> None:
+        """Iterated EM steps never decrease log evidence."""
+        rng = np.random.default_rng(123)
+        prior = np.array([1.0, 1.0])
+        posteriors = {}
+        for g in range(15):
+            rate = rng.gamma(5.0, 1.0 / 2.0)
+            counts = rng.poisson(rate, size=30)
+            posteriors[g] = prior + np.array([float(counts.sum()), float(len(counts))])
+
+        evidences: list[float] = []
+        alpha = prior.copy()
+        for _ in range(20):
+            current = {g: alpha + (p - prior) for g, p in posteriors.items()}
+            alpha, ev, _ = negbin_update_gamma_poisson(current, alpha, n_iter=1)
+            evidences.append(ev)
+
+        for i in range(1, len(evidences)):
+            assert evidences[i] >= evidences[i - 1] - 1e-6, (
+                f"Evidence decreased at step {i}: "
+                f"{evidences[i - 1]:.6f} -> {evidences[i]:.6f}"
+            )

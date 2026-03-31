@@ -582,8 +582,10 @@ def _negbin_log_evidence(
     """
     log_beta_plus_n = np.log(beta + exposures)
     log_p = math.log(beta) - log_beta_plus_n
-    # Guard against log(0) when exposure is 0
-    log_q = np.where(exposures > 0, np.log(exposures) - log_beta_plus_n, 0.0)
+    # Guard against log(0) when exposure is 0; use np.log1p to avoid
+    # eager evaluation of log(0) inside np.where.
+    safe_exp = np.maximum(exposures, 1e-300)
+    log_q = np.where(exposures > 0, np.log(safe_exp) - log_beta_plus_n, 0.0)
     return float(
         np.sum(
             gammaln(counts + alpha)
