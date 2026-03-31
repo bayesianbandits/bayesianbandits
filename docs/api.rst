@@ -87,6 +87,7 @@ for decay as a defensive default).
    :toctree: generated/
 
    bayesianbandits.EmpiricalBayesDirichletClassifier
+   bayesianbandits.EmpiricalBayesGammaRegressor
    bayesianbandits.EmpiricalBayesNormalRegressor
 
 Utilities

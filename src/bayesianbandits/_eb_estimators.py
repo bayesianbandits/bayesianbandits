@@ -1,7 +1,8 @@
 """Empirical Bayes estimators via evidence maximization.
 
-Provides MacKay's update rules for Normal regression and Minka's
-fixed-point iteration for Dirichlet-Multinomial classification.
+Provides MacKay's update rules for Normal regression, Minka's
+fixed-point iteration for Dirichlet-Multinomial classification,
+and Minka's EM for Gamma-Poisson rate estimation.
 """
 
 from __future__ import annotations
@@ -21,9 +22,11 @@ from ._empirical_bayes import (
     accumulate_sufficient_stats,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
+    negbin_update_gamma_poisson,
 )
 from ._estimators import (
     DirichletClassifier,
+    GammaRegressor,
     NormalRegressor,
     _invalidate_cached_properties,
 )
@@ -1006,5 +1009,311 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
             # Stabilized forgetting: decay + re-inject prior
             self.known_alphas_[key] = np.asarray(
                 decay_rate * self.known_alphas_[key] + (1 - decay_rate) * self.prior_,
+                dtype=np.float64,
+            )
+
+
+class EmpiricalBayesGammaRegressor(GammaRegressor):
+    """Gamma-Poisson regressor with empirical Bayes prior tuning.
+
+    Extends :class:`GammaRegressor` with automatic optimization of
+    the Gamma prior parameters ``(alpha, beta)`` via the Negative
+    Binomial marginal likelihood, using Minka's EM algorithm [1]_.
+
+    During ``fit``, the prior is iteratively updated to maximize the
+    marginal likelihood across all groups. During ``partial_fit``, a
+    single EM step is performed using the current group posteriors.
+
+    The EM treats per-group rates as latent Gamma variables. The
+    E-step computes posterior moments; the M-step solves a Gamma MLE
+    for the shared prior, using the generalized Newton method for the
+    shape parameter [1]_.
+
+    When ``learning_rate < 1``, exponential forgetting is applied.
+    Stabilized forgetting re-injects the EB-tuned prior after each
+    decay step, ensuring the prior contribution converges to the tuned
+    value rather than zero.
+
+    Parameters
+    ----------
+    alpha : float
+        Initial Gamma shape parameter.
+    beta : float
+        Initial Gamma rate parameter.
+    n_eb_iter : int, default=10
+        Maximum number of EB iterations during ``fit``.
+    eb_tol : float, default=1e-4
+        Convergence tolerance on change in log marginal likelihood.
+    learning_rate : float, default=1.0
+        Decay rate for sequential updates.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls RNG for ``sample``.
+
+    Attributes
+    ----------
+    log_evidence_ : float
+        Log marginal likelihood at convergence.
+    n_eb_iterations_ : int
+        Number of EB iterations in last ``fit``.
+    eb_converged_ : bool
+        Whether the EB loop converged within ``eb_tol``.
+
+    See Also
+    --------
+    GammaRegressor : Base estimator without empirical Bayes tuning.
+    EmpiricalBayesDirichletClassifier : EB tuning for Dirichlet classification.
+    EmpiricalBayesNormalRegressor : EB tuning for Normal regression.
+
+    Notes
+    -----
+    **Negative Binomial marginal likelihood**
+
+    The Gamma-Poisson marginal for group :math:`g` with effective
+    count :math:`c_g` and exposure :math:`n_g` is:
+
+    .. math::
+
+        \\log p(c_g \\mid \\alpha, \\beta)
+        = \\log\\Gamma(c_g + \\alpha) - \\log\\Gamma(\\alpha)
+          - \\log\\Gamma(c_g + 1)
+          + \\alpha \\log\\frac{\\beta}{\\beta + n_g}
+          + c_g \\log\\frac{n_g}{\\beta + n_g}
+
+    **EM update (Minka 2002, section 2.1)**
+
+    E-step: posterior moments of the latent rate :math:`\\lambda_g`:
+
+    .. math::
+
+        \\mathbb{E}[\\lambda_g] &= \\frac{\\alpha + c_g}{\\beta + n_g} \\\\
+        \\mathbb{E}[\\log \\lambda_g] &= \\psi(\\alpha + c_g)
+          - \\log(\\beta + n_g)
+
+    M-step: Gamma MLE on expected sufficient statistics. The rate
+    update is closed-form given the shape:
+
+    .. math::
+
+        \\beta = \\frac{\\alpha}{\\bar{\\mathbb{E}}[\\lambda]}
+
+    The shape uses the generalized Newton method from [1]_:
+
+    .. math::
+
+        \\frac{1}{\\alpha^{\\text{new}}} = \\frac{1}{\\alpha}
+        + \\frac{\\log\\bar{\\mathbb{E}}[\\lambda]
+          - \\bar{\\mathbb{E}}[\\log\\lambda]
+          - \\log\\alpha + \\psi(\\alpha)}
+             {\\alpha^2 (1/\\alpha - \\psi'(\\alpha))}
+
+    **Stabilized forgetting**
+
+    Every time ``learning_rate`` :math:`\\gamma < 1` causes decay,
+    the prior is re-injected:
+
+    .. math::
+
+        \\mathbf{p}_g \\leftarrow
+        \\gamma^n \\mathbf{p}_g
+        + (1 - \\gamma^n) \\mathbf{p}^{\\text{prior}}
+
+    where :math:`\\mathbf{p}_g = (\\alpha_g, \\beta_g)` are the
+    posterior parameters. This ensures effective counts and exposures
+    are correctly decayed and the prior contribution never vanishes.
+
+    References
+    ----------
+    .. [1] Minka, T. P. (2002). "Estimating a Gamma distribution."
+       Microsoft Research Technical Report.
+
+    Examples
+    --------
+    Basic rate estimation with EB-tuned prior:
+
+    >>> import numpy as np
+    >>> from bayesianbandits import EmpiricalBayesGammaRegressor
+    >>> rng = np.random.default_rng(42)
+    >>> X = np.repeat(np.arange(1, 6), 30).reshape(-1, 1)
+    >>> y = rng.poisson(3.0, size=150)
+    >>> model = EmpiricalBayesGammaRegressor(
+    ...     alpha=1.0, beta=1.0, random_state=0
+    ... )
+    >>> model.fit(X, y)
+    EmpiricalBayesGammaRegressor(alpha=..., beta=..., random_state=0)
+    """
+
+    def __init__(
+        self,
+        alpha: float,
+        beta: float,
+        *,
+        n_eb_iter: int = 10,
+        eb_tol: float = 1e-4,
+        learning_rate: float = 1.0,
+        random_state: Union[int, np.random.Generator, None] = None,
+    ) -> None:
+        super().__init__(
+            alpha=alpha,
+            beta=beta,
+            learning_rate=learning_rate,
+            random_state=random_state,
+        )
+        self.n_eb_iter = n_eb_iter
+        self.eb_tol = eb_tol
+
+    def _fit_helper(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> None:
+        """Override to add stabilized prior re-injection after decay.
+
+        The base class ``_fit_helper`` decays the existing posterior by
+        ``learning_rate ** n_obs`` when stacking with new observations,
+        but does not re-inject the prior. Without re-injection the prior
+        contribution decays toward zero, breaking the invariant
+        ``coef_[g] - prior_ = decayed_counts``.
+        """
+        if sample_weight is None:
+            sample_weight = np.ones(X.shape[0], dtype=np.float64)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
+                    f"equal to X.shape[0]={X.shape[0]}"
+                )
+
+        lr = self.learning_rate
+        no_decay = lr == 1.0
+
+        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+            key = group[0].item()
+
+            weighted_counts = arr * weights
+            weighted_data = np.column_stack((weighted_counts, weights))
+
+            if no_decay:
+                self.coef_[key] = self.coef_[key] + weighted_data.sum(axis=0)
+            else:
+                n_obs = len(arr)
+                decay_factor = lr**n_obs
+                data_weights = lr ** np.arange(n_obs - 1, -1, -1)
+                data_contribution = data_weights @ weighted_data
+                reinjection = (1 - decay_factor) * self.prior_
+                self.coef_[key] = (
+                    decay_factor * self.coef_[key] + data_contribution + reinjection
+                )
+
+    def fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """Fit with empirical Bayes hyperparameter tuning.
+
+        Iteratively optimizes the Gamma prior parameters by maximizing
+        the Negative Binomial marginal likelihood using Minka's EM
+        algorithm, then performs a final posterior update with the
+        converged prior.
+        """
+        X, y = check_X_y(X, y, copy=True, ensure_2d=True)
+
+        if self.n_eb_iter > 0:
+            y_encoded: NDArray[np.int_] = y.astype(int)
+
+            # Fit once to get the counts, then iterate the prior.
+            self._initialize_prior()
+            self.n_features_ = X.shape[1]
+            self._fit_helper(X, y_encoded, sample_weight)
+
+            # Run EM iterations on the fixed counts
+            new_prior, log_ev, converged = negbin_update_gamma_poisson(
+                self.coef_,
+                self.prior_,
+                n_iter=self.n_eb_iter,
+                tol=self.eb_tol,
+            )
+
+            self.alpha = float(new_prior[0])
+            self.beta = float(new_prior[1])
+
+            # Refit with converged prior
+            self._initialize_prior()
+            self.n_features_ = X.shape[1]
+            self._fit_helper(X, y_encoded, sample_weight)
+
+            self.log_evidence_ = log_ev
+            self.n_eb_iterations_ = self.n_eb_iter
+            self.eb_converged_ = converged
+        else:
+            super().fit(X, y, sample_weight)
+            self.log_evidence_ = -math.inf
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+
+        return self
+
+    def partial_fit(
+        self,
+        X: NDArray[Any],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """Incrementally update and retune hyperparameters.
+
+        Performs a posterior update (via the base class), then runs
+        one EM step to adjust the prior. All group posteriors are
+        corrected to reflect the new prior.
+        """
+        result = super().partial_fit(X, y, sample_weight)
+
+        if hasattr(self, "coef_") and len(self.coef_) > 0:
+            old_prior = self.prior_.copy()
+
+            new_prior, log_ev, _ = negbin_update_gamma_poisson(
+                self.coef_,
+                self.prior_,
+                n_iter=1,
+            )
+
+            prior_delta = new_prior - old_prior
+            for key in list(self.coef_.keys()):
+                self.coef_[key] = np.asarray(
+                    self.coef_[key] + prior_delta, dtype=np.float64
+                )
+
+            self.prior_ = new_prior
+            self.alpha = float(new_prior[0])
+            self.beta = float(new_prior[1])
+
+            self.log_evidence_ = log_ev
+
+        return result
+
+    def decay(
+        self,
+        X: NDArray[Any],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """Decay with stabilized prior re-injection.
+
+        Applies exponential forgetting and re-injects the EB-tuned
+        prior so that the prior contribution converges to ``prior_``
+        rather than zero.
+        """
+        if not hasattr(self, "coef_"):
+            self._initialize_prior()
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        for x in X:
+            key = x.item()
+            self.coef_[key] = np.asarray(
+                decay_rate * self.coef_[key] + (1 - decay_rate) * self.prior_,
                 dtype=np.float64,
             )
