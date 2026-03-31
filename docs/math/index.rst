@@ -11,6 +11,7 @@ textbook formulations.
    normal-inverse-gamma
    empirical-bayes
    dirichlet-eb
+   gamma-eb
    intercept-only
    glm
    policies

@@ -16,7 +16,7 @@ from typing import Union, cast
 import numpy as np
 from numpy.typing import NDArray
 from scipy.sparse import csc_array, issparse
-from scipy.special import digamma, gammaln
+from scipy.special import digamma, gammaln, polygamma
 
 from ._blas_helpers import dsymv
 from ._sparse_bayesian_linear_regression import (
@@ -548,3 +548,161 @@ def minka_update_dirichlet_multinomial(
 
     log_ev = _dirichlet_multinomial_log_evidence(counts, count_totals, alpha)
     return alpha, log_ev, converged
+
+
+def _negbin_log_evidence(
+    counts: NDArray[np.floating],
+    exposures: NDArray[np.floating],
+    alpha: float,
+    beta: float,
+) -> float:
+    """Compute Negative Binomial marginal log-likelihood.
+
+    The Gamma-Poisson marginal for G groups, each with effective
+    count ``c_g`` and exposure ``n_g``, under a shared
+    Gamma(alpha, beta) prior.
+
+    Parameters
+    ----------
+    counts : ndarray of shape (G,)
+        Effective counts per group (sum of weighted observations).
+    exposures : ndarray of shape (G,)
+        Effective exposures per group (sum of weights).
+    alpha : float
+        Gamma shape parameter.
+    beta : float
+        Gamma rate parameter.
+
+    Returns
+    -------
+    float
+        Log marginal likelihood
+        ``Σ_g [logΓ(c_g + α) - logΓ(α) - logΓ(c_g + 1)
+        + α·log(β/(β+n_g)) + c_g·log(n_g/(β+n_g))]``.
+    """
+    log_beta_plus_n = np.log(beta + exposures)
+    log_p = math.log(beta) - log_beta_plus_n
+    # Guard against log(0) when exposure is 0; use np.log1p to avoid
+    # eager evaluation of log(0) inside np.where.
+    safe_exp = np.maximum(exposures, 1e-300)
+    log_q = np.where(exposures > 0, np.log(safe_exp) - log_beta_plus_n, 0.0)
+    return float(
+        np.sum(
+            gammaln(counts + alpha)
+            - gammaln(alpha)
+            - gammaln(counts + 1)
+            + alpha * log_p
+            + counts * log_q
+        )
+    )
+
+
+def negbin_update_gamma_poisson(
+    posterior_params: dict,
+    prior: NDArray[np.float64],
+    n_iter: int = 1,
+    tol: float = 0.0,
+) -> tuple[NDArray[np.float64], float, bool]:
+    """EM-based update for Gamma-Poisson empirical Bayes.
+
+    Given G groups with posterior Gamma parameters and the current
+    prior, performs ``n_iter`` EM steps to maximize the Negative
+    Binomial marginal likelihood [1]_.
+
+    Each EM iteration treats the per-group rate as a latent variable:
+
+    - **E-step**: compute ``E[λ_g]`` and ``E[log λ_g]`` under the
+      posterior ``Gamma(α + c_g, β + n_g)``.
+    - **M-step**: solve the Gamma MLE for ``(α, β)`` using the
+      expected sufficient statistics. The shape update uses Minka's
+      generalized Newton method [1]_ (section 1); the rate has a
+      closed-form conditional on the shape.
+
+    Parameters
+    ----------
+    posterior_params : dict mapping group keys to ndarray of shape (2,)
+        Each value is ``[alpha_post, beta_post]`` for that group.
+    prior : ndarray of shape (2,)
+        Current prior ``[alpha, beta]``.
+    n_iter : int, default=1
+        Maximum number of EM iterations to perform.
+    tol : float, default=0.0
+        Early stopping tolerance on change in log evidence between
+        successive iterations. Set to 0 to always run all iterations.
+
+    Returns
+    -------
+    prior_new : ndarray of shape (2,)
+        Updated prior ``[alpha_new, beta_new]``.
+    log_evidence : float
+        Negative Binomial marginal log-likelihood at the new prior.
+    converged : bool
+        Whether the iteration converged within ``tol``.
+
+    References
+    ----------
+    .. [1] Minka, T. P. (2002). "Estimating a Gamma distribution."
+       Microsoft Research Technical Report.
+    """
+    if not posterior_params:
+        return prior.copy(), -math.inf, True
+
+    param_matrix = np.array(list(posterior_params.values()), dtype=np.float64)
+    counts = param_matrix[:, 0] - prior[0]
+    exposures = param_matrix[:, 1] - prior[1]
+
+    valid = exposures > 0
+    if not np.any(valid):
+        log_ev = _negbin_log_evidence(counts, exposures, prior[0], prior[1])
+        return prior.copy(), log_ev, True
+    counts = counts[valid]
+    exposures = exposures[valid]
+
+    alpha = float(prior[0])
+    beta = float(prior[1])
+    _EPS = 1e-8
+    prev_ev = -math.inf
+    converged = False
+
+    for _ in range(n_iter):
+        # --- E-step ---
+        E_lambda = (counts + alpha) / (exposures + beta)
+        E_log_lambda = digamma(counts + alpha) - np.log(exposures + beta)
+
+        mean_E_lambda = float(np.mean(E_lambda))
+        mean_E_log_lambda = float(np.mean(E_log_lambda))
+
+        # --- M-step: beta update (closed-form given alpha) ---
+        if mean_E_lambda > _EPS:
+            beta = alpha / mean_E_lambda
+        beta = max(beta, _EPS)
+
+        # --- M-step: alpha update (Minka's generalized Newton) ---
+        target = math.log(max(mean_E_lambda, _EPS)) - mean_E_log_lambda
+        if target > _EPS:
+            for _ in range(5):
+                inv_alpha = 1.0 / alpha
+                numerator = (math.log(alpha) - float(digamma(alpha))) - target
+                trigamma = float(polygamma(1, alpha))
+                denom = alpha * alpha * (inv_alpha - trigamma)
+                if abs(denom) < _EPS:
+                    break
+                inv_alpha_new = inv_alpha + numerator / denom
+                if inv_alpha_new > _EPS:
+                    alpha = 1.0 / inv_alpha_new
+                alpha = max(alpha, _EPS)
+
+        if tol > 0:
+            ev = _negbin_log_evidence(counts, exposures, alpha, beta)
+            if abs(ev - prev_ev) < tol:
+                converged = True
+                prev_ev = ev
+                break
+            prev_ev = ev
+
+    log_ev = (
+        prev_ev
+        if prev_ev > -math.inf
+        else _negbin_log_evidence(counts, exposures, alpha, beta)
+    )
+    return np.array([alpha, beta], dtype=np.float64), log_ev, converged

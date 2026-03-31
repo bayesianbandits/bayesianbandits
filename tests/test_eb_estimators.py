@@ -9,6 +9,7 @@ from sklearn.base import clone
 
 from bayesianbandits import (
     EmpiricalBayesDirichletClassifier,
+    EmpiricalBayesGammaRegressor,
     EmpiricalBayesNormalRegressor,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
@@ -807,3 +808,371 @@ class TestEBDirichletClassifier:
                 rtol=1e-12,
                 err_msg="Stabilized decay on fresh prior should be identity",
             )
+
+
+class TestEBGammaRegressor:
+    """Tests for EmpiricalBayesGammaRegressor."""
+
+    @pytest.fixture
+    def gamma_poisson_data(self):
+        """Synthetic Gamma-Poisson data: 5 groups with rates drawn from Gamma(3, 1)."""
+        rng = np.random.default_rng(42)
+        true_alpha, true_beta = 3.0, 1.0
+        X_parts, y_parts = [], []
+        for group_id in range(1, 6):
+            rate = rng.gamma(true_alpha, 1.0 / true_beta)
+            counts = rng.poisson(rate, size=30)
+            X_parts.append(np.full((30, 1), group_id))
+            y_parts.append(counts)
+        X = np.vstack(X_parts)
+        y = np.concatenate(y_parts)
+        return X, y
+
+    def test_fit_smoke(self, gamma_poisson_data):
+        """Basic fit produces valid attributes and predictions."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X, y)
+
+        assert hasattr(model, "log_evidence_")
+        assert np.isfinite(model.log_evidence_)
+        assert hasattr(model, "n_eb_iterations_")
+        assert hasattr(model, "eb_converged_")
+
+        preds = model.predict(X[:5])
+        assert preds.shape == (5,)
+        assert np.all(preds > 0)
+
+        samples = model.sample(X[:5], size=3)
+        assert samples.shape == (3, 5)
+        assert np.all(samples > 0)
+
+    def test_hyperparams_change(self, gamma_poisson_data):
+        """EB tuning changes alpha and/or beta from initial values."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X, y)
+
+        assert model.alpha != 1.0 or model.beta != 1.0, (
+            "EB should change at least one hyperparameter"
+        )
+
+    def test_convergence_flag(self, gamma_poisson_data):
+        """With enough iterations, EB converges."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=1000, eb_tol=1e-4, random_state=42
+        )
+        model.fit(X, y)
+        assert model.eb_converged_
+
+    def test_evidence_monotonicity(self, gamma_poisson_data):
+        """Repeatedly fitting with n_eb_iter=1, evidence is non-decreasing."""
+        X, y = gamma_poisson_data
+        evidences = []
+        alpha, beta = 1.0, 1.0
+
+        for _ in range(10):
+            model = EmpiricalBayesGammaRegressor(
+                alpha=alpha, beta=beta, n_eb_iter=1, random_state=42
+            )
+            model.fit(X, y)
+            evidences.append(model.log_evidence_)
+            alpha = model.alpha
+            beta = model.beta
+
+        for i in range(1, len(evidences)):
+            assert evidences[i] >= evidences[i - 1] - 1e-6, (
+                f"Evidence decreased: {evidences[i]} < {evidences[i - 1]}"
+            )
+
+    def test_partial_fit_updates_prior(self, gamma_poisson_data):
+        """partial_fit changes the prior via online EB."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X[:60], y[:60])
+        prior_before = model.prior_.copy()
+
+        model.partial_fit(X[60:], y[60:])
+        assert not np.allclose(model.prior_, prior_before), (
+            "Prior should change after partial_fit"
+        )
+
+    def test_partial_fit_corrects_posteriors(self, gamma_poisson_data):
+        """partial_fit shifts unaffected group posteriors by exactly prior_delta."""
+        X, y = gamma_poisson_data
+        # Fit on groups 1,2 (first 60 rows)
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X[:60], y[:60])
+
+        old_prior = model.prior_.copy()
+        old_posteriors = {k: v.copy() for k, v in model.coef_.items()}
+
+        # partial_fit on group 3 only (rows 60:90)
+        model.partial_fit(X[60:90], y[60:90])
+
+        prior_delta = model.prior_ - old_prior
+        # Groups 1 and 2 were not in the batch, so their posteriors
+        # should shift by exactly prior_delta (the EB correction).
+        for key in [1, 2]:
+            diff = model.coef_[key] - old_posteriors[key]
+            np.testing.assert_allclose(
+                diff,
+                prior_delta,
+                atol=1e-12,
+                err_msg=f"Group {key} (not in batch) should shift by exactly prior_delta",
+            )
+
+    def test_n_eb_iter_zero(self, gamma_poisson_data):
+        """n_eb_iter=0 disables EB; prior stays at initial values."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=0, random_state=42
+        )
+        model.fit(X, y)
+
+        assert model.log_evidence_ == -np.inf
+        assert model.n_eb_iterations_ == 0
+        assert not model.eb_converged_
+        np.testing.assert_array_equal(model.prior_, np.array([1.0, 1.0]))
+
+    def test_decay_stabilized_forgetting(self):
+        """After many decays, coef_ converges to prior, not zero."""
+        rng = np.random.default_rng(99)
+        X_parts, y_parts = [], []
+        for gid in range(1, 4):
+            counts = rng.poisson(3.0, size=30)
+            X_parts.append(np.full((30, 1), gid))
+            y_parts.append(counts)
+        X = np.vstack(X_parts)
+        y = np.concatenate(y_parts)
+
+        model = EmpiricalBayesGammaRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.9, random_state=42
+        )
+        model.fit(X, y)
+        prior_after_fit = model.prior_.copy()
+
+        group_ids = np.array([[1], [2], [3]])
+        for _ in range(200):
+            model.decay(group_ids)
+
+        for key in list(model.coef_.keys()):
+            np.testing.assert_allclose(
+                model.coef_[key],
+                prior_after_fit,
+                atol=1e-2,
+                rtol=0.05,
+            )
+            assert np.all(model.coef_[key] > 0.01), (
+                "Params decayed to near-zero despite stabilized forgetting"
+            )
+
+    def test_decay_before_fit_preserves_prior(self):
+        """Decay on unfitted model: stabilized forgetting gives lr*p + (1-lr)*p = p."""
+        lr = 0.9
+        model = EmpiricalBayesGammaRegressor(
+            alpha=2.0, beta=3.0, learning_rate=lr, random_state=42
+        )
+        model.decay(np.array([[1], [2]]))
+
+        expected = np.array([2.0, 3.0])
+        for key in [1, 2]:
+            np.testing.assert_allclose(
+                model.coef_[key],
+                expected,
+                rtol=1e-12,
+                err_msg="Stabilized decay on fresh prior should be identity",
+            )
+
+    def test_prior_recovery_large_sample(self):
+        """With many groups, EB recovers the true Gamma prior parameters."""
+        rng = np.random.default_rng(42)
+        true_alpha, true_beta = 3.0, 1.0
+
+        X_parts, y_parts = [], []
+        for group_id in range(1, 51):
+            rate = rng.gamma(true_alpha, 1.0 / true_beta)
+            counts = rng.poisson(rate, size=100)
+            X_parts.append(np.full((100, 1), group_id))
+            y_parts.append(counts)
+        X = np.vstack(X_parts)
+        y = np.concatenate(y_parts)
+
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X, y)
+
+        recovered_mean = model.alpha / model.beta
+        true_mean = true_alpha / true_beta
+        assert abs(recovered_mean - true_mean) < 0.6, (
+            f"Prior mean {recovered_mean:.3f} too far from true {true_mean:.1f}"
+        )
+
+        recovered_var = model.alpha / model.beta**2
+        true_var = true_alpha / true_beta**2
+        assert abs(recovered_var - true_var) < 1.5, (
+            f"Prior variance {recovered_var:.3f} too far from true {true_var:.1f}"
+        )
+
+    def test_prior_recovery_misspecified_init(self):
+        """EB recovers even from a badly misspecified initial prior."""
+        rng = np.random.default_rng(42)
+        true_alpha, true_beta = 3.0, 1.0
+
+        X_parts, y_parts = [], []
+        for group_id in range(1, 51):
+            rate = rng.gamma(true_alpha, 1.0 / true_beta)
+            counts = rng.poisson(rate, size=100)
+            X_parts.append(np.full((100, 1), group_id))
+            y_parts.append(counts)
+        X = np.vstack(X_parts)
+        y = np.concatenate(y_parts)
+
+        model_good = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model_good.fit(X, y)
+
+        model_bad = EmpiricalBayesGammaRegressor(
+            alpha=100.0, beta=0.01, random_state=42
+        )
+        model_bad.fit(X, y)
+
+        np.testing.assert_allclose(
+            model_bad.alpha / model_bad.beta,
+            model_good.alpha / model_good.beta,
+            rtol=0.01,
+            err_msg="Misspecified init should converge to same prior mean",
+        )
+
+    def test_partial_fit_no_negative_counts_under_decay(self):
+        """Stabilized forgetting prevents negative counts with lr < 1."""
+        rng = np.random.default_rng(42)
+        model = EmpiricalBayesGammaRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.8, random_state=0
+        )
+
+        for i in range(200):
+            g = rng.integers(0, 10)
+            count = rng.poisson(3.0)
+            model.partial_fit(np.array([[g]]), np.array([count]))
+
+            if i % 3 == 0:
+                model.decay(np.array([[rng.integers(0, 10)]]))
+
+            for key, val in model.coef_.items():
+                counts = val - model.prior_
+                assert np.all(counts >= -1e-10), (
+                    f"Negative counts at step {i}, group {key}: {counts}"
+                )
+
+    def test_sample_weight_doubles_equivalent_to_duplicate(self, gamma_poisson_data):
+        """Weight=2 on each sample produces same posteriors as duplicating data."""
+        X, y = gamma_poisson_data
+
+        model_dup = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model_dup.fit(np.vstack([X, X]), np.concatenate([y, y]))
+
+        model_wt = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        weights = 2.0 * np.ones(X.shape[0])
+        model_wt.fit(X, y, sample_weight=weights)
+
+        for key in model_dup.coef_:
+            np.testing.assert_allclose(
+                model_wt.coef_[key],
+                model_dup.coef_[key],
+                rtol=1e-10,
+            )
+
+    def test_sample_weight_shape_mismatch_raises(self, gamma_poisson_data):
+        """Mismatched sample_weight shape raises ValueError."""
+        X, y = gamma_poisson_data
+        weights = np.ones(X.shape[0] + 5, dtype=np.float64)
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        with pytest.raises(ValueError, match="sample_weight"):
+            model.fit(X, y, sample_weight=weights)
+
+    def test_get_set_params(self):
+        """sklearn get_params/set_params contract."""
+        model = EmpiricalBayesGammaRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=5, eb_tol=1e-3
+        )
+        params = model.get_params()
+        assert params["n_eb_iter"] == 5
+        assert params["eb_tol"] == 1e-3
+
+        model.set_params(n_eb_iter=20)
+        assert model.n_eb_iter == 20
+
+    def test_clone(self, gamma_poisson_data):
+        """sklearn clone produces equivalent estimator."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X, y)
+
+        cloned = clone(model)
+        assert cloned.n_eb_iter == model.n_eb_iter
+        assert not hasattr(cloned, "log_evidence_")
+
+    def test_pickle_roundtrip(self, gamma_poisson_data):
+        """Fitted model survives pickle/unpickle."""
+        X, y = gamma_poisson_data
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=42)
+        model.fit(X, y)
+
+        data = pickle.dumps(model)
+        loaded = pickle.loads(data)
+
+        np.testing.assert_array_equal(
+            model.predict(X[:5]),
+            loaded.predict(X[:5]),
+        )
+
+    def test_single_em_step_matches_hand_computation(self):
+        """One EM iteration on a 2-group example matches hand-derived values.
+
+        Prior: Gamma(alpha=2, beta=1) (rate parameterization).
+        Group 1: count=3, exposure=2 -> posterior [5, 3].
+        Group 2: count=1, exposure=1 -> posterior [3, 2].
+
+        E-step:
+            E[lambda_1] = (3+2)/(2+1) = 5/3
+            E[lambda_2] = (1+2)/(1+1) = 3/2
+            E[log lambda_1] = psi(5) - log(3)
+            E[log lambda_2] = psi(3) - log(2)
+
+        M-step (beta first, then alpha via Newton):
+            mean_E_lambda = (5/3 + 3/2) / 2 = 19/12
+            beta_new = alpha_old / mean_E_lambda = 2 / (19/12) = 24/19
+            alpha_new = 3.705... (5 Newton iterations converged)
+        """
+        from scipy.special import digamma
+
+        from bayesianbandits._empirical_bayes import negbin_update_gamma_poisson
+
+        prior = np.array([2.0, 1.0])
+        posterior_params = {
+            "g1": np.array([5.0, 3.0]),
+            "g2": np.array([3.0, 2.0]),
+        }
+
+        result, _, _ = negbin_update_gamma_poisson(posterior_params, prior, n_iter=1)
+
+        # Beta: closed-form given old alpha
+        # mean_E_lambda = ((3+2)/(2+1) + (1+2)/(1+1)) / 2 = 19/12
+        expected_beta = 2.0 / (19.0 / 12.0)  # = 24/19
+        np.testing.assert_allclose(result[1], expected_beta, atol=1e-14)
+
+        # Alpha: verify E-step feeds correct target into Newton
+        E_log_lambda = np.array(
+            [
+                float(digamma(5)) - np.log(3),
+                float(digamma(3)) - np.log(2),
+            ]
+        )
+        mean_E_log_lambda = E_log_lambda.mean()
+        target = np.log(19.0 / 12.0) - mean_E_log_lambda
+        # At convergence: log(alpha) - psi(alpha) = target
+        residual = abs(np.log(result[0]) - float(digamma(result[0])) - target)
+        assert residual < 1e-10, (
+            f"Newton did not converge: log(a)-psi(a)={np.log(result[0]) - float(digamma(result[0])):.10f}, "
+            f"target={target:.10f}, residual={residual:.2e}"
+        )

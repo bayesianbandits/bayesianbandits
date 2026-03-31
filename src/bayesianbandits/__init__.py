@@ -93,6 +93,8 @@ for decay as a defensive default).
 
 .. autosummary::
 
+    EmpiricalBayesDirichletClassifier
+    EmpiricalBayesGammaRegressor
     EmpiricalBayesNormalRegressor
 
 Utilities
@@ -110,6 +112,7 @@ from ._arm import Arm
 from ._arm_featurizer import ArmFeaturizer
 from ._eb_estimators import (
     EmpiricalBayesDirichletClassifier,
+    EmpiricalBayesGammaRegressor,
     EmpiricalBayesNormalRegressor,
 )
 from ._estimators import (
@@ -140,6 +143,7 @@ __all__ = [
     "BayesianGLM",
     "DirichletClassifier",
     "EmpiricalBayesDirichletClassifier",
+    "EmpiricalBayesGammaRegressor",
     "EmpiricalBayesNormalRegressor",
     "GammaRegressor",
     "NormalInverseGammaRegressor",
