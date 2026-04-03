@@ -265,9 +265,7 @@ def _sift_downdate_sparse(
     # Pre-scale the correction and use addition to avoid an intermediate
     # sparse matrix from scalar multiplication.
     n = precision.shape[0]
-    correction = _scatter_to_csc(
-        -(1 - lam) * correction_sub, nz_rows, nz_rows, (n, n)
-    )
+    correction = _scatter_to_csc(-(1 - lam) * correction_sub, nz_rows, nz_rows, (n, n))
     return precision + correction
 
 
