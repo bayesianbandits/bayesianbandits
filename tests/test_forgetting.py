@@ -189,9 +189,7 @@ class TestFilterBatch:
         assert_allclose(xtx_d, xtx_s, atol=1e-10)
 
         xty_d = X_bar_d.T @ y_bar_d
-        xty_s = X_bar_s.T @ y_bar_s
-        if sparse.issparse(xty_s):
-            xty_s = np.asarray(xty_s).ravel()
+        xty_s = np.asarray(X_bar_s.T @ y_bar_s).ravel()
         assert_allclose(xty_d, xty_s, atol=1e-10)
 
     def test_projection_preserves_sufficient_statistics(self):
@@ -288,14 +286,12 @@ def _downdate(R, X, y, lam, use_sparse):
         # Build sparse X with nonzeros only in a few columns
         X_sparse = sparse.csc_array(X)
         result = _filter_batch_sparse(X_sparse, y, eps=1e-12)
-        if result is None:
-            return None
+        assert result is not None, "test data should always have excitation"
         R_bar = _sift_downdate_sparse(R_sparse, result.active_cols, result.X_bar_a, lam)
         return R_bar.toarray(), np.asarray(R)
     else:
         result = filter_batch(X, y, eps=1e-12)
-        if result is None:
-            return None
+        assert result is not None, "test data should always have excitation"
         X_bar, _ = result
         R_bar = _sym(_sift_downdate_dense(R, X_bar, lam))
         return R_bar, np.asarray(R)
@@ -347,8 +343,6 @@ class TestSiftDowndate:
             lam = rng.uniform(0.8, 0.99)
 
             pair = _downdate(R, X, y, lam, use_sparse)
-            if pair is None:
-                continue
             R_bar, R_dense = pair
 
             # Symmetric
@@ -506,8 +500,7 @@ class TestSiftForgetting:
             y = rng.standard_normal(p)
 
             result = rule(R, X, y, lam)
-            if result is None:
-                continue
+            assert result is not None, f"Step {step}: no excitation"
             R_bar, X_bar, y_bar = result
             R_bar_full = _sym(R_bar) if isinstance(R_bar, np.ndarray) else R_bar
             # Forgetting actually modified R (non-vacuous check)
