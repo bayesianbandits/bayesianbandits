@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
-from scipy.linalg.blas import dsymv  # type: ignore
+from scipy.linalg.blas import dgemv, dsymv  # type: ignore
 from scipy.sparse import csc_array, diags, eye
 from scipy.special import expit
 from scipy.stats import (
@@ -1550,6 +1550,7 @@ scipy.sparse.csc_array
         # Apply weights to y for the linear term
         y_weighted = y * effective_weights
 
+        prior_quad = 0.0  # set below in both branches
         if self.sparse:
             # Scale vectors instead of sparse matrices to avoid copies
             eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ y_weighted
@@ -1559,9 +1560,19 @@ scipy.sparse.csc_array
             m_n = factor.solve(eta)
             self._precision_factor = factor
         else:
-            # eta = prior_decay * cov_inv_ @ coef_ + X^T @ y_weighted
-            eta = compute_eta_dense(
-                prior_decay, self.cov_inv_, self.coef_, 1.0, X, y_weighted
+            # Inline compute_eta_dense to reuse the intermediate dsymv
+            # result for prior_quad, saving one O(p²) matvec.
+            prior_cov_coef = dsymv(prior_decay, self.cov_inv_, self.coef_)
+            prior_quad = self.coef_.dot(prior_cov_coef)
+            # eta = prior_decay * cov_inv @ coef + X^T @ y_weighted
+            eta = dgemv(
+                1.0,
+                X,
+                y_weighted,
+                trans=1,
+                beta=1.0,
+                y=prior_cov_coef,
+                overwrite_y=True,
             )
             # Cache the Cholesky factor for reuse in shape_/sample
             cho = cho_factor(V_n, lower=False, check_finite=False)
@@ -1578,11 +1589,8 @@ scipy.sparse.csc_array
         if self.sparse:
             cov_inv_coef = self.cov_inv_ @ self.coef_
             prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
-            posterior_quad = m_n.dot(eta)
-        else:
-            cov_inv_coef = dsymv(1.0, self.cov_inv_, self.coef_)
-            prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
-            posterior_quad = m_n.dot(eta)
+        # else: prior_quad already computed in the dense eta block above.
+        posterior_quad = m_n.dot(eta)
         b_n = prior_decay * self.b_ + 0.5 * (
             weighted_y_squared + prior_quad - posterior_quad
         )
