@@ -1578,13 +1578,11 @@ scipy.sparse.csc_array
         if self.sparse:
             cov_inv_coef = self.cov_inv_ @ self.coef_
             prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
-            Vn_mn = V_n @ m_n
-            posterior_quad = m_n.dot(Vn_mn)
+            posterior_quad = m_n.dot(eta)
         else:
             cov_inv_coef = dsymv(1.0, self.cov_inv_, self.coef_)
             prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
-            Vn_mn = dsymv(1.0, V_n, m_n)
-            posterior_quad = m_n.dot(Vn_mn)
+            posterior_quad = m_n.dot(eta)
         b_n = prior_decay * self.b_ + 0.5 * (
             weighted_y_squared + prior_quad - posterior_quad
         )
