@@ -1552,8 +1552,11 @@ scipy.sparse.csc_array
 
         prior_quad = 0.0  # set below in both branches
         if self.sparse:
-            # Scale vectors instead of sparse matrices to avoid copies
-            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ y_weighted
+            # Compute prior term and extract prior_quad before adding
+            # the data term, mirroring the dense path optimisation.
+            prior_cov_coef = self.cov_inv_ @ (prior_decay * self.coef_)
+            prior_quad = float(self.coef_.dot(prior_cov_coef))
+            eta = prior_cov_coef + X.T @ y_weighted
             eta = cast(NDArray[np.float64], eta)
             assert isinstance(V_n, csc_array)
             factor: PrecisionFactor = create_sparse_factor(V_n)
@@ -1586,10 +1589,7 @@ scipy.sparse.csc_array
         # For b_n: weighted residual sum of squares
         # Use matvec + dot to compute quadratic forms efficiently
         weighted_y_squared = y.T @ (y * effective_weights)
-        if self.sparse:
-            cov_inv_coef = self.cov_inv_ @ self.coef_
-            prior_quad = prior_decay * self.coef_.dot(cov_inv_coef)
-        # else: prior_quad already computed in the dense eta block above.
+        # prior_quad already computed in both sparse and dense eta blocks above.
         posterior_quad = m_n.dot(eta)
         b_n = prior_decay * self.b_ + 0.5 * (
             weighted_y_squared + prior_quad - posterior_quad
