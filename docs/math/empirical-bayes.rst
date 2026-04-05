@@ -251,6 +251,10 @@ which is itself updated by MacKay. EB changes :math:`\alpha` slowly
 (one step per ``partial_fit``), so stabilization prevents prior
 collapse between updates.
 
+See :doc:`forgetting` for the broader context of forgetting
+strategies, including directional forgetting which addresses the
+isotropy limitation of stabilized forgetting.
+
 During ``decay``, the sufficient statistics are also decayed:
 
 .. math::

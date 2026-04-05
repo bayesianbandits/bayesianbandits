@@ -161,7 +161,9 @@ posterior mean is unchanged because
 
 This is equivalent to a random-walk state-space model where the
 transition shrinks the effective precision by :math:`\gamma` per time
-step. See :doc:`/howto/decay` for practical guidance.
+step.  This is exponential forgetting, the simplest of three
+strategies.  See :doc:`forgetting` for stabilized and directional
+alternatives, and :doc:`/howto/decay` for practical guidance.
 
 
 Hyperparameter semantics
