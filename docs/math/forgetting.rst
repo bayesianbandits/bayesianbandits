@@ -1,18 +1,11 @@
 Forgetting Strategies
 =====================
 
-In non-stationary environments, old data collected under conditions
-that no longer hold actively misleads the model.  Forgetting is a
-concrete operation on the posterior precision matrix: shrink it to
-become less confident, then let new data rebuild confidence in the
-directions it excites.
-
-The three strategies below differ only in *how* the precision is
-shrunk.  Everything else -- the Bayesian update, the Cholesky solve,
-the sampling -- is unchanged.
-
-See :doc:`/howto/decay` for practical guidance on *when* and *how
-much* to decay.
+Three strategies for shrinking the posterior precision matrix before
+a recursive Bayesian update.  Each addresses a limitation of the
+previous one.  The update and sampling steps are unchanged;
+see :doc:`normal` for those details and :doc:`/howto/decay` for
+practical tuning guidance.
 
 
 Symbols
@@ -49,10 +42,9 @@ Symbols
 The update loop
 ---------------
 
-Every recursive Bayesian update with forgetting has three steps.
-First, apply a forgetting rule to get
-:math:`\bar{\boldsymbol{\Lambda}}` from :math:`\boldsymbol{\Lambda}`.
-Then update:
+The forgetting rule maps
+:math:`\boldsymbol{\Lambda} \to \bar{\boldsymbol{\Lambda}}`.
+The subsequent update is standard:
 
 .. math::
 
@@ -65,9 +57,7 @@ Then update:
    \boldsymbol{\mu}_n
    &= \boldsymbol{\Lambda}_n^{-1}\,\boldsymbol{\eta}_n
 
-The forgetting rule
-:math:`\boldsymbol{\Lambda} \to \bar{\boldsymbol{\Lambda}}` is the
-entire design space.  Everything else is fixed by Bayes' rule.
+The three strategies below differ only in the forgetting rule.
 
 
 Exponential forgetting
@@ -77,33 +67,20 @@ Exponential forgetting
 
    \bar{\boldsymbol{\Lambda}} = \gamma\,\boldsymbol{\Lambda}
 
-A scalar multiply on the precision matrix.  It preserves sparsity
-structure, introduces no parameters beyond :math:`\gamma`, and reduces
-to the standard (no-forgetting) update when :math:`\gamma = 1`.
+Scalar multiply on the precision.  Preserves sparsity, no parameters
+beyond :math:`\gamma`, reduces to no forgetting when
+:math:`\gamma = 1`.
 
-**Kalman interpretation.**
-Exponential forgetting is the predict step of a Kalman filter for a
-random-walk state-space model
-:math:`\mathbf{w}_t = \mathbf{w}_{t-1} + \boldsymbol{\epsilon}` with
-process noise
-:math:`\mathbf{Q} = (1 - \gamma)\,\boldsymbol{\Sigma}`, where
-:math:`\boldsymbol{\Sigma} = \boldsymbol{\Lambda}^{-1}`.
+Equivalent to the predict step of a Kalman filter for a random-walk
+model with process noise
+:math:`\mathbf{Q} = (1 - \gamma)\,\boldsymbol{\Lambda}^{-1}`.
 
 **Covariance windup.**
-Each decay step scales every eigenvalue of the precision by
-:math:`\gamma`.  The subsequent update adds
-:math:`\beta\,\mathbf{X}^\top\mathbf{W}\mathbf{X}`, but this only
-replenishes precision in directions excited by the current batch.
-Directions that receive no new information lose a fraction
-:math:`1 - \gamma` of their precision on every step and never recover.
-Over time, those eigenvalues approach zero and the Cholesky
-factorization fails.  The prior contribution :math:`\alpha\mathbf{I}`
-decays along with everything else, so the model eventually loses its
-regularization too.
-
-This is the Bayesian analog of integrator windup in control theory:
-the covariance accumulates uncertainty without bound in unexcited
-directions.
+Each step scales every eigenvalue by :math:`\gamma`.  The update
+replenishes precision only in directions excited by the current batch.
+Unexcited directions lose :math:`1 - \gamma` per step and never
+recover; their eigenvalues approach zero and the Cholesky fails.  The
+prior :math:`\alpha\mathbf{I}` decays along with everything else.
 
 
 Stabilized forgetting (Kulhavy--Zarrop)
@@ -115,34 +92,19 @@ Stabilized forgetting (Kulhavy--Zarrop)
    = \gamma\,\boldsymbol{\Lambda}
    + (1 - \gamma)\,\alpha\,\mathbf{I}
 
-After scaling the precision by :math:`\gamma`, a fraction of the
-prior is added back [1]_.  The term
-:math:`(1 - \gamma)\,\alpha\,\mathbf{I}` is a floor: no eigenvalue
-of :math:`\bar{\boldsymbol{\Lambda}}` can fall below
-:math:`(1 - \gamma)\,\alpha`, regardless of how many decay steps have
-occurred.
+After scaling by :math:`\gamma`, a fraction of the prior is added
+back [1]_.  No eigenvalue of :math:`\bar{\boldsymbol{\Lambda}}` can
+fall below :math:`(1 - \gamma)\,\alpha`.
 
-**Steady-state convergence.**
-Let :math:`s_t` track the prior contribution on the precision
-diagonal.  Under stabilized forgetting:
+**Convergence.**
+The prior scalar :math:`s_t` on the diagonal evolves as
+:math:`s_{t+1} = \gamma\,s_t + (1 - \gamma)\,\alpha`, which has
+fixed point :math:`s^* = \alpha`.  See :doc:`empirical-bayes` for
+the interaction with EB hyperparameter tuning.
 
-.. math::
-
-   s_{t+1} = \gamma\,s_t + (1 - \gamma)\,\alpha
-
-This linear recurrence has fixed point :math:`s^* = \alpha`.  Starting
-from any :math:`s_0`, the prior contribution converges to
-:math:`\alpha`.  The model can never become less confident than its
-prior.  See :doc:`empirical-bayes` for how this interacts with
-Empirical Bayes hyperparameter tuning.
-
-**The isotropy limitation.**
-Stabilized forgetting is still isotropic: every direction in parameter
-space loses the same fraction of precision and gets the same floor.
-If some features are excited by every observation (dense user
-attributes) while others are rare (event indicators triggered a few
-times a year), the rare features sit at the floor between events,
-unable to accumulate precision above it.
+**Isotropy.**
+Every direction loses the same fraction of precision and gets the
+same floor, regardless of excitation.
 
 
 Directional forgetting (SIFt)
@@ -158,17 +120,16 @@ Directional forgetting (SIFt)
            \bar{\mathbf{X}}^\top\bigr)^{-1}
      \bar{\mathbf{X}}\,\boldsymbol{\Lambda}
 
-The second term is a projection.  It identifies how much of the
-current precision lives in the subspace excited by the batch, and
-removes a fraction :math:`1 - \gamma` of it.  Directions orthogonal
-to the batch are untouched; fully excited directions receive the same
-:math:`\gamma` scaling as exponential forgetting [2]_.
+The correction term projects the precision onto the subspace excited
+by the batch and removes :math:`1 - \gamma` of it.  Directions
+orthogonal to the batch are unchanged; fully excited directions
+receive the same :math:`\gamma` scaling as exponential forgetting
+[2]_.
 
-Before applying the formula, the batch is filtered via
-eigendecomposition of the Gram matrix: eigenvalues below
-:math:`\varepsilon` are discarded, leaving a rank-:math:`q`
-approximation :math:`\bar{\mathbf{X}}` that preserves the sufficient
-statistics :math:`\mathbf{X}^\top\!\mathbf{X}` and
+Before applying the formula, the batch is filtered: eigenvalues of
+the Gram matrix below :math:`\varepsilon` are discarded, leaving a
+rank-:math:`q` approximation :math:`\bar{\mathbf{X}}` that preserves
+:math:`\mathbf{X}^\top\!\mathbf{X}` and
 :math:`\mathbf{X}^\top\!\mathbf{y}` in the surviving subspace [3]_.
 
 
@@ -177,16 +138,15 @@ Precision retention
 
 :math:`\bar{\boldsymbol{\Lambda}} \succeq \gamma\,\boldsymbol{\Lambda}`.
 
-Directional forgetting always retains at least as much precision as
-exponential forgetting.  When the batch rank :math:`q < p`, it
-retains strictly more.  The bound is tight only when :math:`q = p`,
-which rarely occurs in practice (Proposition 5 in [3]_).
+Directional forgetting retains at least as much precision as
+exponential forgetting.  Strictly more when :math:`q < p`
+(Proposition 5 in [3]_).
 
 
 Eigenvalue floor
 ~~~~~~~~~~~~~~~~
 
-After arbitrarily many forget-update cycles:
+After arbitrarily many forget–update cycles:
 
 .. math::
 
@@ -196,35 +156,28 @@ After arbitrarily many forget-update cycles:
      \lambda_{\min}(\boldsymbol{\Lambda}_0)
    \Bigr)
 
-No artificial prior injection is needed.  The floor emerges from the
-geometry of the directional forgetting itself: only directions that
-receive new information are forgotten, so precision cannot collapse
-(Theorem 3 in [3]_).  Compare with stabilized forgetting, where the
-floor :math:`(1 - \gamma)\,\alpha` is explicitly injected.
+No prior injection is needed (Theorem 3 in [3]_).  Compare with the
+stabilized floor :math:`(1 - \gamma)\,\alpha`.
 
 
 Computational cost
 ~~~~~~~~~~~~~~~~~~
 
 **Dense.**
-The inner Gram matrix
+The inner Gram
 :math:`\bar{\mathbf{X}}\,\boldsymbol{\Lambda}\,\bar{\mathbf{X}}^\top`
-is :math:`q \times q`, where :math:`q` is the batch rank (typically
-single digits).  Its Cholesky costs :math:`O(q^3)`.  The dominant
-cost is the rank-:math:`q` symmetric update to the
-:math:`p \times p` precision, implemented as a BLAS-3 ``dsyrk`` call
-at :math:`O(p^2 q)` -- the same asymptotic cost as the standard RLS
+is :math:`q \times q`.  Cholesky is :math:`O(q^3)`.  The dominant
+cost is the rank-:math:`q` symmetric update via ``dsyrk`` at
+:math:`O(p^2 q)`, the same asymptotic cost as the standard RLS
 update.
 
 **Sparse.**
-The correction touches only features that interact with the batch in
-the precision matrix's sparsity graph.  If the batch activates
-:math:`k_0` columns of a sparse design matrix, the linear algebra
-operates on a :math:`k_0 \times k_0` dense submatrix extracted from
-the sparse precision.  The inner Cholesky is :math:`k_0 \times k_0`.
-The sparse path uses pivoted Cholesky (``dpstrf``) rather than
-eigendecomposition, which handles rank deficiency and is faster for
-the small Gram matrices that arise in practice.
+If the batch activates :math:`k_0` columns of a sparse design matrix,
+the linear algebra operates on a :math:`k_0 \times k_0` dense
+submatrix extracted from the sparse precision.  The sparse path uses
+pivoted Cholesky (``dpstrf``) rather than eigendecomposition, which
+handles rank deficiency and is faster for the small Gram matrices
+that arise in practice.
 
 
 Choosing a strategy
@@ -245,7 +198,7 @@ Choosing a strategy
    * - Stabilized
      - Prior floor prevents collapse; integrates with Empirical
        Bayes
-     - Isotropic -- decays rare features at the same rate as
+     - Isotropic; decays rare features at the same rate as
        common ones
      - Environments where EB tunes :math:`\alpha`; safety net
        against collapse
@@ -258,6 +211,120 @@ Choosing a strategy
 
 Stabilized and directional forgetting address orthogonal problems
 (prior collapse vs. isotropic decay) and can be combined.
+
+
+Adaptation from SIFt-RLS
+-------------------------
+
+SIFt-RLS [3]_ is formulated for classical recursive least squares.
+Adapting it to the precision-parameterized Bayesian estimators in
+this library required several changes.  This section documents each
+and why correctness is preserved.
+
+
+Precision-only updates
+~~~~~~~~~~~~~~~~~~~~~~
+
+Algorithm 1 of [3]_ maintains both the information matrix
+:math:`R_k` and the covariance
+:math:`P_k \triangleq R_k^{-1}`, updating the covariance via the
+matrix inversion lemma (equation 31 in [3]_).  Only the precision
+is kept here: the SIFt step (equation 27) and the information
+update (equation 29) are both defined on :math:`R_k`, and the
+posterior mean is recovered by Cholesky solve.  The covariance is
+never formed.
+:math:`\boldsymbol{\Lambda}` is positive definite at every step
+(Corollary 1 in [3]_), so the solve is well-conditioned.
+
+
+Gram eigendecomposition instead of SVD
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+[3]_ filters the regressor via compact SVD, thresholding singular
+values below :math:`\sqrt{\varepsilon}` (Section 4.1).  The Gram
+matrix :math:`\mathbf{G} = \mathbf{X}\mathbf{X}^\top` is
+eigendecomposed instead.  Its eigenvalues are the squared singular
+values of :math:`\mathbf{X}`, so thresholding at
+:math:`\varepsilon` is equivalent to thresholding singular values at
+:math:`\sqrt{\varepsilon}`.  The eigenvectors of :math:`\mathbf{G}`
+are the left singular vectors :math:`\mathbf{U}_k`, the only factor
+needed to form
+:math:`\bar{\mathbf{X}} = \mathbf{U}_q^\top \mathbf{X}`
+(:math:`\mathbf{V}_k` need not be computed; footnote 3 in [3]_).
+
+
+Pivoted Cholesky for sparse batch filtering
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When :math:`\mathbf{X}` is sparse with :math:`k_0` active (nonzero)
+columns, the dense :math:`k_0 \times k_0` active-column Gram
+:math:`\mathbf{G}_a = \mathbf{X}_a^\top \mathbf{X}_a` is factored
+via LAPACK pivoted Cholesky (``dpstrf``) with tolerance
+:math:`\varepsilon`:
+
+.. math::
+
+   \mathbf{P}^\top \mathbf{G}_a \mathbf{P}
+   = \mathbf{L}_{:r}\,\mathbf{L}_{:r}^\top
+
+where :math:`r` is the numerical rank and :math:`\mathbf{P}` is a
+permutation.  Setting
+:math:`\bar{\mathbf{X}}_a = \mathbf{L}_{:r}[\mathbf{P}^{-1}]^\top`
+gives
+:math:`\bar{\mathbf{X}}_a^\top \bar{\mathbf{X}}_a = \mathbf{G}_a`,
+preserving sufficient statistics in the surviving subspace.  The
+nonzero eigenvalues of :math:`\mathbf{G}_a` are identical to those of
+the full :math:`p \times p` Gram, so the rank determination is
+equivalent.  Pivoted Cholesky is :math:`O(k_0^2 r)` versus
+:math:`O(k_0^3)` for eigendecomposition.
+
+
+Symmetry preservation
+~~~~~~~~~~~~~~~~~~~~~
+
+Computing the SIFt correction via ``solve(H, w.T)`` produces an
+asymmetric result due to rounding, and the error accumulates over
+many steps.  Algorithm 1 of [3]_ corrects this with
+:math:`R_k \leftarrow \tfrac{1}{2}(R_k + R_k^\top)` (line 12).
+
+Instead,
+:math:`\mathbf{H} = \bar{\mathbf{X}}\,\boldsymbol{\Lambda}\,\bar{\mathbf{X}}^\top`
+is Cholesky-factored as :math:`\mathbf{L}\mathbf{L}^\top` and the
+correction is computed as
+:math:`\mathbf{V}^\top\!\mathbf{V}` where
+:math:`\mathbf{V} = \mathbf{L}^{-1}\mathbf{w}^\top` and
+:math:`\mathbf{w} = \boldsymbol{\Lambda}\bar{\mathbf{X}}^\top`.
+:math:`\mathbf{V}^\top\!\mathbf{V}` is a Gram matrix, hence
+symmetric by construction:
+
+.. math::
+
+   \mathbf{V}^\top\!\mathbf{V}
+   = \mathbf{w}\,\mathbf{L}^{-\top}\mathbf{L}^{-1}\mathbf{w}^\top
+   = \mathbf{w}\,\mathbf{H}^{-1}\mathbf{w}^\top
+   = \boldsymbol{\Lambda}\bar{\mathbf{X}}^\top
+     (\bar{\mathbf{X}}\,\boldsymbol{\Lambda}\,
+      \bar{\mathbf{X}}^\top)^{-1}
+     \bar{\mathbf{X}}\,\boldsymbol{\Lambda}
+
+The rank-:math:`q` update is applied via ``dsyrk``, which writes only
+one triangle, so no post-hoc symmetrization is needed.
+
+
+Sparse precision downdate
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+[3]_ does not discuss sparse precision matrices.  When
+:math:`\bar{\mathbf{X}}` has nonzero entries only in :math:`k_0`
+columns,
+:math:`\boldsymbol{\Lambda}\bar{\mathbf{X}}^\top` is nonzero only
+in the rows of :math:`\boldsymbol{\Lambda}` that interact with those
+columns.  Call this row set :math:`\mathcal{N}`.  The correction
+:math:`\mathbf{V}^\top\!\mathbf{V}` is a
+:math:`|\mathcal{N}| \times |\mathcal{N}|` dense block embedded in
+the :math:`p \times p` sparse matrix; all linear algebra is done on
+that block.  Entries outside :math:`\mathcal{N}` are structurally
+zero, so no approximation is introduced.
 
 
 References
