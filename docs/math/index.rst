@@ -14,4 +14,5 @@ textbook formulations.
    gamma-eb
    intercept-only
    glm
+   forgetting
    policies

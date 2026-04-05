@@ -1,5 +1,17 @@
 """Forgetting rules for precision-based Bayesian recursive least squares.
 
+Three strategies for computing a "forgotten" precision matrix from the
+current precision, each addressing a limitation of the previous one:
+
+- :class:`ExponentialForgetting` -- scalar decay, simplest but subject to
+  covariance windup under non-uniform excitation.
+- :class:`StabilizedForgetting` -- Kulhavy & Zarrop (1993) prior floor
+  prevents collapse, but forgetting is isotropic.
+- :class:`SiftForgetting` -- directional forgetting via SIFt-RLS
+  (Lai & Bernstein 2024), forgets only in excited directions.
+
+See ``docs/math/forgetting.rst`` for the full mathematical reference.
+
 Each forgetting rule is a frozen dataclass callable with signature::
 
     (precision, X, y, lam) -> (R_bar, X_eff, y_eff) | None
@@ -271,7 +283,13 @@ def _sift_downdate_sparse(
 
 @dataclass(frozen=True)
 class ExponentialForgetting:
-    """Uniform scalar decay: ``R_bar = lam * R``."""
+    """Uniform scalar decay: ``R_bar = lam * R``.
+
+    Equivalent to the predict step of a Kalman filter with random-walk
+    process noise ``Q = (1 - lam) * Sigma``.  All eigenvalues of the
+    precision are scaled equally.  Risk: covariance windup when
+    excitation is non-uniform (unexcited eigenvalues → 0).
+    """
 
     def __call__(
         self,
@@ -285,12 +303,19 @@ class ExponentialForgetting:
 
 @dataclass(frozen=True)
 class StabilizedForgetting:
-    """Kulhavy-Zarrop stabilized forgetting.
+    """Kulhavy-Zarrop stabilized forgetting [1]_.
 
     ``R_bar = lam * R + (1 - lam) * alpha * I``
 
     The prior floor ``(1 - lam) * alpha * I`` prevents precision from
-    collapsing to zero under sustained forgetting.
+    collapsing to zero under sustained forgetting.  The prior scalar
+    converges to ``alpha`` under repeated application regardless of
+    starting value.  Still isotropic: all directions decay equally.
+
+    References
+    ----------
+    .. [1] Kulhavy, R. & Zarrop, M. B. (1993). "On a general concept of
+       forgetting." *Int. J. Control*, 58(4), 905--924.
     """
 
     alpha: float
@@ -312,12 +337,36 @@ class StabilizedForgetting:
 
 @dataclass(frozen=True)
 class SiftForgetting:
-    """Directional forgetting (Cao & Schwartz 2000) via the SIFt algorithm
-    (Lai & Bernstein 2024).
+    """Directional forgetting via SIFt-RLS [1]_ [2]_.
+
+    ``R_bar = R - (1 - lam) * R @ X_bar.T @ inv(X_bar @ R @ X_bar.T) @ X_bar @ R``
 
     Decomposes precision relative to the information subspace of the
-    current batch and forgets only in excited directions. Unexcited
+    current batch and forgets only in excited directions.  Unexcited
     directions retain full precision.
+
+    Key properties (from [2]_):
+
+    - **Precision retention**: ``R_bar >= lam * R`` (Loewner order).
+      Always retains at least as much precision as exponential forgetting.
+    - **Eigenvalue floor**: ``lambda_min(R_k) >= min(eps / (1 - lam),
+      lambda_min(R_0))`` after arbitrarily many forget-update cycles.
+      No artificial prior injection needed.
+
+    Parameters
+    ----------
+    eps : float
+        Eigenvalue threshold for :func:`filter_batch`.  Eigenvalues of
+        the batch Gram below this value are discarded.
+
+    References
+    ----------
+    .. [1] Cao, L. & Schwartz, H. M. (2000). "A directional forgetting
+       algorithm based on the decomposition of the information matrix."
+       *Automatica*, 36(11), 1725--1731.
+    .. [2] Lai, B. & Bernstein, D. S. (2024). "SIFt-RLS: Subspace of
+       Information Forgetting Recursive Least Squares."
+       *arXiv:2404.10844*.
     """
 
     eps: float
