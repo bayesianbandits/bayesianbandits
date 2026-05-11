@@ -18,7 +18,7 @@ cholmod = ["scikit-sparse>=0.5.0,<0.6"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.1.1,<9",
+    "pytest>=8.1.1,<10",
     "ruff>=0.9,<1",
     "ipython>=8.16.1,<9",
     "coverage>=7.4.4,<8",
