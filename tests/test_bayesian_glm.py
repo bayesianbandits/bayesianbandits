@@ -593,3 +593,54 @@ def test_bayesian_glm_custom_approximator(binary_data) -> None:
 
     # Precise approximator should do at least as well
     assert ll_precise >= ll_fast - 1e-6  # Allow tiny numerical differences
+
+
+class RecordingApproximator(LaplaceApproximator):
+    """Delegates to Laplace but records the prior_factor it receives."""
+
+    def __init__(self):
+        super().__init__()
+        self.received_factors = []
+
+    def update_posterior(self, *args, prior_factor=None, **kwargs):
+        self.received_factors.append(prior_factor)
+        return super().update_posterior(*args, prior_factor=prior_factor, **kwargs)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_bayesian_glm_threads_prior_factor(binary_data, sparse: bool) -> None:
+    """Sparse partial_fit passes the cached precision factor through."""
+    X, y = binary_data
+    if sparse:
+        X = sp.csc_array(X)
+
+    approximator = RecordingApproximator()
+    clf = BayesianGLM(alpha=0.1, approximator=approximator, sparse=sparse)
+
+    clf.fit(X, y)
+    # Fresh fit: nothing cached yet, so no factor to thread.
+    assert approximator.received_factors == [None]
+
+    cached_factor = clf.__dict__.get("_precision_factor")
+    clf.partial_fit(X, y)
+    if sparse:
+        assert cached_factor is not None
+        assert approximator.received_factors[1] is cached_factor
+    else:
+        assert approximator.received_factors[1] is None
+
+
+def test_bayesian_glm_refit_does_not_pass_stale_factor(binary_data) -> None:
+    """Refitting resets the prior, so the old posterior's factor must not
+    be handed to the approximator as if it factored the fresh prior."""
+    X, y = binary_data
+    X = sp.csc_array(X)
+
+    approximator = RecordingApproximator()
+    clf = BayesianGLM(alpha=0.1, approximator=approximator, sparse=True)
+
+    clf.fit(X, y)
+    assert "_precision_factor" in clf.__dict__
+
+    clf.fit(X, y)
+    assert approximator.received_factors == [None, None]

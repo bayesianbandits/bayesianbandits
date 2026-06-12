@@ -1989,6 +1989,10 @@ scipy.sparse.csc_array
                 NDArray[np.float64], np.eye(self.n_features_) * self.alpha
             )
 
+        # A cached factor from a previous fit would be stale against
+        # the freshly-reset cov_inv_; drop it.
+        self.__dict__.pop("_precision_factor", None)
+
         # Initialize approximator if not provided
         if self.approximator is None:
             self.approximator_ = LaplaceApproximator()
@@ -2044,6 +2048,12 @@ scipy.sparse.csc_array
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:
         """Update posterior using the configured approximation method."""
+        # For sparse partial_fit, hand the cached prior factor to the
+        # approximator so it can skip redundant factorization work.
+        prior_factor: Optional[Any] = (
+            self.__dict__.get("_precision_factor") if self.sparse else None
+        )
+
         posterior = self.approximator_.update_posterior(
             X,
             y,
@@ -2053,6 +2063,7 @@ scipy.sparse.csc_array
             sample_weight=sample_weight,
             learning_rate=self.learning_rate,
             sparse=self.sparse,
+            prior_factor=prior_factor,
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
