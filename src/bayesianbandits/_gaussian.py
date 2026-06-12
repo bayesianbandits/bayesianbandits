@@ -382,6 +382,13 @@ class PosteriorApproximator(Protocol):
     --------
     LaplaceApproximator : Default implementation using IRLS.
     BayesianGLM : Estimator that uses this protocol.
+
+    Notes
+    -----
+    ``prior_factor``, when provided, is a factorization of
+    ``prior_precision`` cached by the caller from the previous update.
+    Implementations may use it to skip refactorizing the prior; they
+    must not mutate it and may ignore it entirely.
     """
 
     def update_posterior(
@@ -394,6 +401,7 @@ class PosteriorApproximator(Protocol):
         sample_weight: Optional[NDArray[np.float64]],
         learning_rate: float,
         sparse: bool,
+        prior_factor: Optional[Any] = None,
     ) -> GaussianPosterior: ...
 
 
@@ -462,7 +470,9 @@ class LaplaceApproximator(PosteriorApproximator):
         sample_weight: Optional[NDArray[np.float64]],
         learning_rate: float,
         sparse: bool,
+        prior_factor: Optional[Any] = None,
     ) -> GaussianPosterior:
+        # prior_factor unused: IRLS builds its own factor each call.
         return update_gaussian_posterior_laplace(
             X,
             y,
