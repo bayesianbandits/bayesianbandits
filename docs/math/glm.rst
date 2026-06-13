@@ -136,6 +136,101 @@ previous posterior is a good initialization, ``n_iter=1`` (a single
 Newton step) is often sufficient.
 
 
+R-VGA: expected-curvature alternative
+--------------------------------------
+
+The Laplace approximation evaluates curvature at a point estimate
+(the MAP). R-VGA (Lambert, Bonnabel, Bach 2022 [2]_) replaces this
+with the *expected curvature* under the current approximate posterior,
+correcting a systematic bias for non-Gaussian likelihoods.
+
+Each IRLS iteration replaces point-estimate weights with expected
+weights:
+
+.. math::
+
+   \tilde{\mathbf{W}} = \mathrm{diag}\!\left(
+     \mathbb{E}_{q(\mathbf{w})}\!\left[
+       \frac{d\boldsymbol{\mu}}{d\boldsymbol{\eta}}
+     \right]
+   \right)
+
+where the expectation is over the current Gaussian approximation
+:math:`q(\mathbf{w}) = \mathcal{N}(\hat{\mathbf{w}},
+\boldsymbol{\Lambda}^{-1})`.
+For each observation, this reduces to a univariate integral
+:math:`\mathbb{E}[\,h'(\eta_i)\,]` with
+:math:`\eta_i \sim \mathcal{N}(m_i, v_i)`, where
+:math:`m_i = \mathbf{x}_i^\top\hat{\mathbf{w}}` and
+:math:`v_i = \mathbf{x}_i^\top\boldsymbol{\Lambda}^{-1}\mathbf{x}_i`.
+
+**Computing expected weights.** The path depends on the link:
+
+- **Log link** (exact): the lognormal mean gives
+  :math:`\mathbb{E}[\exp(\eta_i)] = \exp(m_i + v_i/2)` in closed
+  form, and for the log link the expected response and the expected
+  Fisher weight coincide. No quadrature is needed.
+- **Probit approximation** (default for logit link): the MacKay
+  probit approximation to the logistic sigmoid.
+  :math:`k_i = \beta / \sqrt{v_i + \beta^2}` with
+  :math:`\beta = \sqrt{8/\pi}`, giving
+  :math:`\mathbb{E}[\sigma(\eta_i)] \approx \sigma(k_i m_i)`.
+  Within 5% of Gauss-Hermite and avoids the quadrature cost.
+- **Gauss-Hermite quadrature** (logit link with
+  ``use_probit=False``): evaluates the integrand at ``n_gh_nodes``
+  points. 20 nodes suffice in practice.
+
+**Effect on the posterior.** For logit link, the expected weight
+:math:`\mathbb{E}[\sigma'(\eta)]` is always :math:`\le \sigma'(\hat\eta)` when
+the posterior mean is near zero (because :math:`\sigma'` peaks at
+:math:`\eta = 0` and posterior variance spreads mass into the
+tails). This yields wider posteriors than Laplace, correcting the
+well-known underestimation of posterior uncertainty.
+
+**When to use R-VGA.** Laplace's systematically narrow posteriors
+cause underexploration in Thompson sampling; R-VGA's better-calibrated
+posteriors explore more early on and converge to better policies. The
+per-coordinate effect is percent-level, but it compounds: each update's
+posterior is the next update's prior, and Thompson sampling draws all
+:math:`p` coordinates jointly. In the demonstration notebook
+(:doc:`/notebooks/rvga-glm`), a 5-arm bandit with :math:`p = 20` and
+single-observation updates accumulates about 6% less cumulative regret
+over 300 rounds (paired difference over 50 simulations,
+:math:`2.1 \pm 0.4` s.e.). The cost is
+:math:`O(p^2 n)` per iteration for the predictive variance solve; at
+:math:`p = 1000`, the :math:`O(p^3)` Cholesky dominates and the
+overhead is negligible.
+
+**Large sparse batches.** The sparse path computes predictive
+variances through an :math:`n \times n` Gram matrix, so a single
+joint update over a large batch would allocate :math:`8 n^2` bytes.
+Batches larger than ``batch_size`` (default 2048, capping the Gram at
+roughly 34 MB) are therefore processed as *sequential* minibatch
+updates, threading each chunk's posterior into the next chunk's
+prior. This is R-VGA's native recursive formulation: decay and sample
+weights compose exactly across chunks, and in sparse high-dimensional
+regimes the result is nearly indistinguishable from the joint update
+(coefficient differences on the order of :math:`10^{-3}` in our
+benchmarks). The one semantic change is that the posterior becomes
+mildly dependent on row order, as in any recursive update. Set
+``batch_size=None`` to force a single joint update.
+
+Usage::
+
+    from bayesianbandits import BayesianGLM, RVGAApproximator
+
+    model = BayesianGLM(
+        link="logit",
+        approximator=RVGAApproximator(),  # probit path, 5 IRLS iters
+    )
+
+    # Or with Gauss-Hermite for maximum accuracy:
+    model = BayesianGLM(
+        link="logit",
+        approximator=RVGAApproximator(use_probit=False, n_gh_nodes=20),
+    )
+
+
 Sampling
 --------
 
@@ -188,17 +283,25 @@ Hyperparameter semantics
    * - ``approximator``
      - Posterior approximation strategy. Default is
        ``LaplaceApproximator(n_iter=5, tol=1e-4)``.
-     - See the IRLS section above for ``n_iter`` guidance.
+     - ``RVGAApproximator()`` for better-calibrated uncertainty.
+       See the R-VGA section above.
    * - ``learning_rate``
      - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
      - 1.0 (default) for stationary environments.
 
 
-Trade-offs vs. conjugate models
---------------------------------
+Trade-offs
+----------
 
-The Laplace approximation buys flexible likelihoods (logistic, Poisson)
-at a cost:
+**Laplace vs. R-VGA.** Laplace is faster (no predictive variance
+solve) but systematically underestimates posterior width for logit
+link. R-VGA corrects this at a cost of roughly 1.5--5x slower ``fit``
+(the overhead shrinks as :math:`p` grows because the
+:math:`O(p^3)` Cholesky dominates). When calibrated uncertainty
+matters, R-VGA is the better default.
+
+**GLM vs. conjugate models.** Both approximations buy flexible
+likelihoods (logistic, Poisson) at a cost:
 
 - The posterior is Gaussian at the MAP, not exact. Tail behavior and
   multimodality are lost.
@@ -222,3 +325,7 @@ References
 
 .. [1] Murphy, K. P. (2012). *Machine Learning: A Probabilistic
    Perspective*, Chapter 8. MIT Press.
+
+.. [2] Lambert, M., Bonnabel, S. & Bach, F. (2022). The recursive
+   variational Gaussian approximation (R-VGA). *Statistics and
+   Computing*, 32, 10.

@@ -1,11 +1,14 @@
+import functools
 from dataclasses import dataclass
-from typing import Any, Literal, NamedTuple, Optional, Protocol, Union, cast
+from typing import Any, Literal, NamedTuple, Optional, Protocol, Tuple, Union, cast
 
 import numpy as np
+from numpy.polynomial.hermite_e import hermegauss
 from numpy.typing import NDArray
-from scipy.linalg import cho_factor, cho_solve
+from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.linalg.blas import dgemv, dsymv, dsyrk
 from scipy.sparse import csc_array
+from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
 
 # Type aliases
@@ -111,8 +114,8 @@ def compute_glm_weights_and_working_response(
         Working response values
     """
     residual = y - mu
-    np.maximum(d_mu_d_eta, 1e-10, out=d_mu_d_eta)  # in-place
-    residual /= d_mu_d_eta  # in-place
+    np.maximum(d_mu_d_eta, 1e-10, out=d_mu_d_eta)
+    residual /= d_mu_d_eta
     z = eta + residual
 
     W = d_mu_d_eta if sample_weight is None else d_mu_d_eta * sample_weight
@@ -144,7 +147,6 @@ def _irls_dense(
     """Dense IRLS loop with pre-allocated buffers and fused BLAS calls."""
     n_samples, n_features = X.shape
 
-    # Precompute prior contributions
     no_decay = prior_decay == 1.0
     prior_precision_scaled = (
         prior_precision if no_decay else prior_decay * prior_precision
@@ -154,7 +156,6 @@ def _irls_dense(
     # F-order copy of prior precision for dsyrk accumulation buffer
     prior_prec_F = np.asfortranarray(prior_precision_scaled)
 
-    # Pre-allocate reusable buffers
     X_weighted = np.empty_like(X)
     W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
     Wz_buf = np.empty(n_samples, dtype=np.float64)
@@ -218,7 +219,6 @@ def _irls_sparse(
     """Sparse IRLS loop using CHOLMOD/SuperLU factorization."""
     from ._sparse_bayesian_linear_regression import create_sparse_factor
 
-    # Precompute prior contributions
     no_decay = prior_decay == 1.0
     prior_precision_scaled = (
         prior_precision if no_decay else prior_decay * prior_precision
@@ -484,4 +484,500 @@ class LaplaceApproximator(PosteriorApproximator):
             sparse=sparse,
             n_iter=self.n_iter,
             tol=self.tol,
+        )
+
+
+# ---------------------------------------------------------------------------
+# R-VGA: Recursive Variational Gaussian Approximation
+# (Lambert, Bonnabel, Bach 2022 -- Statistics and Computing)
+# ---------------------------------------------------------------------------
+
+_PROBIT_BETA = np.sqrt(8.0 / np.pi)
+
+
+@functools.lru_cache(maxsize=8)
+def _gh_nodes_cached(n: int) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Probabilist's Gauss-Hermite nodes/weights for N(0,1)."""
+    z, w = hermegauss(n)
+    w = w / np.sqrt(2.0 * np.pi)
+    z = z.astype(np.float64)
+    w = w.astype(np.float64)
+    z.flags.writeable = False
+    w.flags.writeable = False
+    return z, w
+
+
+def gh_expected_weights(
+    m: NDArray[np.float64],
+    v: NDArray[np.float64],
+    link: LinkFunction,
+    n_gh_nodes: int,
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """E_q[h(eta)] and E_q[h'(eta)] via Gauss-Hermite quadrature.
+
+    Parameters
+    ----------
+    m : (N,) predictive means  x_i^T mu
+    v : (N,) predictive variances  x_i^T Sigma x_i
+    link : 'logit' or 'log'
+    n_gh_nodes : number of quadrature nodes
+
+    Returns
+    -------
+    E_mu : (N,) expected mean response
+    E_W  : (N,) expected Fisher weight
+    """
+    z_nodes, w_nodes = _gh_nodes_cached(n_gh_nodes)
+    std = np.sqrt(np.maximum(v, 0.0))
+    eta_grid = cast(NDArray[np.float64], m[:, None] + std[:, None] * z_nodes[None, :])
+    link_out = _eval_link(link, eta_grid.ravel())
+    mu_grid = link_out.mu.reshape(eta_grid.shape)
+    dmu_grid = link_out.d_mu_d_eta.reshape(eta_grid.shape)
+    E_mu = cast(NDArray[np.float64], mu_grid @ w_nodes)
+    E_W = cast(NDArray[np.float64], dmu_grid @ w_nodes)
+    return E_mu, E_W
+
+
+def probit_expected_weights(
+    m: NDArray[np.float64],
+    v: NDArray[np.float64],
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """E_q[sigma(eta)] and E_q[sigma'(eta)] via probit approximation.
+
+    Only valid for logit link.  k = beta / sqrt(v + beta^2).
+    """
+    beta = _PROBIT_BETA
+    k = beta / np.sqrt(v + beta**2)
+    km = k * m
+    E_mu = cast(NDArray[np.float64], expit(km))
+    E_W = cast(NDArray[np.float64], k * E_mu * (1.0 - E_mu))
+    return E_mu, E_W
+
+
+def log_expected_weights(
+    m: NDArray[np.float64],
+    v: NDArray[np.float64],
+) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """E_q[exp(eta)] and E_q[exp(eta)] for the log link, in closed form.
+
+    For eta ~ N(m, v) the lognormal mean gives
+    E[exp(eta)] = exp(m + v/2) exactly, and for the log link
+    mu(eta) = mu'(eta) = exp(eta), so the expected response and the
+    expected Fisher weight coincide.
+    """
+    exponent = np.clip(m + 0.5 * v, -700.0, 700.0)
+    E_mu = cast(NDArray[np.float64], np.exp(exponent))
+    return E_mu, E_mu.copy()
+
+
+def _compute_predictive_variances_dense(
+    cho: Tuple[NDArray[np.float64], bool],
+    X: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """v_i = x_i^T Lambda^{-1} x_i via Cholesky triangular solve."""
+    U = cho[0]
+    Z = solve_triangular(U, X.T, lower=False, trans=1, check_finite=False)
+    return cast(NDArray[np.float64], np.sum(Z * Z, axis=0))
+
+
+def _precompute_gram_matrix(
+    prior_precision_scaled: csc_array,
+    X: csc_array,
+    prior_factor: Optional[Any] = None,
+) -> NDArray[np.float64]:
+    """Compute G = X A^{-1} X^T  (n_samples × n_samples).
+
+    When A is diagonal this is a single sparse matrix product.
+    Otherwise a factor for A is needed: if *prior_factor* is supplied
+    it is used directly (partial_fit path); otherwise one is created
+    ad-hoc.  The n×n result is reused across every IRLS iteration
+    via the Woodbury identity.
+    """
+    # Diagonal A: G = X diag(1/a) X^T — no solves
+    nnz_per_col = np.diff(prior_precision_scaled.indptr)
+    if np.max(nnz_per_col) <= 1:
+        diag_inv = 1.0 / prior_precision_scaled.diagonal()
+        X_scaled = X.multiply(diag_inv.reshape(1, -1))
+        return np.asarray((X_scaled @ X.T).todense(), dtype=np.float64)
+
+    # General sparse A: reuse passed factor or create one
+    if prior_factor is None:
+        from ._sparse_bayesian_linear_regression import create_sparse_factor
+
+        prior_factor = create_sparse_factor(prior_precision_scaled)
+    Z = prior_factor.solve(X.T)  # (p, n) — sparse RHS handled by CHOLMOD/SuperLU
+    G = X @ Z
+    if sp_issparse(G):
+        G = G.toarray()
+    return np.asarray(G, dtype=np.float64)
+
+
+def _rvga_dense(
+    X: NDArray[np.float64],
+    y: NDArray[np.float64],
+    prior_mean: NDArray[np.float64],
+    prior_precision: NDArray[np.float64],
+    *,
+    link: LinkFunction,
+    effective_weights: NDArray[np.float64],
+    prior_decay: float,
+    n_iter: int,
+    tol: float,
+    n_gh_nodes: int,
+    use_probit: bool,
+) -> GaussianPosterior:
+    """Dense R-VGA loop with expected curvature."""
+    n_samples, n_features = X.shape
+
+    no_decay = prior_decay == 1.0
+    prior_precision_scaled = (
+        prior_precision if no_decay else prior_decay * prior_precision
+    )
+    prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
+    prior_prec_F = np.asfortranarray(prior_precision_scaled)
+
+    X_weighted = np.empty_like(X)
+    m_buf = np.empty(n_samples, dtype=np.float64)
+    W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
+    Wz_buf = np.empty(n_samples, dtype=np.float64)
+    diff_buf = np.empty(n_features, dtype=np.float64)
+    precision_buf = np.empty_like(prior_prec_F)
+    eta_buf = np.empty_like(prior_eta_scaled)
+
+    coef = prior_mean.copy()
+    posterior_precision = prior_prec_F
+    cho = cho_factor(prior_prec_F, lower=False, check_finite=False)
+
+    use_probit_path = use_probit and link == "logit"
+
+    for iteration in range(n_iter):
+        if iteration > 0:
+            coef_old = coef.copy()
+
+        np.dot(X, coef, out=m_buf)
+        v = _compute_predictive_variances_dense(cho, X)
+
+        if link == "log":
+            E_mu, E_W = log_expected_weights(m_buf, v)
+        elif use_probit_path:
+            E_mu, E_W = probit_expected_weights(m_buf, v)
+        else:
+            E_mu, E_W = gh_expected_weights(m_buf, v, link, n_gh_nodes)
+
+        np.maximum(E_W, 1e-10, out=E_W)
+        np.multiply(E_W, effective_weights, out=W_sqrt_buf)
+        np.sqrt(W_sqrt_buf, out=W_sqrt_buf)
+        np.multiply(X, W_sqrt_buf[:, np.newaxis], out=X_weighted)
+        np.copyto(precision_buf, prior_prec_F)
+        posterior_precision = dsyrk(
+            1.0, X_weighted, trans=1, beta=1.0, c=precision_buf, overwrite_c=True
+        )
+
+        # Fused Wz = eff_w * (E_W * m + y - E_mu) avoids division by E_W
+        np.multiply(E_W, m_buf, out=Wz_buf)
+        np.add(Wz_buf, y, out=Wz_buf)
+        np.subtract(Wz_buf, E_mu, out=Wz_buf)
+        np.multiply(Wz_buf, effective_weights, out=Wz_buf)
+        np.copyto(eta_buf, prior_eta_scaled)
+        posterior_eta = dgemv(
+            1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
+        )
+
+        cho = cho_factor(posterior_precision, lower=False, check_finite=False)
+        coef = cho_solve(cho, posterior_eta, check_finite=False)
+
+        if iteration > 0:
+            np.subtract(coef, coef_old, out=diff_buf)
+            np.abs(diff_buf, out=diff_buf)
+            if diff_buf.max() < tol:
+                break
+
+    return GaussianPosterior(coef, cast(NDArray[np.float64], posterior_precision), cho)
+
+
+def _rvga_sparse(
+    X: csc_array,
+    y: NDArray[np.float64],
+    prior_mean: NDArray[np.float64],
+    prior_precision: csc_array,
+    *,
+    link: LinkFunction,
+    effective_weights: NDArray[np.float64],
+    prior_decay: float,
+    n_iter: int,
+    tol: float,
+    n_gh_nodes: int,
+    use_probit: bool,
+    prior_factor: Optional[Any] = None,
+) -> GaussianPosterior:
+    """Sparse R-VGA loop with Woodbury predictive variances.
+
+    Precomputes the n×n Gram matrix G = X A⁻¹ Xᵀ (A = scaled prior)
+    once, then each IRLS iteration obtains predictive variances via
+    the Woodbury identity in O(n³) instead of O(|A|³) or O(n·p).
+    """
+    from ._sparse_bayesian_linear_regression import create_sparse_factor
+
+    n_samples = X.shape[0]
+
+    no_decay = prior_decay == 1.0
+    prior_precision_scaled = (
+        prior_precision if no_decay else prior_decay * prior_precision
+    )
+    prior_eta_scaled = (
+        prior_precision @ prior_mean
+        if no_decay
+        else prior_decay * (prior_precision @ prior_mean)
+    )
+    # prior_factor is for unscaled prior_precision; rescale to match
+    if prior_factor is not None and not no_decay:
+        from ._sparse_bayesian_linear_regression import scale_factor
+
+        prior_factor = scale_factor(prior_factor, prior_decay)
+
+    # Precompute G = X A^{-1} X^T (n×n, computed once).
+    # Woodbury: Λ = A + X^T diag(W) X
+    #   => X Λ^{-1} X^T = G - G (diag(1/W) + G)^{-1} G
+    G = _precompute_gram_matrix(prior_precision_scaled, X, prior_factor=prior_factor)
+    diag_G = np.diag(G).copy()
+
+    coef = prior_mean.copy()
+    sparse_factor = None
+    use_probit_path = use_probit and link == "logit"
+    W_prev: Optional[NDArray[np.float64]] = None
+
+    for iteration in range(n_iter):
+        if iteration > 0:
+            coef_old = coef.copy()
+
+        m = cast(NDArray[np.float64], X @ coef)
+
+        # Predictive variances via Woodbury identity.
+        # Iteration 0: Λ = A, so v = diag(G).
+        # Iteration k: Λ = A + X^T diag(W_{k-1}) X, use Woodbury.
+        if W_prev is None:
+            v = diag_G
+        else:
+            M = G.copy()
+            M.ravel()[:: n_samples + 1] += 1.0 / W_prev
+            cho_M = cho_factor(M, lower=False, check_finite=False)
+            # diag(G M^{-1} G) = colsum(V^2) where R^T V = G
+            V = solve_triangular(cho_M[0], G, lower=False, trans=1, check_finite=False)
+            v = diag_G - np.sum(V * V, axis=0)
+
+        if link == "log":
+            E_mu, E_W = log_expected_weights(m, v)
+        elif use_probit_path:
+            E_mu, E_W = probit_expected_weights(m, v)
+        else:
+            E_mu, E_W = gh_expected_weights(m, v, link, n_gh_nodes)
+
+        np.maximum(E_W, 1e-10, out=E_W)
+        W = E_W * effective_weights
+        W_prev = W
+
+        XW = X.multiply(W.reshape(-1, 1)).tocsc()
+        posterior_precision = csc_array(X.T @ XW)
+        posterior_precision += prior_precision_scaled
+
+        # Fused Wz = eff_w * (E_W * m + y - E_mu) avoids division by E_W
+        Wz = E_W * m + (y - E_mu)
+        Wz *= effective_weights
+        likelihood_eta = X.T @ Wz
+        posterior_eta = prior_eta_scaled + likelihood_eta
+
+        if sparse_factor is None:
+            sparse_factor = create_sparse_factor(posterior_precision)
+        else:
+            sparse_factor = sparse_factor.refactorize(posterior_precision)
+        coef = sparse_factor.solve(posterior_eta)
+
+        if iteration > 0:
+            coef_change = np.max(np.abs(coef - coef_old))
+            if coef_change < tol:
+                break
+
+    return GaussianPosterior(coef, posterior_precision, sparse_factor)
+
+
+def update_gaussian_posterior_rvga(
+    X: ArrayType,
+    y: NDArray[np.float64],
+    prior_mean: ArrayType,
+    prior_precision: ArrayType,
+    *,
+    link: LinkFunction,
+    sample_weight: Optional[NDArray[np.float64]] = None,
+    learning_rate: float = 1.0,
+    sparse: bool = False,
+    n_iter: int = 5,
+    tol: float = 1e-4,
+    n_gh_nodes: int = 20,
+    use_probit: bool = True,
+    prior_factor: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+) -> GaussianPosterior:
+    """Update Gaussian posterior using R-VGA (expected curvature).
+
+    Parameters
+    ----------
+    batch_size : int, optional
+        Sparse path only. When set and ``n_samples > batch_size``, the
+        batch is processed as sequential minibatch updates (R-VGA's
+        native recursive mode), threading the posterior factor between
+        chunks. Bounds the Gram-matrix allocation at
+        ``8 * batch_size**2`` bytes instead of ``8 * n_samples**2``.
+        Decay and sample weights compose exactly across chunks; the
+        variational weights make the result mildly dependent on row
+        order. Ignored when ``sparse=False``.
+
+    References
+    ----------
+    Lambert, Bonnabel, Bach (2022). Statistics and Computing, 32, 10.
+    """
+    assert X.shape is not None, "X must be a 2D array"
+    n_samples = X.shape[0]
+
+    if n_samples == 0:
+        return GaussianPosterior(prior_mean.copy(), prior_precision.copy(), None)
+
+    if sparse and batch_size is not None and batch_size >= 1 and n_samples > batch_size:
+        X_csr = csc_array(X).tocsr()
+        posterior = GaussianPosterior(prior_mean, prior_precision, prior_factor)
+        for start in range(0, n_samples, batch_size):
+            end = min(start + batch_size, n_samples)
+            posterior = update_gaussian_posterior_rvga(
+                csc_array(X_csr[start:end]),
+                y[start:end],
+                posterior.mean,
+                posterior.precision,
+                link=link,
+                sample_weight=(
+                    sample_weight[start:end] if sample_weight is not None else None
+                ),
+                learning_rate=learning_rate,
+                sparse=True,
+                n_iter=n_iter,
+                tol=tol,
+                n_gh_nodes=n_gh_nodes,
+                use_probit=use_probit,
+                prior_factor=posterior.factor,
+            )
+        return posterior
+
+    effective_weights = compute_effective_weights(
+        n_samples, sample_weight, learning_rate
+    )
+    prior_decay = learning_rate**n_samples
+
+    if sparse:
+        return _rvga_sparse(
+            csc_array(X),
+            y,
+            np.asarray(prior_mean),
+            csc_array(prior_precision),
+            link=link,
+            effective_weights=effective_weights,
+            prior_decay=prior_decay,
+            n_iter=n_iter,
+            tol=tol,
+            n_gh_nodes=n_gh_nodes,
+            use_probit=use_probit,
+            prior_factor=prior_factor,
+        )
+    else:
+        return _rvga_dense(
+            np.asarray(X),
+            y,
+            np.asarray(prior_mean),
+            np.asarray(prior_precision),
+            link=link,
+            effective_weights=effective_weights,
+            prior_decay=prior_decay,
+            n_iter=n_iter,
+            tol=tol,
+            n_gh_nodes=n_gh_nodes,
+            use_probit=use_probit,
+        )
+
+
+@dataclass
+class RVGAApproximator(PosteriorApproximator):
+    """R-VGA posterior approximation via expected curvature.
+
+    Replaces Laplace's point-estimate curvature with expected curvature
+    under the approximate posterior, correcting systematic bias for
+    non-Gaussian likelihoods.
+
+    Parameters
+    ----------
+    n_iter : int, default=5
+        Maximum iterations per update.
+    tol : float, default=1e-4
+        Convergence tolerance on coefficient change.
+    n_gh_nodes : int, default=20
+        Number of Gauss-Hermite quadrature nodes. Only used for
+        link='logit' with ``use_probit=False``; the log link uses the
+        exact closed form :math:`E[\\exp(\\eta)] = \\exp(m + v/2)`.
+    use_probit : bool, default=True
+        If True and link='logit', use the analytical probit
+        approximation instead of GH quadrature. Ignored for log link.
+    batch_size : int or None, default=2048
+        Sparse models only. Batches larger than this are processed as
+        sequential minibatch updates (R-VGA's native recursive mode),
+        bounding the predictive-variance Gram allocation at
+        ``8 * batch_size**2`` bytes (~34 MB at the default) instead of
+        growing quadratically with the batch. Sequential updates make
+        the posterior mildly dependent on row order; set to None to
+        force a single joint update regardless of batch size. Ignored
+        for dense models, whose memory does not depend on batch size.
+
+    References
+    ----------
+    Lambert, Bonnabel, Bach (2022). Statistics and Computing, 32, 10.
+
+    See Also
+    --------
+    LaplaceApproximator : Default approximation using IRLS.
+    BayesianGLM : Estimator that uses this protocol.
+
+    Examples
+    --------
+    >>> from bayesianbandits import RVGAApproximator, BayesianGLM
+    >>> model = BayesianGLM(approximator=RVGAApproximator())
+    """
+
+    n_iter: int = 5
+    tol: float = 1e-4
+    n_gh_nodes: int = 20
+    use_probit: bool = True
+    batch_size: Optional[int] = 2048
+
+    def update_posterior(
+        self,
+        X: ArrayType,
+        y: NDArray[np.float64],
+        prior_mean: ArrayType,
+        prior_precision: ArrayType,
+        link: LinkFunction,
+        sample_weight: Optional[NDArray[np.float64]],
+        learning_rate: float,
+        sparse: bool,
+        prior_factor: Optional[Any] = None,
+    ) -> GaussianPosterior:
+        return update_gaussian_posterior_rvga(
+            X,
+            y,
+            prior_mean,
+            prior_precision,
+            link=link,
+            sample_weight=sample_weight,
+            learning_rate=learning_rate,
+            sparse=sparse,
+            n_iter=self.n_iter,
+            tol=self.tol,
+            n_gh_nodes=self.n_gh_nodes,
+            use_probit=self.use_probit,
+            prior_factor=prior_factor,
+            batch_size=self.batch_size,
         )

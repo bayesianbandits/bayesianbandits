@@ -9,6 +9,7 @@ Worked examples as Jupyter notebooks.
    notebooks/linear-bandits
    notebooks/hybrid-bandits
    notebooks/empirical-bayes
+   notebooks/rvga-glm
    notebooks/adversarial
    notebooks/delayed-reward
    notebooks/offline-learning

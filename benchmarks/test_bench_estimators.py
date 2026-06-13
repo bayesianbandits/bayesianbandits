@@ -11,6 +11,7 @@ from bayesianbandits._estimators import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
+from bayesianbandits._gaussian import RVGAApproximator
 
 # -- normal dense 100 ---------------------------------------------------------
 
@@ -878,6 +879,267 @@ def test_partial_fit_nig_sparse_100k(benchmark, nig_sparse_100k_fresh):
 def test_decay_nig_sparse_100k(benchmark, nig_sparse_100k_fresh):
     def run():
         est, X, _ = nig_sparse_100k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- rvga_logit dense 100 (compare with glm_logit dense 100 above) -----------
+
+
+def test_fit_rvga_logit_dense_100(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 100))
+    y = rng.integers(0, 2, size=200).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=False,
+            approximator=RVGAApproximator(),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_rvga_logit_dense_100(benchmark, rvga_logit_dense_100):
+    est, X, _ = rvga_logit_dense_100
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_rvga_logit_dense_100(benchmark, rvga_logit_dense_100):
+    est, X, _ = rvga_logit_dense_100
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_rvga_logit_dense_100(benchmark, rvga_logit_dense_100):
+    est, X, _ = rvga_logit_dense_100
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_rvga_logit_dense_100(benchmark, rvga_logit_dense_100_fresh):
+    def run():
+        est, X, _ = rvga_logit_dense_100_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_rvga_logit_dense_100(benchmark, rvga_logit_dense_100_fresh):
+    def run():
+        est, X, _ = rvga_logit_dense_100_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- rvga_logit dense 1k (compare with glm_logit dense 1k above) -------------
+
+
+def test_fit_rvga_logit_dense_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 1000))
+    y = rng.integers(0, 2, size=200).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=False,
+            approximator=RVGAApproximator(),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_rvga_logit_dense_1k(benchmark, rvga_logit_dense_1k):
+    est, X, _ = rvga_logit_dense_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_rvga_logit_dense_1k(benchmark, rvga_logit_dense_1k):
+    est, X, _ = rvga_logit_dense_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_rvga_logit_dense_1k(benchmark, rvga_logit_dense_1k):
+    est, X, _ = rvga_logit_dense_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_rvga_logit_dense_1k(benchmark, rvga_logit_dense_1k_fresh):
+    def run():
+        est, X, _ = rvga_logit_dense_1k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_rvga_logit_dense_1k(benchmark, rvga_logit_dense_1k_fresh):
+    def run():
+        est, X, _ = rvga_logit_dense_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- rvga_logit sparse 1k (compare with glm_logit sparse 1k above) -----------
+
+
+def test_fit_rvga_logit_sparse_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = csc_array(sparse_random(200, 1000, density=0.01, random_state=42))
+    y = rng.integers(0, 2, size=200).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=True,
+            approximator=RVGAApproximator(),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_rvga_logit_sparse_1k(benchmark, rvga_logit_sparse_1k):
+    est, X, _ = rvga_logit_sparse_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_rvga_logit_sparse_1k(benchmark, rvga_logit_sparse_1k):
+    est, X, _ = rvga_logit_sparse_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_rvga_logit_sparse_1k(benchmark, rvga_logit_sparse_1k):
+    est, X, _ = rvga_logit_sparse_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_rvga_logit_sparse_1k(benchmark, rvga_logit_sparse_1k_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_1k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_rvga_logit_sparse_1k(benchmark, rvga_logit_sparse_1k_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- rvga_logit sparse 100k (compare with glm_logit sparse 100k above) -------
+
+
+def test_fit_rvga_logit_sparse_100k(benchmark):
+    X = csc_array(sparse_random(200, 100_000, density=0.0001, random_state=42))
+    rng = np.random.default_rng(42)
+    y = rng.integers(0, 2, size=200).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=True,
+            approximator=RVGAApproximator(),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_rvga_logit_sparse_100k(benchmark, rvga_logit_sparse_100k):
+    est, X, _ = rvga_logit_sparse_100k
+    benchmark(est.sample, X, size=1)
+
+
+def test_predict_rvga_logit_sparse_100k(benchmark, rvga_logit_sparse_100k):
+    est, X, _ = rvga_logit_sparse_100k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_rvga_logit_sparse_100k(benchmark, rvga_logit_sparse_100k_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_100k_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_rvga_logit_sparse_100k(benchmark, rvga_logit_sparse_100k_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_100k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- rvga_logit sparse 1m (compare with glm_logit sparse 1m above) -----------
+
+
+@pytest.mark.slow
+def test_fit_rvga_logit_sparse_1m(benchmark):
+    X = csc_array(sparse_random(200, 1_000_000, density=0.00001, random_state=42))
+    rng = np.random.default_rng(42)
+    y = rng.integers(0, 2, size=200).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=True,
+            approximator=RVGAApproximator(),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+@pytest.mark.slow
+def test_sample_1_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m):
+    est, X, _ = rvga_logit_sparse_1m
+    benchmark(est.sample, X, size=1)
+
+
+@pytest.mark.slow
+def test_sample_10_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m):
+    est, X, _ = rvga_logit_sparse_1m
+    benchmark(est.sample, X, size=10)
+
+
+@pytest.mark.slow
+def test_predict_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m):
+    est, X, _ = rvga_logit_sparse_1m
+    benchmark(est.predict, X)
+
+
+@pytest.mark.slow
+def test_partial_fit_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_1m_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+@pytest.mark.slow
+def test_decay_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_1m_fresh()
         est.decay(X, decay_rate=0.99)
 
     benchmark(run)
