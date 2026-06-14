@@ -354,3 +354,18 @@ def rvga_logit_sparse_1m():
 def rvga_logit_sparse_1m_fresh(rvga_logit_sparse_1m):
     est, X_test, name = rvga_logit_sparse_1m
     return lambda: (copy.deepcopy(est), X_test, name)
+
+
+# Many-row fixture: n_obs (8192) far exceeds the default batch_size (2048),
+# so the sparse fit exercises R-VGA's sequential minibatch path (4 chunks)
+# rather than a single joint update. This is the regime where the n×n Gram
+# matrix would otherwise blow up; it is the path that scales with n_samples.
+@pytest.fixture
+def rvga_logit_sparse_8k_rows():
+    return _fit_estimator("rvga_logit", "sparse", 2_000, n_obs=8_192)
+
+
+@pytest.fixture
+def rvga_logit_sparse_8k_rows_fresh(rvga_logit_sparse_8k_rows):
+    est, X_test, name = rvga_logit_sparse_8k_rows
+    return lambda: (copy.deepcopy(est), X_test, name)

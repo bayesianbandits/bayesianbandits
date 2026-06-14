@@ -573,11 +573,23 @@ def log_expected_weights(
 def _compute_predictive_variances_dense(
     cho: Tuple[NDArray[np.float64], bool],
     X: NDArray[np.float64],
+    Z_buf: NDArray[np.float64],
+    v_buf: NDArray[np.float64],
 ) -> NDArray[np.float64]:
-    """v_i = x_i^T Lambda^{-1} x_i via Cholesky triangular solve."""
+    """v_i = x_i^T Lambda^{-1} x_i via Cholesky triangular solve.
+
+    Reuses ``Z_buf`` (n_features x n_samples, F-ordered) as the solve
+    scratch and ``v_buf`` (n_samples,) as the output, so the per-iteration
+    R-VGA variance computation allocates nothing.
+    """
     U = cho[0]
-    Z = solve_triangular(U, X.T, lower=False, trans=1, check_finite=False)
-    return cast(NDArray[np.float64], np.sum(Z * Z, axis=0))
+    np.copyto(Z_buf, X.T)
+    # overwrite_b reuses Z_buf in place; squaring is also in place.
+    Z = solve_triangular(
+        U, Z_buf, lower=False, trans=1, check_finite=False, overwrite_b=True
+    )
+    np.multiply(Z, Z, out=Z)
+    return cast(NDArray[np.float64], np.sum(Z, axis=0, out=v_buf))
 
 
 def _precompute_gram_matrix(
@@ -643,6 +655,9 @@ def _rvga_dense(
     diff_buf = np.empty(n_features, dtype=np.float64)
     precision_buf = np.empty_like(prior_prec_F)
     eta_buf = np.empty_like(prior_eta_scaled)
+    # Scratch for the per-iteration predictive-variance solve (x_i^T Λ^{-1} x_i).
+    Z_buf = np.empty((n_features, n_samples), dtype=np.float64, order="F")
+    v_buf = np.empty(n_samples, dtype=np.float64)
 
     coef = prior_mean.copy()
     posterior_precision = prior_prec_F
@@ -655,7 +670,7 @@ def _rvga_dense(
             coef_old = coef.copy()
 
         np.dot(X, coef, out=m_buf)
-        v = _compute_predictive_variances_dense(cho, X)
+        v = _compute_predictive_variances_dense(cho, X, Z_buf, v_buf)
 
         if link == "log":
             E_mu, E_W = log_expected_weights(m_buf, v)

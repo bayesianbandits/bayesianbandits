@@ -1143,3 +1143,78 @@ def test_decay_rvga_logit_sparse_1m(benchmark, rvga_logit_sparse_1m_fresh):
         est.decay(X, decay_rate=0.99)
 
     benchmark(run)
+
+
+# -- rvga_logit sparse, many rows (exercises the minibatch/batch_size path) ---
+# All other rvga fixtures use n_obs=200 (< batch_size=2048), so they only ever
+# hit the single joint update. These fit 8192 rows, forcing the sequential
+# minibatch loop. This is the path that scales with n_samples; a regression in
+# its per-chunk overhead (or an accidental quadratic in the Gram) shows here.
+
+
+def test_fit_rvga_logit_sparse_8k_rows(benchmark):
+    n_obs, n_features = 8_192, 2_000
+    X = csc_array(sparse_random(n_obs, n_features, density=0.005, random_state=42))
+    rng = np.random.default_rng(42)
+    y = rng.integers(0, 2, size=n_obs).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=True,
+            approximator=RVGAApproximator(),  # default batch_size=2048 -> 4 chunks
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_fit_rvga_logit_sparse_8k_rows_joint(benchmark):
+    """Same data, batch_size=None forces a single joint update with the full
+    8192x8192 Gram. Pairs with the chunked fit above to make the batch path's
+    memory/time advantage at large n_samples visible."""
+    n_obs, n_features = 8_192, 2_000
+    X = csc_array(sparse_random(n_obs, n_features, density=0.005, random_state=42))
+    rng = np.random.default_rng(42)
+    y = rng.integers(0, 2, size=n_obs).astype(np.float64)
+
+    def run():
+        est = BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=True,
+            approximator=RVGAApproximator(batch_size=None),
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_partial_fit_rvga_logit_sparse_8k_rows(
+    benchmark, rvga_logit_sparse_8k_rows_fresh
+):
+    def run():
+        est, X, _ = rvga_logit_sparse_8k_rows_fresh()
+        y = np.zeros(X.shape[0])
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_predict_rvga_logit_sparse_8k_rows(benchmark, rvga_logit_sparse_8k_rows):
+    est, X, _ = rvga_logit_sparse_8k_rows
+    benchmark(est.predict, X)
+
+
+def test_sample_1_rvga_logit_sparse_8k_rows(benchmark, rvga_logit_sparse_8k_rows):
+    est, X, _ = rvga_logit_sparse_8k_rows
+    benchmark(est.sample, X, size=1)
+
+
+def test_decay_rvga_logit_sparse_8k_rows(benchmark, rvga_logit_sparse_8k_rows_fresh):
+    def run():
+        est, X, _ = rvga_logit_sparse_8k_rows_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
