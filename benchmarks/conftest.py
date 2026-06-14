@@ -13,6 +13,7 @@ from bayesianbandits._estimators import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
+from bayesianbandits._gaussian import RVGAApproximator
 
 
 def _make_estimator(estimator_type, sparse):
@@ -25,6 +26,13 @@ def _make_estimator(estimator_type, sparse):
         return BayesianGLM(alpha=1.0, link="logit", sparse=sparse)
     elif estimator_type == "glm_log":
         return BayesianGLM(alpha=1.0, link="log", sparse=sparse)
+    elif estimator_type == "rvga_logit":
+        return BayesianGLM(
+            alpha=1.0,
+            link="logit",
+            sparse=sparse,
+            approximator=RVGAApproximator(),
+        )
     elif estimator_type == "eb_normal":
         return EmpiricalBayesNormalRegressor(
             alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
@@ -64,7 +72,7 @@ def _fit_estimator(estimator_type, kind, n_features, n_obs=200, density=None):
         kind, n_features, n_obs=n_obs, rng=rng, density=density
     )
 
-    if estimator_type == "glm_logit":
+    if estimator_type in ("glm_logit", "rvga_logit"):
         y = rng.integers(0, 2, size=X_train.shape[0]).astype(np.float64)
     elif estimator_type == "glm_log":
         y = rng.poisson(3, size=X_train.shape[0]).astype(np.float64)
@@ -287,4 +295,77 @@ def nig_sparse_100k():
 @pytest.fixture
 def nig_sparse_100k_fresh(nig_sparse_100k):
     est, X_test, name = nig_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+# -- R-VGA logit fixtures ----------------------------------------------------
+
+
+@pytest.fixture
+def rvga_logit_dense_100():
+    return _fit_estimator("rvga_logit", "dense", 100)
+
+
+@pytest.fixture
+def rvga_logit_dense_100_fresh(rvga_logit_dense_100):
+    est, X_test, name = rvga_logit_dense_100
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def rvga_logit_dense_1k():
+    return _fit_estimator("rvga_logit", "dense", 1_000)
+
+
+@pytest.fixture
+def rvga_logit_dense_1k_fresh(rvga_logit_dense_1k):
+    est, X_test, name = rvga_logit_dense_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def rvga_logit_sparse_1k():
+    return _fit_estimator("rvga_logit", "sparse", 1_000)
+
+
+@pytest.fixture
+def rvga_logit_sparse_1k_fresh(rvga_logit_sparse_1k):
+    est, X_test, name = rvga_logit_sparse_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def rvga_logit_sparse_100k():
+    return _fit_estimator("rvga_logit", "sparse", 100_000)
+
+
+@pytest.fixture
+def rvga_logit_sparse_100k_fresh(rvga_logit_sparse_100k):
+    est, X_test, name = rvga_logit_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def rvga_logit_sparse_1m():
+    return _fit_estimator("rvga_logit", "sparse", 1_000_000)
+
+
+@pytest.fixture
+def rvga_logit_sparse_1m_fresh(rvga_logit_sparse_1m):
+    est, X_test, name = rvga_logit_sparse_1m
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+# Many-row fixture: n_obs (8192) far exceeds the default batch_size (2048),
+# so the sparse fit exercises R-VGA's sequential minibatch path (4 chunks)
+# rather than a single joint update. This is the regime where the n×n Gram
+# matrix would otherwise blow up; it is the path that scales with n_samples.
+@pytest.fixture
+def rvga_logit_sparse_8k_rows():
+    return _fit_estimator("rvga_logit", "sparse", 2_000, n_obs=8_192)
+
+
+@pytest.fixture
+def rvga_logit_sparse_8k_rows_fresh(rvga_logit_sparse_8k_rows):
+    est, X_test, name = rvga_logit_sparse_8k_rows
     return lambda: (copy.deepcopy(est), X_test, name)

@@ -122,7 +122,7 @@ from ._estimators import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
-from ._gaussian import LaplaceApproximator
+from ._gaussian import LaplaceApproximator, RVGAApproximator
 from .api import (
     Agent,
     ContextualAgent,
@@ -149,6 +149,7 @@ __all__ = [
     "NormalInverseGammaRegressor",
     "NormalRegressor",
     "LaplaceApproximator",
+    "RVGAApproximator",
     "Agent",
     "ContextualAgent",
     "LipschitzContextualAgent",

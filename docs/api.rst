@@ -90,10 +90,14 @@ for decay as a defensive default).
    bayesianbandits.EmpiricalBayesGammaRegressor
    bayesianbandits.EmpiricalBayesNormalRegressor
 
-Utilities
----------
+Posterior Approximators
+-----------------------
+
+These control how :class:`~bayesianbandits.BayesianGLM` approximates
+the non-conjugate posterior. Pass to the ``approximator`` argument.
 
 .. autosummary::
    :toctree: generated/
 
    bayesianbandits.LaplaceApproximator
+   bayesianbandits.RVGAApproximator
