@@ -97,14 +97,15 @@ for decay as a defensive default).
     EmpiricalBayesGammaRegressor
     EmpiricalBayesNormalRegressor
 
-Utilities
-=========
-These utilities provide additional functionality for the bandit algorithms,
-such as Laplace approximation for Gaussian posteriors.
+Posterior Approximators
+=======================
+These control how :class:`BayesianGLM` approximates the non-conjugate
+posterior. Pass to the ``approximator`` argument.
 
 .. autosummary::
 
     LaplaceApproximator
+    RVGAApproximator
 
 """
 
