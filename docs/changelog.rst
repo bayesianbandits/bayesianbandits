@@ -1,8 +1,53 @@
 Changelog
 =========
 
-1.3.0rc1 (2026-03-20)
+1.4.0rc1 (2026-07-03)
 ---------------------
+
+**New features**
+
+- Empirical Bayes Gamma regressor: Gamma-Poisson regressor with automatic
+  prior tuning via the Negative Binomial marginal likelihood, using Minka's
+  fixed-point EM with the generalized Newton update for the shape parameter.
+  Stabilized forgetting re-injects the tuned prior after each decay step
+  (#244)
+- SIFt directional forgetting: forgets only in the excited directions of each
+  batch, retaining full precision in unexcited directions. Guarantees an
+  eigenvalue floor without artificial prior injection (Lai & Bernstein 2024)
+  (#245)
+- ``RVGAApproximator`` for ``BayesianGLM``: R-VGA posterior approximation that
+  replaces Laplace's point-estimate curvature with expected curvature under
+  the approximate posterior, correcting systematic bias for non-Gaussian
+  likelihoods. Supports the exact log-link closed form, an analytical probit
+  approximation, and Gauss-Hermite quadrature for the logit link, with
+  minibatched updates for large sparse models (#254)
+
+**Performance**
+
+- Cache the precision Cholesky factor and thread it through posterior
+  approximators to avoid redundant factorizations (#253)
+- Reuse the ``dsymv`` result to optimize dense linear regression updates (#247)
+- Drop a redundant O(p\ :sup:`2`) matvec in ``NormalInverseGammaRegressor._fit_helper``
+  (#246)
+
+**Documentation**
+
+- Mathematical reference for forgetting strategies (exponential, stabilized
+  Kulhavy-Zarrop, and directional SIFt), with expanded ``_forgetting.py``
+  docstrings and cross-references from the normal and empirical-Bayes pages
+  (#248)
+- Gamma empirical-Bayes math reference page (#244)
+- R-VGA GLM notebook and example demonstrating the expected-curvature
+  approximation (#254)
+
+**Infrastructure**
+
+- Test against scikit-learn 1.9.0, drop 1.5.2 (#252)
+- Dependency bumps for security advisories: urllib3 2.7.0 (#249), dev
+  dependencies (#250), pytest 9.0.3 (#251)
+
+1.3.0 (2026-03-28)
+------------------
 
 **New features**
 
