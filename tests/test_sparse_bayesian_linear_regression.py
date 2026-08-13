@@ -11,6 +11,7 @@ from scipy.stats import Covariance, multivariate_normal, multivariate_t
 from bayesianbandits._estimators import multivariate_t_sample_from_covariance
 from bayesianbandits._sparse_bayesian_linear_regression import (
     CholmodSparseFactor,
+    DenseFactor,
     SparseSolver,
     create_sparse_factor,
     multivariate_normal_sample_from_sparse_precision,
@@ -223,3 +224,62 @@ class TestRefactorize:
         refactored = scaled.refactorize(A2)
         assert isinstance(refactored, CholmodSparseFactor)
         assert refactored is factor
+
+
+class TestHalfSolve:
+    """half_solve is the transpose of the colorize operator.
+
+    If M is the colorize map (M @ M.T = inv(P)), half_solve applies M.T,
+    so B = half_solve(X.T) satisfies B.T @ B = X @ inv(P) @ X.T -- the
+    projected covariance, computed with one triangular solve per column
+    against the cached factor and without ever forming inv(P).
+    """
+
+    D = 300
+
+    @pytest.fixture(scope="class")
+    def precision(self):
+        rng = np.random.default_rng(42)
+        mat = sp.random(self.D, self.D, 0.01, random_state=1) * 10
+        return sp.csc_array((mat @ mat.T) + sp.diags(1 + rng.gamma(1, 1, self.D)))
+
+    @pytest.fixture(scope="class")
+    def X(self):
+        return np.random.default_rng(7).standard_normal((8, self.D))
+
+    def _reference(self, precision, X):
+        return X @ np.linalg.solve(precision.toarray(), X.T)
+
+    def _assert_gram_matches(self, B, S_ref):
+        sd = np.sqrt(np.diag(S_ref))
+        assert np.abs((B.T @ B - S_ref) / np.outer(sd, sd)).max() < 1e-10
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_sparse_gram_identity(self, precision, X, solver):
+        factor = create_sparse_factor(precision, solver=solver)
+        B = np.asarray(factor.half_solve(X.T))
+        assert B.shape == (self.D, 8)
+        self._assert_gram_matches(B, self._reference(precision, X))
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_scaled_factor_gram_identity(self, precision, X, solver):
+        """A factor scaled by s represents s*P, so the projected
+        covariance shrinks by 1/s."""
+        factor = scale_factor(create_sparse_factor(precision, solver=solver), 0.7)
+        B = np.asarray(factor.half_solve(X.T))
+        self._assert_gram_matches(B, self._reference(precision, X) / 0.7)
+
+    def test_dense_gram_identity(self, precision, X):
+        from scipy.linalg import cholesky
+
+        prec = precision.toarray()
+        factor = DenseFactor(_U=cholesky(prec, lower=False), _n_features=self.D)
+        B = np.asarray(factor.half_solve(X.T))
+        assert B.shape == (self.D, 8)
+        self._assert_gram_matches(B, self._reference(precision, X))
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_single_column_rhs_keeps_2d_shape(self, precision, X, solver):
+        factor = create_sparse_factor(precision, solver=solver)
+        B = np.asarray(factor.half_solve(X.T[:, :1]))
+        assert B.shape == (self.D, 1)
