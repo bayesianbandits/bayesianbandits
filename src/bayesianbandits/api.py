@@ -81,6 +81,7 @@ from ._arm import (
     _accepts_context_batch,
     batch_identity,
     is_identity_function,
+    resolve_marginal_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
 from .policies import (  # noqa: F401
@@ -91,6 +92,14 @@ from .policies import (  # noqa: F401
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
+    marginal_ok: bool
+    """Whether iid per-row marginal draws (``sample_marginal``) may
+    replace joint ``sample`` draws for this policy. Set ``True`` only
+    when decisions consume per-(arm, context) statistics alone, for
+    which marginal draws are exact and much cheaper; policies that
+    compare arms within a shared posterior draw (e.g. Thompson
+    sampling) must keep it ``False``."""
+
     @overload
     def __call__(
         self,
@@ -1249,7 +1258,7 @@ class LipschitzContextualAgent(Generic[TokenType]):
         # consume only per-(arm, context) statistics opt into iid
         # marginal draws, which are exact for them and much cheaper.
         if getattr(self.policy, "marginal_ok", False):
-            sampler = getattr(self.learner, "sample_marginal", self.learner.sample)
+            sampler = resolve_marginal_sampler(self.learner)
         else:
             sampler = self.learner.sample
         samples = sampler(X_enriched, size=self.policy.samples_needed)

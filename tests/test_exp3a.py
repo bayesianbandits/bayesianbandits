@@ -284,6 +284,29 @@ class TestEXP3AEdgeCases:
         # Update should work normally
         agent.update(X, np.array([1.0]))
 
+    def test_extreme_eta_heavy_tailed_rewards(self):
+        """Numerical stability with extreme eta and heavy-tailed draws.
+
+        The default a=0.1 prior gives a t(0.2) prior predictive whose
+        draws reach ~1e15, driving every exp weight to exact zero at
+        eta=100 -- the underflow regime that ``test_extreme_eta``'s
+        concentrated prior no longer exercises. No assertion on which
+        arm wins (the sample mean of t(0.2) has no population mean);
+        pulls must simply stay valid and finite.
+        """
+        arms: List[Arm[NDArray[Any], int]] = [
+            Arm(i, learner=NormalInverseGammaRegressor(mu=mu, lam=100))
+            for i, mu in enumerate([0.1, 0.2, 0.9])
+        ]
+        policy = EXP3A(gamma=0.01, eta=100.0, samples=20)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+
+        X = np.array([[1.0]])
+        for _ in range(50):
+            action = agent.pull(X)
+            assert action[0] in (0, 1, 2)
+            agent.update(X, np.array([1.0]))
+
     def test_extreme_eta(self):
         """Test numerical stability with extreme eta values."""
         arms: List[Arm[NDArray[Any], int]] = []

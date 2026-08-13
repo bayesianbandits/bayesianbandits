@@ -14,8 +14,9 @@ Covers four fronts:
 3. The independence contract: marginal draws are iid across rows, while
    ``sample`` rows within a draw are correlated.
 4. Plumbing: ``Arm``/``LearnerPipeline``/``batch_sample_arms``
-   forwarding, the policies' ``marginal_ok`` opt-in, and the fallback to
-   joint ``sample`` for learners without ``sample_marginal``.
+   forwarding, the policies' ``marginal_ok`` opt-in (and subclass
+   opt-out), and the fallback to joint ``sample`` for learners without
+   ``sample_marginal`` or whose class overrides ``sample`` without it.
 """
 
 from unittest import mock
@@ -23,7 +24,6 @@ from unittest import mock
 import numpy as np
 import pytest
 import scipy.sparse as sp
-from _helpers import cov_inv_dense
 from numpy.testing import assert_allclose
 from scipy.stats import ks_2samp, kstest
 from scipy.stats import t as t_dist
@@ -39,8 +39,9 @@ from bayesianbandits import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from bayesianbandits._arm import batch_sample_arms
+from bayesianbandits._arm import batch_sample_arms, resolve_marginal_sampler
 from bayesianbandits.pipelines import LearnerPipeline
+from tests._helpers import cov_inv_dense
 
 
 def _fit_dense(cls=NormalRegressor, d=40, rows=200, seed=0, **kwargs) -> tuple:
@@ -247,6 +248,19 @@ class TestIndependenceContract:
         corr = np.corrcoef(marginal[:, 0], marginal[:, 1])[0, 1]
         assert abs(corr) < 0.1
 
+    def test_nig_marginal_rows_are_independent(self):
+        """A chi-square mixing variable shared across rows would leave
+        rows tail-dependent (correlated absolute deviations) even though
+        each marginal stays exactly Student t; each (draw, row) cell must
+        mix its own chi-square variable."""
+        est, rng = _fit_dense(cls=NormalInverseGammaRegressor, d=5, rows=7)
+        x = rng.standard_normal(5)
+        X = np.tile(x, (2, 1))
+        marginal = est.sample_marginal(X, size=50_000)
+        dev = np.abs(marginal - np.median(marginal, axis=0))
+        corr = np.corrcoef(dev[:, 0], dev[:, 1])[0, 1]
+        assert abs(corr) < 0.05
+
 
 # -- 4. Plumbing --------------------------------------------------------------
 
@@ -283,6 +297,52 @@ class TestPlumbing:
         draws = arm.sample_marginal([[1.0]], size=4)
         assert learner.calls == 1
         assert draws.shape == (4, 1)
+
+    def test_learner_subclass_sample_override_falls_back(self):
+        """A learner subclass overriding ``sample`` but inheriting
+        ``sample_marginal`` must not be bypassed by the marginal path
+        (regression: the guard once only covered Arm subclasses)."""
+
+        class Clipped(NormalRegressor):
+            def sample(self, X, size=1):
+                return np.clip(super().sample(X, size), 0.0, None)
+
+        rng = np.random.default_rng(0)
+        est = Clipped(alpha=1.0, beta=1.0, random_state=0)
+        X_train = rng.standard_normal((30, 4))
+        est.fit(X_train, rng.standard_normal(30) - 5.0)
+        X = rng.standard_normal((4, 4))
+
+        assert resolve_marginal_sampler(est) == est.sample
+        plain = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
+        assert resolve_marginal_sampler(plain) == plain.sample_marginal
+
+        arm = Arm("a", learner=est)
+        assert (arm.sample_marginal(X, size=500) >= 0.0).all()
+
+        pipeline = LearnerPipeline(steps=[], learner=est)
+        assert (pipeline.sample_marginal(X, size=500) >= 0.0).all()
+
+    def test_policy_marginal_opt_out_uses_joint_sampling(self):
+        """A policy subclass setting ``marginal_ok = False`` must get
+        joint draws (regression: ``__call__`` once hardcoded
+        ``marginal=True`` regardless of the flag)."""
+
+        class JointUCB(UpperConfidenceBound):
+            marginal_ok = False
+
+        est, rng = _fit_dense()
+        arms = [Arm(i, learner=est) for i in range(2)]
+        X = rng.standard_normal((1, 40))
+        with (
+            mock.patch.object(est, "sample", wraps=est.sample) as joint_spy,
+            mock.patch.object(
+                est, "sample_marginal", wraps=est.sample_marginal
+            ) as marginal_spy,
+        ):
+            JointUCB(alpha=0.8)(arms, X, np.random.default_rng(0))
+        assert joint_spy.called
+        assert not marginal_spy.called
 
     def test_arm_subclass_sample_override_is_respected(self):
         """A subclass overriding ``sample`` keeps its behavior on the

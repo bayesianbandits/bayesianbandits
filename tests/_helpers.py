@@ -2,9 +2,8 @@
 
 Kept separate from ``conftest.py`` (which holds fixtures) because the
 module name ``conftest`` is ambiguous when pytest is invoked from the
-repo root: ``benchmarks/conftest.py`` shadows it. This module's name is
-unique, and ``pythonpath = ["tests"]`` in pyproject.toml makes it
-importable from any test module.
+repo root: ``benchmarks/conftest.py`` shadows it. ``tests`` is a
+package, so import these as ``from tests._helpers import ...``.
 """
 
 import numpy as np

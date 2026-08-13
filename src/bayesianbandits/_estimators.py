@@ -803,6 +803,11 @@ def _invalidate_cached_properties(
     return wrapper
 
 
+# Cap on the dense (n_features, block) scratch densified from a sparse
+# X in _marginal_predictive_sd: ~2M float64 elements = 16 MB per array.
+_MARGINAL_SD_BLOCK_ELEMS = 2**21
+
+
 def _marginal_predictive_sd(
     factor: PrecisionFactor, X: Union[NDArray[Any], csc_array]
 ) -> NDArray[np.float64]:
@@ -813,15 +818,25 @@ def _marginal_predictive_sd(
     equals :math:`X \\Lambda^{-1} X^T` -- and takes column norms.
     Neither :math:`\\Lambda^{-1}` nor any :math:`n \\times n` matrix is
     ever formed; the cost is linear in the number of prediction rows.
+    A sparse ``X`` is densified for the solve in row blocks, keeping the
+    dense scratch bounded regardless of the number of prediction rows.
     """
     # Dispatch on the actual type of X: sparse models accept dense X too
     # (check_array's accept_sparse only *permits* sparse input)
-    if issparse(X):
-        rhs = np.asarray(X.T.toarray(), dtype=np.float64)
-    else:
+    if not issparse(X):
         rhs = np.asarray(X, dtype=np.float64).T
-    B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
-    return cast(NDArray[np.float64], np.sqrt((B * B).sum(axis=0)))
+        B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
+        return cast(NDArray[np.float64], np.sqrt((B * B).sum(axis=0)))
+    assert X.shape is not None  # for the type checker
+    n_rows, n_features = X.shape
+    block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
+    var = np.empty(n_rows, dtype=np.float64)
+    for start in range(0, n_rows, block):
+        stop = min(n_rows, start + block)
+        rhs = np.asarray(X[start:stop].T.toarray(), dtype=np.float64)
+        B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
+        var[start:stop] = (B * B).sum(axis=0)
+    return cast(NDArray[np.float64], np.sqrt(var))
 
 
 def _validated_marginal_mean_sd(
@@ -1772,11 +1787,11 @@ scipy.sparse.csc_array
 
         Each row's marginal is a Student t with :math:`2 a_n` degrees
         of freedom, location :math:`x_i^T \\mu_n`, and scale
-        :math:`\\sqrt{(b_n / a_n)\\, x_i^T \\Lambda_n^{-1} x_i}`. Draws
-        are independent across rows -- see
+        :math:`\\sqrt{(b_n / a_n)\\, x_i^T \\Lambda_n^{-1} x_i}`. Each
+        (draw, row) cell mixes its own chi-square variable, so draws
+        are fully independent across rows -- see
         :meth:`NormalRegressor.sample_marginal` for the contrast with
-        ``sample`` -- while the chi-square mixing variable is shared
-        across rows within a draw, leaving every row's marginal exact.
+        ``sample``.
 
         If the model has not been fitted, samples are drawn from the
         prior predictive distribution.
@@ -1802,11 +1817,13 @@ scipy.sparse.csc_array
         mean, sd = _validated_marginal_mean_sd(self, X)
         df = 2.0 * self.a_
         z = self.random_state_.standard_normal((size, mean.shape[0]))
-        g = self.random_state_.chisquare(df, size=size)
+        # one chi-square per (draw, row) cell: rows must be fully
+        # independent, not merely marginally exact
+        g = self.random_state_.chisquare(df, size=(size, mean.shape[0]))
         # the (b/a) scale factor and the df/g mixing fold into one
-        # per-draw scale
+        # per-cell scale
         scale = np.sqrt((self.b_ / self.a_) * df / g)
-        return cast(NDArray[np.float64], mean + (sd * z) * scale[:, None])
+        return cast(NDArray[np.float64], mean + (sd * z) * scale)
 
     @_invalidate_cached_properties
     def decay(
@@ -2349,10 +2366,15 @@ scipy.sparse.csc_array
 
         eta = X_pred @ self.coef_
 
+        return self._inverse_link(eta)
+
+    def _inverse_link(self, eta: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Apply the inverse link elementwise, mapping the linear
+        predictor to the response scale."""
         if self.link == "logit":
-            return expit(eta)
+            return cast(NDArray[np.float64], expit(eta))
         elif self.link == "log":
-            return np.exp(np.clip(eta, -700, 700))
+            return cast(NDArray[np.float64], np.exp(np.clip(eta, -700, 700)))
         else:
             raise ValueError(f"Unknown link: {self.link}")
 
@@ -2411,12 +2433,7 @@ scipy.sparse.csc_array
         # Vectorized: (size, n_features) @ (n_features, n_samples) -> (size, n_samples)
         eta = param_samples @ X_sample.T
 
-        if self.link == "logit":
-            return expit(eta)
-        elif self.link == "log":
-            return np.exp(np.clip(eta, -700, 700))
-        else:
-            raise ValueError(f"Unknown link: {self.link}")
+        return self._inverse_link(cast(NDArray[np.float64], eta))
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2455,13 +2472,7 @@ scipy.sparse.csc_array
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
         z = self.random_state_.standard_normal((size, mean.shape[0]))
-        eta = mean + sd * z
-        if self.link == "logit":
-            return cast(NDArray[np.float64], expit(eta))
-        elif self.link == "log":
-            return cast(NDArray[np.float64], np.exp(np.clip(eta, -700, 700)))
-        else:
-            raise ValueError(f"Unknown link: {self.link}")
+        return self._inverse_link(mean + sd * z)
 
     @_invalidate_cached_properties
     def decay(

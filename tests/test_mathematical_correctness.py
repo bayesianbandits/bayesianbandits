@@ -10,7 +10,6 @@ All examples are small enough to verify by hand.
 import numpy as np
 import pytest
 import scipy.sparse as sp
-from _helpers import cov_inv_dense
 from numpy.testing import assert_allclose
 from scipy.stats import dirichlet as scipy_dirichlet
 from scipy.stats import gamma as scipy_gamma
@@ -24,6 +23,7 @@ from bayesianbandits import (
 )
 from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
 from bayesianbandits._gaussian import LaplaceApproximator
+from tests._helpers import cov_inv_dense
 
 # ---------------------------------------------------------------------------
 # Fixtures

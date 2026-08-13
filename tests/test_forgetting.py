@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from _helpers import symmetrize
 from numpy.testing import assert_allclose
 from scipy import sparse
 from scipy.linalg import cho_factor, cho_solve, eigvalsh
@@ -16,6 +15,7 @@ from bayesianbandits._forgetting import (
     _sift_downdate_sparse,
     filter_batch,
 )
+from tests._helpers import symmetrize
 
 
 def _random_pd(n, rng, cond=10.0):

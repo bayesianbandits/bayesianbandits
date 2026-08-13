@@ -352,12 +352,20 @@ class EXP3A:
             Selected arms, one per context if top_k is None,
             or k arms per context if top_k is specified.
         """
-        # Marginal draws: this policy reduces samples to per-(arm, context)
-        # statistics, so iid marginal sampling is exact and much cheaper
-        samples = batch_sample_arms(arms, X, size=self.samples_needed, marginal=True)
+        # Marginal draws when marginal_ok: this policy reduces samples to
+        # per-(arm, context) statistics, so iid marginal sampling is exact
+        # and much cheaper; subclasses can opt out via marginal_ok = False
+        samples = batch_sample_arms(
+            arms, X, size=self.samples_needed, marginal=self.marginal_ok
+        )
         if samples is None:
             samples = np.array(
-                [arm.sample_marginal(X, self.samples_needed) for arm in arms]
+                [
+                    (arm.sample_marginal if self.marginal_ok else arm.sample)(
+                        X, self.samples_needed
+                    )
+                    for arm in arms
+                ]
             )
             # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
             samples = samples.transpose(0, 2, 1)
@@ -395,9 +403,14 @@ class EXP3A:
             multiplied with the importance weights.
         """
         # Recompute probabilities (stateless design); only per-arm means
-        # are consumed, so marginal draws are exact
+        # are consumed, so marginal draws are exact when marginal_ok
         rewards = np.stack(
-            [a.sample_marginal(X, size=self.samples).mean(axis=0) for a in all_arms]
+            [
+                (a.sample_marginal if self.marginal_ok else a.sample)(
+                    X, size=self.samples
+                ).mean(axis=0)
+                for a in all_arms
+            ]
         )
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
 

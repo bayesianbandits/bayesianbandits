@@ -1,9 +1,9 @@
 """Shared fixtures for the test suite.
 
-Plain (non-fixture) helpers live in ``tests/_helpers.py`` -- importing
-them from here would be ambiguous, since ``benchmarks/conftest.py``
-shadows the ``conftest`` module name when pytest runs from the repo
-root.
+Plain (non-fixture) helpers live in ``tests/_helpers.py`` (imported as
+``from tests._helpers import ...``) -- importing them from here would
+be ambiguous, since ``benchmarks/conftest.py`` shadows the ``conftest``
+module name when pytest runs from the repo root.
 """
 
 from unittest import mock

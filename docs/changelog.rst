@@ -13,7 +13,8 @@ Unreleased
   :math:`n \times n` matrix is ever formed, and per-draw cost is independent
   of the feature count). ``Arm.sample_marginal``, ``LearnerPipeline.sample_marginal``,
   and ``batch_sample_arms(..., marginal=True)`` forward to it, falling back
-  to joint ``sample`` for learners without it. Unlike ``sample`` -- whose
+  to joint ``sample`` for learners without it (or whose class overrides
+  ``sample`` without it). Unlike ``sample`` -- whose
   rows within one draw share a weight vector -- draws are independent
   across rows, so it serves per-row statistics only (#258)
 
@@ -24,14 +25,24 @@ Unreleased
   statistics, for which marginal draws are exact), giving large speedups
   for their Monte Carlo estimates, dense and sparse alike.
   ``ThompsonSampling`` and joint ``sample`` are unchanged, byte-for-byte.
-  Custom policies can opt in by setting ``marginal_ok = True`` (#258)
+  Custom policies can opt in by setting ``marginal_ok = True`` (declared
+  on ``PolicyProtocol``), and subclasses of the built-in policies can
+  opt out with ``marginal_ok = False``, which their ``__call__`` and the
+  agents both honor. The marginal path is never used for a learner whose
+  class overrides ``sample`` without also overriding ``sample_marginal``,
+  so customized joint sampling is not silently bypassed (#258)
 
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
   ``EpsilonGreedy`` change: the marginal path consumes different amounts
-  of randomness than joint sampling. The decision distributions are
-  unchanged (per-row marginals are identical; verified by KS tests).
+  of randomness than joint sampling. Per-row marginals are identical
+  (verified by KS tests) and decisions converge to the same choices as
+  ``samples`` grows, but for arms sharing one model the per-arm Monte
+  Carlo estimates no longer share weight draws, so finite-sample
+  selection noise among near-tied arms increases; raise ``samples`` to
+  compensate (marginal draws are much cheaper per draw), or opt the
+  policy out with ``marginal_ok = False``.
   ``sample`` itself is bit-for-bit identical to previous versions (#258)
 
 1.4.0 (2026-07-31)
