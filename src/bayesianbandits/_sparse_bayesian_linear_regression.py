@@ -12,6 +12,7 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import cho_solve, solve_triangular  # type: ignore
 from scipy.sparse import (  # type: ignore  # type: ignore
     csc_array,
     csc_matrix,
@@ -79,6 +80,16 @@ class CholmodSparseFactor:
         """Solve L^T x = z, undo permutation."""
         return self._factor.solve(z, system="Lt")[self._inv_perm]
 
+    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Apply the transpose of the ``colorize`` operator: L^{-1} P b.
+
+        If ``M`` is the colorize operator (``M M^T = Λ^{-1}``), this
+        returns ``M^T b``, so ``half_solve(X.T).T @ half_solve(X.T)``
+        equals ``X Λ^{-1} X^T`` -- a half-solve per column against the
+        cached factor, without ever forming ``Λ^{-1}``.
+        """
+        return self._factor.solve(b[self._factor.perm], system="L")
+
     def logdet(self) -> float:
         """Log-determinant of the factored matrix via CHOLMOD."""
         return float(self._factor.logdet())
@@ -111,6 +122,14 @@ class SuperLUSparseFactor:
     def __post_init__(self) -> None:
         self._Lt_csc = csc_array(self._L.T)
 
+    @cached_property
+    def _perm(self) -> NDArray[np.intp]:
+        """Inverse of ``_inv_perm``, computed lazily so that ``fit``/
+        ``partial_fit`` (which never call ``half_solve``) pay no extra cost."""
+        perm = np.empty_like(self._inv_perm)
+        perm[self._inv_perm] = np.arange(self._inv_perm.size)
+        return perm
+
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cast(NDArray[np.float64], spsolve(self._precision, b))
 
@@ -119,6 +138,17 @@ class SuperLUSparseFactor:
         return cast(
             NDArray[np.float64],
             spsolve_triangular(self._Lt_csc, z, lower=False)[self._inv_perm],
+        )
+
+    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Apply the transpose of the ``colorize`` operator: L^{-1} P b.
+
+        Same contract as :meth:`CholmodSparseFactor.half_solve`, against
+        the cached triangular factor (no refactorization, unlike ``solve``).
+        """
+        return cast(
+            NDArray[np.float64],
+            spsolve_triangular(self._L, b[self._perm], lower=True),
         )
 
     def logdet(self) -> float:
@@ -163,6 +193,7 @@ class ScaledSparseFactor:
     If L L^T = P, then (s*P) has factor (√s * L).
     - solve(s*P, b) = (1/s) * solve(P, b)
     - colorize(s*P, z) = (1/√s) * colorize(P, z)
+    - half_solve(s*P, b) = (1/√s) * half_solve(P, b)
     """
 
     _inner: ConcreteFactor
@@ -174,6 +205,11 @@ class ScaledSparseFactor:
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cast(NDArray[np.float64], self._inner.colorize(z) / np.sqrt(self._scale))
+
+    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        return cast(
+            NDArray[np.float64], self._inner.half_solve(b) / np.sqrt(self._scale)
+        )
 
     def logdet(self) -> float:
         """Log-determinant: log|s*P| = p*log(s) + log|P|."""
@@ -211,20 +247,27 @@ class DenseFactor:
 
     @cached_property
     def _U_inv(self) -> NDArray[np.float64]:
-        from scipy.linalg import solve_triangular
-
         return solve_triangular(
             self._U, np.eye(self._n_features), lower=False, check_finite=False
         )
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        from scipy.linalg import cho_solve
-
         return cho_solve((self._U, False), b, check_finite=False)
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Compute U^{-1} z, producing samples from N(0, Λ^{-1})."""
         return cast(NDArray[np.float64], self._U_inv @ z)
+
+    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+        """Solve U^T x = b, the transpose of the ``colorize`` operator.
+
+        Same contract as :meth:`CholmodSparseFactor.half_solve`; one
+        triangular solve, without building ``U^{-1}``.
+        """
+        return cast(
+            NDArray[np.float64],
+            solve_triangular(self._U, b, trans=1, lower=False, check_finite=False),
+        )
 
     def logdet(self) -> float:
         """log|Λ| = 2·sum(log(diag(U)))."""
