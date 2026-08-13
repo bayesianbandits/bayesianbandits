@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
 from scipy.linalg.blas import dgemv, dsymv  # type: ignore
-from scipy.sparse import csc_array, diags, eye
+from scipy.sparse import csc_array, diags, eye, issparse
 from scipy.special import expit
 from scipy.stats import (
     Covariance,
@@ -803,6 +803,61 @@ def _invalidate_cached_properties(
     return wrapper
 
 
+# Cap on the dense (n_features, block) scratch densified from a sparse
+# X in _marginal_predictive_sd: ~2M float64 elements = 16 MB per array.
+_MARGINAL_SD_BLOCK_ELEMS = 2**21
+
+
+def _marginal_predictive_sd(
+    factor: PrecisionFactor, X: Union[NDArray[Any], csc_array]
+) -> NDArray[np.float64]:
+    """Per-row predictive standard deviations :math:`\\sqrt{x_i^T \\Lambda^{-1} x_i}`.
+
+    Computes ``B = factor.half_solve(X.T)`` -- one triangular solve per
+    prediction row against the cached precision factor, so ``B.T @ B``
+    equals :math:`X \\Lambda^{-1} X^T` -- and takes column norms.
+    Neither :math:`\\Lambda^{-1}` nor any :math:`n \\times n` matrix is
+    ever formed; the cost is linear in the number of prediction rows.
+    A sparse ``X`` is densified for the solve in row blocks, keeping the
+    dense scratch bounded regardless of the number of prediction rows.
+    """
+    # Dispatch on the actual type of X: sparse models accept dense X too
+    # (check_array's accept_sparse only *permits* sparse input)
+    if not issparse(X):
+        rhs = np.asarray(X, dtype=np.float64).T
+        B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
+        return cast(NDArray[np.float64], np.sqrt((B * B).sum(axis=0)))
+    assert X.shape is not None  # for the type checker
+    n_rows, n_features = X.shape
+    block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
+    var = np.empty(n_rows, dtype=np.float64)
+    for start in range(0, n_rows, block):
+        stop = min(n_rows, start + block)
+        rhs = np.asarray(X[start:stop].T.toarray(), dtype=np.float64)
+        B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
+        var[start:stop] = (B * B).sum(axis=0)
+    return cast(NDArray[np.float64], np.sqrt(var))
+
+
+def _validated_marginal_mean_sd(
+    est: Any, X: Union[NDArray[Any], csc_array]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Shared ``sample_marginal`` preamble for the linear/GLM estimators:
+    validate ``X``, initialize the prior if the model is unfitted, and
+    return the per-row predictive mean and standard deviation of the
+    linear predictor ``X @ w``."""
+    X_pred = check_array(
+        X, copy=True, ensure_2d=True, accept_sparse="csc" if est.sparse else False
+    )
+    try:
+        check_is_fitted(est, "coef_")
+    except NotFittedError:
+        est._initialize_prior(X_pred)
+    mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
+    sd = _marginal_predictive_sd(est._precision_factor, X_pred)
+    return mean, sd
+
+
 class NormalRegressor(BaseEstimator, RegressorMixin):
     """
     Bayesian linear regression with known noise variance.
@@ -1247,6 +1302,50 @@ scipy.sparse.csc_array
 
         return samples @ X_sample.T  # type: ignore
 
+    def sample_marginal(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample iid draws from each row's marginal posterior predictive.
+
+        Each prediction row's draws come from its exact marginal
+        posterior predictive
+        :math:`\\mathcal{N}(x_i^T \\hat{w},\\; x_i^T \\Lambda^{-1} x_i)`.
+        Unlike ``sample`` -- whose rows within one draw share a weight
+        vector and are therefore correlated -- draws are independent
+        across rows, so only per-row statistics (means, quantiles,
+        variances) are meaningful across the returned rows.
+
+        For those statistics the result is exact and much cheaper than
+        ``sample`` when many draws are needed: one triangular solve per
+        row against the cached precision factor plus univariate draws,
+        with per-draw cost independent of the number of features.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of marginal samples to draw per row.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Independent marginal draws for each row.
+
+        See Also
+        --------
+        sample : Joint draws whose rows share a weight draw.
+        predict : Point predictions using the posterior mean.
+        """
+        mean, sd = _validated_marginal_mean_sd(self, X)
+        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        return cast(NDArray[np.float64], mean + sd * z)
+
     @_invalidate_cached_properties
     def decay(
         self,
@@ -1680,6 +1779,52 @@ scipy.sparse.csc_array
 
         return np.atleast_2d(samples @ X_sample.T)  # type: ignore
 
+    def sample_marginal(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample iid draws from each row's marginal posterior predictive.
+
+        Each row's marginal is a Student t with :math:`2 a_n` degrees
+        of freedom, location :math:`x_i^T \\mu_n`, and scale
+        :math:`\\sqrt{(b_n / a_n)\\, x_i^T \\Lambda_n^{-1} x_i}`. Each
+        (draw, row) cell mixes its own chi-square variable, so draws
+        are fully independent across rows -- see
+        :meth:`NormalRegressor.sample_marginal` for the contrast with
+        ``sample``.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of marginal samples to draw per row.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Independent marginal draws for each row.
+
+        See Also
+        --------
+        sample : Joint draws whose rows share a weight draw.
+        predict : Point predictions using the posterior mean.
+        """
+        mean, sd = _validated_marginal_mean_sd(self, X)
+        df = 2.0 * self.a_
+        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        # one chi-square per (draw, row) cell: rows must be fully
+        # independent, not merely marginally exact
+        g = self.random_state_.chisquare(df, size=(size, mean.shape[0]))
+        # the (b/a) scale factor and the df/g mixing fold into one
+        # per-cell scale
+        scale = np.sqrt((self.b_ / self.a_) * df / g)
+        return cast(NDArray[np.float64], mean + (sd * z) * scale)
+
     @_invalidate_cached_properties
     def decay(
         self,
@@ -1746,7 +1891,7 @@ def multivariate_t_sample_from_covariance(
     loc: Optional[NDArray[np.float64]],
     shape: Covariance,
     df: float = 1,
-    size: int = 1,
+    size: Union[int, tuple[int, ...]] = 1,
     random_state: Union[int, np.random.Generator, None] = None,
 ):
     """
@@ -1782,9 +1927,18 @@ def multivariate_t_sample_from_covariance(
     z = multivariate_normal.rvs(
         0,
         shape,  # type: ignore
-        size=size,
+        size=size,  # type: ignore[arg-type]  # scipy stubs say int; tuples work
         random_state=rng,
     )
+    # rvs squeezes singleton axes (size=1 or 1-dimensional shape) and
+    # returns a single draw for empty sizes; restore ``(*size, dim)`` so
+    # the chi-square scaling broadcasts per draw. ``size`` may be an int
+    # or a tuple, so shape the result after ``x`` rather than ``size``.
+    dim = shape.shape[-1]
+    if np.prod(np.shape(x), dtype=int) == 0:
+        z = np.zeros(np.shape(x) + (dim,))
+    else:
+        z = np.asarray(z).reshape(np.shape(x) + (dim,))
     if loc is None:
         loc = np.zeros_like(z)
     samples = loc + z / np.sqrt(x)[..., None]
@@ -2212,10 +2366,15 @@ scipy.sparse.csc_array
 
         eta = X_pred @ self.coef_
 
+        return self._inverse_link(eta)
+
+    def _inverse_link(self, eta: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Apply the inverse link elementwise, mapping the linear
+        predictor to the response scale."""
         if self.link == "logit":
-            return expit(eta)
+            return cast(NDArray[np.float64], expit(eta))
         elif self.link == "log":
-            return np.exp(np.clip(eta, -700, 700))
+            return cast(NDArray[np.float64], np.exp(np.clip(eta, -700, 700)))
         else:
             raise ValueError(f"Unknown link: {self.link}")
 
@@ -2274,12 +2433,46 @@ scipy.sparse.csc_array
         # Vectorized: (size, n_features) @ (n_features, n_samples) -> (size, n_samples)
         eta = param_samples @ X_sample.T
 
-        if self.link == "logit":
-            return expit(eta)
-        elif self.link == "log":
-            return np.exp(np.clip(eta, -700, 700))
-        else:
-            raise ValueError(f"Unknown link: {self.link}")
+        return self._inverse_link(cast(NDArray[np.float64], eta))
+
+    def sample_marginal(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample iid draws from each row's marginal posterior predictive.
+
+        Draws each row's linear predictor from its exact marginal
+        :math:`\\eta_i \\sim \\mathcal{N}(x_i^T \\hat{w},\\;
+        x_i^T \\Lambda^{-1} x_i)` and applies the inverse link
+        elementwise. Draws are independent across rows -- see
+        :meth:`NormalRegressor.sample_marginal` for the contrast with
+        ``sample``.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of marginal samples to draw per row.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Independent marginal draws for each row, on the response
+            scale of the link.
+
+        See Also
+        --------
+        sample : Joint draws whose rows share a weight draw.
+        predict : Point predictions using the posterior mean.
+        """
+        mean, sd = _validated_marginal_mean_sd(self, X)
+        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        return self._inverse_link(mean + sd * z)
 
     @_invalidate_cached_properties
     def decay(

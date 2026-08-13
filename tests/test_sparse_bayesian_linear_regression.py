@@ -132,6 +132,20 @@ class TestSparseFactor:
 
         assert_array_almost_equal(sparse_samples, scipy_samples)
 
+    def test_mvt_sample_tuple_size_and_empty(self, precision_matrix):
+        """Tuple ``size`` and ``size=0`` follow numpy conventions
+        (regression: a ``reshape(size, -1)`` once broke both)."""
+        scipy_cov = Covariance.from_precision(precision_matrix)
+        d = scipy_cov.shape[0]
+        draws = multivariate_t_sample_from_covariance(
+            loc=None, shape=scipy_cov, size=(2, 4), random_state=0, df=5
+        )
+        assert np.asarray(draws).shape == (2, 4, d)
+        empty = multivariate_t_sample_from_covariance(
+            loc=None, shape=scipy_cov, size=0, random_state=0, df=5
+        )
+        assert np.asarray(empty).shape == (0, d)
+
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_logdet_matches_dense(self, precision_matrix, solver):
         """logdet via sparse factor matches np.linalg.slogdet for both solvers."""

@@ -284,11 +284,37 @@ class TestEXP3AEdgeCases:
         # Update should work normally
         agent.update(X, np.array([1.0]))
 
+    def test_extreme_eta_heavy_tailed_rewards(self):
+        """Numerical stability with extreme eta and heavy-tailed draws.
+
+        The default a=0.1 prior gives a t(0.2) prior predictive whose
+        draws reach ~1e15, driving every exp weight to exact zero at
+        eta=100 -- the underflow regime that ``test_extreme_eta``'s
+        concentrated prior no longer exercises. No assertion on which
+        arm wins (the sample mean of t(0.2) has no population mean);
+        pulls must simply stay valid and finite.
+        """
+        arms: List[Arm[NDArray[Any], int]] = [
+            Arm(i, learner=NormalInverseGammaRegressor(mu=mu, lam=100))
+            for i, mu in enumerate([0.1, 0.2, 0.9])
+        ]
+        policy = EXP3A(gamma=0.01, eta=100.0, samples=20)
+        agent = ContextualAgent(arms, policy, random_seed=42)
+
+        X = np.array([[1.0]])
+        for _ in range(50):
+            action = agent.pull(X)
+            assert action[0] in (0, 1, 2)
+            agent.update(X, np.array([1.0]))
+
     def test_extreme_eta(self):
         """Test numerical stability with extreme eta values."""
         arms: List[Arm[NDArray[Any], int]] = []
         for i, mu in enumerate([0.1, 0.2, 0.9]):
-            learner = NormalInverseGammaRegressor(mu=mu, lam=100)
+            # Higher 'a' for a concentrated prior: with the default a=0.1
+            # the prior predictive is t(0.2), whose sample mean has no
+            # population mean, making "best arm wins" a coin flip.
+            learner = NormalInverseGammaRegressor(mu=mu, lam=100, a=10, b=1)
             arms.append(Arm(i, learner=learner))
 
         # Very high eta
@@ -502,53 +528,68 @@ class TestEXP3AProperties:
             total_reward += reward
             agent.update(X, np.array([reward]))
 
-        # Check that no arm dominates (adversary forces exploration)
+        # Check that no arm dominates (adversary forces exploration).
+        # Bands are ~3 sigma below the observed cross-seed minima
+        # (max-prop 0.34-0.38, min-prop 0.29-0.33 over 15 seeds).
         pull_proportions = np.array(pull_counts) / sum(pull_counts)
-        assert np.max(pull_proportions) < 0.4  # No arm pulled > 40% of time
-        assert np.min(pull_proportions) > 0.2  # All arms pulled > 20% of time
+        assert np.max(pull_proportions) < 0.4  # No arm dominates
+        assert np.min(pull_proportions) > 0.25  # All arms pulled often
 
         # Should still achieve reasonable reward despite adversary
-        assert (
-            total_reward / 500 > 0.6
-        )  # Randomly pulling each arm should yield ~0.67 average reward
+        # (observed 0.584-0.64 across 15 seeds, sd ~0.016; random
+        # pulling yields ~0.67)
+        assert total_reward / 500 > 0.54
 
     def test_adaptive_adversary(self):
-        """Test against adversary that adapts to algorithm's beliefs."""
-        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(2)]
+        """Test against adversary that adapts to algorithm's beliefs.
 
-        policy = EXP3A(eta=1.0, ix_gamma=0.5)
-        agent = ContextualAgent(arms, policy, random_seed=42)
+        A single seed's last-50-round mean is too noisy (sd ~0.06) to
+        support a tight bound, so the statistics are averaged over five
+        seeds, which supports bounds with real detection power.
+        """
 
-        X = np.array([[1.0]])
-        rewards_received: List[float] = []
-        last_50_pulls: List[int] = []
+        def run(seed: int) -> tuple[float, float]:
+            arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(2)]
+            policy = EXP3A(eta=1.0, ix_gamma=0.5)
+            agent = ContextualAgent(arms, policy, random_seed=seed)
 
-        for t in range(200):
-            beliefs = [arm.learner.predict(X)[0] for arm in arms]  # type: ignore
+            X = np.array([[1.0]])
+            rewards_received: List[float] = []
+            last_50_pulls: List[int] = []
 
-            action = agent.pull(X)
-            arm_idx = action[0]
+            for t in range(200):
+                beliefs = [arm.learner.predict(X)[0] for arm in arms]  # type: ignore
 
-            if t >= 150:  # Track last 50 pulls
-                last_50_pulls.append(arm_idx)
+                action = agent.pull(X)
+                arm_idx = action[0]
 
-            # Adversary: make the arm that looks best actually give bad reward
-            if arm_idx == np.argmax(beliefs):
-                reward = 0.0
-            else:
-                reward = 1.0
+                if t >= 150:  # Track last 50 pulls
+                    last_50_pulls.append(arm_idx)
 
-            rewards_received.append(reward)
-            agent.update(X, np.array([reward]))
+                # Adversary: make the arm that looks best give bad reward
+                if arm_idx == np.argmax(beliefs):
+                    reward = 0.0
+                else:
+                    reward = 1.0
 
-        # Should converge to ~0.5 reward (adversary makes arms equivalent)
-        assert (
-            np.mean(rewards_received[-50:]) > 0.45
-        )  # Randomly pulling should yield ~0.5 average reward
+                rewards_received.append(reward)
+                agent.update(X, np.array([reward]))
 
-        # Should be exploring both arms in steady state
-        last_50_proportions = np.bincount(last_50_pulls, minlength=2) / 50
-        assert np.min(last_50_proportions) > 0.3  # Both arms pulled frequently
+            last_50_proportions = np.bincount(last_50_pulls, minlength=2) / 50
+            return float(np.mean(rewards_received[-50:])), float(
+                np.min(last_50_proportions)
+            )
+
+        results = np.array([run(seed) for seed in range(5)])
+
+        # Should converge to ~0.5 reward (adversary makes arms
+        # equivalent). The 5-seed average has sd ~0.028 (per-seed mean
+        # 0.49, sd 0.06 over 15 seeds), so 0.42 is a ~2.5 sigma bound.
+        assert results[:, 0].mean() > 0.42
+
+        # Should be exploring both arms in steady state (per-seed
+        # minimum proportion observed 0.28-0.50 across 15 seeds)
+        assert results[:, 1].mean() > 0.26
 
     def test_exp3a_top_k_return_type(self) -> None:
         """Test that EXP3A returns correct types with top_k."""

@@ -484,6 +484,40 @@ class Arm(Generic[ContextType, TokenType]):
         return apply_reward_function(self.reward_function, samples, X)
 
     @requires_learner
+    def sample_marginal(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
+        """Draw per-context marginal reward samples.
+
+        Uses the learner's ``sample_marginal`` when available -- iid
+        draws from each context's exact marginal posterior predictive,
+        much cheaper than ``sample`` for large ``size``. Falls back to
+        joint ``sample`` when the learner has no ``sample_marginal``,
+        when the learner's class overrides ``sample`` without also
+        overriding ``sample_marginal``, or when an ``Arm`` subclass
+        overrides ``sample`` -- custom sampling behavior must not be
+        bypassed; per-context marginals are identical either way.
+        Draws are independent across contexts, so use this only for
+        per-context statistics such as means and quantiles, never for
+        comparisons across contexts within a draw.
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix of shape ``(n_contexts, n_features)``.
+        size : int, default=1
+            Number of samples to draw per context.
+
+        Returns
+        -------
+        NDArray[np.float64]
+            Reward samples of shape ``(size, n_contexts)``.
+        """
+        assert self.learner is not None
+        if type(self).sample is not Arm.sample:
+            return self.sample(X, size)
+        samples = resolve_marginal_sampler(self.learner)(X, size)
+        return apply_reward_function(self.reward_function, samples, X)
+
+    @requires_learner
     def update(
         self,
         X: ContextType,
@@ -539,6 +573,25 @@ class Arm(Generic[ContextType, TokenType]):
             f"Arm(action_token={self.action_token},"
             f" reward_function={self.reward_function})"
         )
+
+
+def resolve_marginal_sampler(learner: Any) -> Callable[..., NDArray[np.float64]]:
+    """Resolve a learner's marginal sampler, falling back to joint ``sample``.
+
+    Returns the learner's ``sample_marginal`` only when it is safe to
+    use: walking the MRO from the most-derived class, the first class
+    that defines either method decides. A class that overrides
+    ``sample`` without also overriding ``sample_marginal`` (e.g. to
+    clip or transform draws) gets the fallback, so its custom sampling
+    behavior is never bypassed; per-row marginals are identical either
+    way, the fallback is merely slower.
+    """
+    for klass in type(learner).__mro__:
+        if "sample_marginal" in vars(klass):
+            return cast(Callable[..., NDArray[np.float64]], learner.sample_marginal)
+        if "sample" in vars(klass):
+            break
+    return cast(Callable[..., NDArray[np.float64]], learner.sample)
 
 
 def can_batch_arms(arms: List[Arm[Any, Any]]) -> bool:
@@ -608,7 +661,10 @@ def stack_features(feature_list: List[Any]) -> Any:
 
 
 def batch_sample_arms(
-    arms: List[Arm[ContextType, TokenType]], X: ContextType, size: int = 1
+    arms: List[Arm[ContextType, TokenType]],
+    X: ContextType,
+    size: int = 1,
+    marginal: bool = False,
 ) -> Optional[NDArray[np.float64]]:
     """
     Batch sample from arms that share the same model.
@@ -624,6 +680,13 @@ def batch_sample_arms(
         Context data
     size : int, default=1
         Number of samples to draw from each arm
+    marginal : bool, default=False
+        If True, draw iid per-row marginal samples via the model's
+        ``sample_marginal`` when it is safe to use (falling back to
+        joint ``sample`` -- see :func:`resolve_marginal_sampler`).
+        Much cheaper for large ``size``; only
+        valid when the caller consumes per-(arm, context) statistics,
+        since draws are then independent across rows.
 
     Returns
     -------
@@ -671,7 +734,8 @@ def batch_sample_arms(
     # We know from can_batch_arms that first learner is LearnerWithTransform
     first_learner = cast(LearnerWithTransform[Any], arms[0].learner)
     model = first_learner.final_estimator
-    samples = model.sample(X_stacked, size=size)
+    sampler = resolve_marginal_sampler(model) if marginal else model.sample
+    samples = sampler(X_stacked, size=size)
 
     # Reshape based on size
     if size == 1:

@@ -15,6 +15,7 @@ from bayesianbandits._forgetting import (
     _sift_downdate_sparse,
     filter_batch,
 )
+from tests._helpers import symmetrize
 
 
 def _random_pd(n, rng, cond=10.0):
@@ -32,16 +33,6 @@ def _naive_sift_downdate(R, X_bar, lam):
     w = R @ X_bar.T
     H = X_bar @ w
     return R - (1 - lam) * w @ np.linalg.solve(H, w.T)
-
-
-def _sym(A):
-    """Mirror upper triangle to lower, producing a full symmetric matrix.
-
-    ``_sift_downdate_dense`` returns upper-triangle-only (dsyrk convention).
-    Tests that need full-matrix operations (eigvalsh, matmul, element access
-    in the lower triangle) should call ``_sym`` first.
-    """
-    return np.triu(A) + np.triu(A, 1).T
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +284,7 @@ def _downdate(R, X, y, lam, use_sparse):
         result = filter_batch(X, y, eps=1e-12)
         assert result is not None, "test data should always have excitation"
         X_bar, _ = result
-        R_bar = _sym(_sift_downdate_dense(R, X_bar, lam))
+        R_bar = symmetrize(_sift_downdate_dense(R, X_bar, lam))
         return R_bar, np.asarray(R)
 
 
@@ -440,7 +431,7 @@ class TestSiftForgetting:
             assert result is not None
             R_bar, X_bar, y_bar = result
 
-            advantage = (_sym(R_bar) + X_bar.T @ X_bar) - (lam * R + X.T @ X)
+            advantage = (symmetrize(R_bar) + X_bar.T @ X_bar) - (lam * R + X.T @ X)
             eigs = eigvalsh(advantage)
             assert eigs[0] >= -1e-10, f"advantage not PSD: min eig = {eigs[0]}"
 
@@ -467,7 +458,7 @@ class TestSiftForgetting:
         assert result is not None
         X_bar, _ = result
 
-        R_bar = _sym(_sift_downdate_dense(R, X_bar, lam))
+        R_bar = symmetrize(_sift_downdate_dense(R, X_bar, lam))
 
         # The correction R - R_bar should live in col(R @ X_bar.T)
         w = R @ X_bar.T  # (n, q)
@@ -502,7 +493,7 @@ class TestSiftForgetting:
             result = rule(R, X, y, lam)
             assert result is not None, f"Step {step}: no excitation"
             R_bar, X_bar, y_bar = result
-            R_bar_full = _sym(R_bar) if isinstance(R_bar, np.ndarray) else R_bar
+            R_bar_full = symmetrize(R_bar) if isinstance(R_bar, np.ndarray) else R_bar
             # Forgetting actually modified R (non-vacuous check)
             assert not np.allclose(R_bar_full, R), (
                 f"Step {step}: R_bar == R, no forgetting"
@@ -534,7 +525,7 @@ class TestSiftForgetting:
         result = rule(R, X, y, lam)
         assert result is not None
         R_bar_raw, X_bar, y_bar = result
-        R_bar = _sym(R_bar_raw)
+        R_bar = symmetrize(R_bar_raw)
         R_new = R_bar + X_bar.T @ X_bar
         eta = R_bar @ theta + X_bar.T @ y_bar
         cho = cho_factor(R_new)
@@ -593,7 +584,7 @@ class TestSiftForgetting:
         assert_allclose(X_bar_dense.T @ y_bar, X_dense.T @ y, atol=1e-10)
 
         # R_bar still PD
-        R_bar_full = _sym(R_bar_dense) if not use_sparse else R_bar_dense
+        R_bar_full = symmetrize(R_bar_dense) if not use_sparse else R_bar_dense
         assert eigvalsh(R_bar_full)[0] > 0
 
         # R_bar >= lam * R (Corollary 1)

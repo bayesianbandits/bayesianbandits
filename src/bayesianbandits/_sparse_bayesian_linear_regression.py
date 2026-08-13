@@ -140,16 +140,37 @@ class SuperLUSparseFactor:
             spsolve_triangular(self._Lt_csc, z, lower=False)[self._inv_perm],
         )
 
+    @cached_property
+    def _half_solve_factor(self) -> tuple[csc_array, NDArray[np.float64]]:
+        """Unit-diagonal ``L`` (CSC) and its inverse diagonal, cached
+        because ``spsolve_triangular`` otherwise re-copies and re-scales
+        the factor on every call (O(nnz) per solve). Lazy, like
+        ``_perm``, so ``fit``/``partial_fit`` pay no extra cost."""
+        invdiag = np.asarray(1.0 / self._L.diagonal(), dtype=np.float64)
+        L_unit = csc_array(self._L @ diags(invdiag))
+        return L_unit, invdiag
+
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Apply the transpose of the ``colorize`` operator: L^{-1} P b.
 
         Same contract as :meth:`CholmodSparseFactor.half_solve`, against
         the cached triangular factor (no refactorization, unlike ``solve``).
+        With ``L = L' D`` (``L'`` unit-diagonal), ``x = D^{-1} L'^{-1} b``;
+        the cached ``L'`` lets ``spsolve_triangular`` skip its per-call
+        copy and rescale of the factor (``b[perm]`` is a fresh array, so
+        overwriting both operands is safe).
         """
-        return cast(
-            NDArray[np.float64],
-            spsolve_triangular(self._L, b[self._perm], lower=True),
+        L_unit, invdiag = self._half_solve_factor
+        y = spsolve_triangular(
+            L_unit,
+            b[self._perm],
+            lower=True,
+            unit_diagonal=True,
+            overwrite_A=True,
+            overwrite_b=True,
         )
+        scale = invdiag if y.ndim == 1 else invdiag[:, None]
+        return cast(NDArray[np.float64], y * scale)
 
     def logdet(self) -> float:
         """Log-determinant of the factored matrix.

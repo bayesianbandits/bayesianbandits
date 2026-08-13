@@ -7,8 +7,6 @@ Verifies two properties for each estimator:
 All examples are small enough to verify by hand.
 """
 
-from unittest import mock
-
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -25,38 +23,17 @@ from bayesianbandits import (
 )
 from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
 from bayesianbandits._gaussian import LaplaceApproximator
-from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
+from tests._helpers import cov_inv_dense
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-suitesparse_envvar_params = [
-    SparseSolver.SUPERLU,
-    SparseSolver.CHOLMOD,
-]
 
-
-@pytest.fixture(params=suitesparse_envvar_params, autouse=True)
-def suitesparse_envvar(request):
+@pytest.fixture(autouse=True)
+def suitesparse_envvar(sparse_solver):
     """Run each test with both CHOLMOD and SuperLU sparse solvers."""
-    with mock.patch(
-        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
-    ):
-        yield
-
-
-def _cov_inv_dense(est):
-    """Return cov_inv_ as a full symmetric dense array.
-
-    Dense mode stores only the upper triangle for speed; this helper
-    mirrors it so tests can compare against the full expected matrix.
-    """
-    if sp.issparse(est.cov_inv_):
-        return est.cov_inv_.toarray()
-    A = np.array(est.cov_inv_)
-    # Mirror upper triangle to lower
-    return A + np.triu(A, k=1).T
+    yield
 
 
 # ===========================================================================
@@ -231,7 +208,7 @@ class TestNormalRegressorMath:
         reg.fit(X, y)
 
         assert_allclose(reg.coef_, [2.0, 10.0 / 3], atol=1e-10)
-        assert_allclose(_cov_inv_dense(reg), [[3.0, 0.0], [0.0, 3.0]], atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), [[3.0, 0.0], [0.0, 3.0]], atol=1e-10)
 
     def test_sufficient_stats_correlated_design(self, sparse):
         """X=[[1,1]], y=[4], alpha=1, beta=2.
@@ -248,7 +225,7 @@ class TestNormalRegressorMath:
         reg.fit(X, y)
 
         assert_allclose(reg.coef_, [1.6, 1.6], atol=1e-10)
-        assert_allclose(_cov_inv_dense(reg), [[3.0, 2.0], [2.0, 3.0]], atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), [[3.0, 2.0], [2.0, 3.0]], atol=1e-10)
 
     def test_posterior_predictive_moments(self, sparse):
         """From identity design: X_test=[1,0] => E[y]=2, Var[y]=1/3."""
@@ -292,7 +269,7 @@ class TestNormalRegressorMath:
         weight_samples = reg.sample(X_test, size=100_000)
 
         theoretical_mean = reg.coef_
-        theoretical_cov = np.linalg.inv(_cov_inv_dense(reg))
+        theoretical_cov = np.linalg.inv(cov_inv_dense(reg))
 
         assert_allclose(weight_samples.mean(axis=0), theoretical_mean, atol=0.01)
         assert_allclose(np.cov(weight_samples.T), theoretical_cov, atol=0.01)
@@ -327,7 +304,7 @@ class TestNormalInverseGammaRegressorMath:
         reg.fit(X, y)
 
         assert_allclose(reg.coef_[0], 28.0 / 15, atol=1e-10)
-        assert_allclose(_cov_inv_dense(reg), [[15.0]], atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), [[15.0]], atol=1e-10)
         assert_allclose(reg.a_, 3.5, atol=1e-10)
         assert_allclose(reg.b_, 43.0 / 15, atol=1e-10)
 
@@ -382,7 +359,7 @@ class TestNormalInverseGammaRegressorMath:
 
         df = 2 * reg.a_  # 7
         loc = reg.coef_[0]
-        scale_sq = reg.b_ / (reg.a_ * _cov_inv_dense(reg)[0, 0])
+        scale_sq = reg.b_ / (reg.a_ * cov_inv_dense(reg)[0, 0])
         expected_var = scale_sq * df / (df - 2)
         expected_kurtosis = 6.0 / (df - 4)  # excess kurtosis for t(df)
 
@@ -395,6 +372,9 @@ class TestNormalInverseGammaRegressorMath:
 
         assert_allclose(samples.mean(), loc, atol=0.02)
         assert_allclose(samples.var(), expected_var, atol=0.02)
+        # Kurtosis is a weak-power check here (its estimator for t(7) has
+        # infinite variance); the KS test against the exact Student t in
+        # tests/test_marginal_sampling.py carries the tail-shape power.
         assert_allclose(kurtosis(samples), expected_kurtosis, atol=0.2)
 
 
@@ -432,7 +412,7 @@ class TestBayesianGLMMath:
         glm.fit(X, y)
 
         assert_allclose(glm.coef_[0], 6.0 / 7, atol=1e-10)
-        assert_allclose(_cov_inv_dense(glm)[0, 0], 3.5, atol=1e-10)
+        assert_allclose(cov_inv_dense(glm)[0, 0], 3.5, atol=1e-10)
 
     def test_sufficient_stats_log_single_irls_step(self, sparse):
         """One IRLS step from w=0 with log link, alpha=1.
@@ -460,7 +440,7 @@ class TestBayesianGLMMath:
         glm.fit(X, y)
 
         assert_allclose(glm.coef_[0], 7.0 / 3, atol=1e-10)
-        assert_allclose(_cov_inv_dense(glm)[0, 0], 6.0, atol=1e-10)
+        assert_allclose(cov_inv_dense(glm)[0, 0], 6.0, atol=1e-10)
 
     def test_posterior_predictive_logit_bounded(self, sparse):
         """All logit predictions must be in [0, 1]."""
@@ -562,7 +542,7 @@ class TestEmpiricalBayesNormalRegressorMath:
         nr.fit(X_s, y)
 
         assert_allclose(eb.coef_, nr.coef_, atol=1e-10)
-        assert_allclose(_cov_inv_dense(eb), _cov_inv_dense(nr), atol=1e-10)
+        assert_allclose(cov_inv_dense(eb), cov_inv_dense(nr), atol=1e-10)
 
         # EB-specific sufficient stats
         assert_allclose(eb._prior_scalar, 1.0, atol=1e-10)
@@ -588,7 +568,7 @@ class TestEmpiricalBayesNormalRegressorMath:
 
         XtX = X.T @ X  # always dense for reference calculation
         expected_precision = eb.alpha * np.eye(X.shape[1]) + eb.beta * XtX
-        assert_allclose(_cov_inv_dense(eb), expected_precision, atol=1e-6)
+        assert_allclose(cov_inv_dense(eb), expected_precision, atol=1e-6)
 
     def test_posterior_predictive_matches_normal_regressor(self, sparse):
         """With n_eb_iter=0 and same seed, samples should be identical."""
@@ -694,7 +674,7 @@ class TestNormalRegressorDecay:
         reg.fit(X, y)
 
         coef_before = reg.coef_.copy()
-        prec_before = _cov_inv_dense(reg).copy()
+        prec_before = cov_inv_dense(reg).copy()
 
         gamma = 0.8
         # Decay with 2 rows => factor = gamma^2
@@ -705,7 +685,7 @@ class TestNormalRegressorDecay:
 
         factor = gamma**2
         assert_allclose(reg.coef_, coef_before, atol=1e-10)  # mean unchanged
-        assert_allclose(_cov_inv_dense(reg), factor * prec_before, atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), factor * prec_before, atol=1e-10)
 
     def test_decay_single_row(self, sparse):
         """decay with 1 row scales cov_inv_ by gamma."""
@@ -717,7 +697,7 @@ class TestNormalRegressorDecay:
         reg = NormalRegressor(alpha=1, beta=2, sparse=sparse, random_state=0)
         reg.fit(X, y)
 
-        prec_before = _cov_inv_dense(reg).copy()
+        prec_before = cov_inv_dense(reg).copy()
 
         gamma = 0.5
         X_decay = np.array([[0.0, 0.0]])
@@ -725,7 +705,7 @@ class TestNormalRegressorDecay:
             X_decay = sp.csc_array(X_decay)
         reg.decay(X_decay, decay_rate=gamma)
 
-        assert_allclose(_cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -743,7 +723,7 @@ class TestNIGDecay:
         reg.fit(X, y)
 
         coef_before = reg.coef_.copy()
-        prec_before = _cov_inv_dense(reg).copy()
+        prec_before = cov_inv_dense(reg).copy()
         a_before = reg.a_
         b_before = reg.b_
 
@@ -754,7 +734,7 @@ class TestNIGDecay:
         reg.decay(X_decay, decay_rate=gamma)
 
         assert_allclose(reg.coef_, coef_before, atol=1e-10)
-        assert_allclose(_cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
+        assert_allclose(cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
         assert_allclose(reg.a_, gamma * a_before, atol=1e-10)
         assert_allclose(reg.b_, gamma * b_before, atol=1e-10)
 
@@ -772,7 +752,7 @@ class TestBayesianGLMDecay:
         glm.fit(X, y)
 
         coef_before = glm.coef_.copy()
-        prec_before = _cov_inv_dense(glm).copy()
+        prec_before = cov_inv_dense(glm).copy()
 
         gamma = 0.75
         X_decay = np.array([[0.0]])
@@ -781,7 +761,7 @@ class TestBayesianGLMDecay:
         glm.decay(X_decay, decay_rate=gamma)
 
         assert_allclose(glm.coef_, coef_before, atol=1e-10)
-        assert_allclose(_cov_inv_dense(glm), gamma * prec_before, atol=1e-10)
+        assert_allclose(cov_inv_dense(glm), gamma * prec_before, atol=1e-10)
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -921,7 +901,7 @@ class TestBatchEqualsSequentialNormal:
             seq.partial_fit(Xi, y[i : i + 1])
 
         assert_allclose(seq.coef_, batch.coef_, atol=1e-10)
-        assert_allclose(_cov_inv_dense(seq), _cov_inv_dense(batch), atol=1e-10)
+        assert_allclose(cov_inv_dense(seq), cov_inv_dense(batch), atol=1e-10)
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -948,6 +928,6 @@ class TestBatchEqualsSequentialNIG:
             seq.partial_fit(Xi, y[i : i + 1])
 
         assert_allclose(seq.coef_, batch.coef_, atol=1e-10)
-        assert_allclose(_cov_inv_dense(seq), _cov_inv_dense(batch), atol=1e-10)
+        assert_allclose(cov_inv_dense(seq), cov_inv_dense(batch), atol=1e-10)
         assert_allclose(seq.a_, batch.a_, atol=1e-10)
         assert_allclose(seq.b_, batch.b_, atol=1e-10)
