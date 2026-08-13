@@ -484,6 +484,39 @@ class Arm(Generic[ContextType, TokenType]):
         return apply_reward_function(self.reward_function, samples, X)
 
     @requires_learner
+    def sample_marginal(self, X: ContextType, size: int = 1) -> NDArray[np.float64]:
+        """Draw per-context marginal reward samples.
+
+        Uses the learner's ``sample_marginal`` when available -- iid
+        draws from each context's exact marginal posterior predictive,
+        much cheaper than ``sample`` for large ``size``. Falls back to
+        joint ``sample`` when the learner has no ``sample_marginal`` or
+        when a subclass overrides ``sample``, whose custom behavior must
+        not be bypassed; per-context marginals are identical either way.
+        Draws are independent across contexts, so use this only for
+        per-context statistics such as means and quantiles, never for
+        comparisons across contexts within a draw.
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix of shape ``(n_contexts, n_features)``.
+        size : int, default=1
+            Number of samples to draw per context.
+
+        Returns
+        -------
+        NDArray[np.float64]
+            Reward samples of shape ``(size, n_contexts)``.
+        """
+        assert self.learner is not None
+        sampler = getattr(self.learner, "sample_marginal", None)
+        if sampler is None or type(self).sample is not Arm.sample:
+            return self.sample(X, size)
+        samples = sampler(X, size)
+        return apply_reward_function(self.reward_function, samples, X)
+
+    @requires_learner
     def update(
         self,
         X: ContextType,
@@ -608,7 +641,10 @@ def stack_features(feature_list: List[Any]) -> Any:
 
 
 def batch_sample_arms(
-    arms: List[Arm[ContextType, TokenType]], X: ContextType, size: int = 1
+    arms: List[Arm[ContextType, TokenType]],
+    X: ContextType,
+    size: int = 1,
+    marginal: bool = False,
 ) -> Optional[NDArray[np.float64]]:
     """
     Batch sample from arms that share the same model.
@@ -624,6 +660,12 @@ def batch_sample_arms(
         Context data
     size : int, default=1
         Number of samples to draw from each arm
+    marginal : bool, default=False
+        If True, draw iid per-row marginal samples via the model's
+        ``sample_marginal`` when it has one (falling back to joint
+        ``sample`` otherwise). Much cheaper for large ``size``; only
+        valid when the caller consumes per-(arm, context) statistics,
+        since draws are then independent across rows.
 
     Returns
     -------
@@ -671,7 +713,10 @@ def batch_sample_arms(
     # We know from can_batch_arms that first learner is LearnerWithTransform
     first_learner = cast(LearnerWithTransform[Any], arms[0].learner)
     model = first_learner.final_estimator
-    samples = model.sample(X_stacked, size=size)
+    sampler = (
+        getattr(model, "sample_marginal", model.sample) if marginal else model.sample
+    )
+    samples = sampler(X_stacked, size=size)
 
     # Reshape based on size
     if size == 1:

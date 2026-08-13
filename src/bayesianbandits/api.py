@@ -1245,8 +1245,14 @@ class LipschitzContextualAgent(Generic[TokenType]):
         X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
         # Shape: (n_contexts * n_arms, n_features_enriched)
 
-        # 3. Get samples from learner (SINGLE MODEL CALL)
-        samples = self.learner.sample(X_enriched, size=self.policy.samples_needed)
+        # 3. Get samples from learner (SINGLE MODEL CALL). Policies that
+        # consume only per-(arm, context) statistics opt into iid
+        # marginal draws, which are exact for them and much cheaper.
+        if getattr(self.policy, "marginal_ok", False):
+            sampler = getattr(self.learner, "sample_marginal", self.learner.sample)
+        else:
+            sampler = self.learner.sample
+        samples = sampler(X_enriched, size=self.policy.samples_needed)
         # Shape: (size, n_contexts * n_arms) or (size, n_contexts * n_arms, n_classes)
 
         # 4. Unified reshape

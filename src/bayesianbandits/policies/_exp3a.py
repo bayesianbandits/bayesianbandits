@@ -220,6 +220,10 @@ class EXP3A:
     def __repr__(self) -> str:
         return f"EXP3A(gamma={self.gamma}, eta={self.eta}, ix_gamma={self.ix_gamma}, samples={self.samples})"
 
+    #: Consumes only per-(arm, context) statistics, so iid marginal
+    #: draws (``sample_marginal``) are exact for this policy.
+    marginal_ok = True
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""
@@ -348,9 +352,13 @@ class EXP3A:
             Selected arms, one per context if top_k is None,
             or k arms per context if top_k is specified.
         """
-        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        # Marginal draws: this policy reduces samples to per-(arm, context)
+        # statistics, so iid marginal sampling is exact and much cheaper
+        samples = batch_sample_arms(arms, X, size=self.samples_needed, marginal=True)
         if samples is None:
-            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            samples = np.array(
+                [arm.sample_marginal(X, self.samples_needed) for arm in arms]
+            )
             # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
             samples = samples.transpose(0, 2, 1)
         return self.select(samples, arms, rng, top_k)
@@ -386,9 +394,10 @@ class EXP3A:
             Sample weights for each observation. If provided, these are
             multiplied with the importance weights.
         """
-        # Recompute probabilities (stateless design)
+        # Recompute probabilities (stateless design); only per-arm means
+        # are consumed, so marginal draws are exact
         rewards = np.stack(
-            [a.sample(X, size=self.samples).mean(axis=0) for a in all_arms]
+            [a.sample_marginal(X, size=self.samples).mean(axis=0) for a in all_arms]
         )
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
 

@@ -1,6 +1,39 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+**New features**
+
+- ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
+  and ``BayesianGLM``: iid draws from each prediction row's exact marginal
+  posterior predictive, computed with one triangular half-solve per row
+  against the cached precision factor (neither :math:`\Lambda^{-1}` nor any
+  :math:`n \times n` matrix is ever formed, and per-draw cost is independent
+  of the feature count). ``Arm.sample_marginal``, ``LearnerPipeline.sample_marginal``,
+  and ``batch_sample_arms(..., marginal=True)`` forward to it, falling back
+  to joint ``sample`` for learners without it. Unlike ``sample`` -- whose
+  rows within one draw share a weight vector -- draws are independent
+  across rows, so it serves per-row statistics only (#258)
+
+**Performance**
+
+- ``UpperConfidenceBound``, ``EXP3A``, and ``EpsilonGreedy`` now draw
+  through the marginal path (they consume only per-arm, per-context
+  statistics, for which marginal draws are exact), giving large speedups
+  for their Monte Carlo estimates, dense and sparse alike.
+  ``ThompsonSampling`` and joint ``sample`` are unchanged, byte-for-byte.
+  Custom policies can opt in by setting ``marginal_ok = True`` (#258)
+
+**Behavioral changes**
+
+- Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
+  ``EpsilonGreedy`` change: the marginal path consumes different amounts
+  of randomness than joint sampling. The decision distributions are
+  unchanged (per-row marginals are identical; verified by KS tests).
+  ``sample`` itself is bit-for-bit identical to previous versions (#258)
+
 1.4.0 (2026-07-31)
 ------------------
 

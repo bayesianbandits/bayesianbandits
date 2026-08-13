@@ -113,6 +113,10 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         self.alpha = alpha
         self.samples = samples
 
+    #: Consumes only per-(arm, context) statistics, so iid marginal
+    #: draws (``sample_marginal``) are exact for this policy.
+    marginal_ok = True
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""
@@ -193,9 +197,13 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using upper confidence bound."""
-        samples = batch_sample_arms(arms, X, size=self.samples_needed)
+        # Marginal draws: this policy reduces samples to per-(arm, context)
+        # statistics, so iid marginal sampling is exact and much cheaper
+        samples = batch_sample_arms(arms, X, size=self.samples_needed, marginal=True)
         if samples is None:
-            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
+            samples = np.array(
+                [arm.sample_marginal(X, self.samples_needed) for arm in arms]
+            )
             # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
             samples = samples.transpose(0, 2, 1)
         return self.select(samples, arms, rng, top_k)

@@ -93,6 +93,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     def __repr__(self) -> str:
         return "ThompsonSampling()"
 
+    #: Requires joint draws (arms compared within a shared posterior
+    #: draw), so marginal sampling must not be used.
+    marginal_ok = False
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""

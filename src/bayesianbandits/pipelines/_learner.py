@@ -261,6 +261,30 @@ class LearnerPipeline(Generic[X_contra]):
         X_transformed = self._apply_transformers(X)
         return self._learner.sample(X_transformed, size)
 
+    def sample_marginal(self, X: X_contra, size: int = 1) -> NDArray[np.float64]:
+        """Sample iid per-row marginal draws from the posterior predictive.
+
+        Forwards to the learner's ``sample_marginal`` when it has one,
+        falling back to joint ``sample`` otherwise -- per-row marginals
+        are identical either way, but the marginal path is much cheaper
+        for large ``size``.
+
+        Parameters
+        ----------
+        X : X_contra
+            Input data (enriched features from ArmFeaturizer)
+        size : int, default=1
+            Number of samples to draw
+
+        Returns
+        -------
+        samples : NDArray[np.float64]
+            Independent marginal samples for each row
+        """
+        X_transformed = self._apply_transformers(X)
+        sampler = getattr(self._learner, "sample_marginal", self._learner.sample)
+        return sampler(X_transformed, size)
+
     def partial_fit(
         self,
         X: X_contra,

@@ -1,5 +1,4 @@
 from typing import Literal
-from unittest import mock
 
 import numpy as np
 import pytest
@@ -8,20 +7,13 @@ from numpy.testing import assert_allclose, assert_array_less
 from sklearn.datasets import make_classification, make_regression
 
 from bayesianbandits import BayesianGLM, LaplaceApproximator
-from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 
 # Fixtures and parametrization
-@pytest.fixture(
-    params=[SparseSolver.SUPERLU, SparseSolver.CHOLMOD],
-    autouse=True,
-)
-def suitesparse_envvar(request):
+@pytest.fixture(autouse=True)
+def suitesparse_envvar(sparse_solver):
     """Test with different sparse solvers."""
-    with mock.patch(
-        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
-    ):
-        yield
+    yield
 
 
 @pytest.fixture

@@ -74,6 +74,8 @@ bayesianbandits = ["*.pyx"]
 
 [tool.pytest.ini_options]
 addopts = "--doctest-modules -v"
+# lets test modules import shared helpers from tests/conftest.py
+pythonpath = ["tests"]
 filterwarnings = "ignore::DeprecationWarning"
 markers = [
     "cython: tests that exercise the Cython extension (no suitesparse needed)",
