@@ -170,7 +170,7 @@ class TestRefactorize:
         """Two SPD matrices with the same sparsity pattern but different values."""
         rng = np.random.default_rng(42)
         n = 200
-        base = sp.random(n, n, density=0.01, random_state=rng)
+        base = sp.random(n, n, density=0.01, random_state=rng)  # type: ignore[call-arg]  # scipy>=1.14 floor predates the rng= kwarg
         A1 = (base @ base.T) + 50 * sp.diags(1 + rng.gamma(1, 1, n))
         A2 = (base @ base.T) + 80 * sp.diags(1 + rng.gamma(1, 1, n))
         return sp.csc_array(A1), sp.csc_array(A2)
@@ -240,7 +240,7 @@ class TestHalfSolve:
     @pytest.fixture(scope="class")
     def precision(self):
         rng = np.random.default_rng(42)
-        mat = sp.random(self.D, self.D, 0.01, random_state=1) * 10
+        mat = sp.random(self.D, self.D, 0.01, random_state=1) * 10  # type: ignore[call-arg]  # scipy>=1.14 floor predates the rng= kwarg
         return sp.csc_array((mat @ mat.T) + sp.diags(1 + rng.gamma(1, 1, self.D)))
 
     @pytest.fixture(scope="class")
@@ -257,7 +257,7 @@ class TestHalfSolve:
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_sparse_gram_identity(self, precision, X, solver):
         factor = create_sparse_factor(precision, solver=solver)
-        B = np.asarray(factor.half_solve(X.T))
+        B = factor.half_solve(X.T)
         assert B.shape == (self.D, 8)
         self._assert_gram_matches(B, self._reference(precision, X))
 
@@ -266,7 +266,7 @@ class TestHalfSolve:
         """A factor scaled by s represents s*P, so the projected
         covariance shrinks by 1/s."""
         factor = scale_factor(create_sparse_factor(precision, solver=solver), 0.7)
-        B = np.asarray(factor.half_solve(X.T))
+        B = factor.half_solve(X.T)
         self._assert_gram_matches(B, self._reference(precision, X) / 0.7)
 
     def test_dense_gram_identity(self, precision, X):
@@ -274,12 +274,12 @@ class TestHalfSolve:
 
         prec = precision.toarray()
         factor = DenseFactor(_U=cholesky(prec, lower=False), _n_features=self.D)
-        B = np.asarray(factor.half_solve(X.T))
+        B = factor.half_solve(X.T)
         assert B.shape == (self.D, 8)
         self._assert_gram_matches(B, self._reference(precision, X))
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_single_column_rhs_keeps_2d_shape(self, precision, X, solver):
         factor = create_sparse_factor(precision, solver=solver)
-        B = np.asarray(factor.half_solve(X.T[:, :1]))
+        B = factor.half_solve(X.T[:, :1])
         assert B.shape == (self.D, 1)

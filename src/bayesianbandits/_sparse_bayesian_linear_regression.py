@@ -12,6 +12,7 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import cho_solve, solve_triangular  # type: ignore
 from scipy.sparse import (  # type: ignore  # type: ignore
     csc_array,
     csc_matrix,
@@ -117,11 +118,17 @@ class SuperLUSparseFactor:
     _inv_perm: NDArray[np.intp]
     _precision: csc_array
     _Lt_csc: csc_array = field(init=False, repr=False)
-    _perm: NDArray[np.intp] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._Lt_csc = csc_array(self._L.T)
-        self._perm = np.argsort(self._inv_perm)
+
+    @cached_property
+    def _perm(self) -> NDArray[np.intp]:
+        """Inverse of ``_inv_perm``, computed lazily so that ``fit``/
+        ``partial_fit`` (which never call ``half_solve``) pay no extra cost."""
+        perm = np.empty_like(self._inv_perm)
+        perm[self._inv_perm] = np.arange(self._inv_perm.size)
+        return perm
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cast(NDArray[np.float64], spsolve(self._precision, b))
@@ -136,10 +143,8 @@ class SuperLUSparseFactor:
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Apply the transpose of the ``colorize`` operator: L^{-1} P b.
 
-        If ``M`` is the colorize operator (``M M^T = Λ^{-1}``), this
-        returns ``M^T b``, so ``half_solve(X.T).T @ half_solve(X.T)``
-        equals ``X Λ^{-1} X^T`` -- a half-solve per column against the
-        cached triangular factor (no refactorization, unlike ``solve``).
+        Same contract as :meth:`CholmodSparseFactor.half_solve`, against
+        the cached triangular factor (no refactorization, unlike ``solve``).
         """
         return cast(
             NDArray[np.float64],
@@ -242,15 +247,11 @@ class DenseFactor:
 
     @cached_property
     def _U_inv(self) -> NDArray[np.float64]:
-        from scipy.linalg import solve_triangular
-
         return solve_triangular(
             self._U, np.eye(self._n_features), lower=False, check_finite=False
         )
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        from scipy.linalg import cho_solve
-
         return cho_solve((self._U, False), b, check_finite=False)
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
@@ -260,11 +261,9 @@ class DenseFactor:
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve U^T x = b, the transpose of the ``colorize`` operator.
 
-        ``half_solve(X.T).T @ half_solve(X.T)`` equals ``X Λ^{-1} X^T``
-        -- one triangular solve, without building ``U^{-1}``.
+        Same contract as :meth:`CholmodSparseFactor.half_solve`; one
+        triangular solve, without building ``U^{-1}``.
         """
-        from scipy.linalg import solve_triangular
-
         return cast(
             NDArray[np.float64],
             solve_triangular(self._U, b, trans=1, lower=False, check_finite=False),
