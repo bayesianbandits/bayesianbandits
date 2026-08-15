@@ -50,6 +50,7 @@ Policy Functions
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
+    InformationDirectedSampling
 
 """
 
@@ -79,13 +80,16 @@ from ._arm import (
     Learner,
     TokenType,
     _accepts_context_batch,
+    _sample_context_major_blocks,
     batch_identity,
     is_identity_function,
     resolve_marginal_sampler,
+    resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
 from .policies import (  # noqa: F401
     EpsilonGreedy,
+    InformationDirectedSampling,
     ThompsonSampling,
     UpperConfidenceBound,
 )
@@ -99,6 +103,17 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     which marginal draws are exact and much cheaper; policies that
     compare arms within a shared posterior draw (e.g. Thompson
     sampling) must keep it ``False``."""
+
+    reward_space_ok: bool
+    """Whether per-context joint blocks drawn in reward space
+    (``sample_reward_space`` with one block of arm rows per context)
+    may replace joint ``sample`` draws for this policy. Set ``True``
+    only when decisions consume each context independently: blocks are
+    exactly jointly distributed within a context but independent across
+    contexts (and, for the NIG learner, do not share a noise-scale draw
+    across contexts the way ``sample`` does). Much cheaper than
+    ``sample`` when many Monte Carlo draws are needed over few arms,
+    e.g. information-directed sampling."""
 
     @overload
     def __call__(
@@ -1257,15 +1272,43 @@ class LipschitzContextualAgent(Generic[TokenType]):
         # 3. Get samples from learner (SINGLE MODEL CALL). Policies that
         # consume only per-(arm, context) statistics opt into iid
         # marginal draws, which are exact for them and much cheaper.
+        # Policies that consume each context independently but need
+        # joint draws across arms (e.g. IDS) opt into per-context
+        # reward-space blocks instead.
+        n_arms, n_contexts = len(self.arms), len(X)
+        samples = None
+        reshaped = None
         if getattr(self.policy, "marginal_ok", False):
             sampler = resolve_marginal_sampler(self.learner)
-        else:
-            sampler = self.learner.sample
-        samples = sampler(X_enriched, size=self.policy.samples_needed)
-        # Shape: (size, n_contexts * n_arms) or (size, n_contexts * n_arms, n_classes)
+            samples = sampler(X_enriched, size=self.policy.samples_needed)
+        elif getattr(self.policy, "reward_space_ok", False):
+            joint_sampler = resolve_reward_space_sampler(
+                self.learner,
+                n_rows=n_arms * n_contexts,
+                size=self.policy.samples_needed,
+                block_size=n_arms,
+            )
+            if joint_sampler is not None:
+                # Already in the (n_arms, n_contexts, size) layout of
+                # step 4, so the unified reshape is skipped
+                reshaped = _sample_context_major_blocks(
+                    joint_sampler,
+                    X_enriched,
+                    n_arms,
+                    n_contexts,
+                    self.policy.samples_needed,
+                )
 
         # 4. Unified reshape
-        samples = self._reshape_samples(samples, len(self.arms), len(X))
+        if reshaped is None:
+            if samples is None:
+                samples = self.learner.sample(
+                    X_enriched, size=self.policy.samples_needed
+                )
+            # Shape: (size, n_contexts * n_arms) or
+            # (size, n_contexts * n_arms, n_classes)
+            reshaped = self._reshape_samples(samples, n_arms, n_contexts)
+        samples = reshaped
         # Shape: (n_arms, n_contexts, size, ...)
 
         # 5. Apply reward functions

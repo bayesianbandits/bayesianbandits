@@ -26,6 +26,7 @@ Policy Functions
    bayesianbandits.EpsilonGreedy
    bayesianbandits.ThompsonSampling
    bayesianbandits.UpperConfidenceBound
+   bayesianbandits.InformationDirectedSampling
    bayesianbandits.EXP3A
 
 Pipelines

@@ -12,7 +12,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType, batch_sample_arms
+from .._arm import Arm, ContextType, TokenType
 from ._base import PolicyDefaultUpdate
 
 
@@ -97,6 +97,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     #: draw), so marginal sampling must not be used.
     marginal_ok = False
 
+    #: Draws one sample per pull, for which weight-space ``sample`` is
+    #: always the cheaper joint path.
+    reward_space_ok = False
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""
@@ -176,9 +180,5 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using Thompson sampling."""
-        samples = batch_sample_arms(arms, X, size=self.samples_needed)
-        if samples is None:
-            samples = np.array([arm.sample(X, self.samples_needed) for arm in arms])
-            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-            samples = samples.transpose(0, 2, 1)
+        samples = self._draw_samples(arms, X, self.samples_needed)
         return self.select(samples, arms, rng, top_k)

@@ -11,10 +11,11 @@ from typing import List, Optional, Union, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType, batch_sample_arms
+from .._arm import Arm, ContextType, TokenType
+from ._base import PolicyDefaultUpdate
 
 
-class EXP3A:
+class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
     """
     EXP3.A: Average-based anytime variant of EXP3 for adversarial bandits.
 
@@ -224,6 +225,10 @@ class EXP3A:
     #: draws (``sample_marginal``) are exact for this policy.
     marginal_ok = True
 
+    #: The marginal path already serves this policy's per-(arm, context)
+    #: statistics; per-context joint blocks are unnecessary.
+    reward_space_ok = False
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""
@@ -352,23 +357,7 @@ class EXP3A:
             Selected arms, one per context if top_k is None,
             or k arms per context if top_k is specified.
         """
-        # Marginal draws when marginal_ok: this policy reduces samples to
-        # per-(arm, context) statistics, so iid marginal sampling is exact
-        # and much cheaper; subclasses can opt out via marginal_ok = False
-        samples = batch_sample_arms(
-            arms, X, size=self.samples_needed, marginal=self.marginal_ok
-        )
-        if samples is None:
-            samples = np.array(
-                [
-                    (arm.sample_marginal if self.marginal_ok else arm.sample)(
-                        X, self.samples_needed
-                    )
-                    for arm in arms
-                ]
-            )
-            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-            samples = samples.transpose(0, 2, 1)
+        samples = self._draw_samples(arms, X, self.samples_needed)
         return self.select(samples, arms, rng, top_k)
 
     def update(
@@ -404,14 +393,7 @@ class EXP3A:
         """
         # Recompute probabilities (stateless design); only per-arm means
         # are consumed, so marginal draws are exact when marginal_ok
-        rewards = np.stack(
-            [
-                (a.sample_marginal if self.marginal_ok else a.sample)(
-                    X, size=self.samples
-                ).mean(axis=0)
-                for a in all_arms
-            ]
-        )
+        rewards = self._draw_samples(all_arms, X, self.samples).mean(axis=-1)
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
 
         # TODO: This is not actually correct if top_k is used, but top_k is currently

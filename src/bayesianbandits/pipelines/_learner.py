@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from .._arm import Learner, resolve_marginal_sampler
+from .._arm import Learner, resolve_marginal_sampler, resolve_reward_space_sampler
 
 X_contra = TypeVar("X_contra", contravariant=True)
 
@@ -285,6 +285,50 @@ class LearnerPipeline(Generic[X_contra]):
         """
         X_transformed = self._apply_transformers(X)
         return resolve_marginal_sampler(self._learner)(X_transformed, size)
+
+    def _use_reward_space(
+        self, n: int, size: int, block_size: Optional[int] = None
+    ) -> bool:
+        """Forward the reward-space flop gate to the wrapped learner."""
+        return (
+            resolve_reward_space_sampler(self._learner, n, size, block_size) is not None
+        )
+
+    def sample_reward_space(
+        self, X: X_contra, size: int = 1, *, block_size: Optional[int] = None
+    ) -> NDArray[np.float64]:
+        """Sample joint draws in reward space from the posterior predictive.
+
+        Forwards to the learner's ``sample_reward_space`` when it is
+        safe and profitable (see
+        :func:`bayesianbandits._arm.resolve_reward_space_sampler`),
+        falling back to joint ``sample`` otherwise. The fallback is
+        fully joint across all rows -- a superset of the per-block
+        joint guarantee -- so callers consuming per-block statistics
+        stay correct either way.
+
+        Parameters
+        ----------
+        X : X_contra
+            Input data (enriched features from ArmFeaturizer)
+        size : int, default=1
+            Number of samples to draw
+        block_size : int, optional
+            Forwarded to the learner: rows are drawn jointly within
+            consecutive blocks of this many rows and independently
+            across blocks.
+
+        Returns
+        -------
+        samples : NDArray[np.float64]
+            Joint samples for each row
+        """
+        X_transformed = self._apply_transformers(X)
+        n_rows = int(X_transformed.shape[0])
+        sampler = resolve_reward_space_sampler(self._learner, n_rows, size, block_size)
+        if sampler is None:
+            return self._learner.sample(X_transformed, size)
+        return sampler(X_transformed, size)
 
     def partial_fit(
         self,

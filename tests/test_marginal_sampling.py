@@ -19,6 +19,7 @@ Covers four fronts:
    ``sample_marginal`` or whose class overrides ``sample`` without it.
 """
 
+from functools import partial
 from unittest import mock
 
 import numpy as np
@@ -41,29 +42,10 @@ from bayesianbandits import (
 )
 from bayesianbandits._arm import batch_sample_arms, resolve_marginal_sampler
 from bayesianbandits.pipelines import LearnerPipeline
-from tests._helpers import cov_inv_dense
+from tests._helpers import cov_inv_dense, fit_dense, fit_sparse
 
-
-def _fit_dense(cls=NormalRegressor, d=40, rows=200, seed=0, **kwargs) -> tuple:
-    rng = np.random.default_rng(seed)
-    if cls is NormalRegressor:
-        kwargs.setdefault("alpha", 1.0)
-        kwargs.setdefault("beta", 1.0)
-    est = cls(random_state=0, **kwargs)
-    X_train = rng.standard_normal((rows, d))
-    y = X_train @ rng.standard_normal(d) + rng.standard_normal(rows)
-    est.fit(X_train, y)
-    return est, rng
-
-
-def _fit_sparse(d=400, rows=300, seed=0, **kwargs):
-    rng = np.random.default_rng(seed)
-    est = NormalRegressor(alpha=1.0, beta=1.0, sparse=True, random_state=0, **kwargs)
-    X_train = sp.csc_array(
-        sp.random(rows, d, density=10 / d, random_state=1)  # type: ignore[call-arg]
-    )
-    est.fit(X_train, rng.standard_normal(rows))
-    return est, rng
+_fit_dense = partial(fit_dense, random_state=0)
+_fit_sparse = partial(fit_sparse, random_state=0)
 
 
 def _reference_sd(est, X_dense: np.ndarray) -> np.ndarray:
