@@ -32,6 +32,19 @@ Unreleased
   class overrides ``sample`` without also overriding ``sample_marginal``,
   so customized joint sampling is not silently bypassed (#258)
 
+- The marginal path is likewise never used when a
+  ``LipschitzContextualAgent`` carries a user-supplied
+  ``batch_reward_function``. That function sees a whole draw at once and
+  may combine arms within it (share of total, cannibalization, softmax
+  over a slate), which requires the arms of a draw to be jointly
+  distributed; iid marginal draws leave such a reward's mean intact but
+  manufacture spread that a quantile-based policy reads as uncertainty.
+  A batch function that maps each ``(arm, context, draw)`` cell
+  independently can opt back into the faster path by carrying a truthy
+  ``elementwise`` attribute. Per-arm ``Arm.reward_function``s are applied
+  one arm at a time and never affect sampling, so the common cases --
+  no reward function, or per-arm functions only -- keep the speedup (#258)
+
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and

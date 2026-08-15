@@ -195,6 +195,29 @@ def batch_identity(
     return samples
 
 
+def is_elementwise_batch_reward(func: Any) -> bool:
+    """Is ``func`` known to map each draw cell independently?
+
+    A batch reward function receives the whole
+    ``(n_arms, n_contexts, size)`` tensor, so it may combine arms
+    *within* a draw (share-of-total, cannibalization, softmax over a
+    slate). Such a function is only meaningful when the rows of one
+    draw are jointly distributed, which rules out the iid marginal
+    sampling path -- there, ``samples[:, c, m]`` is not a coherent
+    sample of the arm-reward vector, and the derived reward picks up
+    spurious spread even though its mean is unchanged.
+
+    ``None`` and :func:`batch_identity` are elementwise by
+    construction. Anything else is assumed to couple arms unless it
+    carries a truthy ``elementwise`` attribute, so the conservative
+    default is the correct one and users who know better can opt back
+    into the faster path.
+    """
+    if func is None or func is batch_identity:
+        return True
+    return bool(getattr(func, "elementwise", False))
+
+
 def apply_reward_function(
     reward_function: RewardFunction,
     samples: NDArray[np.float64],

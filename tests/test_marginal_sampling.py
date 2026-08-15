@@ -31,15 +31,22 @@ from scipy.stats import t as t_dist
 from bayesianbandits import (
     EXP3A,
     Arm,
+    ArmColumnFeaturizer,
     BayesianGLM,
     ContextualAgent,
     EpsilonGreedy,
+    LipschitzContextualAgent,
     NormalInverseGammaRegressor,
     NormalRegressor,
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from bayesianbandits._arm import batch_sample_arms, resolve_marginal_sampler
+from bayesianbandits._arm import (
+    batch_identity,
+    batch_sample_arms,
+    is_elementwise_batch_reward,
+    resolve_marginal_sampler,
+)
 from bayesianbandits.pipelines import LearnerPipeline
 from tests._helpers import cov_inv_dense
 
@@ -397,3 +404,123 @@ class TestPlumbing:
             learner.fit(rng.standard_normal((20, 3)), rng.standard_normal(20))
         tokens = agent.pull(X)
         assert len(tokens) == 2
+
+
+def _share_of_total(samples, action_tokens):
+    """Arm-combining batch reward: each arm's slice of the draw's total.
+
+    Only meaningful when the arms of one draw are jointly distributed.
+    """
+    return samples / samples.sum(axis=0, keepdims=True)
+
+
+class TestBatchRewardCoupling:
+    """A batch reward function may combine arms within a draw, so it
+    must not be handed iid marginal draws even under a ``marginal_ok``
+    policy."""
+
+    @staticmethod
+    def _agent(policy, batch_reward_function):
+        rng = np.random.default_rng(0)
+        featurizer = ArmColumnFeaturizer(column_name="arm")
+        learner = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
+        X = rng.standard_normal((300, 2))
+        X_enriched = featurizer.transform(X, action_tokens=[0, 1, 2])
+        y = np.concatenate([np.full(300, 5.0 + i) for i in range(3)])
+        learner.partial_fit(X_enriched, y + rng.standard_normal(900))
+        return LipschitzContextualAgent(
+            arms=[Arm(i) for i in range(3)],
+            learner=learner,
+            policy=policy,
+            arm_featurizer=featurizer,
+            batch_reward_function=batch_reward_function,
+            random_seed=0,
+        )
+
+    def test_elementwise_predicate(self):
+        assert is_elementwise_batch_reward(None)
+        assert is_elementwise_batch_reward(batch_identity)
+        assert not is_elementwise_batch_reward(_share_of_total)
+
+        def opted_in(samples, action_tokens):
+            return samples * 2.0
+
+        assert not is_elementwise_batch_reward(opted_in)
+        opted_in.elementwise = True
+        assert is_elementwise_batch_reward(opted_in)
+        # the attribute is a promise about the function, not a wrapper:
+        # it must not change what the function computes
+        samples = np.ones((2, 3, 4))
+        assert_allclose(opted_in(samples, [0, 1]), 2.0 * samples)
+
+    @staticmethod
+    def _min_cross_arm_corr(samples):
+        """Smallest |corr| between two arms' draws within a context.
+
+        The property an arm-combining reward function depends on: rows
+        of one draw share a weight vector, so arms move together. iid
+        marginal draws drive this to zero.
+        """
+        n_arms, n_contexts, _ = samples.shape
+        return min(
+            abs(np.corrcoef(samples[a, c], samples[b, c])[0, 1])
+            for c in range(n_contexts)
+            for a in range(n_arms)
+            for b in range(a + 1, n_arms)
+        )
+
+    def test_arm_combining_reward_keeps_joint_draws(self):
+        """The samples handed to an arm-combining batch reward function
+        must stay correlated across arms."""
+        seen = []
+
+        def recording_share(samples, action_tokens):
+            seen.append(np.asarray(samples))
+            return _share_of_total(samples, action_tokens)
+
+        agent = self._agent(
+            UpperConfidenceBound(alpha=0.9, samples=20_000), recording_share
+        )
+        agent.pull(np.random.default_rng(1).standard_normal((2, 2)))
+
+        assert len(seen) == 1
+        assert self._min_cross_arm_corr(seen[0]) > 0.3
+
+    def test_marginal_path_would_decouple_the_arms(self):
+        """Counterpart to the test above: confirms the guard is load
+        bearing, i.e. the marginal draws it blocks really are
+        uncorrelated across arms."""
+        agent = self._agent(
+            UpperConfidenceBound(alpha=0.9, samples=20_000), _share_of_total
+        )
+        X = np.random.default_rng(1).standard_normal((2, 2))
+        X_enriched = agent.arm_featurizer.transform(X, action_tokens=[0, 1, 2])
+        marginal = agent._reshape_samples(
+            resolve_marginal_sampler(agent.learner)(X_enriched, 20_000), 3, 2
+        )
+        assert self._min_cross_arm_corr(marginal) < 0.05
+
+    def test_elementwise_batch_reward_still_uses_marginal(self):
+        def revenue(samples, action_tokens):
+            return samples * np.asarray(action_tokens)[:, None, None]
+
+        revenue.elementwise = True
+        agent = self._agent(UpperConfidenceBound(alpha=0.9, samples=100), revenue)
+        with mock.patch(
+            "bayesianbandits.api.resolve_marginal_sampler",
+            wraps=resolve_marginal_sampler,
+        ) as resolve_marginal:
+            agent.pull(np.random.default_rng(1).standard_normal((2, 2)))
+        resolve_marginal.assert_called_once()
+
+    def test_identity_batch_reward_still_uses_marginal(self):
+        agent = self._agent(UpperConfidenceBound(alpha=0.9, samples=100), None)
+        # all arms use the identity reward, so the agent normalizes to
+        # batch_identity, which stays on the fast path
+        assert agent.batch_reward_function is batch_identity
+        with mock.patch(
+            "bayesianbandits.api.resolve_marginal_sampler",
+            wraps=resolve_marginal_sampler,
+        ) as resolve_marginal:
+            agent.pull(np.random.default_rng(1).standard_normal((2, 2)))
+        resolve_marginal.assert_called_once()
