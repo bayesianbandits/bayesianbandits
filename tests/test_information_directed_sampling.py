@@ -65,9 +65,13 @@ class TestPairOptimizer:
         rng = np.random.default_rng(seed)
         delta = rng.uniform(0.0, 2.0, size=(4, 3))
         v = rng.uniform(0.0, 1.5, size=(4, 3))
+        # context 2 has regret but no information gain anywhere: its
+        # ratio is infinite, which the loop below must skip
+        v[:, 2] = 0.0
         alive = np.ones((4, 3), dtype=bool)
 
         a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
+        assert not np.isfinite(ratio[2])
         for c in range(3):
             if not np.isfinite(ratio[c]):
                 continue
@@ -122,6 +126,32 @@ class TestPairOptimizer:
         freq_a = np.mean(picks == a_idx[0])
         sigma = np.sqrt(q[0] * (1 - q[0]) / n_trials)
         assert abs(freq_a - q[0]) < 5 * sigma
+
+    def test_resolved_posterior_falls_back_to_greedy(self):
+        """With no information left to buy, every pair's ratio is
+        infinite and the minimizer plays the lowest-regret alive arm
+        rather than whatever pair (0, 0) the argmin happens to land on."""
+        # positive regret, zero gain everywhere -> ratio inf
+        delta = np.array([[0.5, 2.0], [0.2, 1.0], [0.9, 0.4]])
+        v = np.zeros((3, 2))
+        alive = np.ones((3, 2), dtype=bool)
+        _, _, _, ratio = _optimal_two_point(delta, v, alive)
+        assert not np.isfinite(ratio).any()
+
+        rng = np.random.default_rng(0)
+        picks = _sample_information_ratio_minimizer(delta, v, alive, rng)
+        assert picks.tolist() == [1, 2]  # argmin delta per context
+
+    def test_resolved_greedy_respects_dead_arms(self):
+        """The greedy fallback must not resurrect an arm already taken
+        by an earlier top_k slot, even when it has the lowest regret."""
+        delta = np.array([[0.5], [0.2], [0.9]])
+        v = np.zeros((3, 1))
+        alive = np.array([[True], [False], [True]])  # best arm is dead
+        picks = _sample_information_ratio_minimizer(
+            delta, v, alive, np.random.default_rng(0)
+        )
+        assert picks.tolist() == [0]
 
 
 class TestVidsStatistics:
