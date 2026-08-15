@@ -52,9 +52,12 @@ def test_repeated_x_builds_root_with_exact_law(sparse: bool) -> None:
     else:
         X = rng.standard_normal((4, 30))
 
-    # first sighting rents (weight space), second builds the root
+    # dense: first sighting rents (weight space), second builds the
+    # root. Sparse: the reach-limited operator is cheap enough to
+    # build and cache on first sight.
     est.sample(X, size=1)
-    assert est._predictive_root_cache[1] is None
+    if not sparse:
+        assert est._predictive_root_cache[1] is None
     est.sample(X, size=1)
     root = est._predictive_root_cache[1]
     assert root is not None

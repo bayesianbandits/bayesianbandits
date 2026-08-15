@@ -111,6 +111,11 @@ class CholmodSparseFactor:
         """
         return csc_array(self._factor.L)
 
+    @cached_property
+    def _reach_solver(self) -> "_ReachHalfSolver":
+        """Reach-limited half-solver; lazy so fit paths pay nothing."""
+        return _ReachHalfSolver(self.get_L_csc(), self._inv_perm)
+
 
 @dataclass
 class SuperLUSparseFactor:
@@ -204,6 +209,87 @@ class SuperLUSparseFactor:
         Rows are in permuted order (matching _Pr).
         """
         return csc_array(self._L)
+
+    @cached_property
+    def _reach_solver(self) -> "_ReachHalfSolver":
+        """Reach-limited half-solver; lazy so fit paths pay nothing."""
+        return _ReachHalfSolver(self.get_L_csc(), self._inv_perm)
+
+
+class _ReachHalfSolver:
+    """Reach-limited sparse triangular solves against a cached factor.
+
+    Solving ``L y = b`` for a lower-triangular ``L`` and a *sparse*
+    ``b`` only ever touches the nodes reachable from ``b``'s support in
+    the graph of ``L`` (Gilbert-Peierls). When the precision factor is
+    nearly diagonal -- the typical posterior of a high-dimensional
+    sparse-feature model -- that reach is a few dozen nodes out of
+    millions, so a half-solve for one prediction row costs
+    O(reach) instead of O(n_features).
+
+    Holds persistent O(n) scratch (a value workspace and a visit-stamp
+    array) so per-solve allocation is O(reach).
+    """
+
+    def __init__(self, L: csc_array, landing: NDArray[np.intp]) -> None:
+        L = csc_array(L)
+        if not L.has_sorted_indices:
+            L.sort_indices()
+        n = cast(tuple[int, int], L.shape)[0]
+        self._indptr = L.indptr
+        self._indices = L.indices
+        self._data = L.data
+        self._n = n
+        # original coordinate s enters the solve at row landing[s]
+        self._landing = landing
+        # bail to the dense path once the reach stops being small
+        self._cap = max(4096, n // 64)
+        self._work = np.zeros(n, dtype=np.float64)
+        self._stamp = np.zeros(n, dtype=np.int64)
+        self._gen = 0
+        # diagonal-first layout is what the solve loop assumes
+        self._usable = bool(np.all(self._indices[self._indptr[:-1]] == np.arange(n)))
+
+    def solve_support(
+        self, nodes: NDArray[np.intp], vals: NDArray[np.float64]
+    ) -> Union[tuple[NDArray[np.intp], NDArray[np.float64]], None]:
+        """Solve ``L y = b`` for ``b`` given as (landing nodes, values).
+
+        Returns ``(rows, values)`` of the sparse result, or None when
+        the reach exceeds the cap (caller falls back to a dense solve).
+        """
+        if not self._usable:
+            return None
+        indptr, indices, data = self._indptr, self._indices, self._data
+        work, stamp = self._work, self._stamp
+        self._gen += 1
+        gen = self._gen
+        cap = self._cap
+        reach: list[int] = []
+        stack = list(nodes)
+        while stack:
+            j = stack.pop()
+            if stamp[j] == gen:
+                continue
+            stamp[j] = gen
+            reach.append(j)
+            if len(reach) > cap:
+                return None
+            for i in indices[indptr[j] + 1 : indptr[j + 1]]:
+                if stamp[i] != gen:
+                    stack.append(int(i))
+        # lower-triangular: ascending index order is a topological order
+        reach_arr = np.sort(np.asarray(reach, dtype=np.intp))
+        np.add.at(work, nodes, vals)
+        for j in reach_arr:
+            s, e = indptr[j], indptr[j + 1]
+            xj = work[j] / data[s]
+            work[j] = xj
+            if xj != 0.0 and e > s + 1:
+                work[indices[s + 1 : e]] -= data[s + 1 : e] * xj
+        out = work[reach_arr].copy()
+        work[reach_arr] = 0.0
+        return reach_arr, out
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
@@ -420,6 +506,76 @@ _PREDICTIVE_DRAWS_ELEMS = 2**24
 # Largest candidate set for which a predictive root is built: the root
 # is n_rows x n_rows and the Gram fallback pays an O(n_rows^3) eigh.
 _PREDICTIVE_ROOT_MAX_ROWS = 4096
+
+
+def sparse_predictive_operator(
+    factor: PrecisionFactor,
+    X: Any,
+    entry_cols: Union[NDArray[np.intp], None] = None,
+) -> Union[NDArray[np.float64], None]:
+    """Compact predictive operator for a sparse prediction matrix.
+
+    Returns a dense ``op`` of shape (k, n_rows) -- k the size of the
+    union of the reach-limited half-solve supports -- satisfying
+    ``op^T op = X Λ^{-1} X^T`` exactly, so ``z @ op`` with iid
+    standard-normal ``z`` gives joint draws of the centered linear
+    predictor. Built with one reach-limited triangular solve per row,
+    touching O(reach) nodes instead of O(n_features): the fast path
+    for a *fresh* sparse ``X`` against a warm posterior.
+
+    Returns None when the factor has no reach solver, the reach is not
+    small (nearly-dense factor -- the dense paths are better), or the
+    candidate set is too large.
+    """
+    scale = 1.0
+    if isinstance(factor, ScaledSparseFactor):
+        scale = factor._scale
+        factor = factor._inner
+    if not isinstance(factor, (CholmodSparseFactor, SuperLUSparseFactor)):
+        return None
+    n_rows, n_features = X.shape
+    if n_rows > _PREDICTIVE_ROOT_MAX_ROWS:
+        return None
+    solver = factor._reach_solver
+    landing = solver._landing
+    Xs = csc_array(X)
+    nnz = Xs.data.shape[0]
+    if nnz == 0:
+        return np.zeros((0, n_rows), dtype=np.float64)
+    # COO triplets without touching the O(n_features) indptr densely;
+    # callers that already computed the entry columns pass them in so
+    # the O(nnz log n_features) search over the wide indptr runs once
+    # per decision.
+    rows = Xs.indices
+    if entry_cols is not None:
+        cols = entry_cols
+    else:
+        cols = np.searchsorted(Xs.indptr, np.arange(nnz), side="right") - 1
+    order = np.argsort(rows, kind="stable")
+    rows_o, cols_o, vals_o = rows[order], cols[order], Xs.data[order]
+    boundaries = np.flatnonzero(np.diff(rows_o)) + 1
+    starts = np.concatenate(([0], boundaries))
+    stops = np.concatenate((boundaries, [rows_o.shape[0]]))
+    solved: list[tuple[int, NDArray[np.intp], NDArray[np.float64]]] = []
+    for start, stop in zip(starts, stops):
+        r = int(rows_o[start])
+        nodes = landing[cols_o[start:stop]]
+        result = solver.solve_support(
+            nodes, np.asarray(vals_o[start:stop], dtype=np.float64)
+        )
+        if result is None:
+            return None
+        solved.append((r, result[0], result[1]))
+    if solved:
+        union = np.unique(np.concatenate([reach for _, reach, _ in solved]))
+    else:
+        union = np.empty(0, dtype=np.intp)
+    op = np.zeros((union.shape[0], n_rows), dtype=np.float64)
+    for r, reach, vals in solved:
+        op[np.searchsorted(union, reach), r] = vals
+    if scale != 1.0:
+        op /= np.sqrt(scale)
+    return op
 
 
 def predictive_root(

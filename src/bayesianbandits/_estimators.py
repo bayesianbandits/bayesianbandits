@@ -43,6 +43,7 @@ from ._sparse_bayesian_linear_regression import (
     multivariate_t_sample_from_precision,
     predictive_root,
     scale_factor,
+    sparse_predictive_operator,
 )
 
 Params = ParamSpec("Params")
@@ -817,17 +818,52 @@ _MARGINAL_SD_BLOCK_ELEMS = 2**21
 _X_CACHE_MAX_NBYTES = 2**25
 
 
-def _x_cache_key(X: Union[NDArray[Any], csc_array]) -> Optional[tuple[Any, ...]]:
+def _sparse_entry_cols(X: csc_array) -> NDArray[np.intp]:
+    """Column index of each stored entry of a CSC matrix, in O(nnz log
+    n_cols) via binary search over ``indptr`` -- never scanning the
+    O(n_cols) pointer array, which dominates everything else for very
+    wide matrices."""
+    nnz = X.data.shape[0]
+    return cast(
+        NDArray[np.intp],
+        np.searchsorted(X.indptr, np.arange(nnz), side="right") - 1,
+    )
+
+
+def _sparse_rows_matvec(
+    X: csc_array,
+    v: NDArray[np.float64],
+    entry_cols: Optional[NDArray[np.intp]] = None,
+) -> NDArray[np.float64]:
+    """``X @ v`` for a CSC matrix in O(nnz log n_cols): scipy's CSC
+    matvec walks the full O(n_cols) ``indptr``, which for very wide
+    prediction matrices costs more than everything else in a decision."""
+    assert X.shape is not None  # for the type checker
+    n_rows = X.shape[0]
+    out = np.zeros(n_rows, dtype=np.float64)
+    if X.data.shape[0]:
+        cols = entry_cols if entry_cols is not None else _sparse_entry_cols(X)
+        np.add.at(out, X.indices, X.data * v[cols])
+    return out
+
+
+def _x_cache_key(
+    X: Union[NDArray[Any], csc_array],
+    entry_cols: Optional[NDArray[np.intp]] = None,
+) -> Optional[tuple[Any, ...]]:
     """Content snapshot of a prediction matrix, or None if too large.
 
     The arrays are copied so later in-place mutation of the caller's
-    matrix cannot alias a stale cache entry.
+    matrix cannot alias a stale cache entry. Sparse matrices are keyed
+    by their entry triplets, which are O(nnz) regardless of how wide
+    the matrix is (the raw ``indptr`` alone is O(n_cols)).
     """
     if issparse(X):
         Xs = cast(csc_array, X)
-        if Xs.data.nbytes + Xs.indices.nbytes + Xs.indptr.nbytes > _X_CACHE_MAX_NBYTES:
+        if 3 * (Xs.data.nbytes + Xs.indices.nbytes) > _X_CACHE_MAX_NBYTES:
             return None
-        return (Xs.shape, Xs.data.copy(), Xs.indices.copy(), Xs.indptr.copy())
+        cols = entry_cols if entry_cols is not None else _sparse_entry_cols(Xs)
+        return (Xs.shape, Xs.data.copy(), Xs.indices.copy(), cols)
     Xd = cast(NDArray[Any], X)
     if Xd.nbytes > _X_CACHE_MAX_NBYTES:
         return None
@@ -835,7 +871,9 @@ def _x_cache_key(X: Union[NDArray[Any], csc_array]) -> Optional[tuple[Any, ...]]
 
 
 def _x_key_matches(
-    key: Optional[tuple[Any, ...]], X: Union[NDArray[Any], csc_array]
+    key: Optional[tuple[Any, ...]],
+    X: Union[NDArray[Any], csc_array],
+    entry_cols: Optional[NDArray[np.intp]] = None,
 ) -> bool:
     """Exact content equality between a stored snapshot and ``X``."""
     if key is None:
@@ -845,9 +883,12 @@ def _x_key_matches(
         return (
             len(key) == 4
             and key[0] == Xs.shape
-            and np.array_equal(key[3], Xs.indptr)
             and np.array_equal(key[2], Xs.indices)
             and np.array_equal(key[1], Xs.data)
+            and np.array_equal(
+                key[3],
+                entry_cols if entry_cols is not None else _sparse_entry_cols(Xs),
+            )
         )
     return (
         len(key) == 2
@@ -861,8 +902,8 @@ def _predictive_root_for_call(
     factor: PrecisionFactor,
     X: Union[NDArray[Any], csc_array],
     size: int,
-) -> Optional[NDArray[np.float64]]:
-    """Predictive root for this ``sample`` call, or None for weight space.
+) -> Optional[tuple[NDArray[np.float64], NDArray[np.float64]]]:
+    """``(root, mean)`` for this ``sample`` call, or None for weight space.
 
     Two situations justify paying for the root (see
     :func:`predictive_root`):
@@ -883,19 +924,38 @@ def _predictive_root_for_call(
     n_rows, n_features = X.shape
     if n_rows >= n_features:
         return None
+    sparse_x = issparse(X)
+    # the entry-column search over a wide indptr is the costliest
+    # per-call bookkeeping -- run it exactly once and share it
+    cols = _sparse_entry_cols(cast(csc_array, X)) if sparse_x else None
+
+    def _mean() -> NDArray[np.float64]:
+        if sparse_x:
+            return _sparse_rows_matvec(cast(csc_array, X), est.coef_, cols)
+        return np.asarray(X @ est.coef_, dtype=np.float64).ravel()
+
     cache = est.__dict__.get("_predictive_root_cache")
-    if cache is not None and _x_key_matches(cache[0], X):
+    if cache is not None and _x_key_matches(cache[0], X, cols):
         if cache[1] is None:
             # Second sighting: build and keep the root. May still be
             # None (candidate set too large) -- cheap to re-answer.
             cache[1] = predictive_root(factor, X)
-        return cache[1]
+        return None if cache[1] is None else (cache[1], _mean())
+    if sparse_x:
+        # Fresh sparse X: a reach-limited half-solve yields the
+        # operator in O(reach) -- no repetition needed. Cache it so an
+        # immediate repeat skips even that.
+        op = sparse_predictive_operator(factor, X, cols)
+        if op is not None:
+            est._predictive_root_cache = [_x_cache_key(X, cols), op]
+            return op, _mean()
     if size > n_rows:
         root = predictive_root(factor, X)
         if root is not None:
-            est._predictive_root_cache = [_x_cache_key(X), root]
-        return root
-    est._predictive_root_cache = [_x_cache_key(X), None]
+            est._predictive_root_cache = [_x_cache_key(X, cols), root]
+            return root, _mean()
+        return None
+    est._predictive_root_cache = [_x_cache_key(X, cols), None]
     return None
 
 
@@ -944,17 +1004,30 @@ def _validated_marginal_mean_sd(
         check_is_fitted(est, "coef_")
     except NotFittedError:
         est._initialize_prior(X_pred)
-    mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
+    cols = _sparse_entry_cols(cast(csc_array, X_pred)) if issparse(X_pred) else None
+    if cols is not None:
+        mean = _sparse_rows_matvec(cast(csc_array, X_pred), est.coef_, cols)
+    else:
+        mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
     # The sd depends only on (factor, X): serve repeats of the same
     # prediction matrix -- the bandit decision loop -- from a cache
     # that fit/decay invalidate. Computed on every call anyway, so a
     # miss costs only the bounded snapshot.
     cache = est.__dict__.get("_marginal_sd_cache")
-    if cache is not None and _x_key_matches(cache[0], X_pred):
+    if cache is not None and _x_key_matches(cache[0], X_pred, cols):
         sd = cache[1]
     else:
-        sd = _marginal_predictive_sd(est._precision_factor, X_pred)
-        key = _x_cache_key(X_pred)
+        op = (
+            sparse_predictive_operator(est._precision_factor, X_pred, cols)
+            if cols is not None
+            else None
+        )
+        if op is not None:
+            # reach-limited: O(reach) per row instead of O(n_features)
+            sd = cast(NDArray[np.float64], np.sqrt((op * op).sum(axis=0)))
+        else:
+            sd = _marginal_predictive_sd(est._precision_factor, X_pred)
+        key = _x_cache_key(X_pred, cols)
         if key is not None:
             est._marginal_sd_cache = [key, sd]
     return mean, sd
@@ -1393,13 +1466,13 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        root = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
-        if root is not None:
+        prep = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
+        if prep is not None:
             # Sample the linear predictor directly in predictive space
             # -- same joint law, per-draw cost independent of
-            # n_features. Taken when draws outnumber rows or this
-            # candidate set repeats against the cached posterior.
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            # n_features. Taken for sparse X (reach-limited), when
+            # draws outnumber rows, or on a repeated candidate set.
+            root, mean = prep
             z = self.random_state_.standard_normal((size, root.shape[0]))
             return cast(NDArray[np.float64], mean + z @ root)
 
@@ -1875,13 +1948,13 @@ scipy.sparse.csc_array
         )
         df = 2 * self.a_
 
-        root = _predictive_root_for_call(self, self.shape_, X_sample, size)
-        if root is not None:
+        prep = _predictive_root_for_call(self, self.shape_, X_sample, size)
+        if prep is not None:
             # Sample the linear predictor in predictive space. The
             # joint t law is preserved -- one chi-square mixing
             # variable per draw, shared across rows, exactly as in
             # weight space.
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            root, mean = prep
             g = self.random_state_.chisquare(df, size) / df
             z = self.random_state_.standard_normal((size, root.shape[0]))
             return cast(NDArray[np.float64], mean + (z @ root) / np.sqrt(g)[:, None])
@@ -2544,13 +2617,13 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        root = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
-        if root is not None:
+        prep = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
+        if prep is not None:
             # Sample the linear predictor directly in predictive space
             # -- same joint law, per-draw cost independent of
-            # n_features. Taken when draws outnumber rows or this
-            # candidate set repeats against the cached posterior.
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            # n_features. Taken for sparse X (reach-limited), when
+            # draws outnumber rows, or on a repeated candidate set.
+            root, mean = prep
             z = self.random_state_.standard_normal((size, root.shape[0]))
             return self._inverse_link(cast(NDArray[np.float64], mean + z @ root))
 
