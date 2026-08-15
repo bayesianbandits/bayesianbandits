@@ -38,12 +38,11 @@ from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
     SparseFactor,
-    centered_predictive_draws,
     create_sparse_factor,
     multivariate_normal_sample_from_precision,
     multivariate_t_sample_from_precision,
+    predictive_root,
     scale_factor,
-    use_predictive_draws,
 )
 
 Params = ParamSpec("Params")
@@ -795,7 +794,7 @@ def _invalidate_cached_properties(
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
     @wraps(func)
     def wrapper(self, *args: Params.args, **kwargs: Params.kwargs) -> ReturnType:
-        for attr in ("shape_", "cov_"):
+        for attr in ("shape_", "cov_", "_predictive_root_cache", "_marginal_sd_cache"):
             try:
                 delattr(self, attr)
             except AttributeError:
@@ -808,6 +807,96 @@ def _invalidate_cached_properties(
 # Cap on the dense (n_features, block) scratch densified from a sparse
 # X in _marginal_predictive_sd: ~2M float64 elements = 16 MB per array.
 _MARGINAL_SD_BLOCK_ELEMS = 2**21
+
+# Snapshot bound for the X-keyed sampling caches below: 32 MB. Bounds
+# both the stored copy and the per-call equality compare. Sized so the
+# ~4 bytes-per-column indptr of a very wide sparse candidate matrix
+# (the regime these caches exist for) fits comfortably: a CSC with
+# several million columns still keys, and the copy/compare stays well
+# below the weight-space solve a hit avoids.
+_X_CACHE_MAX_NBYTES = 2**25
+
+
+def _x_cache_key(X: Union[NDArray[Any], csc_array]) -> Optional[tuple[Any, ...]]:
+    """Content snapshot of a prediction matrix, or None if too large.
+
+    The arrays are copied so later in-place mutation of the caller's
+    matrix cannot alias a stale cache entry.
+    """
+    if issparse(X):
+        Xs = cast(csc_array, X)
+        if Xs.data.nbytes + Xs.indices.nbytes + Xs.indptr.nbytes > _X_CACHE_MAX_NBYTES:
+            return None
+        return (Xs.shape, Xs.data.copy(), Xs.indices.copy(), Xs.indptr.copy())
+    Xd = cast(NDArray[Any], X)
+    if Xd.nbytes > _X_CACHE_MAX_NBYTES:
+        return None
+    return (Xd.shape, np.array(Xd, copy=True))
+
+
+def _x_key_matches(
+    key: Optional[tuple[Any, ...]], X: Union[NDArray[Any], csc_array]
+) -> bool:
+    """Exact content equality between a stored snapshot and ``X``."""
+    if key is None:
+        return False
+    if issparse(X):
+        Xs = cast(csc_array, X)
+        return (
+            len(key) == 4
+            and key[0] == Xs.shape
+            and np.array_equal(key[3], Xs.indptr)
+            and np.array_equal(key[2], Xs.indices)
+            and np.array_equal(key[1], Xs.data)
+        )
+    return (
+        len(key) == 2
+        and key[0] == X.shape
+        and np.array_equal(key[1], cast(NDArray[Any], X))
+    )
+
+
+def _predictive_root_for_call(
+    est: Any,
+    factor: PrecisionFactor,
+    X: Union[NDArray[Any], csc_array],
+    size: int,
+) -> Optional[NDArray[np.float64]]:
+    """Predictive root for this ``sample`` call, or None for weight space.
+
+    Two situations justify paying for the root (see
+    :func:`predictive_root`):
+
+    - ``size > n_rows``: the root pays for itself within this one call.
+    - The same ``X`` was sampled on the immediately preceding call
+      (matched by content): the workload is repeating a candidate set
+      against a static posterior -- the bandit decision loop -- so the
+      root is built once and every later decision costs O(n_rows^2)
+      instead of O(n_features^2). Ski-rental: a workload whose ``X``
+      never repeats records only a bounded snapshot and keeps
+      weight-space sampling.
+
+    The cache is invalidated whenever the posterior changes
+    (``_invalidate_cached_properties`` on fit/decay).
+    """
+    assert X.shape is not None  # for the type checker
+    n_rows, n_features = X.shape
+    if n_rows >= n_features:
+        return None
+    cache = est.__dict__.get("_predictive_root_cache")
+    if cache is not None and _x_key_matches(cache[0], X):
+        if cache[1] is None:
+            # Second sighting: build and keep the root. May still be
+            # None (candidate set too large) -- cheap to re-answer.
+            cache[1] = predictive_root(factor, X)
+        return cache[1]
+    if size > n_rows:
+        root = predictive_root(factor, X)
+        if root is not None:
+            est._predictive_root_cache = [_x_cache_key(X), root]
+        return root
+    est._predictive_root_cache = [_x_cache_key(X), None]
+    return None
 
 
 def _marginal_predictive_sd(
@@ -856,7 +945,18 @@ def _validated_marginal_mean_sd(
     except NotFittedError:
         est._initialize_prior(X_pred)
     mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
-    sd = _marginal_predictive_sd(est._precision_factor, X_pred)
+    # The sd depends only on (factor, X): serve repeats of the same
+    # prediction matrix -- the bandit decision loop -- from a cache
+    # that fit/decay invalidate. Computed on every call anyway, so a
+    # miss costs only the bounded snapshot.
+    cache = est.__dict__.get("_marginal_sd_cache")
+    if cache is not None and _x_key_matches(cache[0], X_pred):
+        sd = cache[1]
+    else:
+        sd = _marginal_predictive_sd(est._precision_factor, X_pred)
+        key = _x_cache_key(X_pred)
+        if key is not None:
+            est._marginal_sd_cache = [key, sd]
     return mean, sd
 
 
@@ -1293,15 +1393,15 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        if use_predictive_draws(X_sample, size):
-            # More draws than prediction rows: sample the linear
-            # predictor directly in predictive space -- same joint law,
-            # per-draw cost independent of n_features.
+        root = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
+        if root is not None:
+            # Sample the linear predictor directly in predictive space
+            # -- same joint law, per-draw cost independent of
+            # n_features. Taken when draws outnumber rows or this
+            # candidate set repeats against the cached posterior.
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
-            centered = centered_predictive_draws(
-                self._precision_factor, X_sample, size, self.random_state_
-            )
-            return cast(NDArray[np.float64], mean + centered)
+            z = self.random_state_.standard_normal((size, root.shape[0]))
+            return cast(NDArray[np.float64], mean + z @ root)
 
         samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
@@ -1775,17 +1875,16 @@ scipy.sparse.csc_array
         )
         df = 2 * self.a_
 
-        if use_predictive_draws(X_sample, size):
-            # More draws than prediction rows: sample the linear
-            # predictor in predictive space. The joint t law is
-            # preserved -- one chi-square mixing variable per draw,
-            # shared across rows, exactly as in weight space.
+        root = _predictive_root_for_call(self, self.shape_, X_sample, size)
+        if root is not None:
+            # Sample the linear predictor in predictive space. The
+            # joint t law is preserved -- one chi-square mixing
+            # variable per draw, shared across rows, exactly as in
+            # weight space.
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
             g = self.random_state_.chisquare(df, size) / df
-            centered = centered_predictive_draws(
-                self.shape_, X_sample, size, self.random_state_
-            )
-            return cast(NDArray[np.float64], mean + centered / np.sqrt(g)[:, None])
+            z = self.random_state_.standard_normal((size, root.shape[0]))
+            return cast(NDArray[np.float64], mean + (z @ root) / np.sqrt(g)[:, None])
 
         # Sample from multivariate t via precision parameterization
         # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
@@ -2445,15 +2544,15 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        if use_predictive_draws(X_sample, size):
-            # More draws than prediction rows: sample the linear
-            # predictor directly in predictive space -- same joint law,
-            # per-draw cost independent of n_features.
+        root = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
+        if root is not None:
+            # Sample the linear predictor directly in predictive space
+            # -- same joint law, per-draw cost independent of
+            # n_features. Taken when draws outnumber rows or this
+            # candidate set repeats against the cached posterior.
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
-            centered = centered_predictive_draws(
-                self._precision_factor, X_sample, size, self.random_state_
-            )
-            return self._inverse_link(cast(NDArray[np.float64], mean + centered))
+            z = self.random_state_.standard_normal((size, root.shape[0]))
+            return self._inverse_link(cast(NDArray[np.float64], mean + z @ root))
 
         param_samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(

@@ -413,49 +413,42 @@ multivariate_normal_sample_from_sparse_precision = (
 )
 
 
-# Cap on the dense (n_features, n_rows) scratch densified from a sparse X
-# in use_predictive_draws: 2^24 float64 elements = 128 MB.
+# Cap on the dense (n_features, block) scratch used while building a
+# predictive root: 2^24 float64 elements = 128 MB.
 _PREDICTIVE_DRAWS_ELEMS = 2**24
 
-
-def use_predictive_draws(X: Any, size: int) -> bool:
-    """Whether ``centered_predictive_draws`` beats weight-space sampling.
-
-    Predictive space wins when it is the lower-dimensional space
-    (``n_rows < n_features``) and more draws are requested than there
-    are rows (``size > n_rows``): the R factor then costs less than one
-    weight-space colorize and each draw is O(n_rows²) instead of O(p²).
-    For sparse ``X`` the half-solve densifies an (n_features, n_rows)
-    scratch, so the switch is also capped by that scratch's size.
-    """
-    n_rows, n_features = X.shape
-    if not (size > n_rows and n_rows < n_features):
-        return False
-    if issparse(X) and n_rows * n_features > _PREDICTIVE_DRAWS_ELEMS:
-        return False
-    return True
+# Largest candidate set for which a predictive root is built: the root
+# is n_rows x n_rows and the Gram fallback pays an O(n_rows^3) eigh.
+_PREDICTIVE_ROOT_MAX_ROWS = 4096
 
 
-def centered_predictive_draws(
+def predictive_root(
     factor: PrecisionFactor,
     X: Any,
-    size: int,
-    rng: np.random.Generator,
-) -> NDArray[np.float64]:
-    """Centered joint draws of ``X @ w`` for ``w ~ N(0, Λ^{-1})``.
+) -> Union[NDArray[np.float64], None]:
+    """Square root of the predictive covariance of ``X @ w``.
 
-    Samples in predictive space rather than weight space: one
-    half-solve against the cached factor gives ``B = M^T X^T``
-    (``M`` being the colorize operator, so ``B^T B = X Λ^{-1} X^T``),
-    and the R factor of a QR decomposition of ``B`` is an exact
-    square root of the n_rows × n_rows predictive covariance
-    (``R^T R = B^T B``), so each draw costs O(n_rows²) instead of
-    O(p²). The joint law across rows is exactly that of weight-space
-    sampling; only the random stream differs. Gate calls with
-    :func:`use_predictive_draws`.
+    Returns ``R`` of shape (k, n_rows), k = min(n_rows, n_features),
+    with ``R^T R = X Λ^{-1} X^T`` exactly: one half-solve against the
+    cached factor gives ``B = M^T X^T`` (``M`` being the colorize
+    operator, so ``B^T B = X Λ^{-1} X^T``), and the R factor of a QR
+    decomposition of ``B`` is the root. Joint draws of ``X @ w`` for
+    ``w ~ N(0, Λ^{-1})`` are then ``z @ R`` with iid standard-normal
+    ``z`` -- O(n_rows*k) per draw, independent of n_features.
 
-    Returns an array of shape ``(size, n_rows)``.
+    When a sparse ``X`` is too wide to densify within the scratch cap,
+    the n_rows x n_rows Gram matrix is accumulated in bounded column
+    blocks instead and its eigendecomposition provides the root.
+
+    Returns None when ``n_rows >= n_features`` (weight space is the
+    smaller space -- sample there instead) or the candidate set exceeds
+    ``_PREDICTIVE_ROOT_MAX_ROWS``.
     """
+    n_rows, n_features = X.shape
+    if n_rows >= n_features or n_rows > _PREDICTIVE_ROOT_MAX_ROWS:
+        return None
+    if issparse(X) and n_rows * n_features > _PREDICTIVE_DRAWS_ELEMS:
+        return _predictive_root_gram(factor, X)
     Xt = X.T.toarray() if issparse(X) else np.asarray(X.T, dtype=np.float64)
     B = np.asarray(factor.half_solve(Xt), dtype=np.float64)
     # B may be (p,) for a single row; keep columns = rows of X
@@ -464,11 +457,35 @@ def centered_predictive_draws(
     # mode="r" skips forming Q entirely; B is scratch, safe to overwrite.
     # It returns R padded to B's full row count -- everything below the
     # triangle is zero, so only the top min(p, n_rows) rows carry the
-    # square root and the noise needs only that many dimensions.
+    # square root.
     k = min(B.shape)
-    R = scipy_qr(B, mode="r", overwrite_a=True, check_finite=False)[0][:k]
-    z = rng.standard_normal((size, k))
-    return cast(NDArray[np.float64], z @ R)
+    return cast(
+        NDArray[np.float64],
+        scipy_qr(B, mode="r", overwrite_a=True, check_finite=False)[0][:k],
+    )
+
+
+def _predictive_root_gram(factor: PrecisionFactor, X: Any) -> NDArray[np.float64]:
+    """Predictive root via the Gram matrix, with bounded dense scratch.
+
+    Accumulates ``S = X Λ^{-1} X^T`` one column block at a time using
+    ``Λ^{-1} b = M (M^T b)`` against the cached factor, so the dense
+    scratch never exceeds the block cap regardless of n_features, then
+    roots the n_rows x n_rows ``S`` by eigendecomposition (clipping
+    the tiny negative eigenvalues roundoff can produce).
+    """
+    n_rows, n_features = X.shape
+    block = max(1, _PREDICTIVE_DRAWS_ELEMS // n_features)
+    S = np.empty((n_rows, n_rows), dtype=np.float64)
+    for start in range(0, n_rows, block):
+        stop = min(n_rows, start + block)
+        rhs = np.asarray(X[start:stop].T.toarray(), dtype=np.float64)
+        W = factor.colorize(factor.half_solve(rhs))  # Λ^{-1} X_block^T
+        S[:, start:stop] = X @ W
+    S = 0.5 * (S + S.T)
+    w, V = np.linalg.eigh(S)
+    np.clip(w, 0.0, None, out=w)
+    return cast(NDArray[np.float64], np.sqrt(w)[:, None] * V.T)
 
 
 def multivariate_t_sample_from_precision(
