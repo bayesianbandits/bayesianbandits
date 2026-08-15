@@ -43,6 +43,7 @@ from ._sparse_bayesian_linear_regression import (
     multivariate_normal_sample_from_precision,
     multivariate_t_sample_from_precision,
     scale_factor,
+    use_predictive_draws,
 )
 
 Params = ParamSpec("Params")
@@ -1292,7 +1293,7 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        if size > X_sample.shape[0]:
+        if use_predictive_draws(X_sample, size):
             # More draws than prediction rows: sample the linear
             # predictor directly in predictive space -- same joint law,
             # per-draw cost independent of n_features.
@@ -1774,7 +1775,7 @@ scipy.sparse.csc_array
         )
         df = 2 * self.a_
 
-        if size > X_sample.shape[0]:
+        if use_predictive_draws(X_sample, size):
             # More draws than prediction rows: sample the linear
             # predictor in predictive space. The joint t law is
             # preserved -- one chi-square mixing variable per draw,
@@ -2444,7 +2445,7 @@ scipy.sparse.csc_array
             X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        if size > X_sample.shape[0]:
+        if use_predictive_draws(X_sample, size):
             # More draws than prediction rows: sample the linear
             # predictor directly in predictive space -- same joint law,
             # per-draw cost independent of n_features.

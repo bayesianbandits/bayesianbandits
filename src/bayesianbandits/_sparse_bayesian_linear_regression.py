@@ -13,6 +13,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import cho_solve, solve_triangular  # type: ignore
+from scipy.linalg import qr as scipy_qr  # type: ignore
 from scipy.sparse import (  # type: ignore  # type: ignore
     csc_array,
     csc_matrix,
@@ -412,6 +413,29 @@ multivariate_normal_sample_from_sparse_precision = (
 )
 
 
+# Cap on the dense (n_features, n_rows) scratch densified from a sparse X
+# in use_predictive_draws: 2^24 float64 elements = 128 MB.
+_PREDICTIVE_DRAWS_ELEMS = 2**24
+
+
+def use_predictive_draws(X: Any, size: int) -> bool:
+    """Whether ``centered_predictive_draws`` beats weight-space sampling.
+
+    Predictive space wins when it is the lower-dimensional space
+    (``n_rows < n_features``) and more draws are requested than there
+    are rows (``size > n_rows``): the R factor then costs less than one
+    weight-space colorize and each draw is O(n_rows²) instead of O(p²).
+    For sparse ``X`` the half-solve densifies an (n_features, n_rows)
+    scratch, so the switch is also capped by that scratch's size.
+    """
+    n_rows, n_features = X.shape
+    if not (size > n_rows and n_rows < n_features):
+        return False
+    if issparse(X) and n_rows * n_features > _PREDICTIVE_DRAWS_ELEMS:
+        return False
+    return True
+
+
 def centered_predictive_draws(
     factor: PrecisionFactor,
     X: Any,
@@ -423,11 +447,12 @@ def centered_predictive_draws(
     Samples in predictive space rather than weight space: one
     half-solve against the cached factor gives ``B = M^T X^T``
     (``M`` being the colorize operator, so ``B^T B = X Λ^{-1} X^T``),
-    an economy SVD of ``B`` yields a stable square root of the
-    n_rows × n_rows predictive covariance, and each draw then costs
-    O(n_rows · min(n_rows, p)) instead of O(p²). The joint law across
-    rows is exactly that of weight-space sampling; only the random
-    stream differs. Worthwhile whenever ``size`` exceeds ``n_rows``.
+    and the R factor of a QR decomposition of ``B`` is an exact
+    square root of the n_rows × n_rows predictive covariance
+    (``R^T R = B^T B``), so each draw costs O(n_rows²) instead of
+    O(p²). The joint law across rows is exactly that of weight-space
+    sampling; only the random stream differs. Gate calls with
+    :func:`use_predictive_draws`.
 
     Returns an array of shape ``(size, n_rows)``.
     """
@@ -436,9 +461,14 @@ def centered_predictive_draws(
     # B may be (p,) for a single row; keep columns = rows of X
     if B.ndim == 1:
         B = B[:, None]
-    _, s, vt = np.linalg.svd(B, full_matrices=False)
-    z = rng.standard_normal((size, s.shape[0]))
-    return cast(NDArray[np.float64], (z * s) @ vt)
+    # mode="r" skips forming Q entirely; B is scratch, safe to overwrite.
+    # It returns R padded to B's full row count -- everything below the
+    # triangle is zero, so only the top min(p, n_rows) rows carry the
+    # square root and the noise needs only that many dimensions.
+    k = min(B.shape)
+    R = scipy_qr(B, mode="r", overwrite_a=True, check_finite=False)[0][:k]
+    z = rng.standard_normal((size, k))
+    return cast(NDArray[np.float64], z @ R)
 
 
 def multivariate_t_sample_from_precision(
