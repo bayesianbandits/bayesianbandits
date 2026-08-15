@@ -4,6 +4,23 @@ Changelog
 Unreleased
 ----------
 
+**Removals**
+
+- Removed the unused arm-batching machinery from ``bayesianbandits._arm``:
+  ``batch_sample_arms``, ``can_batch_arms``, ``stack_features``, and the
+  ``LearnerWithTransform`` protocol. None was public API, none was
+  documented, and no supported configuration could reach them correctly.
+  ``can_batch_arms`` requires every arm's learner to expose both
+  ``transform`` and ``final_estimator``, which no learner in this library
+  does -- ``Agent`` and ``ContextualAgent`` give each arm its own learner
+  (so the shared-``final_estimator`` test fails by construction), and
+  ``LipschitzContextualAgent`` shares *one* learner across arms, so the
+  per-arm ``transform`` the batched path assumes would return identical
+  rows and silently erase arm identity. Cross-arm batching is
+  ``LipschitzContextualAgent``'s job, done in ``pull`` via the arm
+  featurizer, and is unaffected. The policies now use the per-arm
+  sampling path they already fell back to in every real configuration
+
 **New features**
 
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
