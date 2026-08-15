@@ -210,3 +210,57 @@ def test_reach_budget_bail_falls_back_to_weight_space(monkeypatch) -> None:
     monkeypatch.setattr(solver, "_entry_budget", 0)
     s = est.sample(X, size=1)
     assert s.shape == (1, 4) and np.isfinite(s).all()
+
+
+@pytest.mark.cython
+def test_reach_solve_matches_dense_triangular_solve() -> None:
+    """Direct check of the Cython kernel against scipy's dense solve."""
+    from bayesianbandits._reach import reach_solve
+    from scipy.linalg import solve_triangular
+
+    rng = np.random.default_rng(0)
+    p = 60
+    L = np.tril(rng.normal(0, 0.3, (p, p)), -1) + np.diag(rng.uniform(1, 2, p))
+    Lc = csc_array(L)
+    b = np.zeros(p)
+    nodes = np.array([3, 17, 40], dtype=np.int64)
+    vals = rng.standard_normal(3)
+    b[nodes] = vals
+    work = np.zeros(p)
+    stamp = np.zeros(p, dtype=np.int64)
+    result = reach_solve(
+        np.ascontiguousarray(Lc.data),
+        np.ascontiguousarray(Lc.indices, dtype=np.int32),
+        np.ascontiguousarray(Lc.indptr, dtype=np.int32),
+        nodes,
+        vals,
+        work,
+        stamp,
+        1,
+        p,
+        p * p,
+    )
+    assert result is not None
+    reach, out, entries = result
+    ref = solve_triangular(L, b, lower=True)
+    full = np.zeros(p)
+    full[reach] = out
+    np.testing.assert_allclose(full, ref, rtol=1e-10, atol=1e-12)
+    assert np.all(work == 0.0)  # scratch restored
+    # budget bail returns None and leaves scratch clean
+    assert (
+        reach_solve(
+            np.ascontiguousarray(Lc.data),
+            np.ascontiguousarray(Lc.indices, dtype=np.int32),
+            np.ascontiguousarray(Lc.indptr, dtype=np.int32),
+            nodes,
+            vals,
+            work,
+            stamp,
+            2,
+            1,
+            p * p,
+        )
+        is None
+    )
+    assert np.all(work == 0.0)

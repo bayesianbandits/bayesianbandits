@@ -29,6 +29,8 @@ from scipy.sparse.linalg import (  # type: ignore
 )
 from scipy.stats._multivariate import _squeeze_output  # type: ignore
 
+from ._reach import reach_solve
+
 use_solver(useUmfpack=False)
 
 try:
@@ -236,19 +238,21 @@ class _ReachHalfSolver:
         if not L.has_sorted_indices:
             L.sort_indices()
         n = cast(tuple[int, int], L.shape)[0]
-        self._indptr = L.indptr
-        self._indices = L.indices
-        self._data = L.data
+        self._indptr = np.ascontiguousarray(L.indptr, dtype=np.int32)
+        self._indices = np.ascontiguousarray(L.indices, dtype=np.int32)
+        self._data = np.ascontiguousarray(L.data, dtype=np.float64)
         self._n = n
         # original coordinate s enters the solve at row landing[s]
         self._landing = landing
         # Per-call budgets across all columns, sized to stay well
         # below one dense O(n) triangular solve -- past them the dense
         # path is faster and the caller falls back. Nodes bound the
-        # per-node Python overhead; entries bound the vectorized work,
-        # which hub columns can inflate far beyond the node count.
-        self._call_budget = max(2048, n // 256)
-        self._entry_budget = 2**19
+        # per-node work, entries bound the per-entry work (hub columns
+        # inflate entries far beyond the node count); both are C-speed
+        # in the Cython solve, so the budgets admit fairly bushy
+        # factors before the dense path wins.
+        self._call_budget = max(8192, n // 8)
+        self._entry_budget = 2**22
         self._work = np.zeros(n, dtype=np.float64)
         self._stamp = np.zeros(n, dtype=np.int64)
         self._gen = 0
@@ -267,50 +271,27 @@ class _ReachHalfSolver:
         Returns ``(rows, values, entries_traversed)`` of the sparse
         result, or None when the reach exceeds ``budget`` nodes or
         ``entry_budget`` traversed entries (caller falls back to a
-        dense solve). The neighbor scan is vectorized per node, so a
-        hub column with thousands of entries costs one numpy
-        operation, not one Python iteration per entry.
+        dense solve). Delegates to the Cython extension for the DFS
+        and the solve.
         """
         if not self._usable:
             return None
-        indptr, indices, data = self._indptr, self._indices, self._data
-        work, stamp = self._work, self._stamp
         self._gen += 1
-        gen = self._gen
-        reach: list[int] = []
-        stack: list[int] = []
-        for n in nodes:
-            jn = int(n)
-            if stamp[jn] != gen:
-                stamp[jn] = gen
-                reach.append(jn)
-                stack.append(jn)
-        entries = 0
-        while stack:
-            if len(reach) > budget or entries > entry_budget:
-                return None
-            j = stack.pop()
-            nb = indices[indptr[j] + 1 : indptr[j + 1]]
-            if nb.size:
-                entries += nb.size
-                fresh = nb[stamp[nb] != gen]
-                if fresh.size:
-                    stamp[fresh] = gen
-                    fresh_list = cast("list[int]", fresh.tolist())
-                    reach.extend(fresh_list)
-                    stack.extend(fresh_list)
-        # lower-triangular: ascending index order is a topological order
-        reach_arr = np.sort(np.asarray(reach, dtype=np.intp))
-        np.add.at(work, nodes, vals)
-        for j in reach_arr:
-            s, e = indptr[j], indptr[j + 1]
-            xj = work[j] / data[s]
-            work[j] = xj
-            if xj != 0.0 and e > s + 1:
-                work[indices[s + 1 : e]] -= data[s + 1 : e] * xj
-        out = work[reach_arr].copy()
-        work[reach_arr] = 0.0
-        return reach_arr, out, entries
+        result = reach_solve(
+            self._data,
+            self._indices,
+            self._indptr,
+            np.ascontiguousarray(nodes, dtype=np.int64),
+            vals,
+            self._work,
+            self._stamp,
+            self._gen,
+            budget,
+            entry_budget,
+        )
+        return cast(
+            "Union[tuple[NDArray[np.intp], NDArray[np.float64], int], None]", result
+        )
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
