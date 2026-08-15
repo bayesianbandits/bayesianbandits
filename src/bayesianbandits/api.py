@@ -80,6 +80,7 @@ from ._arm import (
     TokenType,
     _accepts_context_batch,
     batch_identity,
+    is_elementwise_batch_reward,
     is_identity_function,
     resolve_marginal_sampler,
 )
@@ -98,7 +99,13 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     when decisions consume per-(arm, context) statistics alone, for
     which marginal draws are exact and much cheaper; policies that
     compare arms within a shared posterior draw (e.g. Thompson
-    sampling) must keep it ``False``."""
+    sampling) must keep it ``False``.
+
+    This flag describes the policy only. Agents additionally require
+    the reward transform between sampler and policy to be elementwise,
+    so a ``LipschitzContextualAgent`` carrying an arm-combining
+    ``batch_reward_function`` keeps joint draws regardless of this
+    flag (see :func:`~bayesianbandits._arm.is_elementwise_batch_reward`)."""
 
     @overload
     def __call__(
@@ -846,6 +853,24 @@ class LipschitzContextualAgent(Generic[TokenType]):
         dimension of ``samples``. If None and all arms use the identity
         reward function, an optimized batch identity is used
         automatically.
+
+        Because the function sees a whole draw at once, it may combine
+        arms *within* one draw -- share of total, cannibalization,
+        softmax over a slate. Supplying one therefore disables the
+        cheaper iid marginal sampling path that ``marginal_ok``
+        policies (:class:`EpsilonGreedy`,
+        :class:`UpperConfidenceBound`, ``EXP3A``) would otherwise use,
+        since those draws are not jointly distributed across arms. A
+        function that maps each ``(arm, context, draw)`` cell
+        independently can opt back into the faster path by carrying a
+        truthy ``elementwise`` attribute::
+
+            def revenue(samples, action_tokens):
+                return samples * multipliers[:, None, None]
+            revenue.elementwise = True
+
+        Per-arm ``Arm.reward_function``s are always applied one arm at
+        a time and never affect sampling.
     random_seed : int, np.random.Generator, or None, default=None
         Controls the random number generator shared by the policy and
         the learner. Pass an int for reproducible results across calls.
@@ -1257,7 +1282,14 @@ class LipschitzContextualAgent(Generic[TokenType]):
         # 3. Get samples from learner (SINGLE MODEL CALL). Policies that
         # consume only per-(arm, context) statistics opt into iid
         # marginal draws, which are exact for them and much cheaper.
-        if getattr(self.policy, "marginal_ok", False):
+        # A batch reward function that combines arms within a draw needs
+        # those arms jointly distributed, which the marginal path does
+        # not provide -- the policy's own statistics are per-(arm,
+        # context), but the reward function runs before it (step 5)
+        marginal_ok = getattr(self.policy, "marginal_ok", False) and (
+            is_elementwise_batch_reward(self.batch_reward_function)
+        )
+        if marginal_ok:
             sampler = resolve_marginal_sampler(self.learner)
         else:
             sampler = self.learner.sample
