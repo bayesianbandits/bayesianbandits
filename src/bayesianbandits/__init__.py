@@ -37,6 +37,7 @@ policies of your bandit as your needs change.
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
+    InformationDirectedSampling
     EXP3A
     Arm
 
@@ -134,7 +135,7 @@ from .api import (
 )
 from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 from .pipelines import AgentPipeline, LearnerPipeline
-from .policies import EXP3A
+from .policies import EXP3A, InformationDirectedSampling
 
 __all__ = [
     "Arm",
@@ -157,6 +158,7 @@ __all__ = [
     "EpsilonGreedy",
     "ThompsonSampling",
     "UpperConfidenceBound",
+    "InformationDirectedSampling",
     "EXP3A",
     "AgentPipeline",
     "LearnerPipeline",

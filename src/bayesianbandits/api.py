@@ -50,6 +50,7 @@ Policy Functions
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
+    InformationDirectedSampling
 
 """
 
@@ -87,6 +88,7 @@ from ._arm import (
 from ._arm_featurizer import ArmFeaturizer
 from .policies import (  # noqa: F401
     EpsilonGreedy,
+    InformationDirectedSampling,
     ThompsonSampling,
     UpperConfidenceBound,
 )

@@ -6,6 +6,15 @@ Unreleased
 
 **New features**
 
+- ``InformationDirectedSampling``: a variance-based information-directed
+  sampling (IDS) policy after Russo & Van Roy (2018). Each round it
+  estimates every arm's expected regret and variance-based information
+  gain from joint Monte Carlo posterior draws and samples from the
+  two-arm distribution minimizing the information ratio
+  :math:`\Delta(\pi)^2 / v(\pi)`, exploiting cross-arm correlation under
+  shared learners. ``top_k`` returns sequential IDS draws without
+  replacement, each slot re-solving the subgame of remaining arms (#240)
+
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal
   posterior predictive, computed with one triangular half-solve per row
