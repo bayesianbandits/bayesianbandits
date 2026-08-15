@@ -1,4 +1,5 @@
 import os
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
@@ -32,6 +33,14 @@ from scipy.stats._multivariate import _squeeze_output  # type: ignore
 from ._reach import reach_solve
 
 use_solver(useUmfpack=False)
+
+
+def _time_once(fn: Any) -> float:
+    """One wall-clock timing of ``fn()`` for kernel selection."""
+    t0 = time.perf_counter()
+    fn()
+    return time.perf_counter() - t0
+
 
 try:
     from sksparse.cholmod import cho_factor as cholmod_cho_factor  # type: ignore
@@ -343,21 +352,34 @@ class ScaledSparseFactor:
 SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
 
 
+# Machine-level verdicts for DenseFactor's rent-vs-buy choice, keyed by
+# n_features: whether a matmul against a materialized U^{-1} actually
+# beats a direct triangular solve on this machine/BLAS. Threaded BLAS
+# tends to favor the matmul (it parallelizes; the solve's dependency
+# chain does not), single-threaded BLAS tends to favor the solve (it
+# reads half the matrix). Measured once per size, then reused by every
+# later factor of that size.
+_COLORIZE_BUY_WINS: dict[int, bool] = {}
+
+
 @dataclass
 class DenseFactor:
     """Wraps a LAPACK Cholesky factorization for solving and sampling.
 
     Stores the upper-triangular factor U where Λ = U^T U.
     ``colorize`` starts as a direct triangular solve (O(p²) per
-    column) and only materializes U^{-1} (an O(p³) build) once the
-    cumulative solved columns have cost as much as one build, so
-    a factor that is colorized once or twice — the fit/sample loop
-    of a bandit agent — never pays the O(p³) price.
+    column) and only considers materializing U^{-1} (an O(p³) build)
+    once the cumulative solved columns have cost as much as one
+    build, so a factor that is colorized once or twice — the
+    fit/sample loop of a bandit agent — never pays the O(p³) price.
+    At that threshold the two kernels are timed against each other
+    once per size and the faster one is kept.
     """
 
     _U: NDArray[np.float64]
     _n_features: int
     _colorize_cols: int = field(default=0, init=False, repr=False)
+    _rent_forever: bool = field(default=False, init=False, repr=False)
 
     @cached_property
     def _U_inv(self) -> NDArray[np.float64]:
@@ -368,22 +390,64 @@ class DenseFactor:
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cho_solve((self._U, False), b, check_finite=False)
 
+    def _buy_wins(self, z: NDArray[np.floating[Any]]) -> bool:
+        """Time matmul-against-U^{-1} vs direct solve on the caller's
+        actual operand shape; cache the verdict per size. Building
+        U^{-1} to measure it is the one-time cost the ski-rental
+        threshold has already justified."""
+        verdict = _COLORIZE_BUY_WINS.get(self._n_features)
+        if verdict is None:
+            U_inv = self._U_inv
+            t_mm = min(
+                _time_once(lambda: U_inv @ z),
+                _time_once(lambda: U_inv @ z),
+                _time_once(lambda: U_inv @ z),
+            )
+            t_solve = min(
+                _time_once(
+                    lambda: solve_triangular(
+                        self._U, z, lower=False, check_finite=False
+                    )
+                ),
+                _time_once(
+                    lambda: solve_triangular(
+                        self._U, z, lower=False, check_finite=False
+                    )
+                ),
+                _time_once(
+                    lambda: solve_triangular(
+                        self._U, z, lower=False, check_finite=False
+                    )
+                ),
+            )
+            verdict = t_mm < t_solve
+            _COLORIZE_BUY_WINS[self._n_features] = verdict
+        if not verdict and "_U_inv" in self.__dict__:
+            del self.__dict__["_U_inv"]  # free the p² buffer; solve wins here
+        return verdict
+
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Compute U^{-1} z, producing samples from N(0, Λ^{-1}).
 
         Ski-rental amortization: solve directly until the cumulative
         colorized columns reach ``n_features`` (the cost of building
-        U^{-1} once), then build and reuse the cached inverse. Total
-        work is never more than twice the optimal strategy, and the
-        one-shot case skips the O(p³) build entirely.
+        U^{-1} once). At that point, buy the inverse only if a timed
+        comparison says the matmul actually beats the solve on this
+        machine; otherwise keep renting. Total work is never more
+        than twice the optimal strategy, and the one-shot case skips
+        the O(p³) build entirely.
         """
         if "_U_inv" not in self.__dict__:
-            self._colorize_cols += z.shape[1] if z.ndim == 2 else 1
-            if self._colorize_cols < self._n_features:
-                return cast(
-                    NDArray[np.float64],
-                    solve_triangular(self._U, z, lower=False, check_finite=False),
-                )
+            if not self._rent_forever:
+                self._colorize_cols += z.shape[1] if z.ndim == 2 else 1
+                if self._colorize_cols >= self._n_features and self._buy_wins(z):
+                    return cast(NDArray[np.float64], self._U_inv @ z)
+                if self._colorize_cols >= self._n_features:
+                    self._rent_forever = True
+            return cast(
+                NDArray[np.float64],
+                solve_triangular(self._U, z, lower=False, check_finite=False),
+            )
         return cast(NDArray[np.float64], self._U_inv @ z)
 
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:

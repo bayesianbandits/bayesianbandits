@@ -805,6 +805,35 @@ def _invalidate_cached_properties(
     return wrapper
 
 
+def _validated_prediction_x(
+    X: Union[NDArray[Any], csc_array], sparse: bool
+) -> Union[NDArray[Any], csc_array]:
+    """``check_array`` for the read-only prediction paths, with a fast
+    path for input that is already a well-formed 2-D float ndarray.
+
+    ``check_array``'s Python plumbing costs tens of microseconds per
+    call -- a large share of a warm dense decision. The fast path keeps
+    its semantics for the inputs it accepts: finite float data in a
+    non-empty 2-D ndarray. Everything else (sparse, lists, int or
+    object dtypes, wrong dimensions, NaN) falls through to
+    ``check_array`` for identical validation and error messages.
+    """
+    if (
+        not sparse
+        and type(X) is np.ndarray
+        and X.ndim == 2
+        and X.shape[0] > 0
+        and X.shape[1] > 0
+        and X.dtype.kind == "f"
+    ):
+        if not np.isfinite(X).all():
+            raise ValueError(
+                "Input X contains NaN or infinity; check_array would reject it."
+            )
+        return X
+    return check_array(X, ensure_2d=True, accept_sparse="csc" if sparse else False)
+
+
 # Cap on the dense (n_features, block) scratch densified from a sparse
 # X in _marginal_predictive_sd: ~2M float64 elements = 16 MB per array.
 _MARGINAL_SD_BLOCK_ELEMS = 2**21
@@ -997,9 +1026,7 @@ def _validated_marginal_mean_sd(
     validate ``X``, initialize the prior if the model is unfitted, and
     return the per-row predictive mean and standard deviation of the
     linear predictor ``X @ w``."""
-    X_pred = check_array(
-        X, ensure_2d=True, accept_sparse="csc" if est.sparse else False
-    )
+    X_pred = _validated_prediction_x(X, est.sparse)
     try:
         check_is_fitted(est, "coef_")
     except NotFittedError:
@@ -1420,9 +1447,7 @@ scipy.sparse.csc_array
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_pred = check_array(
-            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_pred = _validated_prediction_x(X, self.sparse)
 
         return X_pred @ self.coef_
 
@@ -1462,9 +1487,7 @@ scipy.sparse.csc_array
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_sample = check_array(
-            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = _validated_prediction_x(X, self.sparse)
 
         prep = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
         if prep is not None:
@@ -1943,9 +1966,7 @@ scipy.sparse.csc_array
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_sample = check_array(
-            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = _validated_prediction_x(X, self.sparse)
         df = 2 * self.a_
 
         prep = _predictive_root_for_call(self, self.shape_, X_sample, size)
@@ -2556,9 +2577,7 @@ scipy.sparse.csc_array
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_pred = check_array(
-            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_pred = _validated_prediction_x(X, self.sparse)
 
         eta = X_pred @ self.coef_
 
@@ -2613,9 +2632,7 @@ scipy.sparse.csc_array
         except NotFittedError:
             self._initialize_prior(X)
 
-        X_sample = check_array(
-            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = _validated_prediction_x(X, self.sparse)
 
         prep = _predictive_root_for_call(self, self._precision_factor, X_sample, size)
         if prep is not None:
