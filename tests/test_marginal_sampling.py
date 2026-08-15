@@ -443,10 +443,15 @@ class TestBatchRewardCoupling:
         assert not is_elementwise_batch_reward(_share_of_total)
 
         def opted_in(samples, action_tokens):
-            return samples
+            return samples * 2.0
 
+        assert not is_elementwise_batch_reward(opted_in)
         opted_in.elementwise = True
         assert is_elementwise_batch_reward(opted_in)
+        # the attribute is a promise about the function, not a wrapper:
+        # it must not change what the function computes
+        samples = np.ones((2, 3, 4))
+        assert_allclose(opted_in(samples, [0, 1]), 2.0 * samples)
 
     @staticmethod
     def _min_cross_arm_corr(samples):
