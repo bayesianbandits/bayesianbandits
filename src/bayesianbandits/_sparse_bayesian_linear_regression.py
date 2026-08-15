@@ -296,7 +296,7 @@ class _ReachHalfSolver:
                 fresh = nb[stamp[nb] != gen]
                 if fresh.size:
                     stamp[fresh] = gen
-                    fresh_list = fresh.tolist()
+                    fresh_list = cast("list[int]", fresh.tolist())
                     reach.extend(fresh_list)
                     stack.extend(fresh_list)
         # lower-triangular: ascending index order is a topological order
