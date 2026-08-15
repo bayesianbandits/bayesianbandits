@@ -23,6 +23,8 @@ Covers five fronts:
    reward-space path with correct shapes and unchanged decisions.
 """
 
+from unittest import mock
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -37,9 +39,12 @@ from bayesianbandits import (
     LipschitzContextualAgent,
     NormalInverseGammaRegressor,
     NormalRegressor,
+    _estimators,
 )
 from bayesianbandits._arm import (
+    _take_rows,
     batch_sample_arms,
+    resolve_marginal_sampler,
     resolve_reward_space_sampler,
 )
 from bayesianbandits._estimators import _reward_space_is_cheaper
@@ -486,6 +491,8 @@ class TestResolution:
         X_train = rng.standard_normal((300, 101))
         est.fit(X_train, rng.standard_normal(300))
         assert resolve_reward_space_sampler(est, 10, 1000) is None
+        # and the draws callers do get are the clipped ones
+        assert (est.sample(rng.standard_normal((10, 101)), size=50) >= 0.0).all()
 
     def test_resolver_sampler_applies_block_size(self):
         est, rng = _fit_dense(d=101, rows=300)
@@ -680,15 +687,115 @@ class TestAgentWiring:
                 return np.zeros((size, X.shape[0]))
 
             def predict(self, X):
-                return np.zeros(X.shape[0])
+                return np.full(X.shape[0], 3.0)
 
             def partial_fit(self, X, y, sample_weight=None):
                 return self
 
             def decay(self, X, *, decay_rate=None):
-                pass
+                self.decayed = True
 
-        pipeline = LearnerPipeline(steps=[], learner=PlainLearner())  # type: ignore[arg-type]
+        learner = PlainLearner()
+        pipeline = LearnerPipeline(steps=[], learner=learner)  # type: ignore[arg-type]
         X = np.zeros((4, 3))
         draws = pipeline.sample_reward_space(X, 7, block_size=2)
         assert draws.shape == (7, 4)
+        # the gate declines too, so nothing routes to reward space
+        assert not pipeline._use_reward_space(4, 7, 2)
+        # and the rest of the protocol still forwards to the learner
+        assert pipeline.predict(X).tolist() == [3.0] * 4
+        assert pipeline.partial_fit(X, np.zeros(4)) is pipeline
+        pipeline.decay(X)
+        assert learner.decayed
+
+
+# -- 6. Resolver and factor edge paths ----------------------------------------
+
+
+class TestResolverEdgePaths:
+    def test_learner_with_no_class_level_sample(self):
+        """_defines_before_sample walks the MRO; a learner whose sample is
+        an instance attribute defines neither name at class level, so the
+        walk falls off the end and the resolver declines."""
+
+        class InstanceSampler:
+            pass
+
+        learner = InstanceSampler()
+        learner.sample = lambda X, size=1: np.zeros((size, len(X)))  # type: ignore[attr-defined]
+        assert resolve_reward_space_sampler(learner, 10, 1000) is None
+        assert resolve_marginal_sampler(learner) is learner.sample  # type: ignore[attr-defined]
+
+    def test_take_rows_uses_iloc_for_dataframes(self):
+        """Plain X[indices] selects columns by label on a DataFrame, so
+        positional row selection must go through iloc."""
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame(np.arange(9.0).reshape(3, 3), columns=["a", "b", "c"])
+        taken = _take_rows(df, np.array([2, 0, 1]))
+        assert taken.values.tolist() == [[6, 7, 8], [0, 1, 2], [3, 4, 5]]
+        # and the dense/sparse branch still selects rows positionally
+        assert _take_rows(np.arange(9.0).reshape(3, 3), np.array([2, 0])).tolist() == [
+            [6, 7, 8],
+            [0, 1, 2],
+        ]
+
+
+class TestPredictiveCholeskyEdgePaths:
+    def test_full_mode_pads_when_rows_exceed_features(self):
+        """QR of the (d, n) half-solve returns an (min(d, n), n) R, which
+        must be zero-padded to (n, n) before transposing to a lower
+        factor."""
+        est, rng = _fit_dense(d=4, rows=80)
+        X = rng.standard_normal((12, 4))
+        X[6:9] = X[0:3]  # linearly dependent rows must stay exact
+        mean, L = est._predictive_cholesky(X)
+
+        assert L.shape == (12, 12)
+        assert_allclose(L, np.tril(L), atol=0)
+        assert (np.diag(L) >= -1e-12).all()
+        target = X @ np.linalg.inv(cov_inv_dense(est)) @ X.T
+        assert_allclose(L @ L.T, target, atol=1e-10)
+        assert_allclose(mean, X @ est.coef_)
+
+    def test_blocked_sparse_chunks_via_csr(self, sparse_solver):
+        """Blocked mode bounds the dense half-solve scratch by chunking
+        over blocks; a sparse X is copied to CSR first, since rows are
+        CSC's minor axis."""
+        est, rng = _fit_sparse(d=400, rows=300)
+        X = sp.csc_array(
+            sp.random(24, 400, density=0.05, random_state=7)  # type: ignore[call-arg]
+        )
+        target = X.toarray() @ np.linalg.inv(cov_inv_dense(est)) @ X.toarray().T
+
+        with mock.patch.object(_estimators, "_MARGINAL_SD_BLOCK_ELEMS", 8):
+            _, L_chunked = est._predictive_cholesky(X, 4)
+        _, L_whole = est._predictive_cholesky(X, 4)
+
+        assert L_chunked.shape == (6, 4, 4)
+        assert_allclose(L_chunked, L_whole, atol=1e-10)
+        for b in range(6):
+            block = target[b * 4 : (b + 1) * 4, b * 4 : (b + 1) * 4]
+            assert_allclose(L_chunked[b] @ L_chunked[b].T, block, atol=1e-10)
+
+
+class TestBatchSampleArmsRewardSpace:
+    def test_size_one_squeezes_like_the_weight_space_path(self):
+        """batch_sample_arms returns (n_arms, n_contexts) at size == 1.
+        The default flop gate never picks reward space that small, so
+        force it to keep the two paths' contracts identical."""
+
+        class ForcedRewardSpace(NormalRegressor):
+            def _use_reward_space(self, n, size, block_size=None):
+                return True
+
+        model = ForcedRewardSpace(alpha=1.0, beta=1.0, random_state=0)
+        rng = np.random.default_rng(0)
+        model.fit(rng.standard_normal((60, 2)), rng.standard_normal(60))
+        arms = _shared_model_arms(model, 3)
+        X = rng.standard_normal((5, 2))
+
+        squeezed = batch_sample_arms(arms, X, size=1, reward_space=True)
+        assert squeezed is not None and squeezed.shape == (3, 5)
+
+        stacked = batch_sample_arms(arms, X, size=4, reward_space=True)
+        assert stacked is not None and stacked.shape == (3, 5, 4)
