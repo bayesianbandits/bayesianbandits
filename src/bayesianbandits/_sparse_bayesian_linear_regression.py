@@ -26,6 +26,7 @@ from scipy.sparse.linalg import (  # type: ignore
     spsolve_triangular,
     use_solver,
 )
+from scipy.stats._multivariate import _squeeze_output  # type: ignore
 
 use_solver(useUmfpack=False)
 
@@ -258,13 +259,16 @@ class DenseFactor:
     """Wraps a LAPACK Cholesky factorization for solving and sampling.
 
     Stores the upper-triangular factor U where Λ = U^T U.
-    U^{-1} is computed lazily on first ``colorize`` call so that
-    ``fit``/``partial_fit`` (which only need ``solve``) pay no
-    extra cost.
+    ``colorize`` starts as a direct triangular solve (O(p²) per
+    column) and only materializes U^{-1} (an O(p³) build) once the
+    cumulative solved columns have cost as much as one build, so
+    a factor that is colorized once or twice — the fit/sample loop
+    of a bandit agent — never pays the O(p³) price.
     """
 
     _U: NDArray[np.float64]
     _n_features: int
+    _colorize_cols: int = field(default=0, init=False, repr=False)
 
     @cached_property
     def _U_inv(self) -> NDArray[np.float64]:
@@ -276,7 +280,21 @@ class DenseFactor:
         return cho_solve((self._U, False), b, check_finite=False)
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        """Compute U^{-1} z, producing samples from N(0, Λ^{-1})."""
+        """Compute U^{-1} z, producing samples from N(0, Λ^{-1}).
+
+        Ski-rental amortization: solve directly until the cumulative
+        colorized columns reach ``n_features`` (the cost of building
+        U^{-1} once), then build and reuse the cached inverse. Total
+        work is never more than twice the optimal strategy, and the
+        one-shot case skips the O(p³) build entirely.
+        """
+        if "_U_inv" not in self.__dict__:
+            self._colorize_cols += z.shape[1] if z.ndim == 2 else 1
+            if self._colorize_cols < self._n_features:
+                return cast(
+                    NDArray[np.float64],
+                    solve_triangular(self._U, z, lower=False, check_finite=False),
+                )
         return cast(NDArray[np.float64], self._U_inv @ z)
 
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
@@ -394,6 +412,35 @@ multivariate_normal_sample_from_sparse_precision = (
 )
 
 
+def centered_predictive_draws(
+    factor: PrecisionFactor,
+    X: Any,
+    size: int,
+    rng: np.random.Generator,
+) -> NDArray[np.float64]:
+    """Centered joint draws of ``X @ w`` for ``w ~ N(0, Λ^{-1})``.
+
+    Samples in predictive space rather than weight space: one
+    half-solve against the cached factor gives ``B = M^T X^T``
+    (``M`` being the colorize operator, so ``B^T B = X Λ^{-1} X^T``),
+    an economy SVD of ``B`` yields a stable square root of the
+    n_rows × n_rows predictive covariance, and each draw then costs
+    O(n_rows · min(n_rows, p)) instead of O(p²). The joint law across
+    rows is exactly that of weight-space sampling; only the random
+    stream differs. Worthwhile whenever ``size`` exceeds ``n_rows``.
+
+    Returns an array of shape ``(size, n_rows)``.
+    """
+    Xt = X.T.toarray() if issparse(X) else np.asarray(X.T, dtype=np.float64)
+    B = np.asarray(factor.half_solve(Xt), dtype=np.float64)
+    # B may be (p,) for a single row; keep columns = rows of X
+    if B.ndim == 1:
+        B = B[:, None]
+    _, s, vt = np.linalg.svd(B, full_matrices=False)
+    z = rng.standard_normal((size, s.shape[0]))
+    return cast(NDArray[np.float64], (z * s) @ vt)
+
+
 def multivariate_t_sample_from_precision(
     loc: Union[csc_array, NDArray[np.float64], None],
     factor: PrecisionFactor,
@@ -445,8 +492,6 @@ def multivariate_t_sample_from_precision(
     if loc is None:
         loc = np.zeros_like(z)
     samples = cast(NDArray[np.float64], loc + z / np.sqrt(x)[..., None])
-    from scipy.stats._multivariate import _squeeze_output  # type: ignore
-
     samples = _squeeze_output(samples)
 
     return samples

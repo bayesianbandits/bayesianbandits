@@ -38,6 +38,7 @@ from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
     SparseFactor,
+    centered_predictive_draws,
     create_sparse_factor,
     multivariate_normal_sample_from_precision,
     multivariate_t_sample_from_precision,
@@ -847,7 +848,7 @@ def _validated_marginal_mean_sd(
     return the per-row predictive mean and standard deviation of the
     linear predictor ``X @ w``."""
     X_pred = check_array(
-        X, copy=True, ensure_2d=True, accept_sparse="csc" if est.sparse else False
+        X, ensure_2d=True, accept_sparse="csc" if est.sparse else False
     )
     try:
         check_is_fitted(est, "coef_")
@@ -1246,7 +1247,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_pred = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         return X_pred @ self.coef_
@@ -1288,8 +1289,18 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
+
+        if size > X_sample.shape[0]:
+            # More draws than prediction rows: sample the linear
+            # predictor directly in predictive space -- same joint law,
+            # per-draw cost independent of n_features.
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            centered = centered_predictive_draws(
+                self._precision_factor, X_sample, size, self.random_state_
+            )
+            return cast(NDArray[np.float64], mean + centered)
 
         samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
@@ -1759,9 +1770,21 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
         df = 2 * self.a_
+
+        if size > X_sample.shape[0]:
+            # More draws than prediction rows: sample the linear
+            # predictor in predictive space. The joint t law is
+            # preserved -- one chi-square mixing variable per draw,
+            # shared across rows, exactly as in weight space.
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            g = self.random_state_.chisquare(df, size) / df
+            centered = centered_predictive_draws(
+                self.shape_, X_sample, size, self.random_state_
+            )
+            return cast(NDArray[np.float64], mean + centered / np.sqrt(g)[:, None])
 
         # Sample from multivariate t via precision parameterization
         # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
@@ -2361,7 +2384,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_pred = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         eta = X_pred @ self.coef_
@@ -2418,8 +2441,18 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
+
+        if size > X_sample.shape[0]:
+            # More draws than prediction rows: sample the linear
+            # predictor directly in predictive space -- same joint law,
+            # per-draw cost independent of n_features.
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            centered = centered_predictive_draws(
+                self._precision_factor, X_sample, size, self.random_state_
+            )
+            return self._inverse_link(cast(NDArray[np.float64], mean + centered))
 
         param_samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
