@@ -97,6 +97,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     #: draw), so marginal sampling must not be used.
     marginal_ok = False
 
+    #: Draws one sample per pull, for which weight-space ``sample`` is
+    #: always the cheaper joint path.
+    reward_space_ok = False
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""

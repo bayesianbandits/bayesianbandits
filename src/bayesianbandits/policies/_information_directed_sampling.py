@@ -303,6 +303,13 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     #: within each draw), so marginal sampling must not be used.
     marginal_ok = False
 
+    #: Decisions are per-context and need joint draws only across arms
+    #: within a context, so per-context reward-space blocks
+    #: (``sample_reward_space``) are exact for this policy -- and much
+    #: cheaper than weight-space ``sample`` at this policy's large
+    #: ``samples`` counts.
+    reward_space_ok = True
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""

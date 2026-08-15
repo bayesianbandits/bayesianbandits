@@ -113,6 +113,10 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
     #: draws (``sample_marginal``) are exact for this policy.
     marginal_ok = True
 
+    #: The marginal path already serves this policy's per-(arm, context)
+    #: statistics; per-context joint blocks are unnecessary.
+    reward_space_ok = False
+
     @property
     def samples_needed(self) -> int:
         """Number of samples per arm per context needed for decision making."""

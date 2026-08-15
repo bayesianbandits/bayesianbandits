@@ -598,23 +598,110 @@ class Arm(Generic[ContextType, TokenType]):
         )
 
 
+def _defines_before_sample(learner: Any, method: str) -> bool:
+    """Walking the MRO from the most-derived class, is ``method`` defined
+    at or above the first ``sample`` override?
+
+    The first class defining either name decides, so a class that
+    overrides ``sample`` without also overriding ``method`` (e.g. to
+    clip or transform draws) never has its custom sampling bypassed.
+    """
+    for klass in type(learner).__mro__:
+        if method in vars(klass):
+            return True
+        if "sample" in vars(klass):
+            return False
+    return False
+
+
 def resolve_marginal_sampler(learner: Any) -> Callable[..., NDArray[np.float64]]:
     """Resolve a learner's marginal sampler, falling back to joint ``sample``.
 
     Returns the learner's ``sample_marginal`` only when it is safe to
-    use: walking the MRO from the most-derived class, the first class
-    that defines either method decides. A class that overrides
-    ``sample`` without also overriding ``sample_marginal`` (e.g. to
-    clip or transform draws) gets the fallback, so its custom sampling
-    behavior is never bypassed; per-row marginals are identical either
-    way, the fallback is merely slower.
+    use (see :func:`_defines_before_sample`); per-row marginals are
+    identical either way, the fallback is merely slower.
     """
-    for klass in type(learner).__mro__:
-        if "sample_marginal" in vars(klass):
-            return cast(Callable[..., NDArray[np.float64]], learner.sample_marginal)
-        if "sample" in vars(klass):
-            break
+    if _defines_before_sample(learner, "sample_marginal"):
+        return cast(Callable[..., NDArray[np.float64]], learner.sample_marginal)
     return cast(Callable[..., NDArray[np.float64]], learner.sample)
+
+
+def resolve_reward_space_sampler(
+    learner: Any, n_rows: int, size: int, block_size: Optional[int] = None
+) -> Optional[Callable[..., NDArray[np.float64]]]:
+    """Resolve a learner's reward-space joint sampler, or None to use ``sample``.
+
+    Returns a ``(X, size) -> samples`` callable bound to the learner's
+    ``sample_reward_space`` with ``block_size`` applied, only when it is
+    safe *and* profitable to use: ``sample_reward_space`` must be
+    defined at or above any ``sample`` override (see
+    :func:`_defines_before_sample` -- the two are distributionally
+    identical for the built-in learners, but not necessarily for a
+    subclass), and the learner's ``_use_reward_space`` flop model must
+    prefer reward space for this ``(n_rows, size)`` shape. A learner
+    that defines ``sample_reward_space`` without the ``_use_reward_space``
+    gate is never routed to reward space. Returns None otherwise;
+    callers fall back to ``sample``, which is always correct.
+    """
+    if not _defines_before_sample(learner, "sample_reward_space"):
+        return None
+    gate = getattr(learner, "_use_reward_space", None)
+    if gate is None or not gate(n_rows, size, block_size):
+        return None
+
+    def sampler(X: Any, size: int = 1, _learner: Any = learner) -> NDArray[np.float64]:
+        return cast(
+            NDArray[np.float64],
+            _learner.sample_reward_space(X, size, block_size=block_size),
+        )
+
+    return sampler
+
+
+def _context_major_permutation(n_arms: int, n_contexts: int) -> NDArray[np.intp]:
+    """Row order gathering each context's arm rows into one consecutive block.
+
+    Stacked arm features are arm-major (row ``a * n_contexts + c``); the
+    blocked reward-space sampler needs each context's rows adjacent so a
+    block is jointly drawn per context.
+    """
+    return np.arange(n_arms * n_contexts).reshape(n_arms, n_contexts).T.ravel()
+
+
+def _take_rows(X: Any, indices: NDArray[np.intp]) -> Any:
+    """Positionally select rows from an array, sparse matrix, or DataFrame.
+
+    Plain ``X[indices]`` selects *columns by label* on a DataFrame, so
+    DataFrames must go through ``iloc``.
+    """
+    if hasattr(X, "iloc"):
+        return X.iloc[indices]
+    return X[indices]
+
+
+def _sample_context_major_blocks(
+    joint_sampler: Callable[..., NDArray[np.float64]],
+    X_stacked: Any,
+    n_arms: int,
+    n_contexts: int,
+    size: int,
+) -> NDArray[np.float64]:
+    """Draw per-context joint blocks from arm-major stacked feature rows.
+
+    Permutes the arm-major stack (row ``a * n_contexts + c``)
+    context-major so each context's arm rows form one consecutive
+    jointly-drawn block, samples, and restores the (arm, context) axes.
+    Returns shape ``(n_arms, n_contexts, size)``, a zero-copy view of
+    the drawn array.
+    """
+    if n_arms == 1 or n_contexts == 1:
+        # the permutation is the identity; skip the gather-copy
+        X_ctx_major = X_stacked
+    else:
+        perm = _context_major_permutation(n_arms, n_contexts)
+        X_ctx_major = _take_rows(X_stacked, perm)
+    drawn = joint_sampler(X_ctx_major, size=size)
+    return drawn.reshape(size, n_contexts, n_arms).transpose(2, 1, 0)
 
 
 def can_batch_arms(arms: List[Arm[Any, Any]]) -> bool:
@@ -688,6 +775,7 @@ def batch_sample_arms(
     X: ContextType,
     size: int = 1,
     marginal: bool = False,
+    reward_space: bool = False,
 ) -> Optional[NDArray[np.float64]]:
     """
     Batch sample from arms that share the same model.
@@ -710,6 +798,15 @@ def batch_sample_arms(
         Much cheaper for large ``size``; only
         valid when the caller consumes per-(arm, context) statistics,
         since draws are then independent across rows.
+    reward_space : bool, default=False
+        If True, draw via the model's ``sample_reward_space`` with one
+        joint block of arm rows per context, when it is safe and the
+        model's flop model prefers it (falling back to joint ``sample``
+        -- see :func:`resolve_reward_space_sampler`). Draws stay joint
+        across arms within a context but become independent across
+        contexts, so only valid when the caller consumes per-context
+        decisions. Much cheaper for large ``size``. Ignored when
+        ``marginal`` is set.
 
     Returns
     -------
@@ -757,14 +854,29 @@ def batch_sample_arms(
     # We know from can_batch_arms that first learner is LearnerWithTransform
     first_learner = cast(LearnerWithTransform[Any], arms[0].learner)
     model = first_learner.final_estimator
-    sampler = resolve_marginal_sampler(model) if marginal else model.sample
-    samples = sampler(X_stacked, size=size)
 
-    # Reshape based on size
-    if size == 1:
-        samples = samples.reshape(n_arms, n_contexts)
+    joint_sampler = (
+        resolve_reward_space_sampler(
+            model, n_rows=n_arms * n_contexts, size=size, block_size=n_arms
+        )
+        if reward_space and not marginal
+        else None
+    )
+    if joint_sampler is not None:
+        samples = _sample_context_major_blocks(
+            joint_sampler, X_stacked, n_arms, n_contexts, size
+        )
+        if size == 1:
+            samples = samples[..., 0]
     else:
-        samples = samples.reshape(size, n_arms, n_contexts).transpose(1, 2, 0)
+        sampler = resolve_marginal_sampler(model) if marginal else model.sample
+        samples = sampler(X_stacked, size=size)
+
+        # Reshape based on size
+        if size == 1:
+            samples = samples.reshape(n_arms, n_contexts)
+        else:
+            samples = samples.reshape(size, n_arms, n_contexts).transpose(1, 2, 0)
 
     # Skip reward function application if all arms use identity
     if all(is_identity_function(arm.reward_function) for arm in arms):

@@ -15,6 +15,28 @@ Unreleased
   shared learners. ``top_k`` returns sequential IDS draws without
   replacement, each slot re-solving the subgame of remaining arms (#240)
 
+- ``sample_reward_space`` on ``NormalRegressor``,
+  ``NormalInverseGammaRegressor``, and ``BayesianGLM``: joint draws from
+  the exact posterior predictive, computed by QR-factoring
+  ``half_solve`` output into a triangular square root of
+  :math:`X \Lambda^{-1} X^T` and drawing directly in reward space --
+  distributionally identical to ``sample``, but per-draw cost is
+  independent of the feature count (neither :math:`\Lambda^{-1}` nor any
+  covariance is ever formed; rank-deficient ``X`` is exact). With
+  ``block_size=k``, consecutive row groups are drawn jointly within and
+  independently across groups via one batched QR -- the shape
+  per-context policies need. ``InformationDirectedSampling`` opts in via
+  ``reward_space_ok`` (declared on ``PolicyProtocol``), routed through
+  ``batch_sample_arms(..., reward_space=True)``,
+  ``LearnerPipeline.sample_reward_space``, and
+  ``LipschitzContextualAgent``, and gated by a cost model calibrated
+  against ``benchmarks/test_bench_reward_space_sampling.py`` (weight
+  RNG is ``d x size`` normals vs reward's ``n x size``, so reward space
+  wins precisely when ``n < d``): ~5x faster IDS sampling dense at
+  d=100, ~130x sparse at d=100k. ``sample`` itself is unchanged,
+  byte-for-byte, and Thompson sampling's ``size=1`` hot path never
+  routes here (#240)
+
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal
   posterior predictive, computed with one triangular half-solve per row
