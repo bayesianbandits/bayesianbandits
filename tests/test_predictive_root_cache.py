@@ -192,3 +192,21 @@ def test_marginal_sd_cache_hits_and_invalidates() -> None:
     assert "_marginal_sd_cache" not in est.__dict__
     est.sample_marginal(X, size=2)
     assert est._marginal_sd_cache[1] is not cached_sd
+
+
+def test_reach_budget_bail_falls_back_to_weight_space(monkeypatch) -> None:
+    """A factor too dense for the reach solver must fall back to the
+    exact weight-space path, not fail or serve bad draws."""
+    est, rng = _fitted_normal(sparse=True)
+    X = csc_array(sparse_random(4, 30, density=0.5, random_state=7))
+    solver = est._precision_factor._reach_solver
+    monkeypatch.setattr(solver, "_call_budget", 1)
+    draws = np.vstack([est.sample(X, size=1) for _ in range(2000)])
+    np.testing.assert_allclose(
+        draws.mean(axis=0), np.asarray(X @ est.coef_).ravel(), atol=0.2
+    )
+    # entry budget bail behaves the same
+    monkeypatch.setattr(solver, "_call_budget", 10_000)
+    monkeypatch.setattr(solver, "_entry_budget", 0)
+    s = est.sample(X, size=1)
+    assert s.shape == (1, 4) and np.isfinite(s).all()

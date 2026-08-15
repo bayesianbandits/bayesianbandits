@@ -242,8 +242,13 @@ class _ReachHalfSolver:
         self._n = n
         # original coordinate s enters the solve at row landing[s]
         self._landing = landing
-        # bail to the dense path once the reach stops being small
-        self._cap = max(4096, n // 64)
+        # Per-call budgets across all columns, sized to stay well
+        # below one dense O(n) triangular solve -- past them the dense
+        # path is faster and the caller falls back. Nodes bound the
+        # per-node Python overhead; entries bound the vectorized work,
+        # which hub columns can inflate far beyond the node count.
+        self._call_budget = max(2048, n // 256)
+        self._entry_budget = 2**19
         self._work = np.zeros(n, dtype=np.float64)
         self._stamp = np.zeros(n, dtype=np.int64)
         self._gen = 0
@@ -251,12 +256,20 @@ class _ReachHalfSolver:
         self._usable = bool(np.all(self._indices[self._indptr[:-1]] == np.arange(n)))
 
     def solve_support(
-        self, nodes: NDArray[np.intp], vals: NDArray[np.float64]
-    ) -> Union[tuple[NDArray[np.intp], NDArray[np.float64]], None]:
+        self,
+        nodes: NDArray[np.intp],
+        vals: NDArray[np.float64],
+        budget: int,
+        entry_budget: int,
+    ) -> Union[tuple[NDArray[np.intp], NDArray[np.float64], int], None]:
         """Solve ``L y = b`` for ``b`` given as (landing nodes, values).
 
-        Returns ``(rows, values)`` of the sparse result, or None when
-        the reach exceeds the cap (caller falls back to a dense solve).
+        Returns ``(rows, values, entries_traversed)`` of the sparse
+        result, or None when the reach exceeds ``budget`` nodes or
+        ``entry_budget`` traversed entries (caller falls back to a
+        dense solve). The neighbor scan is vectorized per node, so a
+        hub column with thousands of entries costs one numpy
+        operation, not one Python iteration per entry.
         """
         if not self._usable:
             return None
@@ -264,20 +277,28 @@ class _ReachHalfSolver:
         work, stamp = self._work, self._stamp
         self._gen += 1
         gen = self._gen
-        cap = self._cap
         reach: list[int] = []
-        stack = list(nodes)
+        stack: list[int] = []
+        for n in nodes:
+            jn = int(n)
+            if stamp[jn] != gen:
+                stamp[jn] = gen
+                reach.append(jn)
+                stack.append(jn)
+        entries = 0
         while stack:
-            j = stack.pop()
-            if stamp[j] == gen:
-                continue
-            stamp[j] = gen
-            reach.append(j)
-            if len(reach) > cap:
+            if len(reach) > budget or entries > entry_budget:
                 return None
-            for i in indices[indptr[j] + 1 : indptr[j + 1]]:
-                if stamp[i] != gen:
-                    stack.append(int(i))
+            j = stack.pop()
+            nb = indices[indptr[j] + 1 : indptr[j + 1]]
+            if nb.size:
+                entries += nb.size
+                fresh = nb[stamp[nb] != gen]
+                if fresh.size:
+                    stamp[fresh] = gen
+                    fresh_list = fresh.tolist()
+                    reach.extend(fresh_list)
+                    stack.extend(fresh_list)
         # lower-triangular: ascending index order is a topological order
         reach_arr = np.sort(np.asarray(reach, dtype=np.intp))
         np.add.at(work, nodes, vals)
@@ -289,7 +310,7 @@ class _ReachHalfSolver:
                 work[indices[s + 1 : e]] -= data[s + 1 : e] * xj
         out = work[reach_arr].copy()
         work[reach_arr] = 0.0
-        return reach_arr, out
+        return reach_arr, out, entries
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
@@ -557,13 +578,22 @@ def sparse_predictive_operator(
     starts = np.concatenate(([0], boundaries))
     stops = np.concatenate((boundaries, [rows_o.shape[0]]))
     solved: list[tuple[int, NDArray[np.intp], NDArray[np.float64]]] = []
+    budget = solver._call_budget
+    entry_budget = solver._entry_budget
     for start, stop in zip(starts, stops):
         r = int(rows_o[start])
         nodes = landing[cols_o[start:stop]]
         result = solver.solve_support(
-            nodes, np.asarray(vals_o[start:stop], dtype=np.float64)
+            nodes,
+            np.asarray(vals_o[start:stop], dtype=np.float64),
+            budget,
+            entry_budget,
         )
         if result is None:
+            return None
+        budget -= result[0].shape[0]
+        entry_budget -= result[2]
+        if budget < 0 or entry_budget < 0:
             return None
         solved.append((r, result[0], result[1]))
     if solved:
