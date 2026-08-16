@@ -50,7 +50,9 @@ Unreleased
   through the marginal path (they consume only per-arm, per-context
   statistics, for which marginal draws are exact), giving large speedups
   for their Monte Carlo estimates, dense and sparse alike.
-  ``ThompsonSampling`` and joint ``sample`` are unchanged, byte-for-byte.
+  ``ThompsonSampling`` is unchanged, byte-for-byte; joint ``sample`` is
+  unchanged except where the support-covariance route applies (see
+  below).
   Custom policies can opt in by setting ``marginal_ok = True`` (declared
   on ``PolicyProtocol``), and subclasses of the built-in policies can
   opt out with ``marginal_ok = False``, which their ``__call__`` and the
@@ -76,6 +78,31 @@ Unreleased
   so the copy was pure overhead, costing O(nnz(X)) per draw on sparse
   models. ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
 
+- Sparse ``sample`` and ``sample_marginal`` reduce through the support
+  covariance when the design matrix touches few distinct columns. Writing
+  :math:`U` for those columns, :math:`X = X_U E_U^T` exactly, so
+  :math:`\operatorname{Cov}(Xw) = X_U (\Lambda^{-1})_{U,U} X_U^T`: the whole
+  predictive law follows from one :math:`|U| \times |U|` block, obtained
+  with :math:`|U|` solves against the cached factor. Every draw after that
+  is dense linear algebra on that small block, never touching the factor
+  again. The reformulation is exact, and the cost carries no dependence on
+  the factor's elimination tree. It is used only when :math:`|U|` is
+  smaller than the number of solves the existing path would perform
+  (``size`` for joint draws, ``n_rows`` for per-row standard deviations),
+  so no case gets slower; dense models never take it, since there
+  :math:`|U|` is the full feature count. On a production agent
+  (:math:`2^{20}` features, 96 arms over a 49-column support) a
+  ``size=500`` joint draw goes from 31.5 s to 0.99 s, and additionally
+  drops the ``size``-proportional weight-space allocation, which at that
+  width exhausted memory beyond roughly 2,600 draws (#266)
+
+- ``SuperLUSparseFactor.solve`` no longer refactorizes the precision on
+  every call for a dense right-hand side, going through the cached
+  triangular factor instead. Sparse right-hand sides are unchanged. This
+  also settles a discrepancy between the backends: SuperLU returned a
+  1-D result for a single-column 2-D input, where CHOLMOD preserved the
+  column; both now preserve it (#266)
+
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
@@ -86,8 +113,15 @@ Unreleased
   Carlo estimates no longer share weight draws, so finite-sample
   selection noise among near-tied arms increases; raise ``samples`` to
   compensate (marginal draws are much cheaper per draw), or opt the
-  policy out with ``marginal_ok = False``.
-  ``sample`` itself is bit-for-bit identical to previous versions (#258)
+  policy out with ``marginal_ok = False`` (#258)
+
+- Seeded ``sample`` trajectories change for sparse models whenever the
+  support-covariance route applies, since it consumes ``|U|`` normals per
+  draw rather than one per feature. The draws are exact and jointly
+  distributed either way, and agreement with the weight-space path is
+  verified by KS tests per row. Thompson sampling is unaffected: at
+  ``size = 1`` the route can never win, so it is never taken and the
+  output is bit-for-bit identical (enforced by a test) (#266)
 
 1.4.0 (2026-07-31)
 ------------------
