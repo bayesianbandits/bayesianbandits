@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from functools import cached_property, partial, wraps
-from typing import Any, Callable, Dict, Optional, TypeVar, Union, cast
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
-from scipy.linalg.blas import dgemv, dsymv  # type: ignore
+from scipy.linalg.blas import dgemm, dgemv, dsymv  # type: ignore
 from scipy.sparse import csc_array, diags, eye, issparse
 from scipy.special import expit
 from scipy.stats import (
@@ -26,7 +26,15 @@ from sklearn.utils.validation import (
 )
 from typing_extensions import Concatenate, ParamSpec, Self
 
-from ._blas_helpers import compute_eta_dense, update_precision_dense
+from . import _support_covariance
+from ._blas_helpers import (
+    affine_lower_factor,
+    compute_eta_dense,
+    dense_matvec,
+    lower_predictive_sqrt,
+    standard_normal_f,
+    update_precision_dense,
+)
 from ._gaussian import (
     LaplaceApproximator,
     LinkFunction,
@@ -820,22 +828,33 @@ def _marginal_predictive_sd(
     ever formed; the cost is linear in the number of prediction rows.
     A sparse ``X`` is densified for the solve in row blocks, keeping the
     dense scratch bounded regardless of the number of prediction rows.
+
+    When ``X`` is sparse and touches fewer distinct columns than it has
+    rows, the support-covariance route is exact and cheaper -- it pays
+    one solve per distinct column instead of one per row -- so it is
+    used instead. See :mod:`bayesianbandits._support_covariance`.
     """
     # Dispatch on the actual type of X: sparse models accept dense X too
     # (check_array's accept_sparse only *permits* sparse input)
     if not issparse(X):
         rhs = np.asarray(X, dtype=np.float64).T
         B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
-        return cast(NDArray[np.float64], np.sqrt((B * B).sum(axis=0)))
+        return cast(NDArray[np.float64], np.sqrt(np.einsum("ij,ij->j", B, B)))
     assert X.shape is not None  # for the type checker
     n_rows, n_features = X.shape
+    support_draw = _support_covariance.build(factor, X, n_features, budget=n_rows)
+    if support_draw is not None:
+        return support_draw.sd()
     block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
+    # Rows are CSC's minor axis, so slicing rows per chunk would scan all
+    # of X's nnz each chunk; slice from a CSR copy when chunking
+    X_rows: Any = cast(csc_array, X).tocsr() if n_rows > block else X
     var = np.empty(n_rows, dtype=np.float64)
     for start in range(0, n_rows, block):
         stop = min(n_rows, start + block)
-        rhs = np.asarray(X[start:stop].T.toarray(), dtype=np.float64)
+        rhs = np.asarray(X_rows[start:stop].T.toarray(), dtype=np.float64)
         B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
-        var[start:stop] = (B * B).sum(axis=0)
+        var[start:stop] = np.einsum("ij,ij->j", B, B)
     return cast(NDArray[np.float64], np.sqrt(var))
 
 
@@ -858,7 +877,290 @@ def _validated_marginal_mean_sd(
     return mean, sd
 
 
-class NormalRegressor(BaseEstimator, RegressorMixin):
+def _reward_space_is_cheaper(
+    n: int,
+    d: int,
+    size: int,
+    sparse: bool,
+    precision_nnz: int,
+    block_size: Optional[int] = None,
+) -> bool:
+    """Is reward-space sampling cheaper than weight-space for this call?
+
+    Weight-space draws ``size`` weight vectors from the ``d``-dimensional
+    posterior and projects them through ``X``.  Reward-space computes an
+    exact square root of the predictive covariance
+    :math:`X \\Lambda^{-1} X^T` once (``n`` triangular half-solves plus a
+    QR) and draws directly in reward space, so its per-draw cost is
+    independent of ``d``.
+
+    The decision rests on the one quantity both paths pay in the same
+    currency: **triangular solves against the cached factor**.
+    Reward-space performs ``n`` of them, weight-space ``size``.  Both are
+    exactly known integers, so comparing them needs no calibration.
+    Requiring ``2n <= size`` rather than ``n < size`` leaves the other
+    half of the weight-space solve budget to cover reward-space's
+    remaining work, which the guards below then check fits.
+
+    With ``k`` rows per QR block (``k = n`` in full mode), that remaining
+    work is ``n·k·d`` for the QR and ``n·k·size`` for the draws:
+
+    - Dense.  Weight-space spends ``d²·size`` colorizing, so the draw
+      term fits when ``2·n·k <= d²``.  This is what stops the path being
+      taken at ``n ≈ d``, where the two do the same work but
+      reward-space does it in many small, latency-bound calls rather
+      than one large one.  ``n <= d`` additionally keeps reward-space's
+      ``n·size`` normals under weight-space's ``d·size``.
+    - Sparse.  A solve costs ``nnz``, not ``d²``, so the draw term fits
+      when ``2·n·k <= nnz``.  Sparse also densifies a ``(d, k)`` scratch
+      for the half-solves, which is the only allocation here that can
+      exceed the factor itself, so it is held to the same element budget
+      the marginal path uses.  That budget, not the cost model, is what
+      declines large ``n`` at high ``d``; ``block_size`` is the way to
+      take those calls.
+    """
+    k = n if block_size is None else block_size
+    if 2 * n > size:
+        return False
+    if sparse:
+        return k * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * k <= precision_nnz
+    return n <= d and 2 * n * k <= d * d
+
+
+class _RowSpaceDraw:
+    """Zero-mean joint draws from an ``n x n`` lower factor of the
+    predictive covariance -- the row-side counterpart of
+    :class:`~bayesianbandits._support_covariance.SupportDraw`."""
+
+    __slots__ = ("_L",)
+
+    def __init__(self, L: NDArray[np.float64]) -> None:
+        self._L = L
+
+    def joint(self, size: int, rng: np.random.Generator) -> NDArray[np.float64]:
+        n_rows = self._L.shape[0]
+        z = standard_normal_f(rng, size, n_rows)
+        return cast(NDArray[np.float64], dgemm(1.0, z, self._L, trans_b=1))
+
+
+def build_joint_reduction(
+    factor: PrecisionFactor,
+    X: Union[NDArray[Any], csc_array],
+    n_features: int,
+    size: int,
+    sparse: bool,
+    precision_nnz: int,
+) -> Optional[Any]:
+    """Cheapest exact reduction of ``Cov(Xw)``, or ``None`` for weight space.
+
+    ``Cov(Xw) = X \\Lambda^{-1} X^T`` has rank at most
+    ``min(n_rows, |U|, n_features)``, and there is a reduction to a
+    square root on each side.  All three routes are exact and give the
+    same distribution; they differ only in how many triangular solves
+    against the cached factor they cost:
+
+    ==================  ===================  =========================
+    route               solves               square root
+    ==================  ===================  =========================
+    weight space        ``size``             cached, ``d x d``
+    row side            ``n_rows``           ``n_rows x n_rows``
+    column side         ``|U|``              ``|U| x |U|``
+    ==================  ===================  =========================
+
+    So the choice is just ``min(size, n_rows, |U|)``, three exactly
+    known integers.  Weight space is the one whose square root is
+    *cached* -- it factors :math:`\\Lambda`, which does not depend on
+    ``X`` -- so it needs no build at all and simply pays per draw. The
+    other two must refactor on every call, which is why neither can win
+    at small ``size``: there is nothing to amortize.
+
+    Passing ``min(size, n_rows)`` as the column-side budget is what
+    makes this one comparison rather than two: the column route already
+    declines unless ``|U|`` beats its budget, so handing it the row
+    route's cost lets it fire only when it is the cheapest of the three.
+
+    A dense model has no column-side route -- ``|U|`` is every feature,
+    so there is nothing to reduce -- but the row side still applies, and
+    :func:`_reward_space_is_cheaper` carries the extra guards a dense
+    model needs: weight space there does no solve at all, multiplying by
+    a cached inverse factor instead, so the row side must also fit its
+    draw term under that.
+    """
+    n_rows = cast("tuple[int, int]", X.shape)[0]
+    row_ok = _reward_space_is_cheaper(n_rows, n_features, size, sparse, precision_nnz)
+    support_draw = _support_covariance.build(
+        factor, X, n_features, budget=min(size, n_rows) if row_ok else size
+    )
+    if support_draw is not None:
+        return support_draw
+    if row_ok:
+        B = np.asarray(
+            factor.half_solve(
+                np.asarray(X.todense() if issparse(X) else X, dtype=np.float64).T
+            ),
+            dtype=np.float64,
+        ).reshape(-1, n_rows)
+        return _RowSpaceDraw(lower_predictive_sqrt(B, n_rows))
+    return None
+
+
+def _predictive_cholesky_from_factor(
+    factor: PrecisionFactor,
+    coef: NDArray[np.float64],
+    X: Union[NDArray[Any], csc_array],
+    block_size: Optional[int] = None,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Predictive mean and lower-triangular square root(s) of :math:`X \\Lambda^{-1} X^T`.
+
+    Computes ``B = factor.half_solve(X.T)`` -- one triangular solve per
+    prediction row against the cached factor, so ``B.T @ B`` equals the
+    predictive covariance without :math:`\\Lambda^{-1}` or the covariance
+    itself ever being formed -- and takes the ``R`` factor of its QR
+    decomposition: ``R.T @ R = B.T @ B``, making ``R.T`` an exact lower
+    triangular square root even when ``X`` has linearly dependent rows
+    (e.g. repeated contexts) -- unlike a Cholesky of the explicit
+    covariance, which would need regularization there and would square
+    the condition number.
+
+    With ``block_size=k``, rows are treated as consecutive groups of
+    ``k`` and the QR is batched per group, returning one ``(k, k)``
+    factor per group with shape ``(n_blocks, k, k)``: exact joint
+    structure within each group, none across groups. This is the shape
+    a caller wants when rows group into independent decision units
+    (e.g. one block of arm rows per context). Blocked mode processes
+    rows in chunks so the dense half-solve scratch stays within the
+    same ``_MARGINAL_SD_BLOCK_ELEMS`` budget ``_marginal_predictive_sd``
+    uses, regardless of the total row count. Full mode has no such cap:
+    a sparse ``X`` is densified transposed all at once, so the scratch
+    is a dense ``(n_features, n_rows)`` array -- pass ``block_size`` to
+    bound memory when both dimensions are large.
+    """
+
+    def half_solve_rows(rows: slice) -> NDArray[np.float64]:
+        # Dispatch on the actual type: sparse models accept dense X too
+        # (check_array's accept_sparse only *permits* sparse input)
+        X_rows = X_row_sliceable[rows]
+        if issparse(X_rows):
+            rhs = np.asarray(X_rows.T.toarray(), dtype=np.float64)
+        else:
+            rhs = np.asarray(X_rows, dtype=np.float64).T
+        return np.asarray(factor.half_solve(rhs), dtype=np.float64)
+
+    # Sparse products never enter a BLAS thread pool, so only the dense
+    # case needs routing away from numpy.
+    if issparse(X):
+        mean = np.asarray(X @ coef, dtype=np.float64).ravel()
+    else:
+        mean = dense_matvec(X, coef)
+    n = mean.shape[0]
+    X_row_sliceable: Any = X
+
+    if block_size is None:
+        B = half_solve_rows(slice(0, n)).reshape(-1, n)
+        return mean, lower_predictive_sqrt(B, n)
+
+    if block_size <= 0 or n % block_size:
+        raise ValueError(
+            f"block_size={block_size} must be positive and divide the "
+            f"number of prediction rows ({n})"
+        )
+    n_blocks = n // block_size
+    # Only the small (block_size, block_size) factors survive, so bound
+    # the dense (n_features, chunk_rows) half-solve scratch by chunking
+    # over consecutive blocks
+    chunk_blocks = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, X.shape[1] * block_size))
+    if issparse(X) and n_blocks > chunk_blocks:
+        # Rows are CSC's minor axis, so slicing rows per chunk would scan
+        # all of X's nnz each chunk; slice from a CSR copy when chunking
+        X_row_sliceable = cast(csc_array, X).tocsr()
+    L = np.empty((n_blocks, block_size, block_size))
+    for start in range(0, n_blocks, chunk_blocks):
+        stop = min(start + chunk_blocks, n_blocks)
+        B = half_solve_rows(slice(start * block_size, stop * block_size))
+        B = B.reshape(-1, (stop - start) * block_size)
+        blocks = B.reshape(B.shape[0], stop - start, block_size).transpose(1, 0, 2)
+        # One factorization per block rather than numpy's batched QR: the
+        # batched call is a single trip into numpy's OpenBLAS, and the
+        # round trip out of scipy's costs more than this loop does. See
+        # ``lower_predictive_sqrt``.
+        for offset, block in enumerate(blocks):
+            L[start + offset] = lower_predictive_sqrt(block, block_size)
+    return mean, L
+
+
+def _blocked_colorize(
+    L: NDArray[np.float64], z: NDArray[np.floating[Any]]
+) -> NDArray[np.float64]:
+    """Apply per-block lower factors: ``(L_b @ z_{s,b})`` for every draw.
+
+    ``L`` has shape ``(n_blocks, k, k)``, ``z`` has shape
+    ``(n_blocks, size, k)``; returns shape ``(size, n_blocks * k)``. The
+    result is written straight into a C-order ``(size, n_blocks, k)``
+    array, so neither the draw tensor nor the result is copied through
+    a transposed intermediate.
+    """
+    n_blocks, size, k = z.shape
+    out = np.empty((size, n_blocks, k))
+    np.matmul(z, L.transpose(0, 2, 1), out=out.transpose(1, 0, 2))
+    # explicit column count: reshape(size, -1) is ambiguous when size == 0
+    return out.reshape(size, n_blocks * k)
+
+
+class _RewardSpacePredictiveMixin:
+    """Reward-space sampling support shared by the conjugate linear models.
+
+    Hosts the predictive-Cholesky construction, the flop-model gate, and
+    the shared ``sample``/``sample_reward_space`` validation preamble
+    over the ``coef_``/``_precision_factor``/``sparse`` contract that
+    :class:`NormalRegressor` and :class:`BayesianGLM` share.
+    """
+
+    if TYPE_CHECKING:
+        coef_: NDArray[np.float64]
+        cov_inv_: Union[NDArray[np.float64], csc_array]
+        n_features_: int
+        sparse: bool
+
+        @property
+        def _precision_factor(self) -> PrecisionFactor: ...
+
+        def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None: ...
+
+    def _predictive_cholesky(
+        self, X: Union[NDArray[Any], csc_array], block_size: Optional[int] = None
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Predictive mean and lower square root(s) of the linear
+        predictor's covariance :math:`X \\Lambda^{-1} X^T`. Assumes ``X``
+        is already validated and the model is fitted (or the prior
+        initialized). For the NIG subclass this is the *unscaled* factor:
+        the ``b/a`` scaling is applied by ``sample_reward_space``."""
+        return _predictive_cholesky_from_factor(
+            self._precision_factor, self.coef_, X, block_size
+        )
+
+    @property
+    def _precision_nnz(self) -> int:
+        """Stored entries in the precision, the per-solve cost proxy for
+        a sparse model. Zero for a dense one, where a solve costs
+        ``d^2`` regardless."""
+        return cast(csc_array, self.cov_inv_).nnz if self.sparse else 0
+
+    def _validated_for_sampling(
+        self, X: Union[NDArray[Any], csc_array]
+    ) -> Union[NDArray[Any], csc_array]:
+        """Shared ``sample``/``sample_reward_space`` preamble: validate
+        ``X`` and initialize the prior if the model is unfitted."""
+        X_pred = check_array(
+            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+        )
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X_pred)
+        return X_pred
+
+
+class NormalRegressor(_RewardSpacePredictiveMixin, BaseEstimator, RegressorMixin):
     """
     Bayesian linear regression with known noise variance.
 
@@ -1291,6 +1593,26 @@ scipy.sparse.csc_array
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
+        # Exact joint draws through whichever reduction of the
+        # predictive covariance is cheapest here: one solve per draw
+        # (weight space), one per prediction row, or one per distinct
+        # column X touches. Same distribution, different consumption of
+        # the random stream.
+        support_draw = build_joint_reduction(
+            self._precision_factor,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            return cast(
+                NDArray[np.float64],
+                mean + support_draw.joint(size, self.random_state_),
+            )
+
         samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
                 self.coef_,
@@ -1345,6 +1667,82 @@ scipy.sparse.csc_array
         mean, sd = _validated_marginal_mean_sd(self, X)
         z = self.random_state_.standard_normal((size, mean.shape[0]))
         return cast(NDArray[np.float64], mean + sd * z)
+
+    def sample_reward_space(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        size: int = 1,
+        *,
+        block_size: Optional[int] = None,
+    ) -> NDArray[np.float64]:
+        """
+        Sample jointly from the posterior predictive, drawing in reward space.
+
+        Distributionally identical to :meth:`sample` -- draws from
+        :math:`X w \\sim \\mathcal{N}(X \\hat{w}, X \\Lambda^{-1} X^T)`
+        -- but computed by factoring the ``n``-row predictive covariance
+        once (one triangular half-solve per prediction row against the
+        cached precision factor, then a QR) and drawing directly in
+        reward space. Per-draw cost is then independent of the number of
+        features, so this is much cheaper than ``sample`` when ``size``
+        is large relative to the number of rows, and much more expensive
+        in the opposite regime. Neither :math:`\\Lambda^{-1}` nor the
+        covariance is ever formed, and linearly dependent rows (e.g.
+        repeated contexts) are represented exactly. Note that without
+        ``block_size``, a sparse model densifies the transposed
+        prediction rows all at once -- a dense
+        ``(n_features, n_samples)`` scratch array -- so pass
+        ``block_size`` to bound memory when both dimensions are large.
+
+        With ``block_size=k``, consecutive groups of ``k`` rows are
+        factored and drawn independently: draws are joint within each
+        group and independent across groups (unlike ``sample``, where
+        all rows of one draw share a weight vector). Use this when rows
+        group into independent decision units -- e.g. one block of arm
+        rows per context -- and no cross-group statistic is consumed;
+        the per-group joint distribution is exact.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        .. note::
+
+           Only the sampling *distribution* is guaranteed to match
+           ``sample``, not the bitstream: the two methods consume
+           different amounts of randomness, so the same seed yields
+           different (equally distributed) realizations.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of posterior samples to draw.
+        block_size : int, optional
+            If given, must divide ``n_samples``; rows are drawn jointly
+            within consecutive blocks of this many rows and
+            independently across blocks.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw.
+
+        See Also
+        --------
+        sample : Joint draws in weight space (cheaper for small ``size``).
+        sample_marginal : iid per-row draws for per-row statistics.
+        """
+        X_sample = self._validated_for_sampling(X)
+        mean, L = self._predictive_cholesky(X_sample, block_size)
+        if block_size is None:
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
+            return affine_lower_factor(mean, z, L)
+        z = self.random_state_.standard_normal(
+            (mean.shape[0] // block_size, size, block_size)
+        )
+        return cast(NDArray[np.float64], mean + _blocked_colorize(L, z))
 
     @_invalidate_cached_properties
     def decay(
@@ -1763,6 +2161,27 @@ scipy.sparse.csc_array
         )
         df = 2 * self.a_
 
+        # Exact joint draws via the support covariance, built from
+        # ``shape_`` so S already carries the (b/a) factor. The
+        # chi-square mixing is a per-draw scalar, so it commutes with
+        # the linear map and the reduction stays exact.
+        support_draw = build_joint_reduction(
+            self.shape_,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            z = support_draw.joint(size, self.random_state_)
+            x = self.random_state_.chisquare(df, size) / df
+            return cast(
+                NDArray[np.float64],
+                mean + z / np.sqrt(x)[..., None],
+            )
+
         # Sample from multivariate t via precision parameterization
         # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
         # whose precision is (a/b)·Λ, i.e. shape cov = (b/a)·Λ⁻¹
@@ -1824,6 +2243,76 @@ scipy.sparse.csc_array
         # per-cell scale
         scale = np.sqrt((self.b_ / self.a_) * df / g)
         return cast(NDArray[np.float64], mean + (sd * z) * scale)
+
+    def sample_reward_space(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        size: int = 1,
+        *,
+        block_size: Optional[int] = None,
+    ) -> NDArray[np.float64]:
+        """
+        Sample jointly from the posterior predictive, drawing in reward space.
+
+        Distributionally identical to :meth:`sample` -- the ``n``-row
+        multivariate t with :math:`2 a_n` degrees of freedom, location
+        :math:`X \\mu_n`, and shape :math:`(b_n / a_n) X \\Lambda_n^{-1} X^T`
+        -- but drawn via the exact square root of the shape matrix, with
+        one shared chi-square mixing variable per draw. See
+        :meth:`NormalRegressor.sample_reward_space` for the cost model
+        and the bitstream caveat.
+
+        With ``block_size=k``, consecutive groups of ``k`` rows are
+        drawn independently, each with its own chi-square mixing
+        variable per draw: every group's joint t distribution is exact,
+        and groups are fully independent (whereas ``sample`` shares one
+        noise-scale draw across all rows). Use only when no cross-group
+        statistic is consumed.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of posterior samples to draw.
+        block_size : int, optional
+            If given, must divide ``n_samples``; rows are drawn jointly
+            within consecutive blocks of this many rows and
+            independently across blocks.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw.
+
+        See Also
+        --------
+        sample : Joint draws in weight space (cheaper for small ``size``).
+        sample_marginal : iid per-row draws for per-row statistics.
+        """
+        X_sample = self._validated_for_sampling(X)
+        mean, L = self._predictive_cholesky(X_sample, block_size)
+        df = 2.0 * self.a_
+        if block_size is None:
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
+            g = self.random_state_.chisquare(df, size=size)
+            # t draw: location + sqrt(df/g) · (shape-chol @ z), with the
+            # (b/a) shape scaling (shape cov = (b/a) · X Λ⁻¹ Xᵀ) folded
+            # into the per-draw scale. Scaling the draws rather than the
+            # product is equivalent (both scale whole rows) and lets the
+            # mean be accumulated inside the same GEMM.
+            scale = np.sqrt((self.b_ / self.a_) * df / g)
+            z *= scale[:, np.newaxis]
+            return affine_lower_factor(mean, z, L)
+        n_blocks = mean.shape[0] // block_size
+        z = self.random_state_.standard_normal((n_blocks, size, block_size))
+        # one chi-square per (draw, block): joint t within a block,
+        # independence across blocks
+        g = self.random_state_.chisquare(df, size=(size, n_blocks))
+        scale = np.sqrt((self.b_ / self.a_) * df / g)
+        y = _blocked_colorize(L, z * scale.T[:, :, np.newaxis])
+        return cast(NDArray[np.float64], mean + y)
 
     @_invalidate_cached_properties
     def decay(
@@ -1945,7 +2434,7 @@ def multivariate_t_sample_from_covariance(
     return _squeeze_output(samples)
 
 
-class BayesianGLM(BaseEstimator, RegressorMixin):
+class BayesianGLM(_RewardSpacePredictiveMixin, BaseEstimator, RegressorMixin):
     """
     Bayesian Generalized Linear Model with Laplace approximation.
 
@@ -2421,6 +2910,22 @@ scipy.sparse.csc_array
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
+        # The support covariance gives the linear predictor's exact joint
+        # law directly; the inverse link is applied elementwise either
+        # way, so it composes unchanged.
+        support_draw = build_joint_reduction(
+            self._precision_factor,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            eta = mean + support_draw.joint(size, self.random_state_)
+            return self._inverse_link(cast(NDArray[np.float64], eta))
+
         param_samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
                 self.coef_,
@@ -2473,6 +2978,59 @@ scipy.sparse.csc_array
         mean, sd = _validated_marginal_mean_sd(self, X)
         z = self.random_state_.standard_normal((size, mean.shape[0]))
         return self._inverse_link(mean + sd * z)
+
+    def sample_reward_space(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        size: int = 1,
+        *,
+        block_size: Optional[int] = None,
+    ) -> NDArray[np.float64]:
+        """
+        Sample jointly from the posterior predictive, drawing in eta space.
+
+        Distributionally identical to :meth:`sample` -- draws linear
+        predictors :math:`\\eta \\sim \\mathcal{N}(X \\hat{w},
+        X \\Lambda^{-1} X^T)` and applies the inverse link elementwise
+        -- but the :math:`\\eta` draws come directly from the ``n``-row
+        predictive Gaussian via the exact square root of its covariance.
+        See :meth:`NormalRegressor.sample_reward_space` for the cost
+        model, the ``block_size`` semantics, and the bitstream caveat.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of posterior samples to draw.
+        block_size : int, optional
+            If given, must divide ``n_samples``; rows are drawn jointly
+            within consecutive blocks of this many rows and
+            independently across blocks.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior sample, on the response
+            scale of the link.
+
+        See Also
+        --------
+        sample : Joint draws in weight space (cheaper for small ``size``).
+        sample_marginal : iid per-row draws for per-row statistics.
+        """
+        X_sample = self._validated_for_sampling(X)
+        mean, L = self._predictive_cholesky(X_sample, block_size)
+        if block_size is None:
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
+            eta = affine_lower_factor(mean, z, L)
+        else:
+            z = self.random_state_.standard_normal(
+                (mean.shape[0] // block_size, size, block_size)
+            )
+            eta = mean + _blocked_colorize(L, z)
+        return self._inverse_link(cast(NDArray[np.float64], eta))
 
     @_invalidate_cached_properties
     def decay(

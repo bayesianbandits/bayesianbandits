@@ -131,7 +131,17 @@ class SuperLUSparseFactor:
         return perm
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        return cast(NDArray[np.float64], spsolve(self._precision, b))
+        """Solve ``Λ x = b``.
+
+        For a dense ``b`` this goes through the cached triangular factor
+        (``Λ⁻¹ = P^T L^{-T} L^{-1} P``, i.e. ``colorize(half_solve(b))``)
+        rather than ``spsolve``, which refactorizes the precision on
+        every call. Sparse right-hand sides keep the ``spsolve`` path,
+        which accepts them directly.
+        """
+        if issparse(b):
+            return cast(NDArray[np.float64], spsolve(self._precision, b))
+        return self.colorize(self.half_solve(b))
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve L^T x = z, undo permutation."""
