@@ -857,7 +857,7 @@ def _validated_marginal_mean_sd(
     return the per-row predictive mean and standard deviation of the
     linear predictor ``X @ w``."""
     X_pred = check_array(
-        X, copy=True, ensure_2d=True, accept_sparse="csc" if est.sparse else False
+        X, copy=False, ensure_2d=True, accept_sparse="csc" if est.sparse else False
     )
     try:
         check_is_fitted(est, "coef_")
@@ -1510,7 +1510,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         samples = np.atleast_2d(
@@ -2057,7 +2057,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
         df = 2 * self.a_
 
@@ -2786,7 +2786,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_sample = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         param_samples = np.atleast_2d(

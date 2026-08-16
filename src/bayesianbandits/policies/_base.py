@@ -11,13 +11,13 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType, batch_sample_arms
+from .._arm import Arm, ContextType, TokenType
 
 
 class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
-    #: Safe defaults satisfying ``PolicyProtocol``: joint ``sample``
+    #: Safe default satisfying ``PolicyProtocol``: joint ``sample``
     #: draws serve every policy. Subclasses opt into cheaper sampling
-    #: modes by overriding these (see
+    #: modes by overriding this (see
     #: :class:`~bayesianbandits.api.PolicyProtocol` for the semantics).
     marginal_ok: bool = False
     reward_space_ok: bool = False
@@ -30,34 +30,29 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
     ) -> NDArray[np.float64]:
         """Draw ``(n_arms, n_contexts, size)`` samples for ``select``.
 
-        Tries one batched call across arms sharing a learner, forwarding
-        both capability flags (``marginal_ok``: iid per-row draws are
-        exact for policies consuming only per-(arm, context) statistics;
-        ``reward_space_ok``: per-context joint blocks are exact for
-        per-context decisions); falls back to per-arm sampling
-        (marginal when ``marginal_ok``) otherwise. Always returns a 3-D
-        array, re-expanding the size axis ``batch_sample_arms`` squeezes
-        when ``size == 1``.
+        Samples each arm from its own learner, marginally when
+        ``marginal_ok`` (iid per-row draws are exact for policies
+        consuming only per-(arm, context) statistics) and jointly
+        otherwise.
+
+        Drawing one arm at a time is the correct joint law here because
+        agents using this path give every arm an independent learner --
+        a shared learner is rejected at ``add_arm``, since without
+        arm-specific features the arms would be indistinguishable, and
+        sampling them separately would break the dependence they have
+        through the shared posterior. Sharing a learner across arms is
+        :class:`~bayesianbandits.LipschitzContextualAgent`'s job, and it
+        samples that learner once for all arms rather than coming
+        through here.
         """
-        samples = batch_sample_arms(
-            arms,
-            X,
-            size=size,
-            marginal=self.marginal_ok,
-            reward_space=self.reward_space_ok,
+        samples = np.array(
+            [
+                (arm.sample_marginal if self.marginal_ok else arm.sample)(X, size)
+                for arm in arms
+            ]
         )
-        if samples is None:
-            samples = np.array(
-                [
-                    (arm.sample_marginal if self.marginal_ok else arm.sample)(X, size)
-                    for arm in arms
-                ]
-            )
-            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-            samples = samples.transpose(0, 2, 1)
-        elif samples.ndim == 2:
-            samples = samples[:, :, np.newaxis]
-        return samples
+        # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
+        return samples.transpose(0, 2, 1)
 
     def update(
         self,

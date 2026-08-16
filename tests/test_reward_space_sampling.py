@@ -17,7 +17,7 @@ Covers five fronts:
    (size=1 and n >> d stay on weight-space), the QR row guard, the
    MRO-safety rule for subclasses overriding ``sample``, and unfitted
    models.
-5. Agent wiring: ``batch_sample_arms(reward_space=True)``,
+5. Agent wiring: ``_sample_context_major_blocks``,
    ``LipschitzContextualAgent`` with an IDS-style policy, and
    ``LearnerPipeline.sample_reward_space`` all route through the
    reward-space path with correct shapes and unchanged decisions.
@@ -42,8 +42,8 @@ from bayesianbandits import (
     _estimators,
 )
 from bayesianbandits._arm import (
+    _sample_context_major_blocks,
     _take_rows,
-    batch_sample_arms,
     resolve_marginal_sampler,
     resolve_reward_space_sampler,
 )
@@ -536,61 +536,63 @@ def _shared_model_arms(model, n_arms):
 
 
 class TestAgentWiring:
-    def test_batch_sample_arms_reward_space_matches_sample_distribution(self):
+    def test_context_major_blocks_match_the_joint_distribution(self):
+        """Blocked reward-space draws must have the same per-(arm,
+        context) mean and sd as plain joint ``sample`` draws."""
         rng = np.random.default_rng(0)
-        d, n_arms = 101, 4
+        d, n_arms, n_ctx, size = 101, 4, 3, 5000
         model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
         model.fit(rng.standard_normal((300, d)), rng.standard_normal(300))
-        arms = _shared_model_arms(model, n_arms)
+        # arm-major stack, the layout LipschitzContextualAgent produces
+        X_stacked = rng.standard_normal((n_arms * n_ctx, d))
 
-        X = rng.standard_normal((3, d))
-        joint = batch_sample_arms(arms, X, size=5000, reward_space=True)
-        plain = batch_sample_arms(arms, X, size=5000)
-        assert joint is not None and plain is not None
-        assert joint.shape == plain.shape == (n_arms, 3, 5000)
-        # same per-(arm, context) means within MC tolerance
+        joint = _sample_context_major_blocks(
+            lambda X, size: model.sample_reward_space(X, size, block_size=n_arms),
+            X_stacked,
+            n_arms,
+            n_ctx,
+            size,
+        )
+        plain = np.asarray(model.sample(X_stacked, size=size)).T.reshape(
+            n_arms, n_ctx, size
+        )
+        assert joint.shape == plain.shape == (n_arms, n_ctx, size)
         sd = plain.std(axis=-1)
-        z = np.abs(joint.mean(axis=-1) - plain.mean(axis=-1)) / (sd / np.sqrt(5000))
+        z = np.abs(joint.mean(axis=-1) - plain.mean(axis=-1)) / (sd / np.sqrt(size))
         assert z.max() < 6.0
-        # and same per-(arm, context) sds
         assert np.abs(joint.std(axis=-1) / sd - 1.0).max() < 0.1
 
-    def test_batch_sample_arms_size_one_keeps_weight_space_bitstream(self):
-        """reward_space=True must not change size=1 draws (the flop gate
-        keeps them on weight-space ``sample``, bit-for-bit)."""
+    def test_gate_keeps_size_one_on_weight_space(self):
+        """The solve-count gate must never pick reward space at
+        ``size=1``: one weight draw costs one solve, which no reduction
+        can beat, and Thompson sampling lives here."""
         rng = np.random.default_rng(0)
         model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
-        model.fit(rng.standard_normal((300, 101)), rng.standard_normal(300))
-        arms = _shared_model_arms(model, 3)
-        X = rng.standard_normal((2, 101))
-        model.random_state_ = np.random.default_rng(11)
-        with_flag = batch_sample_arms(arms, X, size=1, reward_space=True)
-        model.random_state_ = np.random.default_rng(11)
-        without = batch_sample_arms(arms, X, size=1)
-        assert with_flag is not None and without is not None
-        assert_allclose(with_flag, without)
+        model.fit(rng.standard_normal((300, 101)), rng.standard_normal(301 - 1))
+        assert resolve_reward_space_sampler(model, n_rows=3, size=1) is None
+        assert resolve_reward_space_sampler(model, n_rows=1, size=1) is None
 
-    def test_batch_sample_arms_block_layout_is_per_context(self):
-        """Each context's arm rows must form one joint block: with a
-        deterministic rank-1 posterior direction, draws for the same
-        context stay perfectly correlated across arms, while different
-        contexts decorrelate."""
+    def test_context_major_blocks_are_joint_within_a_context(self):
+        """Each context's arm rows form one joint block: with identical
+        feature rows across arms, draws for one context stay perfectly
+        correlated, while different contexts decorrelate."""
         rng = np.random.default_rng(0)
-        d, n_arms = 101, 3
+        d, n_arms, n_ctx, size = 101, 3, 2, 4000
         model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
         model.fit(rng.standard_normal((300, d)), rng.standard_normal(300))
-        arms = [
-            Arm(i, learner=_SharedLearner(model, 0.0))  # type: ignore[arg-type]
-            for i in range(n_arms)
-        ]
-        # identical feature rows for every arm: within a context, arms are
-        # perfectly correlated under a joint sampler
-        X = rng.standard_normal((2, d))
-        joint = batch_sample_arms(arms, X, size=4000, reward_space=True)
-        assert joint is not None
-        # same context, different arms: identical draws
+        # every arm sees the same row for a given context, so within a
+        # context the arms are perfectly correlated under a joint law
+        per_context = rng.standard_normal((n_ctx, d))
+        X_stacked = np.tile(per_context, (n_arms, 1))  # arm-major
+
+        joint = _sample_context_major_blocks(
+            lambda X, size: model.sample_reward_space(X, size, block_size=n_arms),
+            X_stacked,
+            n_arms,
+            n_ctx,
+            size,
+        )
         assert_allclose(joint[0, 0], joint[1, 0])
-        # different contexts: independent blocks (correlation ~ 0)
         r = np.corrcoef(joint[0, 0], joint[0, 1])[0, 1]
         assert abs(r) < 0.06
 
@@ -778,24 +780,38 @@ class TestPredictiveCholeskyEdgePaths:
             assert_allclose(L_chunked[b] @ L_chunked[b].T, block, atol=1e-10)
 
 
-class TestBatchSampleArmsRewardSpace:
-    def test_size_one_squeezes_like_the_weight_space_path(self):
-        """batch_sample_arms returns (n_arms, n_contexts) at size == 1.
-        The default flop gate never picks reward space that small, so
-        force it to keep the two paths' contracts identical."""
-
-        class ForcedRewardSpace(NormalRegressor):
-            def _use_reward_space(self, n, size, block_size=None):
-                return True
-
-        model = ForcedRewardSpace(alpha=1.0, beta=1.0, random_state=0)
+class TestContextMajorBlocks:
+    def test_identity_permutation_is_skipped(self):
+        """With one arm or one context the context-major gather is the
+        identity, so the sampler must see ``X_stacked`` itself."""
         rng = np.random.default_rng(0)
-        model.fit(rng.standard_normal((60, 2)), rng.standard_normal(60))
-        arms = _shared_model_arms(model, 3)
         X = rng.standard_normal((5, 2))
+        seen: list[object] = []
 
-        squeezed = batch_sample_arms(arms, X, size=1, reward_space=True)
-        assert squeezed is not None and squeezed.shape == (3, 5)
+        def sampler(X_in, size):
+            seen.append(X_in)
+            return rng.standard_normal((size, X_in.shape[0]))
 
-        stacked = batch_sample_arms(arms, X, size=4, reward_space=True)
-        assert stacked is not None and stacked.shape == (3, 5, 4)
+        _sample_context_major_blocks(sampler, X, n_arms=1, n_contexts=5, size=4)
+        assert seen[-1] is X
+        _sample_context_major_blocks(sampler, X, n_arms=5, n_contexts=1, size=4)
+        assert seen[-1] is X
+
+    def test_axes_are_restored_from_context_major_order(self):
+        """The sampler is handed context-major rows; the result must come
+        back indexed (arm, context, draw)."""
+        n_arms, n_ctx, size = 3, 2, 4
+        # arm-major row ``a * n_ctx + c`` carries the value ``a * 10 + c``
+        X = np.array(
+            [[a * 10 + c] for a in range(n_arms) for c in range(n_ctx)], dtype=float
+        )
+
+        def sampler(X_in, size):
+            # every draw simply echoes the row's payload
+            return np.tile(X_in[:, 0], (size, 1))
+
+        out = _sample_context_major_blocks(sampler, X, n_arms, n_ctx, size)
+        assert out.shape == (n_arms, n_ctx, size)
+        for a in range(n_arms):
+            for c in range(n_ctx):
+                assert_allclose(out[a, c], a * 10 + c)

@@ -13,8 +13,8 @@ Covers four fronts:
    the t test has power.
 3. The independence contract: marginal draws are iid across rows, while
    ``sample`` rows within a draw are correlated.
-4. Plumbing: ``Arm``/``LearnerPipeline``/``batch_sample_arms``
-   forwarding, the policies' ``marginal_ok`` opt-in (and subclass
+4. Plumbing: ``Arm``/``LearnerPipeline`` forwarding, the policies'
+   ``marginal_ok`` opt-in (and subclass
    opt-out), and the fallback to joint ``sample`` for learners without
    ``sample_marginal`` or whose class overrides ``sample`` without it.
 """
@@ -44,7 +44,6 @@ from bayesianbandits import (
 )
 from bayesianbandits._arm import (
     batch_identity,
-    batch_sample_arms,
     is_elementwise_batch_reward,
     resolve_marginal_sampler,
 )
@@ -357,12 +356,6 @@ class TestPlumbing:
             draws = pipeline.sample_marginal(X, size=5)
         spy.assert_called_once()
         assert draws.shape == (5, 3)
-
-    def test_batch_sample_arms_marginal_falls_back_without_pipeline(self):
-        """Non-batchable arms return None regardless of the marginal flag."""
-        est, _ = _fit_dense()
-        arms = [Arm(i, learner=est) for i in range(3)]
-        assert batch_sample_arms(arms, np.ones((2, 40)), size=4, marginal=True) is None
 
     def test_policy_marginal_flags(self):
         assert UpperConfidenceBound().marginal_ok
