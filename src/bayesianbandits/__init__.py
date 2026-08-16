@@ -37,6 +37,7 @@ policies of your bandit as your needs change.
     EpsilonGreedy
     ThompsonSampling
     UpperConfidenceBound
+    InformationDirectedSampling
     EXP3A
     Arm
 
@@ -111,6 +112,7 @@ posterior. Pass to the ``approximator`` argument.
 
 from ._arm import Arm
 from ._arm_featurizer import ArmFeaturizer
+from ._draw_kind import DrawKind
 from ._eb_estimators import (
     EmpiricalBayesDirichletClassifier,
     EmpiricalBayesGammaRegressor,
@@ -134,11 +136,12 @@ from .api import (
 )
 from .featurizers import ArmColumnFeaturizer, FunctionArmFeaturizer
 from .pipelines import AgentPipeline, LearnerPipeline
-from .policies import EXP3A
+from .policies import EXP3A, InformationDirectedSampling
 
 __all__ = [
     "Arm",
     "ArmFeaturizer",
+    "DrawKind",
     "ArmColumnFeaturizer",
     "FunctionArmFeaturizer",
     "BayesianGLM",
@@ -157,6 +160,7 @@ __all__ = [
     "EpsilonGreedy",
     "ThompsonSampling",
     "UpperConfidenceBound",
+    "InformationDirectedSampling",
     "EXP3A",
     "AgentPipeline",
     "LearnerPipeline",

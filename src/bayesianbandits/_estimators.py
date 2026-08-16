@@ -1145,6 +1145,26 @@ class _RewardSpacePredictiveMixin:
         ``d^2`` regardless."""
         return cast(csc_array, self.cov_inv_).nnz if self.sparse else 0
 
+    def _use_reward_space(
+        self, n: int, size: int, block_size: Optional[int] = None
+    ) -> bool:
+        """Solve-count test: is the row-side reduction cheaper here?
+
+        Only the *blocked* reward-space path consults this. Full-mode
+        row-side draws are chosen inside ``sample`` by
+        :func:`build_joint_reduction`, which weighs them against the
+        column-side reduction as well; a caller reaching here has
+        already committed to per-block draws, which no other route
+        produces.
+        """
+        if not hasattr(self, "n_features_"):
+            # Unfitted: no cached factor or dimensions to reason about
+            # yet, and the prior predictive is cheap either way
+            return False
+        return _reward_space_is_cheaper(
+            n, self.n_features_, size, self.sparse, self._precision_nnz, block_size
+        )
+
     def _validated_for_sampling(
         self, X: Union[NDArray[Any], csc_array]
     ) -> Union[NDArray[Any], csc_array]:
