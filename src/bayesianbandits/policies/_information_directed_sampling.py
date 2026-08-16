@@ -250,8 +250,8 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     **Regret bounds (standard setting).** Russo & Van Roy [1]_ show that
     variance-based IDS satisfies the same
     :math:`\\mathbb{E}[\\mathrm{Regret}(T)] \\le \\sqrt{K T \\log K / 2}`
-    Bayesian bound as the information-ratio analysis of Thompson sampling,
-    while its per-round ratio minimization can be substantially smaller in
+    Bayesian bound as the information-ratio analysis of Thompson sampling
+    [2]_, while its per-round ratio minimization can be substantially smaller in
     structured problems (correlated arms, shared parameters), where
     Thompson sampling may repeatedly re-explore arms whose value is already
     implied by other observations.
