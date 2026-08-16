@@ -92,9 +92,11 @@ def support_covariance(
         width = stop - start
         cols = np.arange(width)
         rhs[support[start:stop], cols] = 1.0
-        out = np.asarray(factor.solve(rhs[:, :width]), dtype=np.float64)
-        if out.ndim == 1:  # a single right-hand side may come back 1-D
-            out = out[:, None]
+        # Every factor preserves a 2-D right-hand side, but reshaping
+        # rather than trusting that keeps a single-column block safe.
+        out = np.asarray(factor.solve(rhs[:, :width]), dtype=np.float64).reshape(
+            n_features, width
+        )
         S[:, start:stop] = out[support, :]
         rhs[support[start:stop], cols] = 0.0
     # Λ⁻¹ is symmetric; the solves are not bitwise so average the halves.
@@ -126,10 +128,6 @@ class SupportDraw:
         # conversion is cheap and happens once.
         self._XU = XU.tocsr()
         self._n_rows = cast("tuple[int, int]", XU.shape)[0]
-
-    @property
-    def n_rows(self) -> int:
-        return self._n_rows
 
     def _row_block(self) -> int:
         return max(1, _SCRATCH_ELEMS // max(1, self._C.shape[0]))
