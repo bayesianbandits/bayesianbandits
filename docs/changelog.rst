@@ -4,6 +4,32 @@ Changelog
 Unreleased
 ----------
 
+**Breaking changes**
+
+- ``ContextualAgent`` and ``Agent`` now require each arm to have its own
+  learner, and raise from ``add_arm`` (so also from the constructor) when
+  two arms share one. Neither agent gives arms a way to differ in
+  features, so arms sharing a learner were statistically
+  indistinguishable; worse, the policies on that path sample one arm at a
+  time, which draws a separate weight vector per arm and silently
+  discards the dependence a shared posterior implies. A policy declaring
+  ``marginal_ok = False`` could therefore ask for joint draws and receive
+  independent ones: on arms sharing a learner, measured cross-arm
+  correlation was 0.00 where the true value was 1.00. Sharing one model
+  across arms is ``LipschitzContextualAgent``'s job -- it distinguishes
+  arms with an ``arm_featurizer`` and samples the shared learner once for
+  all of them -- and the error says so. Two distinct ``LearnerPipeline``
+  objects wrapping the same estimator also count as sharing (#267)
+
+- The batched arm-sampling path is removed: ``batch_sample_arms``,
+  ``can_batch_arms``, ``stack_features``, and the ``LearnerWithTransform``
+  protocol (all private). It could only engage for arms sharing a
+  ``final_estimator`` while differing in ``transform``, which is the
+  configuration the invariant above now rejects -- and no shipped learner
+  ever implemented ``final_estimator``, so it never engaged in practice.
+  With per-arm learners, drawing one arm at a time is the correct joint
+  law, so the remaining path needs no batching (#267)
+
 **New features**
 
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,

@@ -82,6 +82,7 @@ from ._arm import (
     batch_identity,
     is_elementwise_batch_reward,
     is_identity_function,
+    posterior_identity,
     resolve_marginal_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
@@ -175,6 +176,34 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     ) -> Union[
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]: ...
+
+
+def _reject_shared_learner(
+    arm: Arm[Any, Any], existing: Sequence[Arm[Any, Any]]
+) -> None:
+    """Enforce one learner per arm.
+
+    Agents built on independent per-arm learners have no way to give
+    arms distinct features, so a shared learner would leave them
+    statistically indistinguishable. Worse, the policies sample one arm
+    at a time, which draws a separate weight vector per arm and so
+    silently discards the dependence a shared posterior implies.
+    Sharing a learner is
+    :class:`~bayesianbandits.LipschitzContextualAgent`'s job.
+    """
+    identity = posterior_identity(arm.learner)
+    if any(posterior_identity(other.learner) is identity for other in existing):
+        raise ValueError(
+            "Each arm needs its own learner: this agent models arms as "
+            "independent, and gives them no way to differ in features, so "
+            "arms sharing one learner would be indistinguishable and their "
+            "draws would silently lose the correlation the shared posterior "
+            "implies.\n\n"
+            "To share one model across arms, use a "
+            "LipschitzContextualAgent with an arm_featurizer, which "
+            "distinguishes arms by features and samples the shared learner "
+            "once for all of them."
+        )
 
 
 class ContextualAgent(Generic[ContextType, TokenType]):
@@ -342,13 +371,15 @@ class ContextualAgent(Generic[ContextType, TokenType]):
         Raises
         ------
         ValueError
-            If the arm's action token is already in the bandit.
+            If the arm's action token is already in the bandit, or if
+            the arm's learner is already used by another arm.
         """
         current_tokens = set(arm.action_token for arm in self.arms)
         if arm.action_token in current_tokens:
             raise ValueError("All arms must have unique action tokens.")
 
         assert arm.learner is not None, "Arm must have a learner."
+        _reject_shared_learner(arm, self.arms)
         arm.learner.random_state = self.rng
         self.arms.append(arm)
 
