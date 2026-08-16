@@ -29,13 +29,23 @@ Unreleased
   ``reward_space_ok`` (declared on ``PolicyProtocol``), routed through
   ``batch_sample_arms(..., reward_space=True)``,
   ``LearnerPipeline.sample_reward_space``, and
-  ``LipschitzContextualAgent``, and gated by a cost model calibrated
-  against ``benchmarks/test_bench_reward_space_sampling.py`` (weight
-  RNG is ``d x size`` normals vs reward's ``n x size``, so reward space
-  wins precisely when ``n < d``): ~5x faster IDS sampling dense at
-  d=100, ~130x sparse at d=100k. ``sample`` itself is unchanged,
-  byte-for-byte, and Thompson sampling's ``size=1`` hot path never
-  routes here (#240)
+  ``LipschitzContextualAgent``, and gated on the one cost both paths pay
+  in the same currency: triangular solves against the cached factor,
+  ``n`` for reward space against ``size`` for weight space. Both are
+  exactly known integers, so the gate holds no calibration constants.
+  ``sample`` itself is unchanged, byte-for-byte, and Thompson sampling's
+  ``size=1`` hot path never routes here (#240)
+
+  Every step after the half-solve is taken from ``scipy.linalg`` rather
+  than ``numpy`` (``dgeqrf`` for the QR, ``dgemm`` for the draws,
+  ``dgemv`` for the predictive mean). ``numpy`` and ``scipy`` bind
+  separate copies of OpenBLAS, each with its own thread pool, and
+  alternating between them within a call parks and unparks both. On a
+  28-core box that cost more than every flop on the path: a 100x100 QR
+  took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through ``dgeqrf``.
+  Reward-space sampling is up to 102x faster than it was before this
+  routing, and Thompson sampling's ``size=1`` path is unaffected either
+  way (#263)
 
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal

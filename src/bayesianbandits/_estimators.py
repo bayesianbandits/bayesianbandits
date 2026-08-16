@@ -26,7 +26,14 @@ from sklearn.utils.validation import (
 )
 from typing_extensions import Concatenate, ParamSpec, Self
 
-from ._blas_helpers import compute_eta_dense, update_precision_dense
+from ._blas_helpers import (
+    affine_lower_factor,
+    compute_eta_dense,
+    dense_matvec,
+    lower_predictive_sqrt,
+    standard_normal_f,
+    update_precision_dense,
+)
 from ._gaussian import (
     LaplaceApproximator,
     LinkFunction,
@@ -861,34 +868,6 @@ def _validated_marginal_mean_sd(
     return mean, sd
 
 
-# Above this many rows in one QR block the reward-space path is never
-# taken: the O(rows^2) factor memory and O(rows^3) QR would dominate.
-# Full-mode calls QR all prediction rows at once; blocked calls only
-# ``block_size`` rows at a time, so the cap applies per block.
-_REWARD_SPACE_MAX_QR_ROWS = 4096
-
-# Cost-model constants, in flop-equivalents at large-GEMM reference
-# throughput, calibrated against the benchmarks in
-# ``benchmarks/test_bench_reward_space_sampling.py`` on Apple
-# Accelerate (the ratios are similar on MKL):
-#
-# - Generating one standard normal costs ~4.6 ns, i.e. hundreds of GEMM
-#   flops. RNG dominates large-``size`` costs: weight-space consumes
-#   ``d*size`` normals while reward-space consumes ``n*size``, which is
-#   what makes reward-space win precisely in the ``n < d`` regime.
-# - Batched small QR/matmul work (the blocked draw path) runs far below
-#   peak GEMM throughput.
-# - Sparse triangular solves are memory-bound, well below the flop rate
-#   the raw ``nnz`` proxy would suggest.
-# - The reward-space path pays fixed per-call overhead (QR dispatch,
-#   extra allocations, ~25 us) that weight-space does not; without this
-#   term the model would pick reward-space for trivially small calls.
-_RNG_DRAW_COST = 400
-_SMALL_OP_PENALTY = 8
-_SPARSE_SOLVE_PENALTY = 20
-_REWARD_SPACE_FIXED_COST = 2_000_000
-
-
 def _reward_space_is_cheaper(
     n: int,
     d: int,
@@ -897,51 +876,46 @@ def _reward_space_is_cheaper(
     precision_nnz: int,
     block_size: Optional[int] = None,
 ) -> bool:
-    """Cost-model test: is reward-space sampling cheaper than weight-space?
+    """Is reward-space sampling cheaper than weight-space for this call?
 
     Weight-space draws ``size`` weight vectors from the ``d``-dimensional
-    posterior and projects them through ``X``. Reward-space computes an
+    posterior and projects them through ``X``.  Reward-space computes an
     exact square root of the predictive covariance
-    :math:`X \\Lambda^{-1} X^T` once (``n`` half-solves against the
-    precision factor plus QR) and draws directly in reward space, so the
-    per-draw cost is independent of ``d``.
+    :math:`X \\Lambda^{-1} X^T` once (``n`` triangular half-solves plus a
+    QR) and draws directly in reward space, so its per-draw cost is
+    independent of ``d``.
 
-    Dense model (flop-equivalents; RNG charged per normal, non-GEMM
-    work weighted by the penalty constants above):
-      weight: ``d*size`` normals + ``d^2*size`` (colorize)
-      + ``n*d*size`` (projection)
-      reward, full: ``n*d^2`` (half-solves) + ``n^2*d + n^3`` (QR)
-      + ``n*size`` normals + ``n^2*size`` (draws)
-      reward, blocked with ``k`` rows per block: ``n*d^2`` + ``n*d*k``
-      (per-block QR) + ``n*size`` normals + ``n*k*size`` (draws)
+    The decision rests on the one quantity both paths pay in the same
+    currency: **triangular solves against the cached factor**.
+    Reward-space performs ``n`` of them, weight-space ``size``.  Both are
+    exactly known integers, so comparing them needs no calibration.
+    Requiring ``2n <= size`` rather than ``n < size`` leaves the other
+    half of the weight-space solve budget to cover reward-space's
+    remaining work, which the guards below then check fits.
 
-    Sparse model, using ``nnz(precision)`` as the per-solve cost proxy:
-      weight: ``d*size`` normals + ``nnz*size`` (one triangular solve
-      per draw)
-      reward: ``2*n*nnz`` (n half-solves) plus the same QR and draw
-      terms as the dense model (the half-solve output is dense).
+    With ``k`` rows per QR block (``k = n`` in full mode), that remaining
+    work is ``n·k·d`` for the QR and ``n·k·size`` for the draws:
+
+    - Dense.  Weight-space spends ``d²·size`` colorizing, so the draw
+      term fits when ``2·n·k <= d²``.  This is what stops the path being
+      taken at ``n ≈ d``, where the two do the same work but
+      reward-space does it in many small, latency-bound calls rather
+      than one large one.  ``n <= d`` additionally keeps reward-space's
+      ``n·size`` normals under weight-space's ``d·size``.
+    - Sparse.  A solve costs ``nnz``, not ``d²``, so the draw term fits
+      when ``2·n·k <= nnz``.  Sparse also densifies a ``(d, k)`` scratch
+      for the half-solves, which is the only allocation here that can
+      exceed the factor itself, so it is held to the same element budget
+      the marginal path uses.  That budget, not the cost model, is what
+      declines large ``n`` at high ``d``; ``block_size`` is the way to
+      take those calls.
     """
-    qr_rows = n if block_size is None else block_size
-    if qr_rows > _REWARD_SPACE_MAX_QR_ROWS:
+    k = n if block_size is None else block_size
+    if 2 * n > size:
         return False
-    if block_size is None:
-        qr_cost = n * n * d + n**3
-        draw_cost = n * n * size
-    else:
-        qr_cost = n * d * block_size
-        draw_cost = n * block_size * size
-    rng_weight = d * size * _RNG_DRAW_COST
-    rng_reward = n * size * _RNG_DRAW_COST + _REWARD_SPACE_FIXED_COST
-    small_ops = _SMALL_OP_PENALTY * (qr_cost + draw_cost)
     if sparse:
-        weight_cost = rng_weight + _SPARSE_SOLVE_PENALTY * precision_nnz * size
-        reward_cost = (
-            rng_reward + _SPARSE_SOLVE_PENALTY * 2 * n * precision_nnz + small_ops
-        )
-    else:
-        weight_cost = rng_weight + d * d * size + n * d * size
-        reward_cost = rng_reward + n * d * d + small_ops
-    return reward_cost < weight_cost
+        return k * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * k <= precision_nnz
+    return n <= d and 2 * n * k <= d * d
 
 
 def _predictive_cholesky_from_factor(
@@ -986,18 +960,18 @@ def _predictive_cholesky_from_factor(
             rhs = np.asarray(X_rows, dtype=np.float64).T
         return np.asarray(factor.half_solve(rhs), dtype=np.float64)
 
-    mean = np.asarray(X @ coef, dtype=np.float64).ravel()
+    # Sparse products never enter a BLAS thread pool, so only the dense
+    # case needs routing away from numpy.
+    if issparse(X):
+        mean = np.asarray(X @ coef, dtype=np.float64).ravel()
+    else:
+        mean = dense_matvec(X, coef)
     n = mean.shape[0]
     X_row_sliceable: Any = X
 
     if block_size is None:
         B = half_solve_rows(slice(0, n)).reshape(-1, n)
-        R = cast(NDArray[np.float64], np.linalg.qr(B, mode="r"))
-        if R.shape[0] < n:  # more prediction rows than features
-            R = np.vstack([R, np.zeros((n - R.shape[0], n))])
-        # canonicalize signs so the lower factor has a nonnegative diagonal
-        signs = np.where(np.diagonal(R) < 0.0, -1.0, 1.0)
-        return mean, R.T * signs
+        return mean, lower_predictive_sqrt(B, n)
 
     if block_size <= 0 or n % block_size:
         raise ValueError(
@@ -1019,12 +993,12 @@ def _predictive_cholesky_from_factor(
         B = half_solve_rows(slice(start * block_size, stop * block_size))
         B = B.reshape(-1, (stop - start) * block_size)
         blocks = B.reshape(B.shape[0], stop - start, block_size).transpose(1, 0, 2)
-        R = cast(NDArray[np.float64], np.linalg.qr(blocks, mode="r"))
-        if R.shape[1] < block_size:  # more rows per block than features
-            pad = np.zeros((R.shape[0], block_size - R.shape[1], block_size))
-            R = np.concatenate([R, pad], axis=1)
-        signs = np.where(np.diagonal(R, axis1=1, axis2=2) < 0.0, -1.0, 1.0)
-        L[start:stop] = R.transpose(0, 2, 1) * signs[:, np.newaxis, :]
+        # One factorization per block rather than numpy's batched QR: the
+        # batched call is a single trip into numpy's OpenBLAS, and the
+        # round trip out of scipy's costs more than this loop does. See
+        # ``lower_predictive_sqrt``.
+        for offset, block in enumerate(blocks):
+            L[start + offset] = lower_predictive_sqrt(block, block_size)
     return mean, L
 
 
@@ -1663,8 +1637,8 @@ scipy.sparse.csc_array
         X_sample = self._validated_for_sampling(X)
         mean, L = self._predictive_cholesky(X_sample, block_size)
         if block_size is None:
-            z = self.random_state_.standard_normal((size, mean.shape[0]))
-            return cast(NDArray[np.float64], mean + z @ L.T)
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
+            return affine_lower_factor(mean, z, L)
         z = self.random_state_.standard_normal(
             (mean.shape[0] // block_size, size, block_size)
         )
@@ -2200,13 +2174,16 @@ scipy.sparse.csc_array
         mean, L = self._predictive_cholesky(X_sample, block_size)
         df = 2.0 * self.a_
         if block_size is None:
-            z = self.random_state_.standard_normal((size, mean.shape[0]))
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
             g = self.random_state_.chisquare(df, size=size)
             # t draw: location + sqrt(df/g) · (shape-chol @ z), with the
             # (b/a) shape scaling (shape cov = (b/a) · X Λ⁻¹ Xᵀ) folded
-            # into the per-draw scale
+            # into the per-draw scale. Scaling the draws rather than the
+            # product is equivalent (both scale whole rows) and lets the
+            # mean be accumulated inside the same GEMM.
             scale = np.sqrt((self.b_ / self.a_) * df / g)
-            return cast(NDArray[np.float64], mean + (z @ L.T) * scale[:, np.newaxis])
+            z *= scale[:, np.newaxis]
+            return affine_lower_factor(mean, z, L)
         n_blocks = mean.shape[0] // block_size
         z = self.random_state_.standard_normal((n_blocks, size, block_size))
         # one chi-square per (draw, block): joint t within a block,
@@ -2909,8 +2886,8 @@ scipy.sparse.csc_array
         X_sample = self._validated_for_sampling(X)
         mean, L = self._predictive_cholesky(X_sample, block_size)
         if block_size is None:
-            z = self.random_state_.standard_normal((size, mean.shape[0]))
-            eta = mean + z @ L.T
+            z = standard_normal_f(self.random_state_, size, mean.shape[0])
+            eta = affine_lower_factor(mean, z, L)
         else:
             z = self.random_state_.standard_normal(
                 (mean.shape[0] // block_size, size, block_size)
