@@ -1247,6 +1247,35 @@ class _RewardSpacePredictiveMixin:
             self._precision_factor, X, block_size
         )
 
+    def _use_reward_space(
+        self, n: int, size: int, block_size: Optional[int] = None
+    ) -> bool:
+        """Solve-count test: is the row-side reduction cheaper here?
+
+        Only the *blocked* reward-space path consults this. Full-mode
+        row-side draws are chosen inside ``sample`` by
+        :func:`build_joint_reduction`, which weighs them against the
+        column-side reduction as well; a caller reaching here has
+        already committed to per-block draws, which no other route
+        produces.
+        """
+        if not hasattr(self, "n_features_"):
+            # Unfitted: no cached factor or dimensions to reason about
+            # yet, and the prior predictive is cheap either way
+            return False
+        # The full-mode guards of :func:`_reward_space_is_cheaper` with
+        # the per-block work substituted: each QR and draw runs over
+        # ``block_size`` rows, so the budget terms scale by ``k`` rather
+        # than ``n``.
+        factor = self._precision_factor
+        d = factor.n_factored
+        k = n if block_size is None else block_size
+        if 2 * n > size:
+            return False
+        if self.sparse:
+            return k * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * k <= factor.solve_cost
+        return n <= d and 2 * n * k <= d * d
+
     def _validated_for_sampling(
         self, X: Union[NDArray[Any], csc_array]
     ) -> Union[NDArray[Any], csc_array]:

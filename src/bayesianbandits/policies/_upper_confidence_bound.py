@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
 
@@ -115,7 +116,10 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
 
     #: Consumes only per-(arm, context) statistics, so iid marginal
     #: draws (``sample_marginal``) are exact for this policy.
-    marginal_ok = True
+    consumes = DrawKind.MARGINAL_ONLY
+
+    #: The marginal path already serves this policy's per-(arm, context)
+    #: statistics; per-context joint blocks are unnecessary.
 
     @property
     def samples_needed(self) -> int:

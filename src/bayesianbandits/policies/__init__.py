@@ -1,11 +1,13 @@
 from ._epsilon_greedy import EpsilonGreedy
 from ._exp3a import EXP3A
+from ._information_directed_sampling import InformationDirectedSampling
 from ._thompson_sampling import ThompsonSampling
 from ._upper_confidence_bound import UpperConfidenceBound
 
 __all__ = [
     "EXP3A",
     "EpsilonGreedy",
+    "InformationDirectedSampling",
     "ThompsonSampling",
     "UpperConfidenceBound",
 ]
