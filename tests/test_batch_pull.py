@@ -466,3 +466,90 @@ class TestPerformance:
         assert result.shape == (n_arms, 50)
         # Should only call sample once due to batching
         assert shared_model.sample.call_count == 1
+
+
+class _SharedLearner:
+    """Minimal real (non-Mock) batchable learner.
+
+    ``can_batch_arms`` needs ``transform`` plus a ``final_estimator``
+    shared by every arm. No learner shipped in this library exposes
+    both, so without a stub like this the batched branch of
+    ``batch_sample_arms`` is only ever reached through ``Mock``s.
+    ``transform`` shifts one feature per arm so the arms' rows differ,
+    as they would under a real shared-model setup.
+    """
+
+    def __init__(self, model, shift):
+        self.final_estimator = model
+        self._shift = shift
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=np.float64).copy()
+        X[:, 0] += self._shift
+        return X
+
+
+class TestDrawSamplesBatchedPath:
+    """``PolicyDefaultUpdate._draw_samples`` over genuinely batchable arms.
+
+    ``batch_sample_arms`` squeezes the size axis at ``size == 1``, but
+    ``select`` reduces over the last axis and so needs 3-D. Before
+    ``_draw_samples`` existed nothing re-expanded it, which took down
+    every ``ThompsonSampling`` pull over batchable arms --
+    ``samples_needed`` is always 1 there, so the squeeze always fired.
+    """
+
+    @staticmethod
+    def _arms(n_arms=3):
+        from bayesianbandits import Arm, NormalRegressor
+
+        model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
+        model.fit(
+            np.random.default_rng(0).standard_normal((30, 2)),
+            np.random.default_rng(1).standard_normal(30),
+        )
+        return [Arm(i, learner=_SharedLearner(model, float(i))) for i in range(n_arms)]
+
+    @pytest.mark.parametrize("size", [1, 4])
+    def test_batched_draws_are_always_3d(self, size):
+        from bayesianbandits import ThompsonSampling
+
+        arms = self._arms()
+        X = np.random.default_rng(2).standard_normal((5, 2))
+        assert can_batch_arms(arms)
+
+        samples = ThompsonSampling()._draw_samples(arms, X, size)
+        assert samples.shape == (3, 5, size)
+
+    @pytest.mark.parametrize(
+        "policy_name", ["ThompsonSampling", "UpperConfidenceBound", "EpsilonGreedy"]
+    )
+    def test_every_policy_pulls_over_batchable_arms(self, policy_name):
+        """Regression: ThompsonSampling raised
+        ``TypeError: 'numpy.int64' object is not iterable`` here, because
+        its 2-D draws made ``select`` reduce over contexts and argmax down
+        to a scalar. The other policies default to samples > 1 and so
+        never hit the squeeze."""
+        import bayesianbandits
+
+        policy = getattr(bayesianbandits, policy_name)()
+        arms = self._arms()
+        X = np.random.default_rng(2).standard_normal((5, 2))
+
+        chosen = policy(arms, X, np.random.default_rng(0))
+        assert len(chosen) == 5  # one arm per context
+        assert all(a in arms for a in chosen)
+
+    def test_batched_matches_per_arm_fallback(self):
+        """The batched path and the per-arm fallback agree on shape."""
+        from bayesianbandits import Arm, NormalRegressor, ThompsonSampling
+
+        X = np.random.default_rng(2).standard_normal((5, 2))
+        batched = ThompsonSampling()._draw_samples(self._arms(), X, 4)
+
+        model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)
+        unbatchable = [Arm(i, learner=model) for i in range(3)]
+        assert not can_batch_arms(unbatchable)
+        per_arm = ThompsonSampling()._draw_samples(unbatchable, X, 4)
+
+        assert batched.shape == per_arm.shape == (3, 5, 4)

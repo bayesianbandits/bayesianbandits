@@ -12,7 +12,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType, batch_sample_arms
+from .._arm import Arm, ContextType, TokenType
 from ._base import PolicyDefaultUpdate
 
 
@@ -197,21 +197,5 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Choose arm(s) using upper confidence bound."""
-        # Marginal draws when marginal_ok: this policy reduces samples to
-        # per-(arm, context) statistics, so iid marginal sampling is exact
-        # and much cheaper; subclasses can opt out via marginal_ok = False
-        samples = batch_sample_arms(
-            arms, X, size=self.samples_needed, marginal=self.marginal_ok
-        )
-        if samples is None:
-            samples = np.array(
-                [
-                    (arm.sample_marginal if self.marginal_ok else arm.sample)(
-                        X, self.samples_needed
-                    )
-                    for arm in arms
-                ]
-            )
-            # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-            samples = samples.transpose(0, 2, 1)
+        samples = self._draw_samples(arms, X, self.samples_needed)
         return self.select(samples, arms, rng, top_k)
