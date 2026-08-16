@@ -26,6 +26,7 @@ from sklearn.utils.validation import (
 )
 from typing_extensions import Concatenate, ParamSpec, Self
 
+from . import _support_covariance
 from ._blas_helpers import (
     affine_lower_factor,
     compute_eta_dense,
@@ -827,6 +828,11 @@ def _marginal_predictive_sd(
     ever formed; the cost is linear in the number of prediction rows.
     A sparse ``X`` is densified for the solve in row blocks, keeping the
     dense scratch bounded regardless of the number of prediction rows.
+
+    When ``X`` is sparse and touches fewer distinct columns than it has
+    rows, the support-covariance route is exact and cheaper -- it pays
+    one solve per distinct column instead of one per row -- so it is
+    used instead. See :mod:`bayesianbandits._support_covariance`.
     """
     # Dispatch on the actual type of X: sparse models accept dense X too
     # (check_array's accept_sparse only *permits* sparse input)
@@ -836,6 +842,9 @@ def _marginal_predictive_sd(
         return cast(NDArray[np.float64], np.sqrt(np.einsum("ij,ij->j", B, B)))
     assert X.shape is not None  # for the type checker
     n_rows, n_features = X.shape
+    support_draw = _support_covariance.build(factor, X, n_features, budget=n_rows)
+    if support_draw is not None:
+        return support_draw.sd()
     block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
     # Rows are CSC's minor axis, so slicing rows per chunk would scan all
     # of X's nnz each chunk; slice from a CSR copy when chunking
@@ -1513,6 +1522,20 @@ scipy.sparse.csc_array
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
+        # Exact joint draws via the support covariance when X is sparse
+        # and touches fewer distinct columns than the number of draws
+        # requested: |U| solves instead of one per draw. Same
+        # distribution, different consumption of the random stream.
+        support_draw = _support_covariance.build(
+            self._precision_factor, X_sample, X_sample.shape[1], budget=size
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            return cast(
+                NDArray[np.float64],
+                mean + support_draw.joint(size, self.random_state_),
+            )
+
         samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
                 self.coef_,
@@ -2060,6 +2083,22 @@ scipy.sparse.csc_array
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
         df = 2 * self.a_
+
+        # Exact joint draws via the support covariance, built from
+        # ``shape_`` so S already carries the (b/a) factor. The
+        # chi-square mixing is a per-draw scalar, so it commutes with
+        # the linear map and the reduction stays exact.
+        support_draw = _support_covariance.build(
+            self.shape_, X_sample, X_sample.shape[1], budget=size
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            z = support_draw.joint(size, self.random_state_)
+            x = self.random_state_.chisquare(df, size) / df
+            return cast(
+                NDArray[np.float64],
+                mean + z / np.sqrt(x)[..., None],
+            )
 
         # Sample from multivariate t via precision parameterization
         # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
@@ -2788,6 +2827,17 @@ scipy.sparse.csc_array
         X_sample = check_array(
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
+
+        # The support covariance gives the linear predictor's exact joint
+        # law directly; the inverse link is applied elementwise either
+        # way, so it composes unchanged.
+        support_draw = _support_covariance.build(
+            self._precision_factor, X_sample, X_sample.shape[1], budget=size
+        )
+        if support_draw is not None:
+            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            eta = mean + support_draw.joint(size, self.random_state_)
+            return self._inverse_link(cast(NDArray[np.float64], eta))
 
         param_samples = np.atleast_2d(
             multivariate_normal_sample_from_precision(
