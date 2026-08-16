@@ -45,6 +45,11 @@ Unreleased
   one arm at a time and never affect sampling, so the common cases --
   no reward function, or per-arm functions only -- keep the speedup (#258)
 
+- ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
+  it. Neither mutates the validated array nor retains a reference to it,
+  so the copy was pure overhead, costing O(nnz(X)) per draw on sparse
+  models. ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
+
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
