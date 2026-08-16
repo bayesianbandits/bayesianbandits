@@ -368,7 +368,11 @@ def ks_draws():
     sd = np.sqrt(np.diag(L @ L.T))
 
     est.random_state_ = np.random.default_rng(100)
-    weight = np.vstack([est.sample(X, 50_000) for _ in range(_KS_N // 50_000)])
+    # A genuine weight-space baseline: ``sample`` now picks whichever
+    # reduction is cheapest, and at this shape that is the row side, so
+    # the comparison would otherwise be reward space against itself.
+    with mock.patch.object(_estimators, "build_joint_reduction", return_value=None):
+        weight = np.vstack([est.sample(X, 50_000) for _ in range(_KS_N // 50_000)])
     est.random_state_ = np.random.default_rng(200)
     reward = est.sample_reward_space(X, _KS_N)
     # blocked mode against the block-diagonal of the weight-space draws:

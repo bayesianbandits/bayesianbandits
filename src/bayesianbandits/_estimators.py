@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar, Union,
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
-from scipy.linalg.blas import dgemv, dsymv  # type: ignore
+from scipy.linalg.blas import dgemm, dgemv, dsymv  # type: ignore
 from scipy.sparse import csc_array, diags, eye, issparse
 from scipy.special import expit
 from scipy.stats import (
@@ -927,6 +927,83 @@ def _reward_space_is_cheaper(
     return n <= d and 2 * n * k <= d * d
 
 
+class _RowSpaceDraw:
+    """Zero-mean joint draws from an ``n x n`` lower factor of the
+    predictive covariance -- the row-side counterpart of
+    :class:`~bayesianbandits._support_covariance.SupportDraw`."""
+
+    __slots__ = ("_L",)
+
+    def __init__(self, L: NDArray[np.float64]) -> None:
+        self._L = L
+
+    def joint(self, size: int, rng: np.random.Generator) -> NDArray[np.float64]:
+        n_rows = self._L.shape[0]
+        z = standard_normal_f(rng, size, n_rows)
+        return cast(NDArray[np.float64], dgemm(1.0, z, self._L, trans_b=1))
+
+
+def build_joint_reduction(
+    factor: PrecisionFactor,
+    X: Union[NDArray[Any], csc_array],
+    n_features: int,
+    size: int,
+    sparse: bool,
+    precision_nnz: int,
+) -> Optional[Any]:
+    """Cheapest exact reduction of ``Cov(Xw)``, or ``None`` for weight space.
+
+    ``Cov(Xw) = X \\Lambda^{-1} X^T`` has rank at most
+    ``min(n_rows, |U|, n_features)``, and there is a reduction to a
+    square root on each side.  All three routes are exact and give the
+    same distribution; they differ only in how many triangular solves
+    against the cached factor they cost:
+
+    ==================  ===================  =========================
+    route               solves               square root
+    ==================  ===================  =========================
+    weight space        ``size``             cached, ``d x d``
+    row side            ``n_rows``           ``n_rows x n_rows``
+    column side         ``|U|``              ``|U| x |U|``
+    ==================  ===================  =========================
+
+    So the choice is just ``min(size, n_rows, |U|)``, three exactly
+    known integers.  Weight space is the one whose square root is
+    *cached* -- it factors :math:`\\Lambda`, which does not depend on
+    ``X`` -- so it needs no build at all and simply pays per draw. The
+    other two must refactor on every call, which is why neither can win
+    at small ``size``: there is nothing to amortize.
+
+    Passing ``min(size, n_rows)`` as the column-side budget is what
+    makes this one comparison rather than two: the column route already
+    declines unless ``|U|`` beats its budget, so handing it the row
+    route's cost lets it fire only when it is the cheapest of the three.
+
+    A dense model has no column-side route -- ``|U|`` is every feature,
+    so there is nothing to reduce -- but the row side still applies, and
+    :func:`_reward_space_is_cheaper` carries the extra guards a dense
+    model needs: weight space there does no solve at all, multiplying by
+    a cached inverse factor instead, so the row side must also fit its
+    draw term under that.
+    """
+    n_rows = cast("tuple[int, int]", X.shape)[0]
+    row_ok = _reward_space_is_cheaper(n_rows, n_features, size, sparse, precision_nnz)
+    support_draw = _support_covariance.build(
+        factor, X, n_features, budget=min(size, n_rows) if row_ok else size
+    )
+    if support_draw is not None:
+        return support_draw
+    if row_ok:
+        B = np.asarray(
+            factor.half_solve(
+                np.asarray(X.todense() if issparse(X) else X, dtype=np.float64).T
+            ),
+            dtype=np.float64,
+        ).reshape(-1, n_rows)
+        return _RowSpaceDraw(lower_predictive_sqrt(B, n_rows))
+    return None
+
+
 def _predictive_cholesky_from_factor(
     factor: PrecisionFactor,
     coef: NDArray[np.float64],
@@ -1061,17 +1138,31 @@ class _RewardSpacePredictiveMixin:
             self._precision_factor, self.coef_, X, block_size
         )
 
+    @property
+    def _precision_nnz(self) -> int:
+        """Stored entries in the precision, the per-solve cost proxy for
+        a sparse model. Zero for a dense one, where a solve costs
+        ``d^2`` regardless."""
+        return cast(csc_array, self.cov_inv_).nnz if self.sparse else 0
+
     def _use_reward_space(
         self, n: int, size: int, block_size: Optional[int] = None
     ) -> bool:
-        """Flop-count test: is reward-space sampling cheaper for this call?"""
+        """Solve-count test: is the row-side reduction cheaper here?
+
+        Only the *blocked* reward-space path consults this. Full-mode
+        row-side draws are chosen inside ``sample`` by
+        :func:`build_joint_reduction`, which weighs them against the
+        column-side reduction as well; a caller reaching here has
+        already committed to per-block draws, which no other route
+        produces.
+        """
         if not hasattr(self, "n_features_"):
             # Unfitted: no cached factor or dimensions to reason about
             # yet, and the prior predictive is cheap either way
             return False
-        nnz = cast(csc_array, self.cov_inv_).nnz if self.sparse else 0
         return _reward_space_is_cheaper(
-            n, self.n_features_, size, self.sparse, nnz, block_size
+            n, self.n_features_, size, self.sparse, self._precision_nnz, block_size
         )
 
     def _validated_for_sampling(
@@ -1522,12 +1613,18 @@ scipy.sparse.csc_array
             X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
-        # Exact joint draws via the support covariance when X is sparse
-        # and touches fewer distinct columns than the number of draws
-        # requested: |U| solves instead of one per draw. Same
-        # distribution, different consumption of the random stream.
-        support_draw = _support_covariance.build(
-            self._precision_factor, X_sample, X_sample.shape[1], budget=size
+        # Exact joint draws through whichever reduction of the
+        # predictive covariance is cheapest here: one solve per draw
+        # (weight space), one per prediction row, or one per distinct
+        # column X touches. Same distribution, different consumption of
+        # the random stream.
+        support_draw = build_joint_reduction(
+            self._precision_factor,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
         )
         if support_draw is not None:
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
@@ -2088,8 +2185,13 @@ scipy.sparse.csc_array
         # ``shape_`` so S already carries the (b/a) factor. The
         # chi-square mixing is a per-draw scalar, so it commutes with
         # the linear map and the reduction stays exact.
-        support_draw = _support_covariance.build(
-            self.shape_, X_sample, X_sample.shape[1], budget=size
+        support_draw = build_joint_reduction(
+            self.shape_,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
         )
         if support_draw is not None:
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
@@ -2831,8 +2933,13 @@ scipy.sparse.csc_array
         # The support covariance gives the linear predictor's exact joint
         # law directly; the inverse link is applied elementwise either
         # way, so it composes unchanged.
-        support_draw = _support_covariance.build(
-            self._precision_factor, X_sample, X_sample.shape[1], budget=size
+        support_draw = build_joint_reduction(
+            self._precision_factor,
+            X_sample,
+            X_sample.shape[1],
+            size,
+            self.sparse,
+            self._precision_nnz,
         )
         if support_draw is not None:
             mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
