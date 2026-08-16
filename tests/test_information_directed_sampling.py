@@ -12,6 +12,7 @@ from bayesianbandits import (
     Arm,
     ArmColumnFeaturizer,
     ContextualAgent,
+    DrawKind,
     InformationDirectedSampling,
     LipschitzContextualAgent,
     NormalInverseGammaRegressor,
@@ -284,8 +285,12 @@ class TestPolicyBasics:
         policy = InformationDirectedSampling(samples=250)
         assert policy.samples_needed == 250
 
-    def test_requires_joint_draws(self):
-        assert InformationDirectedSampling.marginal_ok is False
+    def test_requires_arms_joint_within_a_context(self):
+        """Information gain conditions on the argmax within a draw, so
+        arms must be joint; each context is solved on its own, so the
+        dependence across contexts is never read."""
+        assert InformationDirectedSampling.consumes is DrawKind.CONTEXT_JOINT
+        assert InformationDirectedSampling.consumes > DrawKind.MARGINAL_ONLY
 
 
 class TestAgentIntegration:
@@ -320,7 +325,7 @@ class TestAgentIntegration:
         assert len(slates) == 2 and all(len(s) == 2 for s in slates)
 
     def test_lipschitz_agent_shared_learner(self):
-        # Shared learner: batched joint sampling path (marginal_ok=False).
+        # Shared learner: joint sampling path (consumes is not MARGINAL_ONLY).
         arms = [Arm(i, reward_function=None, learner=None) for i in range(4)]
         agent = LipschitzContextualAgent(
             arms=arms,

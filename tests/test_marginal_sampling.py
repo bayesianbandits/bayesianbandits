@@ -14,7 +14,7 @@ Covers four fronts:
 3. The independence contract: marginal draws are iid across rows, while
    ``sample`` rows within a draw are correlated.
 4. Plumbing: ``Arm``/``LearnerPipeline`` forwarding, the policies'
-   ``marginal_ok`` opt-in (and subclass
+   ``consumes = DrawKind.MARGINAL_ONLY`` opt-in (and subclass
    opt-out), and the fallback to joint ``sample`` for learners without
    ``sample_marginal`` or whose class overrides ``sample`` without it.
 """
@@ -35,6 +35,7 @@ from bayesianbandits import (
     ArmColumnFeaturizer,
     BayesianGLM,
     ContextualAgent,
+    DrawKind,
     EpsilonGreedy,
     LipschitzContextualAgent,
     NormalInverseGammaRegressor,
@@ -44,7 +45,6 @@ from bayesianbandits import (
 )
 from bayesianbandits._arm import (
     batch_identity,
-    is_elementwise_batch_reward,
     resolve_marginal_sampler,
 )
 from bayesianbandits.pipelines import LearnerPipeline
@@ -312,12 +312,12 @@ class TestPlumbing:
         assert (pipeline.sample_marginal(X, size=500) >= 0.0).all()
 
     def test_policy_marginal_opt_out_uses_joint_sampling(self):
-        """A policy subclass setting ``marginal_ok = False`` must get
+        """A policy subclass setting ``consumes = DrawKind.JOINT`` must get
         joint draws (regression: ``__call__`` once hardcoded
         ``marginal=True`` regardless of the flag)."""
 
         class JointUCB(UpperConfidenceBound):
-            marginal_ok = False
+            consumes = DrawKind.JOINT
 
         est, rng = _fit_dense()
         arms = [Arm(i, learner=est) for i in range(2)]
@@ -357,11 +357,11 @@ class TestPlumbing:
         spy.assert_called_once()
         assert draws.shape == (5, 3)
 
-    def test_policy_marginal_flags(self):
-        assert UpperConfidenceBound().marginal_ok
-        assert EXP3A().marginal_ok
-        assert EpsilonGreedy().marginal_ok
-        assert not ThompsonSampling().marginal_ok
+    def test_policies_declare_what_they_consume(self):
+        assert UpperConfidenceBound().consumes is DrawKind.MARGINAL_ONLY
+        assert EXP3A().consumes is DrawKind.MARGINAL_ONLY
+        assert EpsilonGreedy().consumes is DrawKind.MARGINAL_ONLY
+        assert ThompsonSampling().consumes is DrawKind.JOINT
 
     @pytest.mark.parametrize(
         "policy",
@@ -391,7 +391,7 @@ def _share_of_total(samples, action_tokens):
 
 class TestBatchRewardCoupling:
     """A batch reward function may combine arms within a draw, so it
-    must not be handed iid marginal draws even under a ``marginal_ok``
+    must not be handed iid marginal draws even under a ``MARGINAL_ONLY``
     policy."""
 
     @staticmethod
@@ -412,21 +412,32 @@ class TestBatchRewardCoupling:
             random_seed=0,
         )
 
-    def test_elementwise_predicate(self):
-        assert is_elementwise_batch_reward(None)
-        assert is_elementwise_batch_reward(batch_identity)
-        assert not is_elementwise_batch_reward(_share_of_total)
+    def test_batch_reward_function_widens_the_requirement(self):
+        """A batch reward function runs before the policy and may
+        combine arms within a draw, so it widens the agent's
+        requirement past ``MARGINAL_ONLY`` no matter what the policy
+        declares. There is no opt-out: a function that does map cells
+        independently is indistinguishable from one that does not."""
+        policy = UpperConfidenceBound(alpha=0.9, samples=100)
+        assert policy.consumes == DrawKind.MARGINAL_ONLY
 
-        def opted_in(samples, action_tokens):
-            return samples * 2.0
+        agent = self._agent(policy, _share_of_total)
+        with mock.patch(
+            "bayesianbandits.api.resolve_marginal_sampler",
+            wraps=resolve_marginal_sampler,
+        ) as resolve_marginal:
+            agent.pull(np.random.default_rng(1).standard_normal((2, 2)))
+        resolve_marginal.assert_not_called()
 
-        assert not is_elementwise_batch_reward(opted_in)
-        opted_in.elementwise = True
-        assert is_elementwise_batch_reward(opted_in)
-        # the attribute is a promise about the function, not a wrapper:
-        # it must not change what the function computes
-        samples = np.ones((2, 3, 4))
-        assert_allclose(opted_in(samples, [0, 1]), 2.0 * samples)
+    def test_widening_never_narrows(self):
+        """Widening takes the stronger of the two requirements, so a
+        policy already asking for JOINT is unaffected by the reward
+        function, and one asking for less is raised, never lowered."""
+        assert max(DrawKind.MARGINAL_ONLY, DrawKind.CONTEXT_JOINT) is (
+            DrawKind.CONTEXT_JOINT
+        )
+        assert max(DrawKind.JOINT, DrawKind.CONTEXT_JOINT) is DrawKind.JOINT
+        assert DrawKind.MARGINAL_ONLY < DrawKind.CONTEXT_JOINT < DrawKind.JOINT
 
     @staticmethod
     def _min_cross_arm_corr(samples):
@@ -475,18 +486,21 @@ class TestBatchRewardCoupling:
         )
         assert self._min_cross_arm_corr(marginal) < 0.05
 
-    def test_elementwise_batch_reward_still_uses_marginal(self):
+    def test_any_batch_reward_function_leaves_the_marginal_path(self):
+        """Even a genuinely elementwise function loses the marginal
+        path: the agent cannot verify the promise, and joint draws are
+        no longer expensive enough to justify trusting it."""
+
         def revenue(samples, action_tokens):
             return samples * np.asarray(action_tokens)[:, None, None]
 
-        revenue.elementwise = True
         agent = self._agent(UpperConfidenceBound(alpha=0.9, samples=100), revenue)
         with mock.patch(
             "bayesianbandits.api.resolve_marginal_sampler",
             wraps=resolve_marginal_sampler,
         ) as resolve_marginal:
             agent.pull(np.random.default_rng(1).standard_normal((2, 2)))
-        resolve_marginal.assert_called_once()
+        resolve_marginal.assert_not_called()
 
     def test_identity_batch_reward_still_uses_marginal(self):
         agent = self._agent(UpperConfidenceBound(alpha=0.9, samples=100), None)

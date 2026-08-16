@@ -82,13 +82,13 @@ from ._arm import (
     _accepts_context_batch,
     _sample_context_major_blocks,
     batch_identity,
-    is_elementwise_batch_reward,
     is_identity_function,
     posterior_identity,
     resolve_marginal_sampler,
     resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
+from ._draw_kind import DrawKind
 from .policies import (  # noqa: F401
     EpsilonGreedy,
     InformationDirectedSampling,
@@ -98,30 +98,24 @@ from .policies import (  # noqa: F401
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
-    marginal_ok: bool
-    """Whether iid per-row marginal draws (``sample_marginal``) may
-    replace joint ``sample`` draws for this policy. Set ``True`` only
-    when decisions consume per-(arm, context) statistics alone, for
-    which marginal draws are exact and much cheaper; policies that
-    compare arms within a shared posterior draw (e.g. Thompson
-    sampling) must keep it ``False``.
+    consumes: DrawKind
+    """The weakest posterior draws this policy can correctly consume.
 
-    This flag describes the policy only. Agents additionally require
-    the reward transform between sampler and policy to be elementwise,
-    so a ``LipschitzContextualAgent`` carrying an arm-combining
-    ``batch_reward_function`` keeps joint draws regardless of this
-    flag (see :func:`~bayesianbandits._arm.is_elementwise_batch_reward`)."""
+    Declaring a requirement rather than permitting a sampling method is
+    what keeps the choice of method entirely on the agent's side: it
+    may satisfy this with anything at least this strong (see
+    :class:`~bayesianbandits.DrawKind`), and picks whichever is
+    cheapest for the learner and draw count at hand.
 
-    reward_space_ok: bool
-    """Whether per-context joint blocks drawn in reward space
-    (``sample_reward_space`` with one block of arm rows per context)
-    may replace joint ``sample`` draws for this policy. Set ``True``
-    only when decisions consume each context independently: blocks are
-    exactly jointly distributed within a context but independent across
-    contexts (and, for the NIG learner, do not share a noise-scale draw
-    across contexts the way ``sample`` does). Much cheaper than
-    ``sample`` when many Monte Carlo draws are needed over few arms,
-    e.g. information-directed sampling."""
+    An agent may *widen* this. A ``LipschitzContextualAgent`` carrying
+    a ``batch_reward_function`` widens to at least ``CONTEXT_JOINT``,
+    because that function runs before the policy and may combine arms
+    within a draw. It is never narrowed.
+
+    Defaults to ``JOINT`` on :class:`PolicyDefaultUpdate`, which is
+    always correct and never the cheapest; a policy scoring each arm
+    on its own should say ``MARGINAL_ONLY``.
+    """
 
     @overload
     def __call__(
@@ -902,21 +896,14 @@ class LipschitzContextualAgent(Generic[TokenType]):
 
         Because the function sees a whole draw at once, it may combine
         arms *within* one draw -- share of total, cannibalization,
-        softmax over a slate. Supplying one therefore disables the
-        cheaper iid marginal sampling path that ``marginal_ok``
-        policies (:class:`EpsilonGreedy`,
-        :class:`UpperConfidenceBound`, ``EXP3A``) would otherwise use,
-        since those draws are not jointly distributed across arms. A
-        function that maps each ``(arm, context, draw)`` cell
-        independently can opt back into the faster path by carrying a
-        truthy ``elementwise`` attribute::
+        softmax over a slate. Supplying one therefore widens the
+        agent's draw requirement to at least
+        :attr:`~bayesianbandits.DrawKind.CONTEXT_JOINT`, whatever the
+        policy itself reads, so the arms of a draw are jointly
+        distributed when the function runs.
 
-            def revenue(samples, action_tokens):
-                return samples * multipliers[:, None, None]
-            revenue.elementwise = True
-
-        Per-arm ``Arm.reward_function``s are always applied one arm at
-        a time and never affect sampling.
+        A per-arm ``Arm.reward_function`` is always applied one arm at
+        a time and never affects sampling.
     random_seed : int, np.random.Generator, or None, default=None
         Controls the random number generator shared by the policy and
         the learner. Pass an int for reproducible results across calls.
@@ -1334,18 +1321,19 @@ class LipschitzContextualAgent(Generic[TokenType]):
         n_arms, n_contexts = len(self.arms), len(X)
         samples = None
         reshaped = None
-        # A batch reward function that combines arms within a draw needs
-        # those arms jointly distributed, which the marginal path does
-        # not provide -- the policy's own statistics are per-(arm,
-        # context), but the reward function runs before it (step 5).
-        # Reward-space blocks stay joint across arms, so they are fine.
-        marginal_ok = getattr(self.policy, "marginal_ok", False) and (
-            is_elementwise_batch_reward(self.batch_reward_function)
-        )
-        if marginal_ok:
+        # A batch reward function runs before the policy (step 5) and
+        # sees a whole draw, so it may combine arms within one -- share
+        # of total, cannibalization, a softmax over a slate. That needs
+        # the arms of a draw jointly distributed whatever the policy
+        # itself reads, so widen. ``batch_identity`` combines nothing.
+        required = self.policy.consumes
+        if self.batch_reward_function not in (None, batch_identity):
+            required = max(required, DrawKind.CONTEXT_JOINT)
+
+        if required == DrawKind.MARGINAL_ONLY:
             sampler = resolve_marginal_sampler(self.learner)
             samples = sampler(X_enriched, size=self.policy.samples_needed)
-        elif getattr(self.policy, "reward_space_ok", False):
+        elif required == DrawKind.CONTEXT_JOINT:
             joint_sampler = resolve_reward_space_sampler(
                 self.learner,
                 n_rows=n_arms * n_contexts,

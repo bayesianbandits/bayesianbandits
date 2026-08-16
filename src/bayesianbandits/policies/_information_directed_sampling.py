@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
 
@@ -258,7 +259,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     **Joint draws matter.** The conditional means inside :math:`v_a`
     condition on which arm is optimal *within the same posterior draw*, so
     this policy requires coherent joint samples across arms
-    (``marginal_ok = False``). With a shared learner
+    (``consumes = DrawKind.CONTEXT_JOINT``). With a shared learner
     (:class:`~bayesianbandits.LipschitzContextualAgent` or a shared
     pipeline), joint weight-space draws provide this. When arms have
     independent learners, independent per-arm draws *are* the correct joint
@@ -299,16 +300,13 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     def __init__(self, samples: int = 1000):
         self.samples = samples
 
-    #: Requires joint draws (information gain conditions on the argmax
-    #: within each draw), so marginal sampling must not be used.
-    marginal_ok = False
-
-    #: Decisions are per-context and need joint draws only across arms
-    #: within a context, so per-context reward-space blocks
-    #: (``sample_reward_space``) are exact for this policy -- and much
-    #: cheaper than weight-space ``sample`` at this policy's large
-    #: ``samples`` counts.
-    reward_space_ok = True
+    #: Information gain conditions on which arm is the argmax within a
+    #: draw, so arms must be jointly distributed; decisions are solved
+    #: per context, so the dependence across contexts is never read.
+    #: That is exactly ``CONTEXT_JOINT``, which lets an agent serve this
+    #: with per-context reward-space blocks -- far cheaper than fully
+    #: joint draws at this policy's sample counts.
+    consumes = DrawKind.CONTEXT_JOINT
 
     @property
     def samples_needed(self) -> int:

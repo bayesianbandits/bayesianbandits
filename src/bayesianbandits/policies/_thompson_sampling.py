@@ -13,6 +13,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
 
@@ -95,11 +96,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
 
     #: Requires joint draws (arms compared within a shared posterior
     #: draw), so marginal sampling must not be used.
-    marginal_ok = False
+    consumes = DrawKind.JOINT
 
     #: Draws one sample per pull, for which weight-space ``sample`` is
     #: always the cheaper joint path.
-    reward_space_ok = False
 
     @property
     def samples_needed(self) -> int:

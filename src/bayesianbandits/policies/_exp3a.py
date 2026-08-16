@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
 
@@ -223,11 +224,10 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
 
     #: Consumes only per-(arm, context) statistics, so iid marginal
     #: draws (``sample_marginal``) are exact for this policy.
-    marginal_ok = True
+    consumes = DrawKind.MARGINAL_ONLY
 
     #: The marginal path already serves this policy's per-(arm, context)
     #: statistics; per-context joint blocks are unnecessary.
-    reward_space_ok = False
 
     @property
     def samples_needed(self) -> int:
@@ -392,7 +392,7 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
             multiplied with the importance weights.
         """
         # Recompute probabilities (stateless design); only per-arm means
-        # are consumed, so marginal draws are exact when marginal_ok
+        # are read, which is why this policy consumes MARGINAL_ONLY
         rewards = self._draw_samples(all_arms, X, self.samples).mean(axis=-1)
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
 

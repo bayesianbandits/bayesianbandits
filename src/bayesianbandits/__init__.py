@@ -112,6 +112,7 @@ posterior. Pass to the ``approximator`` argument.
 
 from ._arm import Arm
 from ._arm_featurizer import ArmFeaturizer
+from ._draw_kind import DrawKind
 from ._eb_estimators import (
     EmpiricalBayesDirichletClassifier,
     EmpiricalBayesGammaRegressor,
@@ -140,6 +141,7 @@ from .policies import EXP3A, InformationDirectedSampling
 __all__ = [
     "Arm",
     "ArmFeaturizer",
+    "DrawKind",
     "ArmColumnFeaturizer",
     "FunctionArmFeaturizer",
     "BayesianGLM",

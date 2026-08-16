@@ -6,14 +6,42 @@ Unreleased
 
 **Breaking changes**
 
+- Policies declare what they *consume* rather than which sampling
+  methods they tolerate. The ``marginal_ok`` and ``reward_space_ok``
+  flags on ``PolicyProtocol`` are replaced by a single
+  ``consumes: DrawKind``, where ``DrawKind`` is a three-level lattice
+  ``MARGINAL_ONLY < CONTEXT_JOINT < JOINT`` naming the weakest draws a
+  policy can correctly consume. Agents satisfy it with anything at
+  least that strong and pick whichever is cheapest, so no policy names
+  a sampling method any more. Migration is mechanical:
+  ``marginal_ok = True`` becomes ``consumes = DrawKind.MARGINAL_ONLY``,
+  ``reward_space_ok = True`` becomes ``consumes = DrawKind.CONTEXT_JOINT``,
+  and both ``False`` becomes ``consumes = DrawKind.JOINT``, which is the
+  default. The old flags could disagree (a policy could permit both
+  marginal and reward-space draws, which are not the same strength);
+  one ordered value cannot (#240)
+
+- The ``elementwise`` opt-out on batch reward functions is removed,
+  along with ``is_elementwise_batch_reward``. A supplied
+  ``batch_reward_function`` now always widens the agent's requirement to
+  at least ``CONTEXT_JOINT``. The attribute was an unverifiable promise
+  that a function mapped each draw cell independently, and getting it
+  wrong silently fabricated spread that quantile-based policies read as
+  uncertainty. Joint draws are no longer expensive enough to be worth
+  that risk, now that they reduce through the cheapest of three exact
+  routes. Agents that supply no reward function, or per-arm
+  per-arm ``Arm.reward_function`` objects only, are unaffected: those
+  normalize to
+  ``batch_identity``, which combines nothing and does not widen (#240)
+
 - ``ContextualAgent`` and ``Agent`` now require each arm to have its own
   learner, and raise from ``add_arm`` (so also from the constructor) when
   two arms share one. Neither agent gives arms a way to differ in
   features, so arms sharing a learner were statistically
   indistinguishable; worse, the policies on that path sample one arm at a
   time, which draws a separate weight vector per arm and silently
-  discards the dependence a shared posterior implies. A policy declaring
-  ``marginal_ok = False`` could therefore ask for joint draws and receive
+  discards the dependence a shared posterior implies. A policy asking
+  for joint draws could therefore receive
   independent ones: on arms sharing a learner, measured cross-arm
   correlation was 0.00 where the true value was 1.00. Sharing one model
   across arms is ``LipschitzContextualAgent``'s job -- it distinguishes
@@ -51,11 +79,10 @@ Unreleased
   covariance is ever formed; rank-deficient ``X`` is exact). With
   ``block_size=k``, consecutive row groups are drawn jointly within and
   independently across groups via one batched QR -- the shape
-  per-context policies need. ``InformationDirectedSampling`` opts in via
-  ``reward_space_ok`` (declared on ``PolicyProtocol``), routed through
-  ``batch_sample_arms(..., reward_space=True)``,
-  ``LearnerPipeline.sample_reward_space``, and
-  ``LipschitzContextualAgent``, and gated on the one cost both paths pay
+  per-context policies need. ``InformationDirectedSampling`` requests it
+  by declaring ``consumes = DrawKind.CONTEXT_JOINT`` rather than by
+  naming a method, routed through ``LearnerPipeline.sample_reward_space``
+  and ``LipschitzContextualAgent``, and gated on the one cost both paths pay
   in the same currency: triangular solves against the cached factor,
   ``n`` for reward space against ``size`` for weight space. Both are
   exactly known integers, so the gate holds no calibration constants.
@@ -78,8 +105,8 @@ Unreleased
   posterior predictive, computed with one triangular half-solve per row
   against the cached precision factor (neither :math:`\Lambda^{-1}` nor any
   :math:`n \times n` matrix is ever formed, and per-draw cost is independent
-  of the feature count). ``Arm.sample_marginal``, ``LearnerPipeline.sample_marginal``,
-  and ``batch_sample_arms(..., marginal=True)`` forward to it, falling back
+  of the feature count). ``Arm.sample_marginal`` and
+  ``LearnerPipeline.sample_marginal`` forward to it, falling back
   to joint ``sample`` for learners without it (or whose class overrides
   ``sample`` without it). Unlike ``sample`` -- whose
   rows within one draw share a weight vector -- draws are independent
@@ -94,10 +121,10 @@ Unreleased
   ``ThompsonSampling`` is unchanged, byte-for-byte; joint ``sample`` is
   unchanged except where the support-covariance route applies (see
   below).
-  Custom policies can opt in by setting ``marginal_ok = True`` (declared
-  on ``PolicyProtocol``), and subclasses of the built-in policies can
-  opt out with ``marginal_ok = False``, which their ``__call__`` and the
-  agents both honor. The marginal path is never used for a learner whose
+  Custom policies opt in by declaring
+  ``consumes = DrawKind.MARGINAL_ONLY``, and subclasses of the built-in
+  policies opt out with ``consumes = DrawKind.JOINT``, which their
+  ``__call__`` and the agents both honor. The marginal path is never used for a learner whose
   class overrides ``sample`` without also overriding ``sample_marginal``,
   so customized joint sampling is not silently bypassed (#258)
 
@@ -108,10 +135,8 @@ Unreleased
   over a slate), which requires the arms of a draw to be jointly
   distributed; iid marginal draws leave such a reward's mean intact but
   manufacture spread that a quantile-based policy reads as uncertainty.
-  A batch function that maps each ``(arm, context, draw)`` cell
-  independently can opt back into the faster path by carrying a truthy
-  ``elementwise`` attribute. Per-arm ``Arm.reward_function``s are applied
-  one arm at a time and never affect sampling, so the common cases --
+  A per-arm ``Arm.reward_function`` is applied
+  one arm at a time and never affects sampling, so the common cases --
   no reward function, or per-arm functions only -- keep the speedup (#258)
 
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
@@ -154,7 +179,7 @@ Unreleased
   Carlo estimates no longer share weight draws, so finite-sample
   selection noise among near-tied arms increases; raise ``samples`` to
   compensate (marginal draws are much cheaper per draw), or opt the
-  policy out with ``marginal_ok = False`` (#258)
+  policy out with ``consumes = DrawKind.JOINT`` (#258)
 
 - Seeded ``sample`` trajectories change for sparse models whenever the
   support-covariance route applies, since it consumes ``|U|`` normals per
