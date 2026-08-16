@@ -37,10 +37,9 @@ Unreleased
   posterior predictive, computed with one triangular half-solve per row
   against the cached precision factor (neither :math:`\Lambda^{-1}` nor any
   :math:`n \times n` matrix is ever formed, and per-draw cost is independent
-  of the feature count). ``Arm.sample_marginal``, ``LearnerPipeline.sample_marginal``,
-  and ``batch_sample_arms(..., marginal=True)`` forward to it, falling back
-  to joint ``sample`` for learners without it (or whose class overrides
-  ``sample`` without it). Unlike ``sample`` -- whose
+  of the feature count). ``Arm.sample_marginal`` and ``LearnerPipeline.sample_marginal``
+  forward to it, falling back to joint ``sample`` for learners without it
+  (or whose class overrides ``sample`` without it). Unlike ``sample`` -- whose
   rows within one draw share a weight vector -- draws are independent
   across rows, so it serves per-row statistics only (#258)
 
