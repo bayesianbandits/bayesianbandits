@@ -830,8 +830,29 @@ def _dense_rows_t(X_rows: Any) -> NDArray[np.float64]:
     return cast(NDArray[np.float64], np.asarray(X_rows.toarray(), dtype=np.float64).T)
 
 
+def _marginal_support_is_cheaper(n_u: int, n_rows: int, precision_nnz: int) -> bool:
+    """Is the column-side reduction cheaper than the half-solve path?
+
+    The half-solve path spends one half-solve per prediction row,
+    ``n_rows`` times the per-solve cost ``nnz``. The column side spends
+    ``|U|`` full solves, two triangles each, plus the ``|U|³/3``
+    Cholesky of ``S``; half that budget covers each, giving
+    ``4|U| <= n_rows`` and ``2|U|³ <= 3·n_rows·nnz``. ``S`` is also the
+    one dense array on this route that no block loop bounds, so it is
+    held to the same element budget as the scratch it replaces.
+
+    Only a sparse model reaches here (``check_array`` densifies ``X``
+    for a dense one), so ``nnz`` is never the zero placeholder.
+    """
+    return (
+        4 * n_u <= n_rows
+        and 2 * n_u**3 <= 3 * n_rows * precision_nnz
+        and n_u * n_u <= _MARGINAL_SD_BLOCK_ELEMS
+    )
+
+
 def _marginal_predictive_sd(
-    factor: PrecisionFactor, X: Union[NDArray[Any], csc_array]
+    factor: PrecisionFactor, X: Union[NDArray[Any], csc_array], precision_nnz: int
 ) -> NDArray[np.float64]:
     """Per-row predictive standard deviations :math:`\\sqrt{x_i^T \\Lambda^{-1} x_i}`.
 
@@ -843,9 +864,12 @@ def _marginal_predictive_sd(
     A sparse ``X`` is densified for the solve in row blocks, keeping the
     dense scratch bounded regardless of the number of prediction rows.
 
-    A sparse ``X`` touching fewer distinct columns than it has rows
-    goes through :mod:`bayesianbandits._support_covariance` instead: one
-    solve per distinct column rather than one per row, exactly.
+    A sparse ``X`` touching few enough distinct columns goes through
+    :mod:`bayesianbandits._support_covariance` instead: one solve per
+    distinct column rather than one per row, exactly. Solve counts
+    alone do not decide it here, since the block loop below keeps this
+    path's scratch bounded while the reduction's ``|U| x |U|``
+    covariance is not; see :func:`_marginal_support_is_cheaper`.
     """
     # Dispatch on the actual type of X: sparse models accept dense X too
     # (check_array's accept_sparse only *permits* sparse input)
@@ -855,7 +879,13 @@ def _marginal_predictive_sd(
         return cast(NDArray[np.float64], np.sqrt(np.einsum("ij,ij->j", B, B)))
     assert X.shape is not None  # for the type checker
     n_rows, n_features = X.shape
-    support_draw = _support_covariance.build(factor, X, n_features, budget=n_rows)
+    support_draw = _support_covariance.build(
+        factor,
+        X,
+        n_features,
+        budget=n_rows,
+        accept=lambda n_u: _marginal_support_is_cheaper(n_u, n_rows, precision_nnz),
+    )
     if support_draw is not None:
         return support_draw.sd()
     block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
@@ -886,7 +916,7 @@ def _validated_marginal_mean_sd(
     except NotFittedError:
         est._initialize_prior(X_pred)
     mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
-    sd = _marginal_predictive_sd(est._precision_factor, X_pred)
+    sd = _marginal_predictive_sd(est._precision_factor, X_pred, est._precision_nnz)
     return mean, sd
 
 

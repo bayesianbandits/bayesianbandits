@@ -20,7 +20,10 @@ from bayesianbandits import (
     NormalRegressor,
 )
 from bayesianbandits import _support_covariance as sc
-from bayesianbandits._estimators import _marginal_predictive_sd
+from bayesianbandits._estimators import (
+    _marginal_predictive_sd,
+    _marginal_support_is_cheaper,
+)
 from bayesianbandits._sparse_bayesian_linear_regression import create_sparse_factor
 
 
@@ -128,13 +131,14 @@ def test_draw_factor_reproduces_the_predictive_covariance():
 def test_sd_matches_the_half_solve_path():
     rng = np.random.default_rng(8)
     p = 400
-    factor = create_sparse_factor(make_precision(p, rng))
+    precision = make_precision(p, rng)
+    factor = create_sparse_factor(precision)
     X, _ = make_design(p, 60, 15, rng)
 
     draw = sc.build(factor, X, p, budget=X.shape[0])
     assert draw is not None
     with gate_off():
-        expected = _marginal_predictive_sd(factor, X)
+        expected = _marginal_predictive_sd(factor, X, precision.nnz)
 
     assert_allclose(draw.sd(), expected, rtol=1e-10)
 
@@ -143,14 +147,46 @@ def test_marginal_predictive_sd_routes_through_the_support():
     """The wiring in ``_marginal_predictive_sd``, not just the helper."""
     rng = np.random.default_rng(18)
     p = 200
-    factor = create_sparse_factor(make_precision(p, rng))
-    X, _ = make_design(p, 80, 12, rng)  # 12 columns < 80 rows: fires
+    precision = make_precision(p, rng)
+    factor = create_sparse_factor(precision)
+    X, _ = make_design(p, 80, 12, rng)  # 12 columns, 80 rows: fires
 
-    routed = _marginal_predictive_sd(factor, X)
+    routed = _marginal_predictive_sd(factor, X, precision.nnz)
     with gate_off():
-        direct = _marginal_predictive_sd(factor, X)
+        direct = _marginal_predictive_sd(factor, X, precision.nnz)
 
     assert_allclose(routed, direct, rtol=1e-10)
+
+
+def test_marginal_predictive_sd_declines_a_support_it_barely_beats():
+    """|U| just under n_rows saves nothing on solves and adds an
+    O(|U|³) Cholesky, so the marginal path keeps its bounded scratch."""
+    rng = np.random.default_rng(19)
+    p = 400
+    precision = make_precision(p, rng)
+    factor = create_sparse_factor(precision)
+    X, _ = make_design(p, 120, 100, rng)  # 100 columns, 120 rows
+
+    with mock.patch.object(sc, "support_covariance") as never:
+        gated = _marginal_predictive_sd(factor, X, precision.nnz)
+    never.assert_not_called()
+
+    with gate_off():
+        direct = _marginal_predictive_sd(factor, X, precision.nnz)
+    assert_allclose(gated, direct, rtol=1e-10)
+
+
+@pytest.mark.parametrize(
+    "n_u,n_rows,nnz,expected",
+    [
+        (12, 80, 598, True),  # cheap on every axis
+        (100, 120, 1198, False),  # 4|U| > n_rows: no solves saved
+        (200, 4000, 100, False),  # Cholesky outruns the solves it saves
+        (4000, 100_000, 10**9, False),  # |U|² over the scratch budget
+    ],
+)
+def test_marginal_support_gate(n_u, n_rows, nnz, expected):
+    assert _marginal_support_is_cheaper(n_u, n_rows, nnz) is expected
 
 
 # -- rank deficiency ----------------------------------------------------------

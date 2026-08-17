@@ -16,7 +16,7 @@ predictive covariance, singular whenever rows repeat), so its Cholesky
 always exists.
 """
 
-from typing import Any, Optional, Union, cast
+from typing import Any, Callable, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -168,6 +168,7 @@ def build(
     X: Union[NDArray[Any], csc_array],
     n_features: int,
     budget: int,
+    accept: Optional[Callable[[int], bool]] = None,
 ) -> Optional[SupportDraw]:
     """Build a :class:`SupportDraw`, or ``None`` to keep the caller's path.
 
@@ -175,6 +176,14 @@ def build(
     (``size`` for a joint draw, ``n_rows`` for per-row standard
     deviations); this route costs ``|U|``, so it is taken only when
     ``|U| < budget``. Returns ``None`` for dense or all-zero ``X``.
+
+    Solve counts are the whole comparison only when the caller's path
+    already allocates something ``|U|²`` fits inside, as weight space's
+    ``(size, d)`` draw buffer does. A caller whose fallback is bounded
+    tighter than that passes ``accept`` to weigh the route's other
+    costs -- the ``|U| x |U|`` covariance and its ``O(|U|³)`` Cholesky
+    -- against ``|U|``, once the support is known and before it is paid
+    for.
     """
     if not issparse(X):
         return None
@@ -193,6 +202,8 @@ def build(
         return None
     support = support_of(Xc)
     if support.size >= budget:
+        return None
+    if accept is not None and not accept(int(support.size)):
         return None
     S = support_covariance(factor, support, n_features)
     return SupportDraw(_factorize(S), _compact_columns(Xc, support))
