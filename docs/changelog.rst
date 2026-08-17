@@ -116,6 +116,34 @@ Unreleased
   now preserves the column of a single-column 2-D input, as CHOLMOD does
   (#269)
 
+- Every dense right-hand side handed to a sparse factor is now
+  Fortran-ordered. CHOLMOD's dense format is column-major, so a C-ordered
+  block is copied before the solve begins -- and on the
+  support-covariance route that block is ``(n_features, |U|)``, large
+  enough that the copy outweighed the solve. At :math:`p` = 100,000 with
+  96 rows over a 49-column support, ``sample`` at ``size`` = 100 goes
+  from 19.5 ms to 9.8 ms and ``sample_marginal`` at ``size`` = 10 from
+  19.8 ms to 9.6 ms (#269)
+
+- The sparse factors no longer precompute state only ``colorize`` needs,
+  which every ``fit``/``partial_fit`` was paying for and neither uses.
+  Sparse ``partial_fit`` at :math:`p` = 100,000 falls from 13.0 ms to
+  10.0 ms under CHOLMOD (#269)
+
+- ``CholmodSparseFactor`` inverts the fill-reducing permutation by
+  scattering rather than sorting, :math:`O(p)` instead of
+  :math:`O(p \log p)`. It is rebuilt with the factor, so a Thompson pull
+  pays it every round: a ``sample(size=1)`` and ``partial_fit`` round at
+  :math:`p` = 100,000 falls from 11.9 ms to 11.1 ms (#269)
+
+- ``SuperLUSparseFactor`` retains its decomposition, so ``solve`` runs
+  both triangular sweeps in one ``gstrs`` call instead of two trips
+  through ``spsolve_triangular``; the symmetric ``L`` that sampling needs
+  is derived from it on demand. At :math:`p` = 100,000, ``sample`` and
+  ``sample_marginal`` over a 49-column support run 4.3x faster and
+  ``partial_fit`` 1.8x. The factor holds ``L`` and ``U`` rather than one
+  folded ``L``, costing roughly one extra ``nnz(L)`` when sampling (#269)
+
 - ``UpperConfidenceBound``, ``EXP3A``, and ``EpsilonGreedy`` now draw
   through the marginal path (they consume only per-arm, per-context
   statistics, for which marginal draws are exact), giving large speedups

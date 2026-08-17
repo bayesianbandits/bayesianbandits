@@ -817,6 +817,19 @@ def _invalidate_cached_properties(
 _MARGINAL_SD_BLOCK_ELEMS = 2**21
 
 
+def _dense_rows_t(X_rows: Any) -> NDArray[np.float64]:
+    """``X_rows.T`` densified, ``(n_features, rows)`` and F-contiguous.
+
+    Densifying first and transposing the result costs one pass over the
+    row-major block; transposing the sparse matrix first (``X.T.toarray()``)
+    lands on the same layout by way of a CSR-to-CSC conversion of the
+    whole block. F-contiguous either way, which is what the sparse
+    factors' solvers want -- CHOLMOD's dense format is column-major, and
+    a C-ordered right-hand side is copied before the solve.
+    """
+    return cast(NDArray[np.float64], np.asarray(X_rows.toarray(), dtype=np.float64).T)
+
+
 def _marginal_predictive_sd(
     factor: PrecisionFactor, X: Union[NDArray[Any], csc_array]
 ) -> NDArray[np.float64]:
@@ -852,7 +865,7 @@ def _marginal_predictive_sd(
     var = np.empty(n_rows, dtype=np.float64)
     for start in range(0, n_rows, block):
         stop = min(n_rows, start + block)
-        rhs = np.asarray(X_rows[start:stop].T.toarray(), dtype=np.float64)
+        rhs = _dense_rows_t(X_rows[start:stop])
         B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
         var[start:stop] = np.einsum("ij,ij->j", B, B)
     return cast(NDArray[np.float64], np.sqrt(var))
@@ -1026,7 +1039,7 @@ def _predictive_cholesky_from_factor(
         # (check_array's accept_sparse only *permits* sparse input)
         X_rows = X_row_sliceable[rows]
         if issparse(X_rows):
-            rhs = np.asarray(X_rows.T.toarray(), dtype=np.float64)
+            rhs = _dense_rows_t(X_rows)
         else:
             rhs = np.asarray(X_rows, dtype=np.float64).T
         return np.asarray(factor.half_solve(rhs), dtype=np.float64)

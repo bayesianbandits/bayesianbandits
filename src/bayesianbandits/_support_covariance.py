@@ -58,7 +58,11 @@ def support_covariance(
     n_u = support.size
     block = int(np.clip(_SCRATCH_ELEMS // max(1, n_features), 1, n_u))
     S = np.empty((n_u, n_u), dtype=np.float64)
-    rhs = np.zeros((n_features, block), dtype=np.float64)
+    # Fortran order, and sliced from the left so the slice stays
+    # F-contiguous: CHOLMOD's dense format is column-major, so a
+    # C-ordered right-hand side is transposed into a full second copy of
+    # this (n_features, block) buffer before the solve begins.
+    rhs = np.zeros((n_features, block), dtype=np.float64, order="F")
     for start in range(0, n_u, block):
         stop = min(n_u, start + block)
         width = stop - start

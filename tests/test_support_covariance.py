@@ -92,6 +92,24 @@ def test_support_covariance_handles_a_single_column():
     assert_allclose(S, np.linalg.inv(precision.toarray())[7:8, 7:8], atol=1e-10)
 
 
+def test_support_covariance_solves_against_a_fortran_ordered_rhs():
+    """CHOLMOD's dense format is column-major, so a C-ordered right-hand
+    side is copied in full before the solve begins."""
+    rng = np.random.default_rng(11)
+    p = 300
+    factor = create_sparse_factor(make_precision(p, rng))
+    _, support = make_design(p, 10, 15, rng)
+    seen = []
+
+    real_solve = factor.solve
+    with mock.patch.object(
+        factor, "solve", lambda b: seen.append(b.flags.f_contiguous) or real_solve(b)
+    ):
+        sc.support_covariance(factor, support, p)
+
+    assert seen and all(seen)
+
+
 def test_draw_factor_reproduces_the_predictive_covariance():
     """``(X_U C)(X_U C)ᵀ`` is the predictive covariance, exactly."""
     rng = np.random.default_rng(9)

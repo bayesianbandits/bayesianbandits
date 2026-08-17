@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from functools import cached_property
 from typing import (
@@ -70,10 +70,24 @@ class CholmodSparseFactor:
 
     _factor: Any  # sksparse.cholmod.Factor (C extension, no useful type)
     _precision: csc_array
-    _inv_perm: NDArray[np.intp] = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        self._inv_perm = np.argsort(self._factor.perm)
+    @cached_property
+    def _inv_perm(self) -> NDArray[np.intp]:
+        """Inverse of CHOLMOD's fill-reducing permutation, for
+        :meth:`colorize`.
+
+        Scattered in one O(n_features) pass rather than sorted: a
+        permutation's inverse is where each entry points, which
+        ``argsort`` recovers by comparison at O(n log n). Lazy on top of
+        that, because the factor is rebuilt by every ``fit``/
+        ``partial_fit`` and neither colorizes -- but a Thompson pull does
+        colorize, so in a pull-and-update loop this is paid fresh every
+        round and never amortizes.
+        """
+        perm = self._factor.perm
+        inv = np.empty_like(perm)
+        inv[perm] = np.arange(perm.size, dtype=perm.dtype)
+        return cast(NDArray[np.intp], inv)
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return self._factor.solve(b)
@@ -97,7 +111,12 @@ class CholmodSparseFactor:
         return float(self._factor.logdet())
 
     def refactorize(self, precision: csc_array) -> "CholmodSparseFactor":
-        """Numeric refactorization reusing the existing symbolic analysis."""
+        """Numeric refactorization reusing the existing symbolic analysis.
+
+        The fill-reducing permutation belongs to that symbolic analysis
+        and so survives the refactorization, which is what lets
+        :attr:`_inv_perm` stay cached across this call.
+        """
         self._factor.factorize(csc_matrix(precision))
         self._precision = precision
         return self
@@ -116,13 +135,27 @@ class CholmodSparseFactor:
 class SuperLUSparseFactor:
     """Wraps SuperLU decomposition for solving and sampling."""
 
-    _L: csr_matrix
+    _lu: Any  # scipy.sparse.linalg.SuperLU (C extension, no useful type)
     _inv_perm: NDArray[np.intp]
     _precision: csc_array
-    _Lt_csc: csc_array = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        self._Lt_csc = csc_array(self._L.T)
+    @cached_property
+    def _L(self) -> csr_matrix:
+        """Lower triangular factor with ``D`` folded in, ``L Lᵀ = P Λ Pᵀ``.
+
+        SuperLU's own ``L`` is unit-diagonal, with the pivots on ``U``'s
+        diagonal; folding ``sqrt(D)`` in gives the symmetric factor the
+        sampling operators need. Lazy, like everything else here that
+        only sampling reaches -- ``fit``/``partial_fit`` solve through
+        :attr:`_lu` and never build it."""
+        return cast(csr_matrix, self._lu.L @ diags(np.sqrt(self._lu.U.diagonal())))
+
+    @cached_property
+    def _Lt_csc(self) -> csc_array:
+        """``Lᵀ`` in CSC, for :meth:`colorize`. Lazy, like :attr:`_perm`:
+        the transpose is O(nnz) and ``fit``/``partial_fit`` never
+        colorize."""
+        return csc_array(self._L.T)
 
     @cached_property
     def _perm(self) -> NDArray[np.intp]:
@@ -133,11 +166,20 @@ class SuperLUSparseFactor:
         return perm
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        """Solve ``Λ x = b``: through the cached triangular factor for
-        dense ``b``, through ``spsolve`` (which refactorizes) for sparse."""
+        """Solve ``Λ x = b``: through the retained SuperLU object for
+        dense ``b``, through ``spsolve`` (which refactorizes) for sparse.
+
+        ``SuperLU.solve`` runs both triangular sweeps and both
+        permutations inside one ``gstrs`` call, where going through
+        :meth:`half_solve` and :meth:`colorize` pays two trips out to
+        ``spsolve_triangular`` -- each of which rebuilds its own solver
+        state -- to reach the same answer.
+        """
         if issparse(b):
             return cast(NDArray[np.float64], spsolve(self._precision, b))
-        return self.colorize(self.half_solve(b))
+        return cast(
+            NDArray[np.float64], self._lu.solve(np.asarray(b, dtype=np.float64))
+        )
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve L^T x = z, undo permutation."""
@@ -181,25 +223,16 @@ class SuperLUSparseFactor:
     def logdet(self) -> float:
         """Log-determinant of the factored matrix.
 
-        L already has D folded in (L = L_splu @ diag(sqrt(D))), so
-        |P| = |L|^2  =>  log|P| = 2 * sum(log|diag(L)|).
+        ``U``'s diagonal holds the pivots ``D``, which ``_L`` carries as
+        ``sqrt(D)``: ``log|Λ| = 2 * sum(log|diag(_L)|) = sum(log|D|)``,
+        reading the pivots straight off ``U`` rather than building
+        ``_L``.
         """
-        return float(2.0 * np.sum(np.log(np.abs(self._L.diagonal()))))
+        return float(np.sum(np.log(np.abs(self._lu.U.diagonal()))))
 
     def refactorize(self, precision: csc_array) -> "SuperLUSparseFactor":
         """SuperLU has no symbolic reuse API; performs a full refactorization."""
-        splu_ = splu(
-            precision,
-            diag_pivot_thresh=0,
-            permc_spec="MMD_AT_PLUS_A",
-            options=dict(SymmetricMode=True),
-        )
-        if (splu_.perm_r != splu_.perm_c).any():
-            raise ValueError("Matrix must be symmetric")
-        L = splu_.L.dot(diags(np.sqrt(splu_.U.diagonal())))
-        return SuperLUSparseFactor(
-            _L=L, _inv_perm=splu_.perm_r.copy(), _precision=precision
-        )
+        return _superlu_factor(precision)
 
     def get_L_csc(self) -> csc_array:
         """Return the lower triangular factor as CSC.
@@ -208,6 +241,26 @@ class SuperLUSparseFactor:
         Rows are in permuted order (matching _Pr).
         """
         return csc_array(self._L)
+
+
+def _superlu_factor(precision: csc_array) -> SuperLUSparseFactor:
+    """Factor ``precision`` with SuperLU, retaining the decomposition.
+
+    The ``SuperLU`` object itself is kept, not just its ``L``: it is what
+    :meth:`SuperLUSparseFactor.solve` drives, and the symmetric ``L`` the
+    sampling operators want is derived from it on demand.
+    """
+    splu_ = splu(
+        precision,
+        diag_pivot_thresh=0,
+        permc_spec="MMD_AT_PLUS_A",
+        options=dict(SymmetricMode=True),
+    )
+    if (splu_.perm_r != splu_.perm_c).any():
+        raise ValueError("Matrix must be symmetric")
+    return SuperLUSparseFactor(
+        _lu=splu_, _inv_perm=splu_.perm_r.copy(), _precision=precision
+    )
 
 
 ConcreteFactor = CholmodSparseFactor | SuperLUSparseFactor
@@ -358,18 +411,7 @@ def create_sparse_factor(
             _precision=precision,
         )
     else:
-        splu_ = splu(
-            precision,
-            diag_pivot_thresh=0,
-            permc_spec="MMD_AT_PLUS_A",
-            options=dict(SymmetricMode=True),
-        )
-        if (splu_.perm_r != splu_.perm_c).any():
-            raise ValueError("Matrix must be symmetric")
-        L = splu_.L.dot(diags(np.sqrt(splu_.U.diagonal())))
-        return SuperLUSparseFactor(
-            _L=L, _inv_perm=splu_.perm_r.copy(), _precision=precision
-        )
+        return _superlu_factor(precision)
 
 
 def multivariate_normal_sample_from_precision(
