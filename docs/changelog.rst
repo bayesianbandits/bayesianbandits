@@ -11,15 +11,15 @@ Unreleased
   two arms share one. Neither agent gives arms a way to differ in
   features, so arms sharing a learner were statistically
   indistinguishable; worse, the policies on that path sample one arm at a
-  time, which draws a separate weight vector per arm and silently discards
-  the dependence a shared posterior implies. A policy asking for joint
-  draws could therefore receive independent ones: on arms sharing a
-  learner, measured cross-arm correlation was 0.00 where the true value
-  was 1.00. Sharing one model across arms is
-  ``LipschitzContextualAgent``'s job -- it distinguishes arms with an
-  ``arm_featurizer`` and samples the shared learner once for all of them
-  -- and the error says so. Two distinct ``LearnerPipeline`` objects
-  wrapping the same estimator also count as sharing (#267)
+  time, which draws a separate weight vector per arm and silently
+  discards the dependence a shared posterior implies. A policy declaring
+  ``marginal_ok = False`` could therefore ask for joint draws and receive
+  independent ones: on arms sharing a learner, measured cross-arm
+  correlation was 0.00 where the true value was 1.00. Sharing one model
+  across arms is ``LipschitzContextualAgent``'s job -- it distinguishes
+  arms with an ``arm_featurizer`` and samples the shared learner once for
+  all of them -- and the error says so. Two distinct ``LearnerPipeline``
+  objects wrapping the same estimator also count as sharing (#267)
 
 - The batched arm-sampling path is removed: ``batch_sample_arms``,
   ``can_batch_arms``, ``stack_features``, and the ``LearnerWithTransform``
@@ -34,16 +34,12 @@ Unreleased
 
 - ``sample_reward_space`` on ``NormalRegressor``,
   ``NormalInverseGammaRegressor``, and ``BayesianGLM``: joint draws from
-  the exact posterior predictive, computed by QR-factoring ``half_solve``
-  output into a triangular square root of :math:`X \Lambda^{-1} X^T` and
-  drawing directly in reward space -- distributionally identical to
-  ``sample``, but per-draw cost is independent of the feature count
-  (neither :math:`\Lambda^{-1}` nor any covariance is ever formed;
-  rank-deficient ``X`` is exact). With ``block_size=k``, consecutive row
-  groups are drawn jointly within and independently across groups, which no
-  other route can produce, so it stays an explicit request rather than a
-  cost decision. Full-mode draws need no request: ``sample`` reduces through
-  this route on its own whenever it is cheapest (see below) (#269)
+  the exact posterior predictive, factored in reward space (one triangular
+  half-solve per prediction row against the cached precision factor, then
+  a QR), so per-draw cost is independent of the feature count.
+  Distributionally identical to ``sample``; with ``block_size=k``,
+  consecutive groups of ``k`` rows are drawn jointly within and
+  independently across groups (#269)
 
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal
@@ -59,67 +55,47 @@ Unreleased
 
 **Performance**
 
-- Joint ``sample`` draws now reduce through whichever exact route is
-  cheapest. :math:`\operatorname{Cov}(Xw) = X \Lambda^{-1} X^T` has rank at
-  most :math:`\min(n_{\text{rows}}, |U|, p)`, and there is a reduction to a
-  small square root on each side, so the three routes differ only in how
-  many triangular solves against the cached factor they cost:
+- Joint ``sample`` draws reduce through whichever exact route is cheapest.
+  :math:`\operatorname{Cov}(Xw) = X \Lambda^{-1} X^T` has a square root
+  on each side: weight space costs ``size`` solves against the cached
+  factor, the row side ``n_rows`` solves and an ``n_rows x n_rows`` QR,
+  and, for sparse ``X`` touching ``|U|`` columns, the column side ``|U|``
+  solves and the ``|U| x |U|`` block of :math:`\Lambda^{-1}` (an identity,
+  since :math:`X = X_U E_U^T`). The choice is
+  ``min(size, n_rows, |U|)``, three known integers with no calibration
+  constants; at ``size = 1`` nothing beats weight space, so Thompson
+  sampling is bit-for-bit unchanged. Over 36 dense shapes (:math:`p` in
+  {100, 1000}, ``n_rows`` up to 320, ``size`` up to 1000): no regressions,
+  speedups to 45.9x. Sparse: :math:`p` = 100,000, one row, ``size`` = 1000
+  goes from 6.0 s to 7.0 ms; a :math:`2^{20}`-feature agent with 96 arms
+  over a 49-column support draws ``size=500`` in 0.99 s instead of 31.5 s,
+  without the ``size``-proportional weight-space allocation that ran out
+  of memory beyond ~2,600 draws. The column side also serves
+  ``sample_marginal`` when :math:`|U|` beats the row count (#269)
 
-  .. list-table::
-     :header-rows: 1
+- The reward-space path is ``scipy.linalg`` throughout (``dgeqrf``,
+  ``dgemm``, ``dgemv``). ``numpy`` and ``scipy`` bind separate copies of
+  OpenBLAS with separate thread pools, and alternating between them
+  within one call parks and unparks both: on a 28-core box a 100x100 QR
+  took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through ``dgeqrf``
+  (#269)
 
-     * - route
-       - solves
-       - square root
-     * - weight space
-       - ``size``
-       - :math:`p \times p`, cached
-     * - row side
-       - ``n_rows``
-       - :math:`n_{\text{rows}} \times n_{\text{rows}}`
-     * - column side
-       - :math:`|U|`
-       - :math:`|U| \times |U|`
-
-  The choice is therefore :math:`\min(\text{size}, n_{\text{rows}}, |U|)`,
-  three exactly known integers, and the gate holds no calibration
-  constants. Weight space is the one whose square root is *cached* -- it
-  factors :math:`\Lambda`, which does not depend on ``X`` -- so it builds
-  nothing and pays per draw, while the other two refactor on every call.
-  That is why neither can win at small ``size``: there is nothing to
-  amortize. ``size = 1`` therefore always stays on weight space, and
-  Thompson sampling is bit-for-bit unchanged.
-
-  Previously the column side was chosen inside ``sample`` and the row side
-  out at the agent behind a policy flag, so neither could account for what
-  the other would have picked. Measured end-to-end over 36 dense shapes
-  (:math:`p` in {100, 1000}, ``n_rows`` in {1, 10, 32, 96, 320}, ``size``
-  in {1, 100, 500, 1000}): no regressions, and speedups to 45.9x. Sparse
-  gains reach 860x (:math:`p` = 100,000, one row, ``size`` = 1000: 6.0 s to
-  7.0 ms) (#269)
-
-- Every step of the reward-space path after the half-solve is taken from
-  ``scipy.linalg`` rather than ``numpy`` (``dgeqrf`` for the QR, ``dgemm``
-  for the draws, ``dgemv`` for the predictive mean). ``numpy`` and
-  ``scipy`` bind separate copies of OpenBLAS, each with its own thread
-  pool, and alternating between them within one call parks and unparks
-  both. On a 28-core box that cost more than every flop on the path: a
-  100x100 QR took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through
-  ``dgeqrf``. Reward-space sampling is up to 102x faster than before this
-  routing (#269)
+- ``SuperLUSparseFactor.solve`` goes through the cached triangular factor
+  for a dense right-hand side instead of refactorizing on every call, and
+  now preserves the column of a single-column 2-D input, as CHOLMOD does
+  (#269)
 
 - ``UpperConfidenceBound``, ``EXP3A``, and ``EpsilonGreedy`` now draw
   through the marginal path (they consume only per-arm, per-context
   statistics, for which marginal draws are exact), giving large speedups
   for their Monte Carlo estimates, dense and sparse alike.
-  ``ThompsonSampling`` and joint ``sample`` are unchanged, byte-for-byte.
-  Custom policies can opt in by setting ``marginal_ok = True`` (declared on
-  ``PolicyProtocol``), and subclasses of the built-in policies can opt out
-  with ``marginal_ok = False``, which their ``__call__`` and the agents both
-  honor. The marginal path is never used
-  for a learner whose class overrides ``sample`` without also overriding
-  ``sample_marginal``, so customized joint sampling is not silently
-  bypassed (#258)
+  ``ThompsonSampling`` is unchanged, byte-for-byte.
+  Custom policies can opt in by setting ``marginal_ok = True`` (declared
+  on ``PolicyProtocol``), and subclasses of the built-in policies can
+  opt out with ``marginal_ok = False``, which their ``__call__`` and the
+  agents both honor. The marginal path is never used for a learner whose
+  class overrides ``sample`` without also overriding ``sample_marginal``,
+  so customized joint sampling is not silently bypassed (#258)
 
 - The marginal path is likewise never used when a
   ``LipschitzContextualAgent`` carries a user-supplied
@@ -127,58 +103,35 @@ Unreleased
   may combine arms within it (share of total, cannibalization, softmax
   over a slate), which requires the arms of a draw to be jointly
   distributed; iid marginal draws leave such a reward's mean intact but
-  manufacture spread that a quantile-based policy reads as uncertainty. A
-  per-arm ``Arm.reward_function`` is applied one arm at a time and never
-  affects sampling, so the common cases -- no reward function, or per-arm
-  functions only -- keep the speedup (#258)
-
-- The column-side reduction above. Writing :math:`U` for the columns a
-  sparse design matrix touches, :math:`X = X_U E_U^T` exactly, so
-  :math:`\operatorname{Cov}(Xw) = X_U (\Lambda^{-1})_{U,U} X_U^T`: the whole
-  predictive law follows from one :math:`|U| \times |U|` block, obtained
-  with :math:`|U|` solves against the cached factor. Every draw after that
-  is dense linear algebra on that small block, never touching the factor
-  again. The reformulation is exact, and the cost carries no dependence on
-  the factor's elimination tree. Dense models never take it, since there
-  :math:`|U|` is the full feature count and there is nothing to reduce. On a
-  production agent (:math:`2^{20}` features, 96 arms over a 49-column
-  support) a ``size=500`` joint draw goes from 31.5 s to 0.99 s, and
-  additionally drops the ``size``-proportional weight-space allocation,
-  which at that width exhausted memory beyond roughly 2,600 draws. It also
-  serves ``sample_marginal``, where it is taken when :math:`|U|` beats the
-  row count (#269)
+  manufacture spread that a quantile-based policy reads as uncertainty.
+  A batch function that maps each ``(arm, context, draw)`` cell
+  independently can opt back into the faster path by carrying a truthy
+  ``elementwise`` attribute. Per-arm ``Arm.reward_function``s are applied
+  one arm at a time and never affect sampling, so the common cases --
+  no reward function, or per-arm functions only -- keep the speedup (#258)
 
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
-  it. Neither mutates the validated array nor retains a reference to it, so
-  the copy was pure overhead, costing O(nnz(X)) per draw on sparse models.
-  ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
-
-- ``SuperLUSparseFactor.solve`` no longer refactorizes the precision on
-  every call for a dense right-hand side, going through the cached
-  triangular factor instead. Sparse right-hand sides are unchanged. This
-  also settles a discrepancy between the backends: SuperLU returned a
-  1-D result for a single-column 2-D input, where CHOLMOD preserved the
-  column; both now preserve it (#269)
+  it. Neither mutates the validated array nor retains a reference to it,
+  so the copy was pure overhead, costing O(nnz(X)) per draw on sparse
+  models. ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
 
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
-  ``EpsilonGreedy`` change: the marginal path consumes different amounts of
-  randomness than joint sampling. Per-row marginals are identical (verified
-  by KS tests) and decisions converge to the same choices as ``samples``
-  grows, but for arms sharing one model the per-arm Monte Carlo estimates
-  no longer share weight draws, so finite-sample selection noise among
-  near-tied arms increases; raise ``samples`` to compensate (marginal draws
-  are much cheaper per draw), or opt the policy out with
-  ``marginal_ok = False`` (#258)
+  ``EpsilonGreedy`` change: the marginal path consumes different amounts
+  of randomness than joint sampling. Per-row marginals are identical
+  (verified by KS tests) and decisions converge to the same choices as
+  ``samples`` grows, but for arms sharing one model the per-arm Monte
+  Carlo estimates no longer share weight draws, so finite-sample
+  selection noise among near-tied arms increases; raise ``samples`` to
+  compensate (marginal draws are much cheaper per draw), or opt the
+  policy out with ``marginal_ok = False`` (#258)
 
-- Seeded ``sample`` trajectories change wherever a reduction applies, since
-  the row and column routes consume ``n_rows`` and :math:`|U|` normals per
+- Seeded ``sample`` trajectories change wherever a reduction applies: the
+  row and column routes consume ``n_rows`` and :math:`|U|` normals per
   draw rather than one per feature. The draws are exact and jointly
-  distributed either way, and agreement with the weight-space path is
-  verified by KS tests per row. Thompson sampling is unaffected: at
-  ``size = 1`` no reduction can win, so none is taken and the output is
-  bit-for-bit identical (enforced by a test) (#263, #266)
+  distributed either way (verified by per-row KS tests). Thompson sampling (``size = 1``) never reduces and
+  is bit-for-bit unchanged (#269)
 
 1.4.0 (2026-07-31)
 ------------------

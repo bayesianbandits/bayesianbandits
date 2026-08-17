@@ -1,31 +1,19 @@
 """Support-covariance reduction for sparse posterior predictive draws.
 
-A sparse design matrix ``X`` touches only a small set of columns ``U``.
-The joint predictive law of ``X w`` for ``w ~ N(ŵ, Λ⁻¹)`` depends on
-``Λ⁻¹`` only through the ``|U| x |U|`` principal submatrix
-``S = (Λ⁻¹)_{U,U}``:
+A sparse design matrix ``X`` touches only a small set of columns ``U``,
+and ``X = X_U E_Uᵀ`` exactly, so the joint law of ``X w`` for
+``w ~ N(ŵ, Λ⁻¹)`` depends on ``Λ⁻¹`` only through the principal
+submatrix ``S = (Λ⁻¹)_{U,U}``:
 
 .. math::
 
     \\operatorname{Cov}(X w) = X \\Lambda^{-1} X^T = X_U S X_U^T
 
-This is an identity, not an approximation: ``X = X_U E_U^T`` exactly,
-where ``E_U`` selects the columns in ``U``.
-
-``S`` costs ``|U|`` solves against the cached factor -- the stock
-multi-RHS solve both CHOLMOD and SuperLU provide -- after which every
-draw and every per-row standard deviation is dense linear algebra on an
-``|U| x |U|`` matrix, with no further reference to the factor. The cost
-is therefore ``O(|U| · nnz(L))`` with no dependence on the elimination
-tree, unlike approaches that walk the factor's sparsity structure.
-
-Because ``S`` is a principal submatrix of the symmetric positive
-definite ``Λ⁻¹``, it is itself SPD for *any* ``X``, so its Cholesky
-always exists. Reducing on the feature side rather than the row side is
-what buys that: the ``n x n`` predictive covariance ``X_U S X_U^T`` is
-singular whenever two rows of ``X`` coincide, while ``S`` never is.
-Duplicate rows come out perfectly correlated within a draw, which is
-what a shared weight vector implies.
+``S`` costs ``|U|`` solves against the cached factor; every draw and
+per-row standard deviation after that is dense linear algebra on an
+``|U| x |U|`` matrix. ``S`` is SPD for any ``X`` (unlike the ``n x n``
+predictive covariance, singular whenever rows repeat), so its Cholesky
+always exists.
 """
 
 from typing import Any, Optional, Union, cast
@@ -37,36 +25,21 @@ from scipy.sparse import csc_array, issparse  # type: ignore
 from ._sparse_bayesian_linear_regression import PrecisionFactor
 
 _SCRATCH_ELEMS = 2**23
-"""Cap on a single dense scratch buffer, in float64 elements (~64 MB).
-
-Sizes both the ``(n_features, k)`` right-hand-side block used to build
-``S`` and the ``(rows, |U|)`` densified design block. Unlike the
-blocking in ``_marginal_predictive_sd``, changing this trades memory for
-nothing: the blocks are independent GEMMs against the same small
-factor, so neither the solve count nor the flop count moves.
-"""
+"""Cap on a dense scratch buffer, in float64 elements (~64 MB): the
+``(n_features, k)`` right-hand-side block that builds ``S`` and the
+``(rows, |U|)`` densified design block."""
 
 
 def support_of(X: csc_array) -> NDArray[np.intp]:
-    """Column indices ``X`` touches, ascending.
-
-    For CSC these are exactly the columns whose ``indptr`` range is
-    non-empty, so no scan of the row indices is needed. Comparing
-    adjacent entries rather than differencing them keeps the temporary a
-    boolean array instead of an index-width one, which at large feature
-    counts is several times cheaper.
-    """
+    """Column indices ``X`` touches, ascending: the columns whose CSC
+    ``indptr`` range is non-empty, with no scan of ``indices``."""
     indptr = X.indptr
     return cast(NDArray[np.intp], np.flatnonzero(indptr[1:] != indptr[:-1]))
 
 
 def _compact_columns(X: csc_array, support: NDArray[np.intp]) -> csc_array:
-    """``X[:, support]`` for a ``support`` that lists every non-empty column.
-
-    Empty columns never advance ``indptr``, so dropping them is a
-    re-slice of ``indptr`` alone -- ``data`` and ``indices`` are shared
-    with ``X``, not copied.
-    """
+    """``X[:, support]`` when ``support`` lists every non-empty column:
+    a re-slice of ``indptr`` alone, sharing ``data`` and ``indices``."""
     n_rows = cast("tuple[int, int]", X.shape)[0]
     indptr = np.append(X.indptr[support], X.indptr[-1])
     return csc_array(
@@ -77,12 +50,8 @@ def _compact_columns(X: csc_array, support: NDArray[np.intp]) -> csc_array:
 def support_covariance(
     factor: PrecisionFactor, support: NDArray[np.intp], n_features: int
 ) -> NDArray[np.float64]:
-    """``S = (Λ⁻¹)_{U,U}`` via ``|U|`` solves against ``factor``.
-
-    Solves ``Λ Y = E_U`` in column blocks and keeps the ``U`` rows of
-    each result. Only the small ``|U| x |U|`` block is retained, so the
-    ``(n_features, block)`` scratch is the peak allocation.
-    """
+    """``S = (Λ⁻¹)_{U,U}``: solve ``Λ Y = E_U`` in column blocks and keep
+    the ``U`` rows of each result."""
     n_u = support.size
     block = int(np.clip(_SCRATCH_ELEMS // max(1, n_features), 1, n_u))
     S = np.empty((n_u, n_u), dtype=np.float64)
@@ -92,8 +61,7 @@ def support_covariance(
         width = stop - start
         cols = np.arange(width)
         rhs[support[start:stop], cols] = 1.0
-        # Every factor preserves a 2-D right-hand side, but reshaping
-        # rather than trusting that keeps a single-column block safe.
+        # reshape rather than trust every backend to keep a 2-D RHS 2-D
         out = np.asarray(factor.solve(rhs[:, :width]), dtype=np.float64).reshape(
             n_features, width
         )
@@ -104,12 +72,8 @@ def support_covariance(
 
 
 def _factorize(S: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Lower-triangular ``C`` with ``C Cᵀ = S``.
-
-    ``S`` is SPD in exact arithmetic; the eigenvalue branch is a guard
-    against a numerically indefinite result for a severely
-    ill-conditioned precision, not an expected path.
-    """
+    """Lower-triangular ``C`` with ``C Cᵀ = S``; the eigenvalue branch
+    guards against a numerically indefinite ``S``."""
     try:
         return cast(NDArray[np.float64], np.linalg.cholesky(S))
     except np.linalg.LinAlgError:
@@ -124,8 +88,7 @@ class SupportDraw:
 
     def __init__(self, C: NDArray[np.float64], XU: csc_array) -> None:
         self._C = C
-        # CSR so row blocks densify contiguously; |U| is small so this
-        # conversion is cheap and happens once.
+        # CSR so row blocks densify contiguously
         self._XU = XU.tocsr()
         self._n_rows = cast("tuple[int, int]", XU.shape)[0]
 
@@ -166,22 +129,15 @@ def build(
 ) -> Optional[SupportDraw]:
     """Build a :class:`SupportDraw`, or ``None`` to keep the caller's path.
 
-    ``budget`` is the number of triangular solves the caller's existing
-    path would perform: ``size`` for a joint draw (one solve per draw)
-    and ``n_rows`` for per-row standard deviations (one half-solve per
-    row). This route costs ``|U|`` solves, so it is taken only when
-    ``|U| < budget`` -- a comparison of two exactly known integers, with
-    nothing calibrated.
-
-    Returns ``None`` for dense ``X`` (where ``|U| = n_features``, so the
-    reduction buys nothing) and for an all-zero ``X``.
+    ``budget`` is the number of solves the caller's path would perform
+    (``size`` for a joint draw, ``n_rows`` for per-row standard
+    deviations); this route costs ``|U|``, so it is taken only when
+    ``|U| < budget``. Returns ``None`` for dense or all-zero ``X``.
     """
     if not issparse(X):
         return None
-    # ``|U| >= 1`` for any non-empty X, so a budget below 2 can never be
-    # beaten. Checking that first keeps the Thompson-sampling hot path
-    # (``size=1``) clear of the O(n_features) support scan below, which
-    # is otherwise a measurable cost at large feature counts.
+    # |U| >= 1, so budget < 2 can never be beaten; this keeps the
+    # Thompson hot path (size=1) clear of the O(n_features) scan below.
     if budget < 2:
         return None
     Xc = cast(csc_array, X)
@@ -189,11 +145,8 @@ def build(
     nnz = int(Xc.indptr[-1])
     if nnz == 0:
         return None
-    # A column holds at most ``n_rows`` entries, so ``|U| >= nnz / n_rows``.
-    # When that bound alone already meets the budget the answer is known
-    # without scanning: decline in O(1). This is exact whenever the rows
-    # share a common support, which is the shape that reaches here most
-    # often (one design row per arm).
+    # A column holds at most n_rows entries, so |U| >= nnz / n_rows:
+    # decline in O(1) when that bound alone meets the budget.
     if -(-nnz // max(1, n_rows)) >= budget:
         return None
     support = support_of(Xc)

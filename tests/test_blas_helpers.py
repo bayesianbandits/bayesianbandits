@@ -1,11 +1,6 @@
-"""Unit checks for the two BLAS wrappers that carry real logic.
-
-``lower_predictive_sqrt`` builds the square root the whole reduction
-rests on, including the zero padding a rank-deficient ``B`` needs, and
-``affine_lower_factor`` applies it to normals. The rest of the module is
-layout and dispatch plumbing whose only contract is that it agrees with
-the obvious numpy spelling, which the estimator-level identity checks
-already exercise.
+"""Unit checks for ``lower_predictive_sqrt`` (including the zero padding a
+rank-deficient ``B`` needs) and ``affine_lower_factor``. The rest of the
+module is layout plumbing that the estimator-level identity checks cover.
 """
 
 import numpy as np

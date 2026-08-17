@@ -1,9 +1,8 @@
-"""The one decision: which reduction of ``Cov(Xw)`` a joint draw uses.
+"""Which reduction of ``Cov(Xw)`` a joint draw uses.
 
-Picking the wrong route is a performance bug, not a correctness one, so
-the decision table below is deliberately compact. The correctness
-property that does matter is that declining leaves the draw bit-for-bit
-unchanged, which is what keeps seeded Thompson sampling stable.
+A wrong route is a performance bug, not a correctness one, so the
+decision table is compact. What must hold exactly is that declining
+leaves the draw bit-for-bit unchanged (seeded Thompson sampling).
 """
 
 from unittest import mock

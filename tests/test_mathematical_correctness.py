@@ -375,10 +375,8 @@ class TestNormalInverseGammaRegressorMath:
         # Kurtosis is a weak-power check here (its estimator for t(7) has
         # infinite variance); the KS test against the exact Student t in
         # tests/test_marginal_sampling.py carries the tail-shape power.
-        # The tolerance has to reflect that: measured across 12 seeds at
-        # this sample size the estimate has sd ~0.26, so atol=0.8 is
-        # roughly 3 sd. A tighter bound is seed-luck, not power -- at
-        # atol=0.2 this assertion failed for 5 of those 12 seeds.
+        # The estimate has sd ~0.26 across seeds at this sample size, so
+        # atol=0.8 is ~3 sd; atol=0.2 failed 5 of 12 seeds.
         assert_allclose(kurtosis(samples), expected_kurtosis, atol=0.8)
 
 

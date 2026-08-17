@@ -64,20 +64,15 @@ def lower_predictive_sqrt(B: NDArray[np.float64], n_rows: int) -> NDArray[np.flo
 
     ``B`` has shape ``(n_features, n_rows)`` and is **overwritten**.
 
-    Takes the ``R`` factor of ``B``'s QR: ``Rᵀ R = Bᵀ B`` exactly, with
-    no need for ``Bᵀ B`` to be formed and no loss of the conditioning
-    that squaring it would cost.  ``R`` is padded with zero rows when
-    ``B`` has fewer rows than columns, which is what makes the result
-    exact for rank-deficient input (repeated prediction rows) where a
-    Cholesky of the explicit covariance would fail.
+    ``L`` is the transposed ``R`` of ``B``'s QR, zero-padded when ``B``
+    has fewer rows than columns, so it is exact for rank-deficient input
+    (repeated prediction rows) where a Cholesky of ``Bᵀ B`` would fail.
 
-    Calls ``dgeqrf`` directly rather than ``numpy.linalg.qr``.  The two
-    compute the same factor, but numpy and scipy bind *separate* copies
-    of OpenBLAS, each with its own thread pool; alternating between them
-    within one call parks and unparks both pools and dominates the
-    runtime at every size we measured.  Every routine on this path is
-    therefore taken from ``scipy.linalg``, so a caller that reaches here
-    through a ``scipy`` triangular solve stays inside one pool.
+    Calls ``dgeqrf`` rather than ``numpy.linalg.qr``: numpy and scipy
+    bind separate copies of OpenBLAS with separate thread pools, and
+    alternating between them within one call parks and unparks both,
+    which dominates the runtime. Every routine on this path is therefore
+    taken from ``scipy.linalg``.
     """
     lwork = int(dgeqrf_lwork(B.shape[0], B.shape[1])[0])
     qr, _tau, _work, _info = dgeqrf(B, lwork=lwork, overwrite_a=True)
@@ -91,16 +86,10 @@ def lower_predictive_sqrt(B: NDArray[np.float64], n_rows: int) -> NDArray[np.flo
 
 
 def dense_matvec(A: NDArray[Any], x: NDArray[Any]) -> NDArray[np.float64]:
-    """``A @ x`` for dense ``A``, through ``dgemv`` rather than ``numpy``.
-
-    Trivial in flops, but it is the one ``numpy`` BLAS call left on the
-    reward-space path, and a single round trip out of ``scipy``'s thread
-    pool costs far more than the product itself (see
-    :func:`lower_predictive_sqrt`).
-
-    ``dgemv`` wants Fortran order.  A C-contiguous ``A`` is passed as its
-    transpose with ``trans=1``, which is the same memory read the other
-    way round, so neither layout is copied.
+    """``A @ x`` for dense ``A`` through ``dgemv``, so the reward-space
+    path never leaves scipy's BLAS pool (see :func:`lower_predictive_sqrt`).
+    A C-contiguous ``A`` is passed as its transpose with ``trans=1``, so
+    neither layout is copied.
     """
     A2 = np.asarray(A, dtype=np.float64)
     x1 = np.asarray(x, dtype=np.float64).ravel()
@@ -112,23 +101,17 @@ def dense_matvec(A: NDArray[Any], x: NDArray[Any]) -> NDArray[np.float64]:
 def standard_normal_f(
     rng: np.random.Generator, size: int, n_rows: int
 ) -> NDArray[np.float64]:
-    """``(size, n_rows)`` standard normals in **Fortran** order.
-
-    Drawing the transpose and viewing it back costs nothing and lets
-    ``affine_lower_factor`` hand the buffer to ``dgemm`` without a copy.
-    """
+    """``(size, n_rows)`` standard normals in Fortran order, so
+    :func:`affine_lower_factor` can hand them to ``dgemm`` uncopied."""
     return cast(NDArray[np.float64], rng.standard_normal((n_rows, size)).T)
 
 
 def affine_lower_factor(
     mean: NDArray[np.float64], z: NDArray[np.float64], L: NDArray[np.float64]
 ) -> NDArray[np.float64]:
-    """``mean + z @ Lᵀ`` in one ``dgemm``, accumulating onto the mean.
-
-    ``z`` should come from :func:`standard_normal_f` and ``L`` from
-    :func:`lower_predictive_sqrt` so that both are already F-contiguous
-    and ``dgemm`` runs without copying either operand.
-    """
+    """``mean + z @ Lᵀ`` in one ``dgemm``. ``z`` from
+    :func:`standard_normal_f` and ``L`` from :func:`lower_predictive_sqrt`
+    are both F-contiguous, so neither operand is copied."""
     out = np.empty((z.shape[0], L.shape[0]), dtype=np.float64, order="F")
     out[:] = mean
     return cast(

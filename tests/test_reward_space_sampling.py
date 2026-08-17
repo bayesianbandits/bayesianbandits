@@ -1,15 +1,9 @@
-"""Tests for ``sample_reward_space``: joint posterior predictive draws in reward space.
+"""Tests for ``sample_reward_space``.
 
-The routes are exact reformulations, so the contract is an identity, not
-a distribution: the QR square root must satisfy ``L Lᵀ = X Λ⁻¹ Xᵀ``, and
-blocked mode must satisfy it block by block. That identity is checked
-directly against a dense reference, which subsumes any moment or
-goodness-of-fit check on the draws and cannot flake.
-
-What that identity does *not* cover, and what is therefore tested
-separately: applying the factor to normals, the per-estimator scaling
-composed on top of it (NIG's chi-square mixing, the GLM link), and the
-guards that raise.
+The contract is an identity, checked against a dense reference:
+``L Lᵀ = X Λ⁻¹ Xᵀ``, block by block in blocked mode. Tested separately
+is what the identity does not cover: the per-estimator scaling on top
+of the factor (NIG's chi-square mixing, the GLM link) and the guards.
 """
 
 import numpy as np

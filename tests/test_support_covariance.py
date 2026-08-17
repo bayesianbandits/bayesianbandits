@@ -1,15 +1,9 @@
 """Tests for the support-covariance route.
 
-``X = X_U E_Uᵀ`` exactly, so ``Cov(Xw) = X_U (Λ⁻¹)_{U,U} X_Uᵀ``. The
-route is therefore an identity, and the tests are identity checks
-against the paths it replaces: ``S`` against the explicit inverse's
-principal submatrix, and the per-row standard deviations against the
-half-solve path.
-
-Distributional checks on the draws are deliberately absent: they would
-be a weaker statistical restatement of identities already verified to
-floating point. What is checked on top is the composition each estimator
-applies after the reduction, which no factor identity can see.
+``Cov(Xw) = X_U (Λ⁻¹)_{U,U} X_Uᵀ`` is an identity, so the tests are
+identity checks against the paths the route replaces (``S`` against the
+explicit inverse, per-row sd against the half-solve path), plus the
+composition each estimator applies after the reduction.
 """
 
 from contextlib import contextmanager
