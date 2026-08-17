@@ -30,6 +30,7 @@ from . import _support_covariance
 from ._blas_helpers import (
     affine_lower_factor,
     compute_eta_dense,
+    dense_matmul_bt,
     dense_matvec,
     lower_predictive_sqrt,
     standard_normal_f,
@@ -334,7 +335,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=True, ensure_2d=True)
+        X_pred = check_array(X, copy=False, ensure_2d=True)
 
         alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
         return alphas / alphas.sum(axis=1)[:, np.newaxis]
@@ -715,7 +716,7 @@ class GammaRegressor(BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=True, ensure_2d=True)
+        X_pred = check_array(X, copy=False, ensure_2d=True)
 
         shape_params = np.vstack(list(self.coef_[x.item()] for x in X_pred))
         return shape_params[:, 0] / shape_params[:, 1]
@@ -876,6 +877,35 @@ def _validated_marginal_mean_sd(
     return mean, sd
 
 
+def _predictive_mean(
+    X: Union[NDArray[Any], csc_array], coef: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """``X @ coef`` as a 1-D array of predictive means.
+
+    Sparse products never enter a BLAS thread pool, so only the dense
+    case needs routing away from numpy (see
+    :func:`~bayesianbandits._blas_helpers.lower_predictive_sqrt`).
+    """
+    if issparse(X):
+        return np.asarray(X @ coef, dtype=np.float64).ravel()
+    return dense_matvec(X, coef)
+
+
+def _rows_from_weight_draws(
+    draws: NDArray[np.float64], X: Union[NDArray[Any], csc_array]
+) -> NDArray[np.float64]:
+    """``draws @ X.T``: weight-space draws mapped to prediction rows.
+
+    Dense ``X`` goes through ``dgemm`` rather than ``numpy``, which would
+    otherwise cross BLAS thread pools immediately after the triangular
+    solve that produced ``draws``.
+    """
+    draws2 = np.atleast_2d(draws)
+    if issparse(X):
+        return cast(NDArray[np.float64], draws2 @ X.T)
+    return dense_matmul_bt(draws2, cast(NDArray[Any], X))
+
+
 def _reward_space_is_cheaper(
     n: int, d: int, size: int, sparse: bool, precision_nnz: int
 ) -> bool:
@@ -907,10 +937,23 @@ class _RowSpaceDraw:
     def __init__(self, L: NDArray[np.float64]) -> None:
         self._L = L
 
-    def joint(self, size: int, rng: np.random.Generator) -> NDArray[np.float64]:
-        n_rows = self._L.shape[0]
-        z = standard_normal_f(rng, size, n_rows)
-        return cast(NDArray[np.float64], dgemm(1.0, z, self._L, trans_b=1))
+    def joint(
+        self,
+        size: int,
+        rng: np.random.Generator,
+        mean: Optional[NDArray[np.float64]] = None,
+    ) -> NDArray[np.float64]:
+        """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
+
+        ``mean`` is accumulated inside the same ``dgemm`` rather than
+        added by the caller, which would cost a second ``(size, n_rows)``
+        array; omit it when the caller has to rescale the zero-mean draw
+        first, as the multivariate-t path does.
+        """
+        z = standard_normal_f(rng, size, self._L.shape[0])
+        if mean is None:
+            return cast(NDArray[np.float64], dgemm(1.0, z, self._L, trans_b=1))
+        return affine_lower_factor(mean, z, self._L)
 
 
 def build_joint_reduction(
@@ -988,12 +1031,7 @@ def _predictive_cholesky_from_factor(
             rhs = np.asarray(X_rows, dtype=np.float64).T
         return np.asarray(factor.half_solve(rhs), dtype=np.float64)
 
-    # Sparse products never enter a BLAS thread pool, so only the dense
-    # case needs routing away from numpy.
-    if issparse(X):
-        mean = np.asarray(X @ coef, dtype=np.float64).ravel()
-    else:
-        mean = dense_matvec(X, coef)
+    mean = _predictive_mean(X, coef)
     n = mean.shape[0]
     X_row_sliceable: Any = X
 
@@ -1079,9 +1117,12 @@ class _RewardSpacePredictiveMixin:
         self, X: Union[NDArray[Any], csc_array]
     ) -> Union[NDArray[Any], csc_array]:
         """Shared ``sample``/``sample_reward_space`` preamble: validate
-        ``X`` and initialize the prior if the model is unfitted."""
+        ``X`` and initialize the prior if the model is unfitted.
+
+        Not copied: every consumer only reads ``X``, matching ``sample``.
+        """
         X_pred = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
         try:
             check_is_fitted(self, "coef_")
@@ -1478,7 +1519,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_pred = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         return X_pred @ self.coef_
@@ -1534,10 +1575,10 @@ scipy.sparse.csc_array
             self._precision_nnz,
         )
         if support_draw is not None:
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            mean = _predictive_mean(X_sample, self.coef_)
             return cast(
                 NDArray[np.float64],
-                mean + support_draw.joint(size, self.random_state_),
+                support_draw.joint(size, self.random_state_, mean),
             )
 
         samples = np.atleast_2d(
@@ -1549,7 +1590,7 @@ scipy.sparse.csc_array
             )
         )
 
-        return samples @ X_sample.T  # type: ignore
+        return _rows_from_weight_draws(samples, X_sample)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2088,7 +2129,7 @@ scipy.sparse.csc_array
             self._precision_nnz,
         )
         if support_draw is not None:
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
+            mean = _predictive_mean(X_sample, self.coef_)
             z = support_draw.joint(size, self.random_state_)
             x = self.random_state_.chisquare(df, size) / df
             return cast(
@@ -2110,7 +2151,7 @@ scipy.sparse.csc_array
         if self.n_features_ == 1:
             samples = np.expand_dims(samples, -1)
 
-        return np.atleast_2d(samples @ X_sample.T)  # type: ignore
+        return _rows_from_weight_draws(samples, X_sample)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2758,7 +2799,7 @@ scipy.sparse.csc_array
             self._initialize_prior(X)
 
         X_pred = check_array(
-            X, copy=True, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
         )
 
         eta = X_pred @ self.coef_
@@ -2828,8 +2869,8 @@ scipy.sparse.csc_array
             self._precision_nnz,
         )
         if support_draw is not None:
-            mean = np.asarray(X_sample @ self.coef_, dtype=np.float64).ravel()
-            eta = mean + support_draw.joint(size, self.random_state_)
+            mean = _predictive_mean(X_sample, self.coef_)
+            eta = support_draw.joint(size, self.random_state_, mean)
             return self._inverse_link(cast(NDArray[np.float64], eta))
 
         param_samples = np.atleast_2d(
@@ -2841,8 +2882,7 @@ scipy.sparse.csc_array
             )
         )
 
-        # Vectorized: (size, n_features) @ (n_features, n_samples) -> (size, n_samples)
-        eta = param_samples @ X_sample.T
+        eta = _rows_from_weight_draws(param_samples, X_sample)
 
         return self._inverse_link(cast(NDArray[np.float64], eta))
 

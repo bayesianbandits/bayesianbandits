@@ -13,6 +13,8 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import cho_solve, solve_triangular  # type: ignore
+from scipy.linalg.blas import dtrsm  # type: ignore[attr-defined]
+from scipy.linalg.lapack import dtrtri  # type: ignore[attr-defined]
 from scipy.sparse import (  # type: ignore  # type: ignore
     csc_array,
     csc_matrix,
@@ -261,10 +263,11 @@ SparseFactor = CholmodSparseFactor | SuperLUSparseFactor | ScaledSparseFactor
 class DenseFactor:
     """Wraps a LAPACK Cholesky factorization for solving and sampling.
 
-    Stores the upper-triangular factor U where Λ = U^T U.
-    U^{-1} is computed lazily on first ``colorize`` call so that
-    ``fit``/``partial_fit`` (which only need ``solve``) pay no
-    extra cost.
+    Stores the upper-triangular factor U where Λ = U^T U.  Every
+    operation solves against ``U`` directly; the explicit ``U^{-1}`` is
+    built lazily and only for :meth:`trace_inv`, which genuinely needs
+    the inverse.  ``fit``/``partial_fit`` (which only need ``solve``)
+    therefore pay no extra cost, and neither does sampling.
     """
 
     _U: NDArray[np.float64]
@@ -272,16 +275,38 @@ class DenseFactor:
 
     @cached_property
     def _U_inv(self) -> NDArray[np.float64]:
-        return solve_triangular(
-            self._U, np.eye(self._n_features), lower=False, check_finite=False
-        )
+        """Explicit ``U^{-1}``, for :meth:`trace_inv` only.
+
+        ``dtrtri`` inverts the triangle at a third of the flops of
+        solving against a dense identity, but writes only the upper
+        triangle of its result, leaving whatever ``cho_factor`` left
+        below the diagonal, hence the ``triu``.  ``_U`` itself is not
+        overwritten.
+        """
+        U_inv, _info = dtrtri(self._U, lower=0)
+        return cast(NDArray[np.float64], np.triu(U_inv))
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         return cho_solve((self._U, False), b, check_finite=False)
 
     def colorize(self, z: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
-        """Compute U^{-1} z, producing samples from N(0, Λ^{-1})."""
-        return cast(NDArray[np.float64], self._U_inv @ z)
+        """Compute U^{-1} z, producing samples from N(0, Λ^{-1}).
+
+        Solves against ``U`` rather than multiplying by an explicit
+        inverse.  The factor is rebuilt after every ``partial_fit``, so
+        forming ``U^{-1}`` charged an O(d³) triangular inversion to each
+        update -- more than an order of magnitude above the Cholesky
+        that preceded it -- to save nothing: ``dtrsm`` and the ``dgemm``
+        against the inverse cost the same per draw.  ``dtrsm`` also
+        keeps the draw inside scipy's BLAS pool (see
+        :func:`~bayesianbandits._blas_helpers.lower_predictive_sqrt`).
+        """
+        z2 = np.asfortranarray(z, dtype=np.float64)
+        vector = z2.ndim == 1
+        if vector:
+            z2 = z2.reshape(-1, 1)
+        out = dtrsm(1.0, self._U, z2, lower=0, side=0)
+        return cast(NDArray[np.float64], out[:, 0] if vector else out)
 
     def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         """Solve U^T x = b, the transpose of the ``colorize`` operator.

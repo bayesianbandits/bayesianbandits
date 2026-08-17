@@ -20,8 +20,11 @@ from typing import Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import LinAlgError, cholesky, eigh  # type: ignore
+from scipy.linalg.blas import dgemm  # type: ignore[attr-defined]
 from scipy.sparse import csc_array, issparse  # type: ignore
 
+from ._blas_helpers import standard_normal_f
 from ._sparse_bayesian_linear_regression import PrecisionFactor
 
 _SCRATCH_ELEMS = 2**23
@@ -73,12 +76,19 @@ def support_covariance(
 
 def _factorize(S: NDArray[np.float64]) -> NDArray[np.float64]:
     """Lower-triangular ``C`` with ``C Cᵀ = S``; the eigenvalue branch
-    guards against a numerically indefinite ``S``."""
+    guards against a numerically indefinite ``S``.
+
+    Returned Fortran-ordered, so every ``dgemm`` below takes it uncopied.
+    Taken from ``scipy.linalg`` rather than ``numpy.linalg`` to keep the
+    whole route in one BLAS thread pool (see
+    :func:`~bayesianbandits._blas_helpers.lower_predictive_sqrt`).
+    """
     try:
-        return cast(NDArray[np.float64], np.linalg.cholesky(S))
-    except np.linalg.LinAlgError:
-        w, V = np.linalg.eigh(S)
-        return cast(NDArray[np.float64], V * np.sqrt(np.clip(w, 0.0, None)))
+        C = cholesky(S, lower=True, check_finite=False)
+    except LinAlgError:
+        w, V = eigh(S, check_finite=False)
+        C = V * np.sqrt(np.clip(w, 0.0, None))
+    return cast(NDArray[np.float64], np.asfortranarray(C))
 
 
 class SupportDraw:
@@ -95,19 +105,41 @@ class SupportDraw:
     def _row_block(self) -> int:
         return max(1, _SCRATCH_ELEMS // max(1, self._C.shape[0]))
 
-    def joint(self, size: int, rng: np.random.Generator) -> NDArray[np.float64]:
+    def _dense_rows(self, start: int, stop: int) -> NDArray[np.float64]:
+        """``X_U[start:stop]`` densified and transposed, ``(|U|, rows)``.
+
+        A densified CSR block is C-ordered, so its transpose is already
+        Fortran-ordered and ``dgemm`` takes it without a copy.
+        """
+        block = np.asarray(self._XU[start:stop].todense(), dtype=np.float64)
+        return cast(NDArray[np.float64], block.T)
+
+    def joint(
+        self,
+        size: int,
+        rng: np.random.Generator,
+        mean: Optional[NDArray[np.float64]] = None,
+    ) -> NDArray[np.float64]:
         """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
 
         Rows within one draw share a weight vector, matching ``sample``.
+        ``mean`` is broadcast into the output buffer rather than added by
+        the caller, which would cost a second ``(size, n_rows)`` array;
+        omit it when the caller has to rescale the zero-mean draw first.
         """
-        ZC = rng.standard_normal((size, self._C.shape[0])) @ self._C.T
+        Z = standard_normal_f(rng, size, self._C.shape[0])
+        ZC = dgemm(1.0, Z, self._C, trans_b=1)
         out = np.empty((size, self._n_rows), dtype=np.float64)
+        if mean is not None:
+            out[:] = mean
         block = self._row_block()
         for start in range(0, self._n_rows, block):
             stop = min(self._n_rows, start + block)
-            out[:, start:stop] = (
-                ZC @ np.asarray(self._XU[start:stop].todense(), dtype=np.float64).T
-            )
+            drawn = dgemm(1.0, ZC, self._dense_rows(start, stop))
+            if mean is None:
+                out[:, start:stop] = drawn
+            else:
+                out[:, start:stop] += drawn
         return out
 
     def sd(self) -> NDArray[np.float64]:
@@ -116,7 +148,7 @@ class SupportDraw:
         block = self._row_block()
         for start in range(0, self._n_rows, block):
             stop = min(self._n_rows, start + block)
-            T = np.asarray(self._XU[start:stop].todense(), dtype=np.float64) @ self._C
+            T = dgemm(1.0, self._dense_rows(start, stop), self._C, trans_a=1)
             out[start:stop] = np.sqrt(np.einsum("ij,ij->i", T, T))
         return out
 

@@ -19,6 +19,7 @@ __all__ = [
     "compute_eta_dense",
     "lower_predictive_sqrt",
     "dense_matvec",
+    "dense_matmul_bt",
     "standard_normal_f",
     "affine_lower_factor",
 ]
@@ -96,6 +97,32 @@ def dense_matvec(A: NDArray[Any], x: NDArray[Any]) -> NDArray[np.float64]:
     if A2.flags.c_contiguous and not A2.flags.f_contiguous:
         return cast(NDArray[np.float64], dgemv(1.0, A2.T, x1, trans=1))
     return cast(NDArray[np.float64], dgemv(1.0, A2, x1))
+
+
+def dense_matmul_bt(A: NDArray[Any], B: NDArray[Any]) -> NDArray[np.float64]:
+    """``A @ B.T`` for dense ``A`` (m, k) and ``B`` (n, k) through ``dgemm``,
+    so the weight-space draw never leaves scipy's BLAS pool (see
+    :func:`lower_predictive_sqrt`).
+
+    ``dgemm`` wants Fortran-ordered operands, and a C-contiguous array's
+    transpose is Fortran-contiguous, so each operand is handed over in
+    whichever orientation it already has and the transposition is
+    expressed through ``trans_a``/``trans_b`` instead of a copy.  The
+    obvious ``dgemm(1.0, A, B, trans_b=1)`` is arithmetically identical
+    but copies both operands when they are C-ordered, which is the cost
+    this exists to avoid.
+    """
+    A2 = np.asarray(A, dtype=np.float64)
+    B2 = np.asarray(B, dtype=np.float64)
+    if A2.flags.c_contiguous and not A2.flags.f_contiguous:
+        a, trans_a = A2.T, 1
+    else:
+        a, trans_a = A2, 0
+    if B2.flags.c_contiguous and not B2.flags.f_contiguous:
+        b, trans_b = B2.T, 0
+    else:
+        b, trans_b = B2, 1
+    return cast(NDArray[np.float64], dgemm(1.0, a, b, trans_a=trans_a, trans_b=trans_b))
 
 
 def standard_normal_f(

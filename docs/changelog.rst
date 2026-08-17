@@ -55,6 +55,18 @@ Unreleased
 
 **Performance**
 
+- Dense sampling no longer forms an explicit :math:`U^{-1}`. The precision
+  factor is rebuilt after every ``partial_fit``, so materializing the
+  inverse charged an :math:`O(d^3)` triangular inversion to every update
+  -- 13x to 17x the Cholesky that preceded it, and the largest single term
+  in a pull-and-update round -- to save nothing, since solving against
+  ``U`` costs the same per draw as multiplying by the inverse.
+  ``DenseFactor.colorize`` now calls ``dtrsm``, which also keeps the draw
+  inside scipy's BLAS pool. A dense ``size = 1`` pull plus update at
+  :math:`d` = 1,000 falls from 106 ms to 11 ms. ``trace_inv`` genuinely
+  needs the inverse and still builds it lazily, now through ``dtrtri``
+  rather than a solve against a dense identity (#269)
+
 - Joint ``sample`` draws reduce through whichever exact route is cheapest.
   :math:`\operatorname{Cov}(Xw) = X \Lambda^{-1} X^T` has a square root
   on each side: weight space costs ``size`` solves against the cached
@@ -73,12 +85,31 @@ Unreleased
   of memory beyond ~2,600 draws. The column side also serves
   ``sample_marginal`` when :math:`|U|` beats the row count (#269)
 
-- The reward-space path is ``scipy.linalg`` throughout (``dgeqrf``,
-  ``dgemm``, ``dgemv``). ``numpy`` and ``scipy`` bind separate copies of
-  OpenBLAS with separate thread pools, and alternating between them
-  within one call parks and unparks both: on a 28-core box a 100x100 QR
-  took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through ``dgeqrf``
-  (#269)
+  Those dense figures were measured before the BLAS thread-pool fixes
+  below, which cut the weight-space side by up to 8.9x and so narrowed
+  the row side's dense margin; the swept shapes stay wins, but past them
+  the ``2 n_rows <= size`` guard is now slightly loose. At
+  :math:`p` = 1,000 with 448 rows and ``size`` = 900 the row side is
+  taken and runs 0.76x to 0.81x, the crossover there having moved from
+  ``2 n_rows`` to roughly ``4 n_rows``. The guard is left alone
+  deliberately: tightening it would need a fitted constant, and dense
+  cost models are dependent on a BLAS threading configuration the
+  library cannot observe.
+
+- The reward-space, support-covariance, weight-space, and dense sampling
+  paths are ``scipy.linalg`` throughout (``dgeqrf``, ``dgemm``,
+  ``dgemv``, ``dtrsm``, ``dpotrf``). ``numpy`` and ``scipy`` bind
+  separate copies of OpenBLAS with separate thread pools, and
+  alternating between them within one call parks and unparks both: on a
+  28-core box a 100x100 QR took 81 ms through ``numpy.linalg.qr`` and
+  0.9 ms through ``dgeqrf``. The last two crossings to go were the
+  weight-space tail ``draws @ X.T``, which followed the triangular solve
+  that produced ``draws``, and the predictive mean ``X @ coef`` ahead of
+  the reduced draw. Routing both through ``dgemm``/``dgemv`` took a
+  dense ``sample`` at :math:`d` = 1,000 with 320 rows and ``size`` = 100
+  from 40.0 ms to 4.5 ms. Operands are passed in whichever orientation
+  they already hold, since a C-contiguous array's transpose is
+  Fortran-contiguous and the naive spelling would copy both (#269)
 
 - ``SuperLUSparseFactor.solve`` goes through the cached triangular factor
   for a dense right-hand side instead of refactorizing on every call, and
@@ -113,7 +144,10 @@ Unreleased
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
   it. Neither mutates the validated array nor retains a reference to it,
   so the copy was pure overhead, costing O(nnz(X)) per draw on sparse
-  models. ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
+  models. ``fit`` and ``partial_fit`` are unchanged (#265)
+
+- ``sample_reward_space``, ``predict``, and ``predict_proba`` likewise no
+  longer copy ``X``: they only read it (#269)
 
 **Behavioral changes**
 
@@ -130,8 +164,14 @@ Unreleased
 - Seeded ``sample`` trajectories change wherever a reduction applies: the
   row and column routes consume ``n_rows`` and :math:`|U|` normals per
   draw rather than one per feature. The draws are exact and jointly
-  distributed either way (verified by per-row KS tests). Thompson sampling (``size = 1``) never reduces and
-  is bit-for-bit unchanged (#269)
+  distributed either way (verified by per-row KS tests). Thompson sampling
+  (``size = 1``) never reduces, and on sparse models is bit-for-bit
+  unchanged (#269)
+
+- Dense seeded draws change in the last bits, Thompson sampling included:
+  ``colorize`` solves against ``U`` instead of multiplying by an explicit
+  ``U^{-1}``, the same operation in exact arithmetic but a different
+  rounding order (the two agree to ~2e-16). No distribution changes (#269)
 
 1.4.0 (2026-07-31)
 ------------------
