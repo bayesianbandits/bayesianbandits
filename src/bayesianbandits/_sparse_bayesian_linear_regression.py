@@ -12,7 +12,7 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import cho_solve, solve_triangular  # type: ignore
+from scipy.linalg import LinAlgError, cho_solve, solve_triangular  # type: ignore
 from scipy.linalg.blas import dtrsm  # type: ignore[attr-defined]
 from scipy.linalg.lapack import dtrtri  # type: ignore[attr-defined]
 from scipy.sparse import (  # type: ignore  # type: ignore
@@ -335,8 +335,20 @@ class DenseFactor:
         triangle of its result, leaving whatever ``cho_factor`` left
         below the diagonal, hence the ``triu``.  ``_U`` itself is not
         overwritten.
+
+        A singular ``U`` is reported through ``info`` rather than
+        raised, and leaves the triangle untouched -- so the ``triu``
+        below would return ``U`` itself, and :meth:`trace_inv` a
+        plausible number rather than an error.  Raise instead, matching
+        the ``solve_triangular`` this replaced.
         """
-        U_inv, _info = dtrtri(self._U, lower=0)
+        U_inv, info = dtrtri(self._U, lower=0)
+        if info > 0:
+            raise LinAlgError(
+                f"singular precision factor: U[{info - 1}, {info - 1}] is zero"
+            )
+        if info < 0:
+            raise ValueError(f"dtrtri: illegal value in argument {-info}")
         return cast(NDArray[np.float64], np.triu(U_inv))
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:

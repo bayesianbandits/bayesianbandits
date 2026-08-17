@@ -332,6 +332,17 @@ class TestHalfSolve:
         assert_allclose(got, dense.colorize(z[:, None])[:, 0], rtol=1e-15)
         assert_allclose(got, solve_triangular(dense._U, z, lower=False), rtol=1e-10)
 
+    def test_dense_trace_inv_rejects_a_singular_factor(self, precision):
+        """``dtrtri`` reports singularity through ``info`` and leaves the
+        triangle untouched, so an unchecked result is ``U`` itself and
+        ``trace_inv`` a plausible number for a broken factor."""
+        from scipy.linalg import LinAlgError, cholesky
+
+        U = cholesky(precision.toarray(), lower=False)
+        U[1, 1] = 0.0
+        with pytest.raises(LinAlgError, match=r"U\[1, 1\]"):
+            DenseFactor(_U=U, _n_features=self.D).trace_inv()
+
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_single_column_rhs_keeps_2d_shape(self, precision, X, solver):
         factor = create_sparse_factor(precision, solver=solver)
