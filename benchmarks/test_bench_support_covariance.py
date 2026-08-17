@@ -1,14 +1,9 @@
-"""Benchmarks for the support-covariance sampling route.
+"""Benchmarks for the support-covariance route: one solve per distinct
+column touched instead of one per draw or per row.
 
-The route trades one solve per draw (or per row) for one solve per
-distinct column touched, so it helps exactly when a sparse design matrix
-has many rows or many draws over a small feature support -- the
-``LipschitzContextualAgent`` shape, where rows are arms.
-
-Each pair below benchmarks the same call with the route enabled and
-disabled. The ``declines_`` pair is as important as the others: it
-guards the region where the pre-existing path is better, so a future
-change to the gate cannot silently regress it.
+Each pair benchmarks the same call with the route on and off; the
+``declines_`` pair guards the region where the pre-existing path is
+better.
 """
 
 from contextlib import contextmanager
