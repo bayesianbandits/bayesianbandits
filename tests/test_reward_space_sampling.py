@@ -200,6 +200,21 @@ class TestComposition:
         assert z.max() < 5.0
         assert_allclose(np.cov(eta.T), want, atol=0.05 * np.abs(want).max())
 
+    def test_normal_blocked_draws_realize_the_block_diagonal(self):
+        """The base estimator puts no scaling on top of the factor, so its
+        blocked draws are the block-diagonal covariance directly. NIG and
+        the GLM both override ``sample_reward_space``, so this is the only
+        cover for the plain blocked draw."""
+        est, rng = _fit_dense(seed=5)
+        X = rng.standard_normal((6, 40))
+
+        draws = est.sample_reward_space(X, 40_000, block_size=3)
+        want = _block_diagonal(_reference_S(est, X), 3)
+        sd = np.sqrt(np.diag(want))
+        z = np.abs(draws.mean(axis=0) - X @ est.coef_) / (sd / np.sqrt(40_000))
+        assert z.max() < 5.0
+        assert_allclose(np.cov(draws.T), want, atol=0.05 * np.abs(want).max())
+
     def test_nig_blocks_mix_independent_chi_squares(self):
         """Within a block the draws share one chi-square; across blocks
         the mixing variables are independent. A shared-g implementation

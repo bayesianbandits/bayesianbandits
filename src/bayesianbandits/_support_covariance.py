@@ -20,7 +20,7 @@ from typing import Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import LinAlgError, cholesky, eigh  # type: ignore
+from scipy.linalg import cholesky  # type: ignore
 from scipy.linalg.blas import dgemm  # type: ignore[attr-defined]
 from scipy.sparse import csc_array, issparse  # type: ignore
 
@@ -75,20 +75,26 @@ def support_covariance(
 
 
 def _factorize(S: NDArray[np.float64]) -> NDArray[np.float64]:
-    """Lower-triangular ``C`` with ``C Cᵀ = S``; the eigenvalue branch
-    guards against a numerically indefinite ``S``.
+    """Lower-triangular ``C`` with ``C Cᵀ = S``.
 
-    Returned Fortran-ordered, so every ``dgemm`` below takes it uncopied.
-    Taken from ``scipy.linalg`` rather than ``numpy.linalg`` to keep the
-    whole route in one BLAS thread pool (see
-    :func:`~bayesianbandits._blas_helpers.lower_predictive_sqrt`).
+    ``S`` is a principal submatrix of the SPD ``Λ⁻¹``, so it is SPD too,
+    and eigenvalue interlacing bounds it away from singular:
+    ``λ_min(S) >= λ_min(Λ⁻¹) = 1 / λ_max(Λ)``, so ``cond(S) <= cond(Λ)``.
+    The Cholesky therefore exists for any ``X``, and can fail only if
+    ``Λ`` is numerically singular -- which already breaks the cached
+    factor that every route shares. Unlike the row side, where repeated
+    prediction rows make ``Bᵀ B`` genuinely singular and force a QR
+    (see :func:`~bayesianbandits._blas_helpers.lower_predictive_sqrt`),
+    there is no degenerate case to guard against here.
+
+    Returned Fortran-ordered, so every ``dgemm`` below takes it uncopied,
+    and taken from ``scipy.linalg`` rather than ``numpy.linalg`` to keep
+    the whole route in one BLAS thread pool.
     """
-    try:
-        C = cholesky(S, lower=True, check_finite=False)
-    except LinAlgError:
-        w, V = eigh(S, check_finite=False)
-        C = V * np.sqrt(np.clip(w, 0.0, None))
-    return cast(NDArray[np.float64], np.asfortranarray(C))
+    return cast(
+        NDArray[np.float64],
+        np.asfortranarray(cholesky(S, lower=True, check_finite=False)),
+    )
 
 
 class SupportDraw:

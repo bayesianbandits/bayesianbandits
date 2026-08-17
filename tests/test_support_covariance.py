@@ -92,18 +92,6 @@ def test_support_covariance_handles_a_single_column():
     assert_allclose(S, np.linalg.inv(precision.toarray())[7:8, 7:8], atol=1e-10)
 
 
-def test_factorize_falls_back_to_eigendecomposition():
-    """``S`` is SPD in exact arithmetic, so the guard exists only for a
-    numerically indefinite result. Force it to confirm it still returns
-    a valid square root."""
-    S = np.array([[4.0, 1.0], [1.0, 3.0]])
-    with mock.patch.object(
-        np.linalg, "cholesky", side_effect=np.linalg.LinAlgError("forced")
-    ):
-        C = sc._factorize(S)
-    assert_allclose(C @ C.T, S, atol=1e-12)
-
-
 def test_draw_factor_reproduces_the_predictive_covariance():
     """``(X_U C)(X_U C)ᵀ`` is the predictive covariance, exactly."""
     rng = np.random.default_rng(9)
