@@ -43,7 +43,7 @@ Unreleased
   groups are drawn jointly within and independently across groups, which no
   other route can produce, so it stays an explicit request rather than a
   cost decision. Full-mode draws need no request: ``sample`` reduces through
-  this route on its own whenever it is cheapest (see below) (#263)
+  this route on its own whenever it is cheapest (see below) (#269)
 
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal
@@ -96,7 +96,7 @@ Unreleased
   (:math:`p` in {100, 1000}, ``n_rows`` in {1, 10, 32, 96, 320}, ``size``
   in {1, 100, 500, 1000}): no regressions, and speedups to 45.9x. Sparse
   gains reach 860x (:math:`p` = 100,000, one row, ``size`` = 1000: 6.0 s to
-  7.0 ms) (#263)
+  7.0 ms) (#269)
 
 - Every step of the reward-space path after the half-solve is taken from
   ``scipy.linalg`` rather than ``numpy`` (``dgeqrf`` for the QR, ``dgemm``
@@ -106,7 +106,7 @@ Unreleased
   both. On a 28-core box that cost more than every flop on the path: a
   100x100 QR took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through
   ``dgeqrf``. Reward-space sampling is up to 102x faster than before this
-  routing (#263)
+  routing (#269)
 
 - ``UpperConfidenceBound``, ``EXP3A``, and ``EpsilonGreedy`` now draw
   through the marginal path (they consume only per-arm, per-context
@@ -146,7 +146,7 @@ Unreleased
   additionally drops the ``size``-proportional weight-space allocation,
   which at that width exhausted memory beyond roughly 2,600 draws. It also
   serves ``sample_marginal``, where it is taken when :math:`|U|` beats the
-  row count (#266)
+  row count (#269)
 
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
   it. Neither mutates the validated array nor retains a reference to it, so
@@ -158,7 +158,7 @@ Unreleased
   triangular factor instead. Sparse right-hand sides are unchanged. This
   also settles a discrepancy between the backends: SuperLU returned a
   1-D result for a single-column 2-D input, where CHOLMOD preserved the
-  column; both now preserve it (#266)
+  column; both now preserve it (#269)
 
 **Behavioral changes**
 
