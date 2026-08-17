@@ -48,8 +48,6 @@ from ._sparse_bayesian_linear_regression import (
     PrecisionFactor,
     SparseFactor,
     create_sparse_factor,
-    multivariate_normal_sample_from_precision,
-    multivariate_t_sample_from_precision,
     scale_factor,
 )
 
@@ -817,19 +815,6 @@ def _invalidate_cached_properties(
 _MARGINAL_SD_BLOCK_ELEMS = 2**21
 
 
-def _dense_rows_t(X_rows: Any) -> NDArray[np.float64]:
-    """``X_rows.T`` densified, ``(n_features, rows)`` and F-contiguous.
-
-    Densifying first and transposing the result costs one pass over the
-    row-major block; transposing the sparse matrix first (``X.T.toarray()``)
-    lands on the same layout by way of a CSR-to-CSC conversion of the
-    whole block. F-contiguous either way, which is what the sparse
-    factors' solvers want -- CHOLMOD's dense format is column-major, and
-    a C-ordered right-hand side is copied before the solve.
-    """
-    return cast(NDArray[np.float64], np.asarray(X_rows.toarray(), dtype=np.float64).T)
-
-
 def _marginal_support_is_cheaper(n_u: int, n_rows: int, precision_nnz: int) -> bool:
     """Is the column-side reduction cheaper than the half-solve path?
 
@@ -852,7 +837,7 @@ def _marginal_support_is_cheaper(n_u: int, n_rows: int, precision_nnz: int) -> b
 
 
 def _marginal_predictive_sd(
-    factor: PrecisionFactor, X: Union[NDArray[Any], csc_array], precision_nnz: int
+    factor: PrecisionFactor, X: Union[NDArray[Any], csc_array]
 ) -> NDArray[np.float64]:
     """Per-row predictive standard deviations :math:`\\sqrt{x_i^T \\Lambda^{-1} x_i}`.
 
@@ -861,8 +846,13 @@ def _marginal_predictive_sd(
     equals :math:`X \\Lambda^{-1} X^T` -- and takes column norms.
     Neither :math:`\\Lambda^{-1}` nor any :math:`n \\times n` matrix is
     ever formed; the cost is linear in the number of prediction rows.
-    A sparse ``X`` is densified for the solve in row blocks, keeping the
-    dense scratch bounded regardless of the number of prediction rows.
+    A sparse ``X`` is handed over sparse in row blocks: the factor
+    half-solves at the features it factors and returns a compact
+    ``(n_factored + t, rows)`` block, so the scratch, and the block size
+    that bounds it, are in ``factor.n_factored`` rather than
+    ``n_features`` -- at :math:`2^{20}` features with 26k observed that
+    is 80 rows per block instead of 2, and no pass over the never
+    observed features at all.
 
     A sparse ``X`` touching few enough distinct columns goes through
     :mod:`bayesianbandits._support_covariance` instead: one solve per
@@ -884,19 +874,18 @@ def _marginal_predictive_sd(
         X,
         n_features,
         budget=n_rows,
-        accept=lambda n_u: _marginal_support_is_cheaper(n_u, n_rows, precision_nnz),
+        accept=lambda n_u: _marginal_support_is_cheaper(n_u, n_rows, factor.solve_cost),
     )
     if support_draw is not None:
         return support_draw.sd()
-    block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, n_features))
+    block = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, factor.n_factored))
     # Rows are CSC's minor axis, so slicing rows per chunk would scan all
     # of X's nnz each chunk; slice from a CSR copy when chunking
     X_rows: Any = cast(csc_array, X).tocsr() if n_rows > block else X
     var = np.empty(n_rows, dtype=np.float64)
     for start in range(0, n_rows, block):
         stop = min(n_rows, start + block)
-        rhs = _dense_rows_t(X_rows[start:stop])
-        B = np.asarray(factor.half_solve(rhs), dtype=np.float64)
+        B = np.asarray(factor.half_solve(X_rows[start:stop].T), dtype=np.float64)
         var[start:stop] = np.einsum("ij,ij->j", B, B)
     return cast(NDArray[np.float64], np.sqrt(var))
 
@@ -916,7 +905,7 @@ def _validated_marginal_mean_sd(
     except NotFittedError:
         est._initialize_prior(X_pred)
     mean = np.asarray(X_pred @ est.coef_, dtype=np.float64).ravel()
-    sd = _marginal_predictive_sd(est._precision_factor, X_pred, est._precision_nnz)
+    sd = _marginal_predictive_sd(est._precision_factor, X_pred)
     return mean, sd
 
 
@@ -934,19 +923,47 @@ def _predictive_mean(
     return dense_matvec(X, coef)
 
 
-def _rows_from_weight_draws(
-    draws: NDArray[np.float64], X: Union[NDArray[Any], csc_array]
+def _weight_space_rows(
+    factor: PrecisionFactor,
+    X: Union[NDArray[Any], csc_array],
+    coef: NDArray[np.float64],
+    size: int,
+    rng: np.random.Generator,
+    divisor: Optional[NDArray[np.floating[Any]]] = None,
 ) -> NDArray[np.float64]:
-    """``draws @ X.T``: weight-space draws mapped to prediction rows.
+    """``X w`` for ``size`` weight-space draws ``w = ŵ + M z``, shape
+    ``(size, n_rows)``; the one path every ``sample`` falls back to.
 
-    Dense ``X`` goes through ``dgemm`` rather than ``numpy``, which would
-    otherwise cross BLAS thread pools immediately after the triangular
-    solve that produced ``draws``.
+    The factor draws the zero-mean part itself
+    (:meth:`~bayesianbandits._sparse_bayesian_linear_regression.CholmodSparseFactor.sample_at`),
+    at exactly the features asked for, so how many normals that takes
+    is its business, not this function's. A sparse ``X`` asks for its
+    support only: everything after the solve then runs on the ``|U|``
+    columns ``X`` touches, ``O(nnz(X))`` plus one ``O(n_features)`` scan
+    for the support, where a weight vector would spend the same on
+    entries no row reads. A dense ``X`` reads every feature and takes
+    them all.
+
+    ``divisor`` divides the zero-mean part per draw, for the
+    multivariate-t mixing of the Normal-Inverse-Gamma posterior; ``ŵ``
+    is added after it, as in weight space.
     """
-    draws2 = np.atleast_2d(draws)
     if issparse(X):
-        return cast(NDArray[np.float64], draws2 @ X.T)
-    return dense_matmul_bt(draws2, cast(NDArray[Any], X))
+        Xs = cast(csc_array, X)
+        support = _support_covariance.support_of(Xs)
+        XU = _support_covariance.compact_columns(Xs, support)
+        rows = np.asarray(XU @ factor.sample_at(support, size, rng), dtype=np.float64)
+        if divisor is not None:
+            rows /= divisor
+        rows += np.asarray(XU @ coef[support], dtype=np.float64)[:, np.newaxis]
+        return cast(NDArray[np.float64], rows.T)
+    # (size, n_features), C-ordered: the transpose of the factor's
+    # column-major draw, so dgemm takes it uncopied
+    W = factor.sample_at(None, size, rng).T
+    if divisor is not None:
+        W /= divisor[:, np.newaxis]
+    W += coef
+    return dense_matmul_bt(W, cast(NDArray[Any], X))
 
 
 def _reward_space_is_cheaper(
@@ -961,7 +978,9 @@ def _reward_space_is_cheaper(
     guards check against what weight space spends per solve: ``d²``
     dense, ``nnz`` sparse. Dense also needs ``n <= d`` (fewer normals per
     draw); sparse also caps the ``(d, n)`` half-solve scratch at the
-    marginal path's element budget.
+    marginal path's element budget. ``d`` is what the factor factors --
+    ``factor.n_factored`` -- which for a sparse factor is its observed
+    block, the true row count of that scratch.
     """
     if 2 * n > size:
         return False
@@ -1005,7 +1024,6 @@ def build_joint_reduction(
     n_features: int,
     size: int,
     sparse: bool,
-    precision_nnz: int,
 ) -> Optional[Any]:
     """Cheapest exact reduction of ``Cov(Xw)``, or ``None`` for weight space.
 
@@ -1027,19 +1045,19 @@ def build_joint_reduction(
     where ``|U|`` is every feature.
     """
     n_rows = cast("tuple[int, int]", X.shape)[0]
-    row_ok = _reward_space_is_cheaper(n_rows, n_features, size, sparse, precision_nnz)
+    row_ok = _reward_space_is_cheaper(
+        n_rows, factor.n_factored, size, sparse, factor.solve_cost
+    )
     support_draw = _support_covariance.build(
         factor, X, n_features, budget=min(size, n_rows) if row_ok else size
     )
     if support_draw is not None:
         return support_draw
     if row_ok:
-        B = np.asarray(
-            factor.half_solve(
-                np.asarray(X.todense() if issparse(X) else X, dtype=np.float64).T
-            ),
-            dtype=np.float64,
-        ).reshape(-1, n_rows)
+        # sparse X goes over sparse: the factor half-solves at its block
+        # and returns a compact result whose Gram is the same
+        rhs = X.T if issparse(X) else np.asarray(X, dtype=np.float64).T
+        B = np.asarray(factor.half_solve(rhs), dtype=np.float64).reshape(-1, n_rows)
         return _RowSpaceDraw(lower_predictive_sqrt(B, n_rows))
     return None
 
@@ -1061,17 +1079,17 @@ def _predictive_cholesky_from_factor(
     consecutive group of ``k`` rows, shape ``(n_blocks, k, k)``: joint
     within a group, nothing across groups. Blocked mode chunks the dense
     half-solve scratch under ``_MARGINAL_SD_BLOCK_ELEMS``; full mode
-    densifies a sparse ``X`` all at once, ``(n_features, n_rows)``.
+    half-solves a sparse ``X`` all at once. A sparse ``X`` goes over
+    sparse: the factor half-solves at the features it factors and
+    returns a compact ``(n_factored + t, rows)`` block with the same
+    Gram, so the scratch is sized in ``factor.n_factored``.
     """
 
     def half_solve_rows(rows: slice) -> NDArray[np.float64]:
         # Dispatch on the actual type: sparse models accept dense X too
         # (check_array's accept_sparse only *permits* sparse input)
         X_rows = X_row_sliceable[rows]
-        if issparse(X_rows):
-            rhs = _dense_rows_t(X_rows)
-        else:
-            rhs = np.asarray(X_rows, dtype=np.float64).T
+        rhs = X_rows.T if issparse(X_rows) else np.asarray(X_rows, dtype=np.float64).T
         return np.asarray(factor.half_solve(rhs), dtype=np.float64)
 
     mean = _predictive_mean(X, coef)
@@ -1089,9 +1107,11 @@ def _predictive_cholesky_from_factor(
         )
     n_blocks = n // block_size
     # Only the small (block_size, block_size) factors survive, so bound
-    # the dense (n_features, chunk_rows) half-solve scratch by chunking
+    # the dense (n_factored, chunk_rows) half-solve scratch by chunking
     # over consecutive blocks
-    chunk_blocks = max(1, _MARGINAL_SD_BLOCK_ELEMS // max(1, X.shape[1] * block_size))
+    chunk_blocks = max(
+        1, _MARGINAL_SD_BLOCK_ELEMS // max(1, factor.n_factored * block_size)
+    )
     if issparse(X) and n_blocks > chunk_blocks:
         # Rows are CSC's minor axis, so slicing rows per chunk would scan
         # all of X's nnz each chunk; slice from a CSR copy when chunking
@@ -1149,12 +1169,6 @@ class _RewardSpacePredictiveMixin:
         return _predictive_cholesky_from_factor(
             self._precision_factor, self.coef_, X, block_size
         )
-
-    @property
-    def _precision_nnz(self) -> int:
-        """Per-solve cost proxy: stored precision entries for a sparse
-        model, zero for a dense one."""
-        return cast(csc_array, self.cov_inv_).nnz if self.sparse else 0
 
     def _validated_for_sampling(
         self, X: Union[NDArray[Any], csc_array]
@@ -1615,7 +1629,6 @@ scipy.sparse.csc_array
             X_sample.shape[1],
             size,
             self.sparse,
-            self._precision_nnz,
         )
         if support_draw is not None:
             mean = _predictive_mean(X_sample, self.coef_)
@@ -1624,16 +1637,9 @@ scipy.sparse.csc_array
                 support_draw.joint(size, self.random_state_, mean),
             )
 
-        samples = np.atleast_2d(
-            multivariate_normal_sample_from_precision(
-                self.coef_,
-                self._precision_factor,
-                size=size,
-                random_state=self.random_state_,
-            )
+        return _weight_space_rows(
+            self._precision_factor, X_sample, self.coef_, size, self.random_state_
         )
-
-        return _rows_from_weight_draws(samples, X_sample)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -1788,12 +1794,7 @@ scipy.sparse.csc_array
         # mean.
         self.cov_inv_ = prior_decay * self.cov_inv_
         if "_precision_factor" in self.__dict__:
-            if self.sparse:
-                factor = self._precision_factor
-                assert isinstance(factor, SparseFactor)
-                self._precision_factor = scale_factor(factor, prior_decay)
-            else:
-                del self._precision_factor
+            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -2103,20 +2104,10 @@ scipy.sparse.csc_array
         """Precision of the shape matrix for the multivariate t posterior.
 
         The shape covariance is (b/a)·Λ⁻¹, so the shape precision is
-        (a/b)·Λ.  For dense models this is represented as a DenseFactor
-        with U_scaled = √(a/b)·U (zero extra factorizations); for sparse
-        models it wraps the existing SparseFactor via ``scale_factor``.
+        (a/b)·Λ: the cached precision factor with that scalar composed
+        in, no factorization and no copy of the factor.
         """
-        if self.sparse:
-            factor = self._precision_factor
-            assert isinstance(factor, SparseFactor)
-            return scale_factor(factor, float(self.a_ / self.b_))
-        else:
-            factor = self._precision_factor
-            assert isinstance(factor, DenseFactor)
-            scale = np.sqrt(self.a_ / self.b_)
-            U_scaled = np.triu(scale * factor._U)
-            return DenseFactor(_U=U_scaled, _n_features=factor._n_features)
+        return scale_factor(self._precision_factor, float(self.a_ / self.b_))
 
     def sample(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2169,7 +2160,6 @@ scipy.sparse.csc_array
             X_sample.shape[1],
             size,
             self.sparse,
-            self._precision_nnz,
         )
         if support_draw is not None:
             mean = _predictive_mean(X_sample, self.coef_)
@@ -2180,21 +2170,19 @@ scipy.sparse.csc_array
                 mean + z / np.sqrt(x)[..., None],
             )
 
-        # Sample from multivariate t via precision parameterization
-        # shape_ returns a PrecisionFactor (DenseFactor or SparseFactor)
-        # whose precision is (a/b)·Λ, i.e. shape cov = (b/a)·Λ⁻¹
-        samples = multivariate_t_sample_from_precision(
-            self.coef_,
+        # Multivariate t in weight space: a Gaussian draw from ``shape_``
+        # (precision (a/b)·Λ, so covariance (b/a)·Λ⁻¹) divided by the
+        # square root of a chi-square over its degrees of freedom. The
+        # chi-square is drawn first, then the normals.
+        x = self.random_state_.chisquare(df, size) / df
+        return _weight_space_rows(
             self.shape_,
-            df,
+            X_sample,
+            self.coef_,
             size,
-            self.random_state_,  # type: ignore[arg-type]
+            self.random_state_,
+            divisor=np.sqrt(x),
         )
-
-        if self.n_features_ == 1:
-            samples = np.expand_dims(samples, -1)
-
-        return _rows_from_weight_draws(samples, X_sample)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2360,12 +2348,7 @@ scipy.sparse.csc_array
         self.a_ = prior_decay * self.a_
         self.b_ = prior_decay * self.b_
         if "_precision_factor" in self.__dict__:
-            if self.sparse:
-                factor = self._precision_factor
-                assert isinstance(factor, SparseFactor)
-                self._precision_factor = scale_factor(factor, prior_decay)
-            else:
-                del self._precision_factor
+            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
 
 
 def multivariate_t_sample_from_covariance(
@@ -2909,25 +2892,16 @@ scipy.sparse.csc_array
             X_sample.shape[1],
             size,
             self.sparse,
-            self._precision_nnz,
         )
         if support_draw is not None:
             mean = _predictive_mean(X_sample, self.coef_)
             eta = support_draw.joint(size, self.random_state_, mean)
             return self._inverse_link(cast(NDArray[np.float64], eta))
 
-        param_samples = np.atleast_2d(
-            multivariate_normal_sample_from_precision(
-                self.coef_,
-                self._precision_factor,
-                size=size,
-                random_state=self.random_state_,
-            )
+        eta = _weight_space_rows(
+            self._precision_factor, X_sample, self.coef_, size, self.random_state_
         )
-
-        eta = _rows_from_weight_draws(param_samples, X_sample)
-
-        return self._inverse_link(cast(NDArray[np.float64], eta))
+        return self._inverse_link(eta)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -3063,9 +3037,4 @@ scipy.sparse.csc_array
 
         self.cov_inv_ = prior_decay * self.cov_inv_
         if "_precision_factor" in self.__dict__:
-            if self.sparse:
-                factor = self._precision_factor
-                assert isinstance(factor, SparseFactor)
-                self._precision_factor = scale_factor(factor, prior_decay)
-            else:
-                del self._precision_factor
+            self._precision_factor = scale_factor(self._precision_factor, prior_decay)

@@ -13,8 +13,6 @@ from bayesianbandits._empirical_bayes import (
     _diagonal_trace_approx,
     _dirichlet_multinomial_log_evidence,
     _factorization_stats,
-    _takahashi_diagonal,
-    _takahashi_trace,
     accumulate_sufficient_stats,
     mackay_update_glm,
     mackay_update_nig,
@@ -26,6 +24,7 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     DenseFactor,
     create_sparse_factor,
     scale_factor,
+    takahashi_diagonal,
 )
 
 # ---------------------------------------------------------------------------
@@ -209,11 +208,11 @@ def small_spd_matrix() -> NDArray[np.float64]:
 
 
 # ---------------------------------------------------------------------------
-# 1. ScaledSparseFactor logdet
+# 1. Scaled factor logdet
 # ---------------------------------------------------------------------------
 
 
-class TestScaledSparseFactorLogdet:
+class TestScaledFactorLogdet:
     def test_scaled_logdet(self, small_spd_matrix: NDArray[np.float64]) -> None:
         """Verify log|sP| = p·log(s) + log|P|."""
         scale = 3.7
@@ -249,7 +248,7 @@ class TestTakahashiDiagonal:
 
         L_dense = np.linalg.cholesky(M)
         L_csc = csc_array(L_dense)
-        result_diag = _takahashi_diagonal(L_csc)
+        result_diag = takahashi_diagonal(L_csc)
 
         np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
 
@@ -265,7 +264,7 @@ class TestTakahashiDiagonal:
 
         L_dense = np.linalg.cholesky(M_dense)
         L_csc = csc_array(L_dense)
-        result_diag = _takahashi_diagonal(L_csc)
+        result_diag = takahashi_diagonal(L_csc)
 
         np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
 
@@ -274,7 +273,7 @@ class TestTakahashiDiagonal:
         """Takahashi on identity without SparseFactor: diag(I⁻¹) = ones."""
         p = 10
         L_csc = csc_array(np.eye(p))
-        result_diag = _takahashi_diagonal(L_csc)
+        result_diag = takahashi_diagonal(L_csc)
         np.testing.assert_allclose(result_diag, np.ones(p), atol=1e-14)
 
     def test_sparse_spd_cholmod_or_superlu(self) -> None:
@@ -289,7 +288,7 @@ class TestTakahashiDiagonal:
 
         sparse_M = csc_array(M)
         factor = create_sparse_factor(sparse_M)
-        result_trace = _takahashi_trace(factor)
+        result_trace = factor.trace_inv()
 
         np.testing.assert_allclose(result_trace, expected_trace, atol=1e-10)
 
@@ -305,7 +304,7 @@ class TestTakahashiDiagonal:
         sparse_M = csc_array(M_dense)
         factor = create_sparse_factor(sparse_M)
         L = factor.get_L_csc()
-        result_diag = _takahashi_diagonal(L)
+        result_diag = takahashi_diagonal(L)
 
         # Trace is permutation-invariant, so compare sorted diagonals
         np.testing.assert_allclose(
@@ -313,7 +312,7 @@ class TestTakahashiDiagonal:
         )
 
     def test_scaled_sparse_factor(self) -> None:
-        """Takahashi trace through ScaledSparseFactor."""
+        """Takahashi trace through a scaled factor."""
         rng = np.random.default_rng(99)
         p = 5
         A = rng.standard_normal((p, p))
@@ -325,7 +324,7 @@ class TestTakahashiDiagonal:
         sparse_M = csc_array(M)
         factor = create_sparse_factor(sparse_M)
         scaled = scale_factor(factor, s)
-        result_trace = _takahashi_trace(scaled)
+        result_trace = scaled.trace_inv()
 
         np.testing.assert_allclose(result_trace, expected_trace, atol=1e-10)
 
@@ -335,7 +334,7 @@ class TestTakahashiDiagonal:
         M = csc_array(np.eye(p))
         factor = create_sparse_factor(M)
         L = factor.get_L_csc()
-        result_diag = _takahashi_diagonal(L)
+        result_diag = takahashi_diagonal(L)
         np.testing.assert_allclose(result_diag, np.ones(p), atol=1e-14)
 
 

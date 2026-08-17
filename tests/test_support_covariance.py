@@ -70,7 +70,7 @@ def test_support_of_finds_exactly_the_touched_columns():
 def test_compact_columns_matches_fancy_indexing():
     rng = np.random.default_rng(1)
     X, support = make_design(400, 30, 12, rng)
-    assert_allclose(sc._compact_columns(X, support).todense(), X[:, support].todense())
+    assert_allclose(sc.compact_columns(X, support).todense(), X[:, support].todense())
 
 
 def test_support_covariance_equals_the_principal_submatrix():
@@ -95,9 +95,10 @@ def test_support_covariance_handles_a_single_column():
     assert_allclose(S, np.linalg.inv(precision.toarray())[7:8, 7:8], atol=1e-10)
 
 
-def test_support_covariance_solves_against_a_fortran_ordered_rhs():
-    """CHOLMOD's dense format is column-major, so a C-ordered right-hand
-    side is copied in full before the solve begins."""
+def test_support_covariance_solves_against_a_sparse_rhs():
+    """``E_U`` is ``|U|`` ones; handing it over sparse lets a partitioned
+    factor work at its block rows only, never touching an
+    ``(n_features, k)`` dense buffer."""
     rng = np.random.default_rng(11)
     p = 300
     factor = create_sparse_factor(make_precision(p, rng))
@@ -106,7 +107,7 @@ def test_support_covariance_solves_against_a_fortran_ordered_rhs():
 
     real_solve = factor.solve
     with mock.patch.object(
-        factor, "solve", lambda b: seen.append(b.flags.f_contiguous) or real_solve(b)
+        factor, "solve", lambda b: seen.append(sp.issparse(b)) or real_solve(b)
     ):
         sc.support_covariance(factor, support, p)
 
@@ -138,7 +139,7 @@ def test_sd_matches_the_half_solve_path():
     draw = sc.build(factor, X, p, budget=X.shape[0])
     assert draw is not None
     with gate_off():
-        expected = _marginal_predictive_sd(factor, X, precision.nnz)
+        expected = _marginal_predictive_sd(factor, X)
 
     assert_allclose(draw.sd(), expected, rtol=1e-10)
 
@@ -151,9 +152,9 @@ def test_marginal_predictive_sd_routes_through_the_support():
     factor = create_sparse_factor(precision)
     X, _ = make_design(p, 80, 12, rng)  # 12 columns, 80 rows: fires
 
-    routed = _marginal_predictive_sd(factor, X, precision.nnz)
+    routed = _marginal_predictive_sd(factor, X)
     with gate_off():
-        direct = _marginal_predictive_sd(factor, X, precision.nnz)
+        direct = _marginal_predictive_sd(factor, X)
 
     assert_allclose(routed, direct, rtol=1e-10)
 
@@ -168,11 +169,11 @@ def test_marginal_predictive_sd_declines_a_support_it_barely_beats():
     X, _ = make_design(p, 120, 100, rng)  # 100 columns, 120 rows
 
     with mock.patch.object(sc, "support_covariance") as never:
-        gated = _marginal_predictive_sd(factor, X, precision.nnz)
+        gated = _marginal_predictive_sd(factor, X)
     never.assert_not_called()
 
     with gate_off():
-        direct = _marginal_predictive_sd(factor, X, precision.nnz)
+        direct = _marginal_predictive_sd(factor, X)
     assert_allclose(gated, direct, rtol=1e-10)
 
 

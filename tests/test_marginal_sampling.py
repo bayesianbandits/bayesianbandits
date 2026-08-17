@@ -102,7 +102,7 @@ class TestMarginalSd:
         )
 
     def test_sparse_after_decay_uses_scaled_factor(self, sparse_solver):
-        """decay wraps the sparse factor in ScaledSparseFactor; the
+        """decay scales the cached sparse factor in place of refactoring; the
         marginal sd must solve through the scaling."""
         est, rng = _fit_sparse()
         X = sp.csc_array(

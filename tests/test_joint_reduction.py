@@ -46,9 +46,7 @@ def _sparse_X(rng, n_rows, d, nnz_per_row=20, n_distinct=None):
 
 
 def _route(est, X, size, d):
-    return build_joint_reduction(
-        est._precision_factor, X, d, size, est.sparse, est._precision_nnz
-    )
+    return build_joint_reduction(est._precision_factor, X, d, size, est.sparse)
 
 
 class TestRouteSelection:

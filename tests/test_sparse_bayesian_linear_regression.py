@@ -14,29 +14,21 @@ from bayesianbandits._sparse_bayesian_linear_regression import (
     DenseFactor,
     SparseSolver,
     create_sparse_factor,
-    multivariate_normal_sample_from_sparse_precision,
-    multivariate_t_sample_from_precision,
     scale_factor,
 )
 
 
 @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
 @pytest.mark.parametrize("size", [1, 10])
-def test_multivariate_normal_sample_from_sparse_precision_ill_conditioned_matrices(
-    size, solver
-):
+def test_sample_at_ill_conditioned_matrices(size, solver):
     this_file_path = Path(__file__)
     test_data_dir = this_file_path.parent / "ill_conditioned_matrices"
     for file_path in test_data_dir.glob("*"):
         sparse_array = joblib.load(file_path)
         factor = create_sparse_factor(sparse_array, solver=solver)
-        samples = multivariate_normal_sample_from_sparse_precision(
-            mean=None, factor=factor, size=size
-        )
-        if size != 1:
-            assert samples.shape == (size, sparse_array.shape[0])
-        else:
-            assert samples.shape == (sparse_array.shape[0],)
+        samples = factor.sample_at(None, size, np.random.default_rng(0))
+        assert samples.shape == (sparse_array.shape[0], size)
+        assert np.isfinite(samples).all()
 
 
 class TestSparseFactor:
@@ -58,7 +50,7 @@ class TestSparseFactor:
             for file in Path(__file__).parent.glob("ill_conditioned_matrices/*")
         ],
     )
-    def test_colorize_ill_conditioned_matrices(self, matrix):
+    def test_sample_at_ill_conditioned_matrices(self, matrix):
         """
         These aren't actually going to be the same, but they should be close. We'll
         test by taking a large number of samples and checking that the variances are
@@ -71,9 +63,12 @@ class TestSparseFactor:
             sp.csc_array(matrix), solver=SparseSolver.CHOLMOD
         )
 
-        random_samples = np.random.default_rng(0).normal(size=(1000, matrix.shape[0]))
-        superlu_samples = superlu_factor.colorize(random_samples.T).T
-        cholmod_samples = cholmod_factor.colorize(random_samples.T).T
+        superlu_samples = superlu_factor.sample_at(
+            None, 1000, np.random.default_rng(0)
+        ).T
+        cholmod_samples = cholmod_factor.sample_at(
+            None, 1000, np.random.default_rng(0)
+        ).T
 
         assert_allclose(
             superlu_samples.var(axis=0), cholmod_samples.var(axis=0), rtol=0.5
@@ -104,9 +99,7 @@ class TestSparseFactor:
         factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         scipy_cov = Covariance.from_precision(precision_matrix)
 
-        sparse_samples = multivariate_normal_sample_from_sparse_precision(
-            mean=None, factor=factor, size=80000, random_state=0
-        )
+        sparse_samples = factor.sample_at(None, 80000, np.random.default_rng(0)).T
         scipy_samples = multivariate_normal.rvs(
             mean=None,
             cov=scipy_cov,  # type: ignore
@@ -172,9 +165,9 @@ class TestSparseFactor:
         factor = create_sparse_factor(sp.csc_array(precision_matrix), solver=solver)
         scipy_cov = Covariance.from_precision(precision_matrix)
 
-        sparse_samples = multivariate_t_sample_from_precision(
-            loc=None, factor=factor, size=80000, random_state=0, df=300
-        )
+        rng = np.random.default_rng(0)
+        x = rng.chisquare(300, 80000) / 300
+        sparse_samples = factor.sample_at(None, 80000, rng).T / np.sqrt(x)[:, None]
         scipy_samples = multivariate_t_sample_from_covariance(
             loc=None,
             shape=scipy_cov,
@@ -222,14 +215,17 @@ class TestRefactorize:
         assert_allclose(refactored.logdet(), fresh.logdet(), rtol=1e-12)
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
-    def test_refactorize_colorize(self, spd_matrices, solver):
+    def test_refactorize_sample_at(self, spd_matrices, solver):
         A1, A2 = spd_matrices
-        z = np.random.default_rng(1).standard_normal(A1.shape[0])
 
         fresh = create_sparse_factor(A2, solver=solver)
         refactored = create_sparse_factor(A1, solver=solver).refactorize(A2)
 
-        assert_allclose(refactored.colorize(z), fresh.colorize(z), rtol=1e-12)
+        assert_allclose(
+            refactored.sample_at(None, 3, np.random.default_rng(1)),
+            fresh.sample_at(None, 3, np.random.default_rng(1)),
+            rtol=1e-12,
+        )
 
     def test_superlu_refactorize_rejects_a_nonsymmetric_matrix(self):
         """``refactorize`` re-runs the factorization, so it repeats the
@@ -252,20 +248,28 @@ class TestRefactorize:
         factor.refactorize(A2)
         assert factor._precision is A2
 
-    def test_scaled_factor_refactorize_unwraps(self, spd_matrices):
-        """ScaledSparseFactor.refactorize delegates to inner factor."""
+    def test_scaled_factor_refactorize_resets_the_scale(self, spd_matrices):
+        """``refactorize`` yields a factor of the new matrix itself: the
+        scale a view carried is dropped, and the result agrees with a
+        fresh factorization."""
         A1, A2 = spd_matrices
-        factor = create_sparse_factor(A1, solver=SparseSolver.CHOLMOD)
-        scaled = scale_factor(factor, 2.0)
+        scaled = scale_factor(
+            create_sparse_factor(A1, solver=SparseSolver.CHOLMOD), 2.0
+        )
+        assert scaled._scale == 2.0
         refactored = scaled.refactorize(A2)
         assert isinstance(refactored, CholmodSparseFactor)
-        assert refactored is factor
+        assert refactored._scale == 1.0
+        fresh = create_sparse_factor(A2, solver=SparseSolver.CHOLMOD)
+        b = np.random.default_rng(0).standard_normal(A2.shape[0])
+        assert_allclose(refactored.solve(b), fresh.solve(b), rtol=1e-12)
 
 
 class TestHalfSolve:
-    """half_solve is the transpose of the colorize operator.
+    """half_solve is the transpose of the sampling operator.
 
-    If M is the colorize map (M @ M.T = inv(P)), half_solve applies M.T,
+    If M is the map sample_at applies to its normals (M @ M.T = inv(P)),
+    half_solve applies M.T,
     so B = half_solve(X.T) satisfies B.T @ B = X @ inv(P) @ X.T -- the
     projected covariance, computed with one triangular solve per column
     against the cached factor and without ever forming inv(P).
@@ -314,23 +318,26 @@ class TestHalfSolve:
         assert B.shape == (self.D, 8)
         self._assert_gram_matches(B, self._reference(precision, X))
 
-    def test_dense_colorize_accepts_a_vector(self, precision):
-        """Every factor in the ``PrecisionFactor`` union takes a 1-D ``z``
-        (``test_refactorize_colorize`` pins it for the sparse ones), so a
-        caller dispatching on the union must not break on the dense one.
-        ``dtrsm`` needs a 2-D right-hand side, hence the explicit reshape
-        the sparse implementations get for free."""
+    def test_dense_sample_at_is_u_inverse_of_the_stream(self, precision):
+        """The dense draw is ``U⁻¹ z`` for ``z`` drawn ``(size, p)`` and
+        transposed -- pinned, because it is what makes a dense
+        ``sample`` reproducible across releases for a given seed."""
         from scipy.linalg import cholesky, solve_triangular
 
         dense = DenseFactor(
             _U=cholesky(precision.toarray(), lower=False), _n_features=self.D
         )
-        z = np.random.default_rng(3).standard_normal(self.D)
+        z = np.random.default_rng(3).standard_normal((2, self.D))
 
-        got = dense.colorize(z)
-        assert got.shape == (self.D,)
-        assert_allclose(got, dense.colorize(z[:, None])[:, 0], rtol=1e-15)
-        assert_allclose(got, solve_triangular(dense._U, z, lower=False), rtol=1e-10)
+        got = dense.sample_at(None, 2, np.random.default_rng(3))
+        assert got.shape == (self.D, 2)
+        assert_allclose(got, solve_triangular(dense._U, z.T, lower=False), rtol=1e-10)
+        # gathering rows is a gather, not a different draw
+        assert_allclose(
+            dense.sample_at(np.array([2, 0]), 2, np.random.default_rng(3)),
+            got[[2, 0]],
+            rtol=0,
+        )
 
     def test_dense_trace_inv_rejects_a_singular_factor(self, precision):
         """``dtrtri`` reports singularity through ``info`` and leaves the

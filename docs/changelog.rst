@@ -76,7 +76,8 @@ Unreleased
   since :math:`X = X_U E_U^T`). The choice is
   ``min(size, n_rows, |U|)``, three known integers with no calibration
   constants; at ``size = 1`` nothing beats weight space, so Thompson
-  sampling is bit-for-bit unchanged. Over 36 dense shapes (:math:`p` in
+  sampling still draws there (the entry below changes how cheaply that
+  route runs, not which route is chosen). Over 36 dense shapes (:math:`p` in
   {100, 1000}, ``n_rows`` up to 320, ``size`` up to 1000): no regressions,
   speedups to 45.9x. Sparse: :math:`p` = 100,000, one row, ``size`` = 1000
   goes from 6.0 s to 7.0 ms; a :math:`2^{20}`-feature agent with 96 arms
@@ -95,6 +96,127 @@ Unreleased
   deliberately: tightening it would need a fitted constant, and dense
   cost models are dependent on a BLAS threading configuration the
   library cannot observe.
+
+- Sparse factors factor only the features some observation has touched.
+  ``Λ = αI + Σ x_t x_tᵀ`` puts an off-diagonal entry between two
+  features only when one observation touched both, so a feature no
+  observation has touched holds nothing but its diagonal -- exactly --
+  and ``Λ`` is block diagonal between those features and the rest.
+  Their posterior is an independent scalar with variance ``1/Λ_jj``.
+  ``create_sparse_factor`` now detects them from the stored pattern
+  (both sides: the column's own length and how many entries anywhere
+  reference its row, so triangular storage cannot fool it) and hands
+  CHOLMOD or SuperLU only the observed block; every factor operation
+  scatters its result back across the split. Nothing above the factor
+  changes, and when nothing is trivial the block is the whole matrix,
+  as before. On a production model hashing into :math:`2^{20}` features
+  of which 26,119 had been observed (97.5% trivial), factorization went
+  from 2.9 s to 0.39 s and a 32-row ``partial_fit`` from 3.1 s to
+  0.43 s; ``sample(size=1)`` over 96 arms from 27.7 ms to 13.8 ms,
+  ``sample(size=8)`` 253 ms to 97 ms, ``sample_reward_space(size=1)``
+  8.0 s to 2.3 s. The posterior is unchanged to rounding: the support
+  covariance over 49 production features agrees to 9e-16 with the
+  unpartitioned factor (#269)
+
+- The precision factors draw their own weight-space normals.
+  ``sample_at(features, size, rng)`` replaces ``colorize`` and
+  ``colorize_at`` on every factor, dense and sparse: zero-mean draws of
+  ``w ~ N(0, Λ⁻¹)`` at the features asked for, and the factor decides how
+  many normals that takes. A partitioned sparse factor draws one per
+  block feature plus one per *distinct* never-observed feature in the
+  query, never one per never-observed feature it was not asked about;
+  a dense factor, or a sparse one with nothing trivial, draws them all,
+  bitwise as before. A repeated feature repeats its draw, and callers
+  read the result through the design matrix, so rows touching one
+  feature share it: the joint law of ``Xw``, enforced by the interface
+  rather than by care. Every ``sample`` now falls back to one
+  weight-space path for dense and sparse ``X`` alike, and the internal
+  ``multivariate_normal_sample_from_precision``,
+  ``multivariate_t_sample_from_precision`` and the
+  ``..._from_sparse_precision`` alias are removed with the branches
+  they served. On the production model above, ``sample(size=1)`` over
+  96 arms goes from 13.8 ms to 3.2 ms and ``sample(size=8)`` from
+  97 ms to 8.3 ms; end to end from the branch tip, ``sample(size=1)``
+  is 28.1 ms to 3.2 ms (#269)
+
+- The support-covariance route hands the factor a sparse right-hand
+  side, and the sparse factors solve a sparse right-hand side at their
+  block rows only. ``E_U`` is ``|U|`` ones; building it as a dense
+  ``(n_features, k)`` block, and scattering a dense ``(n_features, k)``
+  result back to read ``|U|`` rows of it, cost the route
+  ``O(n_features · |U|)`` however small the observed block -- so once
+  weight-space solves ran on the block, the route was mispriced by the
+  block-to-matrix ratio wherever its gate fired. Neither backend is
+  handed the sparse operand itself: its entries are classified in
+  ``O(nnz log n)``, the observed rows densified (``m x k``) for one
+  BLAS-3 solve, and the result assembled straight into CSC. That also
+  closes a correctness hole -- CHOLMOD's own sparse solve reads the
+  operand's index arrays with the factor's integer type, and an
+  int64-indexed operand (what scipy returns from row-indexing a CSC)
+  against an int32 factor gives the wrong answer silently -- and gives
+  SuperLU a real sparse-RHS solve, where it re-factorized the whole
+  matrix through ``spsolve`` on every call. On the production model:
+  ``support_covariance`` over 49 features 398 ms to 71 ms, over 489
+  features 4.0 s to 0.7 s; ``sample(size=500)`` over one context of 96
+  arms 854 ms to 87 ms and over ten stacked contexts 8.5 s to 0.8 s
+  (#269)
+
+- ``half_solve`` takes a sparse right-hand side and returns it compact,
+  and the marginal, reward-space and row-side joint paths hand it one.
+  Every caller reads a half-solve only through the Gram ``Bᵀ B``, and
+  for a sparse operand the rows at never-observed features it does not
+  touch are exactly zero -- so a partitioned factor now returns the
+  block rows plus one row per distinct never-observed feature touched,
+  ``(n_factored + t, k)``, with the same Gram, and never forms the
+  ``(n_features, k)`` operand or result those paths used to densify per
+  block: ``Θ(n_rows · n_features)`` on the marginal path became
+  ``Θ(n_rows · n_factored)``. ``PrecisionFactor.n_factored`` -- the
+  features the factor actually factors, all of them for a dense factor
+  -- is the unit every scratch bound and route gate on those paths now
+  uses in place of ``n_features``, so at :math:`2^{20}` features with 26k
+  observed the marginal path takes 80 rows per block instead of 2, and
+  the gates price the per-row path at what it costs. On the production
+  model, ``sample_marginal(size=1)`` over 96 arms goes from 1.7 s to
+  90 ms and over ten stacked contexts from 17.3 s to 0.97 s;
+  ``sample_reward_space(size=1)`` over 96 arms from 8.3 s to 0.13 s
+  (#269)
+
+- Scaling is a field on every precision factor, not a wrapper.
+  ``ScaledSparseFactor`` is removed; ``CholmodSparseFactor``,
+  ``SuperLUSparseFactor`` and ``DenseFactor`` carry ``_scale``, and
+  ``scale_factor`` returns a shallow copy with the scalar composed in,
+  for any of the three. ``decay`` scales the cached factor on dense
+  models too, where it used to discard it and refactorize at the next
+  pull -- :math:`O(d^3)` per decay -- and the Normal-Inverse-Gamma
+  ``shape_`` composes ``a/b`` into the cached factor instead of building
+  a scaled copy of the dense triangle by hand; a dense ``decay`` plus
+  pull at :math:`d` = 1,000 goes from 14.7 ms to 1.9 ms. Dense NIG draws
+  now differ from before at rounding (the scale rides in ``dtrsm``'s
+  ``alpha`` rather than in a rescaled triangle); everything else on the
+  dense side is bitwise. ``refactorize`` yields a factor of the new
+  matrix itself, scale reset, and invalidates any scaled views of the
+  same factorization, as the wrapper's did (#269)
+
+- A sparse weight-space ``sample`` never materializes the weight vector.
+  The draw :math:`w = \hat{w} + Mz` is read only through ``X``, so the
+  passes that followed the triangular solve (undoing the factor's
+  fill-reducing permutation, a scaled factor's rescale, adding
+  :math:`\hat{w}`, and the CSC product's own sweep over all :math:`p`
+  columns) spent :math:`O(\text{size} \cdot p)` on entries no prediction
+  row touches. They now run on the :math:`|U|` columns ``X`` does touch,
+  leaving one :math:`O(p)` scan for the support and
+  :math:`O(\mathrm{nnz}(X))` arithmetic; only the normals and the solve
+  stay proportional to :math:`p`, and neither is avoidable in weight
+  space. At :math:`p = 2^{20}` with 96 arms over a 49-column support,
+  ``NormalInverseGammaRegressor.sample`` at ``size = 1`` falls from
+  27.9 ms to 22.7 ms, of which 20.4 ms is now the normals plus the one
+  solve. The same reduction serves ``NormalRegressor`` and
+  ``BayesianGLM``, and the whole weight-space regime rather than
+  ``size = 1`` alone (1.33x at ``size = 8``). Results agree with the
+  previous path to 3e-16 rather than bitwise, since the per-draw scalars
+  are applied once to the reduced draw instead of elementwise to
+  :math:`p` entries. A dense ``X`` against a sparse model reads every
+  column and is left on the old path, unchanged (#269)
 
 - The reward-space, support-covariance, weight-space, and dense sampling
   paths are ``scipy.linalg`` throughout (``dgeqrf``, ``dgemm``,

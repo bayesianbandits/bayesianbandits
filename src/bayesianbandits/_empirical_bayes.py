@@ -20,9 +20,7 @@ from scipy.special import digamma, gammaln, polygamma
 
 from ._blas_helpers import dsymv
 from ._sparse_bayesian_linear_regression import (
-    DenseFactor,
     PrecisionFactor,
-    SparseFactor,
 )
 
 _LOG_2PI = math.log(2.0 * math.pi)
@@ -38,61 +36,6 @@ _LOG_2PI = math.log(2.0 * math.pi)
 # produce such ill-conditioning.  Once enough data arrives (n ≥ p),
 # the updates become well-behaved and start flowing normally.
 _MAX_BETA_ALPHA_RATIO = 1e10
-
-
-def _takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
-    """Compute diag((LL')⁻¹) via Takahashi recursion (selected inversion).
-
-    Given a lower triangular CSC matrix L where LL' = A, computes the
-    diagonal of A⁻¹ exactly using backward recursion through L's sparsity
-    structure.  Cost is O(Σⱼ nⱼ²) where nⱼ is the number of sub-diagonal
-    entries in column j — the same order as the Cholesky factorization
-    itself.
-
-    Delegates to a Cython implementation for performance.
-
-    Parameters
-    ----------
-    L_csc : csc_array
-        Lower triangular Cholesky factor in CSC format.
-
-    Returns
-    -------
-    NDArray[np.float64]
-        Diagonal of (LL')⁻¹, length p.
-
-    References
-    ----------
-    .. [1] Takahashi, K., Fagan, J., & Chin, M.-S. (1973). "Formation of
-       a sparse bus impedance matrix and its application to short circuit
-       study." 8th PICA Conference Proceedings.
-    """
-    from ._takahashi import takahashi_diagonal as _cy_impl
-
-    p = cast(tuple[int, int], L_csc.shape)[0]
-    if not L_csc.has_sorted_indices:
-        L_csc = L_csc.copy()
-        L_csc.sort_indices()
-    return _cy_impl(
-        L_csc.data,
-        L_csc.indices.astype(np.int32),
-        L_csc.indptr.astype(np.int32),
-        p,
-    )
-
-
-def _takahashi_trace(factor: SparseFactor) -> float:
-    """Compute tr(Λ⁻¹) exactly via Takahashi recursion.
-
-    Extracts the Cholesky factor L from the SparseFactor, runs Takahashi
-    diagonal recursion, and returns sum(diag((LL')⁻¹)).
-
-    The trace is permutation-invariant, so the result is correct regardless
-    of fill-reducing permutation order.
-    """
-    L = factor.get_L_csc()
-    Z_diag = _takahashi_diagonal(L)
-    return float(np.sum(Z_diag))
 
 
 def _diagonal_trace_approx(
@@ -122,26 +65,15 @@ def _factorization_stats(
     ----------
     precision : dense or sparse matrix
     factor : pre-computed factorization (DenseFactor or SparseFactor)
-    trace_method : ``"auto"`` uses Takahashi recursion for sparse and
-        Cholesky for dense.  ``"diagonal"`` uses the fast O(p)
-        approximation tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ.
+    trace_method : ``"auto"`` takes the exact trace from the factor
+        (Takahashi recursion for sparse, the Cholesky inverse for
+        dense).  ``"diagonal"`` uses the fast O(p) approximation
+        tr(Λ⁻¹) ≈ Σ 1/Λᵢᵢ, the one case that reads the precision matrix
+        rather than the factorization of it.
     """
     if trace_method == "diagonal":
-        tr_inv = _diagonal_trace_approx(precision)
-        if isinstance(factor, DenseFactor):
-            ld = factor.logdet()
-        else:
-            ld = factor.logdet()
-        return ld, tr_inv
-
-    # trace_method == "auto" (default)
-    if isinstance(factor, DenseFactor):
-        ld = factor.logdet()
-        tr_inv = factor.trace_inv()
-    else:
-        ld = factor.logdet()
-        tr_inv = _takahashi_trace(factor)
-    return ld, tr_inv
+        return factor.logdet(), _diagonal_trace_approx(precision)
+    return factor.logdet(), factor.trace_inv()
 
 
 def accumulate_sufficient_stats(

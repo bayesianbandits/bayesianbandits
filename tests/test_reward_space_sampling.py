@@ -105,7 +105,7 @@ class TestPredictiveCholesky:
         assert_allclose(mean, np.asarray(X @ est.coef_).ravel())
 
     def test_sparse_after_decay_solves_through_the_scaling(self, sparse_solver):
-        """``decay`` wraps the factor in ``ScaledSparseFactor``."""
+        """``decay`` scales the cached factor rather than refactoring."""
         est, rng = _fit_sparse()
         X = sp.csc_array(
             sp.random(6, 400, density=0.05, random_state=3)  # type: ignore[call-arg]

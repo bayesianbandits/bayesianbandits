@@ -40,7 +40,7 @@ def support_of(X: csc_array) -> NDArray[np.intp]:
     return cast(NDArray[np.intp], np.flatnonzero(indptr[1:] != indptr[:-1]))
 
 
-def _compact_columns(X: csc_array, support: NDArray[np.intp]) -> csc_array:
+def compact_columns(X: csc_array, support: NDArray[np.intp]) -> csc_array:
     """``X[:, support]`` when ``support`` lists every non-empty column:
     a re-slice of ``indptr`` alone, sharing ``data`` and ``indices``."""
     n_rows = cast("tuple[int, int]", X.shape)[0]
@@ -54,26 +54,37 @@ def support_covariance(
     factor: PrecisionFactor, support: NDArray[np.intp], n_features: int
 ) -> NDArray[np.float64]:
     """``S = (Λ⁻¹)_{U,U}``: solve ``Λ Y = E_U`` in column blocks and keep
-    the ``U`` rows of each result."""
+    the ``U`` rows of each result.
+
+    ``E_U`` goes in sparse -- it is ``|U|`` ones -- so the factor does
+    the work at the features it actually factors: a partitioned sparse
+    factor densifies only its block rows, ``O(m k)`` for ``m`` observed
+    features, where a dense ``(n_features, k)`` right-hand side would
+    cost ``O(n_features k)`` to build, scatter and read back for the
+    ``|U|`` rows wanted. The block bound is still stated in
+    ``n_features``: it caps the result's footprint when nothing is
+    trivial, and is merely conservative when the block is small.
+    """
     n_u = support.size
     block = int(np.clip(_SCRATCH_ELEMS // max(1, n_features), 1, n_u))
-    S = np.empty((n_u, n_u), dtype=np.float64)
-    # Fortran order, and sliced from the left so the slice stays
-    # F-contiguous: CHOLMOD's dense format is column-major, so a
-    # C-ordered right-hand side is transposed into a full second copy of
-    # this (n_features, block) buffer before the solve begins.
-    rhs = np.zeros((n_features, block), dtype=np.float64, order="F")
+    S = np.zeros((n_u, n_u), dtype=np.float64)
+    # One O(n_features) table for the whole call; reading the ``U`` rows
+    # of each result through it is then O(nnz), where row-indexing the
+    # sparse result would be O(n_features) again per block.
+    lut = np.full(n_features, -1, dtype=np.intp)
+    lut[support] = np.arange(n_u)
     for start in range(0, n_u, block):
         stop = min(n_u, start + block)
         width = stop - start
-        cols = np.arange(width)
-        rhs[support[start:stop], cols] = 1.0
-        # reshape rather than trust every backend to keep a 2-D RHS 2-D
-        out = np.asarray(factor.solve(rhs[:, :width]), dtype=np.float64).reshape(
-            n_features, width
+        rhs = csc_array(
+            (np.ones(width), (support[start:stop], np.arange(width))),
+            shape=(n_features, width),
         )
-        S[:, start:stop] = out[support, :]
-        rhs[support[start:stop], cols] = 0.0
+        out = cast(csc_array, factor.solve(rhs))  # type: ignore[arg-type]
+        rows = lut[out.indices]
+        cols = np.repeat(np.arange(start, stop), np.diff(out.indptr))
+        keep = rows >= 0
+        S[rows[keep], cols[keep]] = out.data[keep]
     # Λ⁻¹ is symmetric; the solves are not bitwise so average the halves.
     return cast(NDArray[np.float64], 0.5 * (S + S.T))
 
@@ -206,4 +217,4 @@ def build(
     if accept is not None and not accept(int(support.size)):
         return None
     S = support_covariance(factor, support, n_features)
-    return SupportDraw(_factorize(S), _compact_columns(Xc, support))
+    return SupportDraw(_factorize(S), compact_columns(Xc, support))
