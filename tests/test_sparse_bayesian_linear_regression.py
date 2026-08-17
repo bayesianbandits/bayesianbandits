@@ -79,6 +79,19 @@ class TestSparseFactor:
             superlu_samples.var(axis=0), cholmod_samples.var(axis=0), rtol=0.5
         )
 
+    def test_superlu_solve_accepts_a_sparse_rhs(self, precision_matrix):
+        """A sparse ``b`` cannot go through the cached triangular factor,
+        so ``solve`` routes it to ``spsolve`` instead."""
+        precision = sp.csc_array(precision_matrix)
+        factor = create_sparse_factor(precision, solver=SparseSolver.SUPERLU)
+        n = precision.shape[0]
+        b = sp.csc_array(np.eye(n)[:, :2])
+
+        got = factor.solve(b)
+        got = np.asarray(got.todense() if sp.issparse(got) else got).reshape(n, 2)
+        want = np.linalg.solve(np.asarray(precision_matrix), b.toarray())
+        assert_allclose(got, want, atol=1e-8)
+
     def test_umfpack_and_superlu_errors_when_not_symmetric_and_positive_definite(
         self,
     ):
@@ -218,6 +231,15 @@ class TestRefactorize:
 
         assert_allclose(refactored.colorize(z), fresh.colorize(z), rtol=1e-12)
 
+    def test_superlu_refactorize_rejects_a_nonsymmetric_matrix(self):
+        """``refactorize`` re-runs the factorization, so it repeats the
+        symmetry check that ``create_sparse_factor`` makes."""
+        factor = create_sparse_factor(
+            sp.csc_array(np.eye(2) * 3.0), solver=SparseSolver.SUPERLU
+        )
+        with pytest.raises(ValueError, match="symmetric"):
+            factor.refactorize(sp.csc_array(np.array([[0.0, 2.0], [1.0, 0.0]])))
+
     def test_cholmod_refactorize_returns_same_object(self, spd_matrices):
         A1, A2 = spd_matrices
         factor = create_sparse_factor(A1, solver=SparseSolver.CHOLMOD)
@@ -291,6 +313,24 @@ class TestHalfSolve:
         B = factor.half_solve(X.T)
         assert B.shape == (self.D, 8)
         self._assert_gram_matches(B, self._reference(precision, X))
+
+    def test_dense_colorize_accepts_a_vector(self, precision):
+        """Every factor in the ``PrecisionFactor`` union takes a 1-D ``z``
+        (``test_refactorize_colorize`` pins it for the sparse ones), so a
+        caller dispatching on the union must not break on the dense one.
+        ``dtrsm`` needs a 2-D right-hand side, hence the explicit reshape
+        the sparse implementations get for free."""
+        from scipy.linalg import cholesky, solve_triangular
+
+        dense = DenseFactor(
+            _U=cholesky(precision.toarray(), lower=False), _n_features=self.D
+        )
+        z = np.random.default_rng(3).standard_normal(self.D)
+
+        got = dense.colorize(z)
+        assert got.shape == (self.D,)
+        assert_allclose(got, dense.colorize(z[:, None])[:, 0], rtol=1e-15)
+        assert_allclose(got, solve_triangular(dense._U, z, lower=False), rtol=1e-10)
 
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_single_column_rhs_keeps_2d_shape(self, precision, X, solver):
