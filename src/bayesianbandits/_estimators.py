@@ -42,6 +42,7 @@ from ._gaussian import (
     PosteriorApproximator,
     compute_effective_weights,
 )
+from ._memory import MemoryUsageMixin
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -57,7 +58,7 @@ ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 
-class DirichletClassifier(BaseEstimator, ClassifierMixin):
+class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     """
     Intercept-only Dirichlet-Multinomial classifier.
 
@@ -436,7 +437,7 @@ class DirichletClassifier(BaseEstimator, ClassifierMixin):
             self.known_alphas_[x.item()] *= decay_rate
 
 
-class GammaRegressor(BaseEstimator, RegressorMixin):
+class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     """
     Intercept-only Gamma-Poisson conjugate regression model.
 
@@ -1275,7 +1276,9 @@ class _RewardSpacePredictiveMixin:
         return X_pred
 
 
-class NormalRegressor(_RewardSpacePredictiveMixin, BaseEstimator, RegressorMixin):
+class NormalRegressor(
+    _RewardSpacePredictiveMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
+):
     """
     Bayesian linear regression with known noise variance.
 
@@ -2423,7 +2426,9 @@ def multivariate_t_sample_from_covariance(
     return _squeeze_output(samples)
 
 
-class BayesianGLM(_RewardSpacePredictiveMixin, BaseEstimator, RegressorMixin):
+class BayesianGLM(
+    _RewardSpacePredictiveMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
+):
     """
     Bayesian Generalized Linear Model with Laplace approximation.
 

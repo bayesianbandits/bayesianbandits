@@ -20,6 +20,8 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Concatenate, ParamSpec, Self, TypeGuard
 
+from ._memory import MemoryUsageMixin
+
 HAS_PANDAS = importlib.util.find_spec("pandas") is not None
 
 P = ParamSpec("P")
@@ -243,7 +245,7 @@ def apply_reward_function(
         return traditional_func(samples)
 
 
-class Arm(Generic[ContextType, TokenType]):
+class Arm(MemoryUsageMixin, Generic[ContextType, TokenType]):
     """Single arm of a multi-armed bandit.
 
     An arm pairs a Bayesian learner with an action token and an

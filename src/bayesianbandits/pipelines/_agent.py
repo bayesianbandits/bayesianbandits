@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 from typing_extensions import Self
 
 from .._arm import Arm, ContextType, TokenType
+from .._memory import MemoryUsageMixin
 from ..api import Agent, ContextualAgent, PolicyProtocol
 
 
@@ -54,7 +55,7 @@ def _transform_data(X: Any, steps: List[Tuple[str, Any]]) -> Any:
     return result
 
 
-class ContextualAgentPipeline(Generic[ContextType, TokenType]):
+class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
     """Pipeline that wraps a ContextualAgent.
 
     Transforms input data through preprocessing steps before delegating
@@ -250,7 +251,7 @@ class ContextualAgentPipeline(Generic[ContextType, TokenType]):
         return self.steps[ind]
 
 
-class NonContextualAgentPipeline(Generic[TokenType]):
+class NonContextualAgentPipeline(MemoryUsageMixin, Generic[TokenType]):
     """Pipeline that wraps an Agent.
 
     For non-contextual agents, preprocessing steps are not applied since

@@ -34,6 +34,8 @@ from scipy.sparse.linalg import (  # type: ignore
     use_solver,
 )
 
+from ._memory import MemoryUsageMixin
+
 use_solver(useUmfpack=False)
 
 try:
@@ -386,7 +388,7 @@ def _stacked_L(L_block: csc_array, trivial_diag: NDArray[np.float64]) -> csc_arr
 
 
 @dataclass
-class CholmodSparseFactor:
+class CholmodSparseFactor(MemoryUsageMixin):
     """A CHOLMOD factor over the observed block of a precision matrix, and
     the trivial diagonal beside it.
 
@@ -589,7 +591,7 @@ class CholmodSparseFactor:
 
 
 @dataclass
-class SuperLUSparseFactor:
+class SuperLUSparseFactor(MemoryUsageMixin):
     """A SuperLU decomposition over the observed block of a precision
     matrix, and the trivial diagonal beside it; see
     :class:`CholmodSparseFactor` for the layout."""
@@ -791,7 +793,7 @@ SparseFactor = CholmodSparseFactor | SuperLUSparseFactor
 
 
 @dataclass
-class DenseFactor:
+class DenseFactor(MemoryUsageMixin):
     """Wraps a LAPACK Cholesky factorization for solving and sampling.
 
     Stores the upper-triangular factor U where Λ = U^T U.  Every

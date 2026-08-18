@@ -13,11 +13,12 @@ from numpy.typing import NDArray
 from typing_extensions import Self
 
 from .._arm import Learner, resolve_marginal_sampler
+from .._memory import MemoryUsageMixin
 
 X_contra = TypeVar("X_contra", contravariant=True)
 
 
-class LearnerPipeline(Generic[X_contra]):
+class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
     """Pipeline that implements the Learner protocol with generic input type.
 
     Enables sklearn transformers to work with Bayesian learners by implementing
