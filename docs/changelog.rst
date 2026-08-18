@@ -32,25 +32,55 @@ Unreleased
 
 **New features**
 
+- ``sample_reward_space`` on ``NormalRegressor``,
+  ``NormalInverseGammaRegressor``, and ``BayesianGLM``: joint draws from
+  the exact posterior predictive, factored in reward space so per-draw
+  cost is independent of the feature count. Distributionally identical
+  to ``sample``; with ``block_size=k``, consecutive groups of ``k`` rows
+  are drawn jointly within and independently across groups (#269)
+
 - ``sample_marginal`` on ``NormalRegressor``, ``NormalInverseGammaRegressor``,
   and ``BayesianGLM``: iid draws from each prediction row's exact marginal
   posterior predictive, computed with one triangular half-solve per row
   against the cached precision factor (neither :math:`\Lambda^{-1}` nor any
   :math:`n \times n` matrix is ever formed, and per-draw cost is independent
-  of the feature count). ``Arm.sample_marginal``, ``LearnerPipeline.sample_marginal``,
-  and ``batch_sample_arms(..., marginal=True)`` forward to it, falling back
-  to joint ``sample`` for learners without it (or whose class overrides
-  ``sample`` without it). Unlike ``sample`` -- whose
-  rows within one draw share a weight vector -- draws are independent
-  across rows, so it serves per-row statistics only (#258)
+  of the feature count). ``Arm.sample_marginal`` and
+  ``LearnerPipeline.sample_marginal`` forward to it, falling back to joint
+  ``sample`` for learners without it (or whose class overrides ``sample``
+  without it). Unlike ``sample`` -- whose rows within one draw share a
+  weight vector -- draws are independent across rows, so it serves per-row
+  statistics only (#258)
 
 **Performance**
+
+- A number of performance updates to posterior sampling on
+  ``NormalRegressor``, ``NormalInverseGammaRegressor`` and ``BayesianGLM``,
+  none of which changes a distribution. Joint ``sample`` draws go through
+  the cheapest exact route for the call: weight space, the row-side
+  factor behind ``sample_reward_space``, or, for a sparse ``X``, a
+  covariance over the columns it touches. Sparse precision factors
+  factor only the features some observation has touched and carry the
+  rest as a diagonal, so factorization, updates and every sampling
+  path are sized by that block rather than by ``n_features``, and
+  memory no longer grows with the never-observed features a query
+  touches. The dense factor no longer materializes :math:`U^{-1}` on
+  every update, scaling is a field on every factor rather than a
+  wrapper, and the sampling paths keep to one BLAS thread pool and stop
+  copying ``X`` and their BLAS operands. Expected gains: on a sparse
+  model hashing into :math:`2^{20}` features of which ~26k had been
+  observed, factorization and a 32-row ``partial_fit`` about 5x faster,
+  Thompson ``sample`` over 96 arms about 4x (26 ms to 7 ms),
+  ``sample(size=8)`` about 30x, ``sample(size=500)`` from 37 s to under
+  0.1 s, and ``sample_marginal(size=500)`` about 20x (2.3 s to 0.1 s
+  over 96 arms, 22 s to 1 s over 960 rows); on dense models, ``size = 1``
+  pull-plus-update at :math:`d` = 1,000 about 10x, and large-``size``
+  joint draws up to ~45x on the shapes swept (#269)
 
 - ``UpperConfidenceBound``, ``EXP3A``, and ``EpsilonGreedy`` now draw
   through the marginal path (they consume only per-arm, per-context
   statistics, for which marginal draws are exact), giving large speedups
   for their Monte Carlo estimates, dense and sparse alike.
-  ``ThompsonSampling`` and joint ``sample`` are unchanged, byte-for-byte.
+  ``ThompsonSampling`` is unchanged, byte-for-byte.
   Custom policies can opt in by setting ``marginal_ok = True`` (declared
   on ``PolicyProtocol``), and subclasses of the built-in policies can
   opt out with ``marginal_ok = False``, which their ``__call__`` and the
@@ -74,7 +104,7 @@ Unreleased
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
   it. Neither mutates the validated array nor retains a reference to it,
   so the copy was pure overhead, costing O(nnz(X)) per draw on sparse
-  models. ``fit``, ``partial_fit``, and ``predict`` are unchanged (#265)
+  models. ``fit`` and ``partial_fit`` are unchanged (#265)
 
 **Behavioral changes**
 
@@ -86,8 +116,17 @@ Unreleased
   Carlo estimates no longer share weight draws, so finite-sample
   selection noise among near-tied arms increases; raise ``samples`` to
   compensate (marginal draws are much cheaper per draw), or opt the
-  policy out with ``marginal_ok = False``.
-  ``sample`` itself is bit-for-bit identical to previous versions (#258)
+  policy out with ``marginal_ok = False`` (#258)
+
+- Seeded ``sample`` trajectories change: a reduced draw consumes
+  ``n_rows`` or :math:`|U|` normals rather than one per feature, a
+  partitioned sparse factor draws one normal per observed feature plus
+  one per distinct never-observed feature the query touches, and dense
+  draws solve against ``U`` instead of multiplying by :math:`U^{-1}`,
+  which differs in the last bits. Every distribution is unchanged
+  (verified by per-row KS tests); Thompson sampling (``size = 1``) on a
+  sparse model whose every feature has been observed is bit-for-bit
+  unchanged (#269)
 
 1.4.0 (2026-07-31)
 ------------------

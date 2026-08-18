@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import Any, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg.blas import dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
+from scipy.linalg.blas import dgemm, dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
+from scipy.linalg.lapack import dgeqrf, dgeqrf_lwork  # type: ignore[attr-defined]
 from scipy.sparse import csc_array
 
-__all__ = ["dgemv", "dsymv", "dsyrk", "update_precision_dense", "compute_eta_dense"]
+__all__ = [
+    "dgemv",
+    "dsymv",
+    "dsyrk",
+    "update_precision_dense",
+    "compute_eta_dense",
+    "lower_predictive_sqrt",
+    "dense_matvec",
+    "dense_matmul_bt",
+    "standard_normal_f",
+    "affine_lower_factor",
+]
 
 _Array = Union[NDArray[Any], csc_array]
 
@@ -45,3 +57,93 @@ def compute_eta_dense(
     """
     eta = dsymv(prior_decay, cov_inv, coef)
     return dgemv(alpha, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True)
+
+
+def lower_predictive_sqrt(B: NDArray[np.float64], n_rows: int) -> NDArray[np.float64]:
+    """Lower-triangular ``L`` of shape ``(n_rows, n_rows)`` with ``L Lᵀ = Bᵀ B``.
+
+    ``B`` has shape ``(n_features, n_rows)`` and is **overwritten**.
+
+    ``L`` is the transposed ``R`` of ``B``'s QR, zero-padded when ``B``
+    has fewer rows than columns, so it is exact for rank-deficient input
+    (repeated prediction rows) where a Cholesky of ``Bᵀ B`` would fail.
+
+    Calls ``dgeqrf`` rather than ``numpy.linalg.qr``: numpy and scipy
+    bind separate copies of OpenBLAS with separate thread pools, and
+    alternating between them within one call parks and unparks both,
+    which dominates the runtime. Every routine on this path is therefore
+    taken from ``scipy.linalg``.
+    """
+    lwork = int(dgeqrf_lwork(B.shape[0], B.shape[1])[0])
+    qr, _tau, _work, _info = dgeqrf(B, lwork=lwork, overwrite_a=True)
+    R = np.triu(qr[: min(qr.shape)])
+    if R.shape[0] < n_rows:  # more prediction rows than features
+        R = np.vstack([R, np.zeros((n_rows - R.shape[0], n_rows))])
+    # Sign-flipping rows of R leaves Rᵀ R unchanged, so this only
+    # canonicalizes the factor to a non-negative diagonal.
+    signs = np.where(np.diagonal(R) < 0.0, -1.0, 1.0)
+    return cast(NDArray[np.float64], np.asfortranarray(R.T * signs, dtype=np.float64))
+
+
+def dense_matvec(A: NDArray[Any], x: NDArray[Any]) -> NDArray[np.float64]:
+    """``A @ x`` for dense ``A`` through ``dgemv``, so the reward-space
+    path never leaves scipy's BLAS pool (see :func:`lower_predictive_sqrt`).
+    A C-contiguous ``A`` is passed as its transpose with ``trans=1``, so
+    neither layout is copied.
+    """
+    A2 = np.asarray(A, dtype=np.float64)
+    x1 = np.asarray(x, dtype=np.float64).ravel()
+    if A2.flags.c_contiguous and not A2.flags.f_contiguous:
+        return cast(NDArray[np.float64], dgemv(1.0, A2.T, x1, trans=1))
+    return cast(NDArray[np.float64], dgemv(1.0, A2, x1))
+
+
+def dense_matmul_bt(A: NDArray[Any], B: NDArray[Any]) -> NDArray[np.float64]:
+    """``A @ B.T`` for dense ``A`` (m, k) and ``B`` (n, k) through ``dgemm``,
+    so the weight-space draw never leaves scipy's BLAS pool (see
+    :func:`lower_predictive_sqrt`).
+
+    ``dgemm`` wants Fortran-ordered operands, and a C-contiguous array's
+    transpose is Fortran-contiguous, so each operand is handed over in
+    whichever orientation it already has and the transposition is
+    expressed through ``trans_a``/``trans_b`` instead of a copy.  The
+    obvious ``dgemm(1.0, A, B, trans_b=1)`` is arithmetically identical
+    but copies both operands when they are C-ordered, which is the cost
+    this exists to avoid.
+    """
+    A2 = np.asarray(A, dtype=np.float64)
+    B2 = np.asarray(B, dtype=np.float64)
+    if A2.flags.c_contiguous and not A2.flags.f_contiguous:
+        a, trans_a = A2.T, 1
+    else:
+        a, trans_a = A2, 0
+    if B2.flags.c_contiguous and not B2.flags.f_contiguous:
+        b, trans_b = B2.T, 0
+    else:
+        b, trans_b = B2, 1
+    return cast(NDArray[np.float64], dgemm(1.0, a, b, trans_a=trans_a, trans_b=trans_b))
+
+
+def standard_normal_f(
+    rng: np.random.Generator, size: int, n_rows: int
+) -> NDArray[np.float64]:
+    """``(size, n_rows)`` standard normals in Fortran order, so
+    :func:`affine_lower_factor` can hand them to ``dgemm`` uncopied."""
+    return cast(NDArray[np.float64], rng.standard_normal((n_rows, size)).T)
+
+
+def affine_lower_factor(
+    mean: NDArray[np.float64], z: NDArray[np.float64], L: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """``mean + z @ Lᵀ`` in one ``dgemm``. ``z`` from
+    :func:`standard_normal_f` and ``L`` from :func:`lower_predictive_sqrt`
+    are both F-contiguous, so neither operand is copied."""
+    out = np.empty((z.shape[0], L.shape[0]), dtype=np.float64, order="F")
+    if out.shape[0] == 0:
+        # f2py rejects a zero-row ``c``; nothing to draw anyway
+        return out
+    out[:] = mean
+    return cast(
+        NDArray[np.float64],
+        dgemm(1.0, z, L, trans_b=1, beta=1.0, c=out, overwrite_c=True),
+    )
