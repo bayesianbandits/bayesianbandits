@@ -936,7 +936,7 @@ def _predictive_mean(
     """
     if issparse(X):
         return np.asarray(X @ coef, dtype=np.float64).ravel()
-    return dense_matvec(X, coef)
+    return dense_matvec(cast(NDArray[Any], X), coef)
 
 
 def _weight_space_rows(
@@ -1199,14 +1199,16 @@ class _RewardSpacePredictiveMixin:
     contract."""
 
     if TYPE_CHECKING:
-        coef_: NDArray[np.float64]
-        cov_inv_: Union[NDArray[np.float64], csc_array]
+        # ``Any`` where the concrete classes assign a wider set of array
+        # types than one annotation covers, or define the name as a
+        # ``cached_property``; a narrower stub here would only make the
+        # subclasses' own assignments type errors.
+        coef_: Any
+        cov_inv_: Any
         n_features_: int
         sparse: bool
         random_state_: np.random.Generator
-
-        @property
-        def _precision_factor(self) -> PrecisionFactor: ...
+        _precision_factor: Any
 
         def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None: ...
 
