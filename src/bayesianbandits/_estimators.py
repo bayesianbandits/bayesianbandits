@@ -1194,20 +1194,45 @@ def _blocked_colorize(
 
 
 class _RewardSpacePredictiveMixin:
-    """Reward-space sampling shared by :class:`NormalRegressor` and
-    :class:`BayesianGLM`, over their common ``coef_`` /
-    ``_precision_factor`` / ``sparse`` contract."""
+    """Sampling shared by :class:`NormalRegressor` and :class:`BayesianGLM`,
+    over their common ``coef_`` / ``_precision_factor`` / ``sparse``
+    contract."""
 
     if TYPE_CHECKING:
         coef_: NDArray[np.float64]
         cov_inv_: Union[NDArray[np.float64], csc_array]
         n_features_: int
         sparse: bool
+        random_state_: np.random.Generator
 
         @property
         def _precision_factor(self) -> PrecisionFactor: ...
 
         def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None: ...
+
+    def _joint_rows(
+        self,
+        factor: PrecisionFactor,
+        X: Union[NDArray[Any], csc_array],
+        size: int,
+        divisor: Optional[NDArray[np.float64]] = None,
+    ) -> NDArray[np.float64]:
+        """``size`` joint draws of ``X w`` for validated ``X``, shape
+        ``(size, n_rows)``: through the cheapest exact reduction of
+        ``Cov(Xw)`` when one is (see :func:`build_joint_reduction`), else
+        weight space; same distribution either way, different random
+        stream. ``divisor`` divides the zero-mean part per draw, for the
+        NIG multivariate-t mixing."""
+        draw = build_joint_reduction(factor, X, self.coef_.shape[0], size, self.sparse)
+        if draw is not None:
+            scale = None if divisor is None else 1.0 / divisor
+            mean = _predictive_mean(X, self.coef_)
+            return cast(
+                NDArray[np.float64], draw.joint(size, self.random_state_, mean, scale)
+            )
+        return _weight_space_rows(
+            factor, X, self.coef_, size, self.random_state_, divisor
+        )
 
     def _predictive_cholesky(
         self, X: Union[NDArray[Any], csc_array], block_size: Optional[int] = None
@@ -1673,26 +1698,7 @@ scipy.sparse.csc_array
         predict : Point predictions using the posterior mean.
         """
         X_sample = self._validated_for_sampling(X)
-
-        # Exact joint draws through the cheapest reduction of Cov(Xw);
-        # same distribution as weight space, different random stream.
-        support_draw = build_joint_reduction(
-            self._precision_factor,
-            X_sample,
-            self.coef_.shape[0],
-            size,
-            self.sparse,
-        )
-        if support_draw is not None:
-            mean = _predictive_mean(X_sample, self.coef_)
-            return cast(
-                NDArray[np.float64],
-                support_draw.joint(size, self.random_state_, mean),
-            )
-
-        return _weight_space_rows(
-            self._precision_factor, X_sample, self.coef_, size, self.random_state_
-        )
+        return self._joint_rows(self._precision_factor, X_sample, size)
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -1757,8 +1763,8 @@ scipy.sparse.csc_array
         cheaper than ``sample`` when ``size`` is large relative to the
         number of rows, more expensive otherwise. Linearly dependent
         rows (e.g. repeated contexts) are represented exactly. A sparse
-        model densifies the transposed rows, ``(n_features, n_samples)``,
-        unless ``block_size`` is given.
+        model's dense scratch is the observed features by ``n_samples``,
+        bounded in row blocks when ``block_size`` is given.
 
         With ``block_size=k``, consecutive groups of ``k`` rows are drawn
         jointly within the group and independently across groups (unlike
@@ -2190,39 +2196,13 @@ scipy.sparse.csc_array
         predict : Point predictions using the posterior mean.
         """
         X_sample = self._validated_for_sampling(X)
+        # Multivariate t: a Gaussian draw from ``shape_`` (precision
+        # (a/b)·Λ, so covariance (b/a)·Λ⁻¹) divided by the square root of
+        # a chi-square over its degrees of freedom. The chi-square is
+        # drawn first, then the normals.
         df = 2 * self.a_
-
-        # ``shape_`` carries the (b/a) factor; the chi-square mixing is
-        # a per-draw scalar, so the reduction stays exact.
-        support_draw = build_joint_reduction(
-            self.shape_,
-            X_sample,
-            self.coef_.shape[0],
-            size,
-            self.sparse,
-        )
-        if support_draw is not None:
-            mean = _predictive_mean(X_sample, self.coef_)
-            z = support_draw.joint(size, self.random_state_)
-            x = self.random_state_.chisquare(df, size) / df
-            return cast(
-                NDArray[np.float64],
-                mean + z / np.sqrt(x)[..., None],
-            )
-
-        # Multivariate t in weight space: a Gaussian draw from ``shape_``
-        # (precision (a/b)·Λ, so covariance (b/a)·Λ⁻¹) divided by the
-        # square root of a chi-square over its degrees of freedom. The
-        # chi-square is drawn first, then the normals.
         x = self.random_state_.chisquare(df, size) / df
-        return _weight_space_rows(
-            self.shape_,
-            X_sample,
-            self.coef_,
-            size,
-            self.random_state_,
-            divisor=np.sqrt(x),
-        )
+        return self._joint_rows(self.shape_, X_sample, size, divisor=np.sqrt(x))
 
     def sample_marginal(
         self, X: Union[NDArray[Any], csc_array], size: int = 1
@@ -2909,23 +2889,8 @@ scipy.sparse.csc_array
         predict : Point predictions using the posterior mean.
         """
         X_sample = self._validated_for_sampling(X)
-
-        # The reduction draws eta; the inverse link is elementwise either way.
-        support_draw = build_joint_reduction(
-            self._precision_factor,
-            X_sample,
-            self.coef_.shape[0],
-            size,
-            self.sparse,
-        )
-        if support_draw is not None:
-            mean = _predictive_mean(X_sample, self.coef_)
-            eta = support_draw.joint(size, self.random_state_, mean)
-            return self._inverse_link(cast(NDArray[np.float64], eta))
-
-        eta = _weight_space_rows(
-            self._precision_factor, X_sample, self.coef_, size, self.random_state_
-        )
+        # eta is drawn either way; the inverse link is elementwise
+        eta = self._joint_rows(self._precision_factor, X_sample, size)
         return self._inverse_link(eta)
 
     def sample_marginal(

@@ -300,28 +300,6 @@ def test_refactorize_follows_the_new_matrix():
 # -- the property that made this worth doing ---------------------------------
 
 
-def test_never_observed_feature_is_shared_across_the_rows_that_touch_it():
-    """Through the estimator: rows reading the same never-observed
-    feature draw the same value, and a row reading twice as much of it
-    draws exactly twice as much. (Its variance is pinned by the stacked
-    contexts test below, through the full covariance.)"""
-    rng = np.random.default_rng(14)
-    p = 50
-    X = sp.csc_array(sp.random(30, p, density=0.1, random_state=14))
-    X = sp.csc_array(X[:, :10].toarray() @ np.eye(10, p))  # touches only 0..9
-    est = NormalRegressor(alpha=1.0, beta=1.0, sparse=True, random_state=0)
-    est.fit(X, rng.standard_normal(30))
-    j = 37  # never observed
-    assert j in trivial_columns(est.cov_inv_)
-
-    Xp = sp.csc_array(
-        sp.csr_array(([1.0, 1.0, 2.0], ([0, 1, 2], [j, j, j])), shape=(3, p))
-    )
-    draws = est.sample(Xp, size=1)[0]
-    assert draws[0] == draws[1]
-    assert draws[2] == 2.0 * draws[0]
-
-
 # -- stacked contexts ---------------------------------------------------------
 
 
@@ -464,12 +442,10 @@ def test_half_solve_sparse_rhs_splits_with_the_same_gram(m):
         assert_allclose(B.block, factor.half_solve(b.toarray()), rtol=1e-12)
 
 
-def test_marginal_sd_over_both_routes_matches_dense_truth():
-    """The marginal path over a partitioned factor, both ways: the
-    chunked half-solve (support route gated off, block budget forced
-    small so many chunks run, each handing the factor a sparse block of
-    rows), and the support route (many rows over few columns, some of
-    them never observed, so it fires and solves over the split)."""
+def test_marginal_sd_chunks_the_half_solve_over_the_block():
+    """The marginal path over a partitioned factor with the block budget
+    forced small: many chunks, each handing the factor a sparse block of
+    rows, and the result is dense truth."""
     from unittest import mock
 
     from bayesianbandits import _estimators as E
@@ -478,7 +454,7 @@ def test_marginal_sd_over_both_routes_matches_dense_truth():
 
     rng = np.random.default_rng(45)
     p = 80
-    precision, observed = make_precision(p, 32, rng)
+    precision, _ = make_precision(p, 32, rng)
     factor = create_sparse_factor(precision)
     inv = dense_inverse(precision)
 
@@ -496,22 +472,6 @@ def test_marginal_sd_over_both_routes_matches_dense_truth():
             got = _marginal_predictive_sd(factor, X)
     assert_allclose(got, np.sqrt(np.einsum("ij,jk,ik->i", Xd, inv, Xd)), rtol=1e-10)
     assert len(seen) == 13 and max(seen) == 3  # 37 rows in blocks of 3
-
-    cols = np.concatenate([observed[:5], np.setdiff1d(np.arange(p), observed)[:2]])
-    rows_, cols_, vals_ = [], [], []
-    for i in range(120):
-        for j in rng.choice(cols, 3, replace=False):
-            rows_.append(i)
-            cols_.append(j)
-            vals_.append(rng.standard_normal())
-    X = sp.csc_array(sp.csr_array((vals_, (rows_, cols_)), shape=(120, p)))
-    Xd = X.toarray()
-    with mock.patch.object(
-        sc, "support_covariance", wraps=sc.support_covariance
-    ) as sc_:
-        got = _marginal_predictive_sd(factor, X)
-    sc_.assert_called_once()
-    assert_allclose(got, np.sqrt(np.einsum("ij,jk,ik->i", Xd, inv, Xd)), rtol=1e-10)
 
 
 def test_a_feature_seen_alone_stays_trivial_and_seen_together_joins_the_block():

@@ -140,15 +140,19 @@ class SupportDraw:
         size: int,
         rng: np.random.Generator,
         mean: Optional[NDArray[np.float64]] = None,
+        scale: Optional[NDArray[np.float64]] = None,
     ) -> NDArray[np.float64]:
         """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
 
         Rows within one draw share a weight vector, matching ``sample``.
-        ``mean`` is broadcast into the output buffer rather than added by
-        the caller, which would cost a second ``(size, n_rows)`` array;
-        omit it when the caller has to rescale the zero-mean draw first.
+        ``scale`` multiplies the zero-mean part per draw, ``(size,)``, for
+        the NIG multivariate-t mixing; ``mean`` is broadcast into the
+        output buffer rather than added by the caller, which would cost
+        a second ``(size, n_rows)`` array.
         """
         Z = standard_normal_f(rng, size, self._C.shape[0])
+        if scale is not None:
+            Z *= scale[:, np.newaxis]
         ZC = dgemm(1.0, Z, self._C, trans_b=1)
         out = np.empty((size, self._n_rows), dtype=np.float64)
         if mean is not None:

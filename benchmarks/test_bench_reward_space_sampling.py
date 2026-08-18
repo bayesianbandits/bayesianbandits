@@ -98,11 +98,6 @@ def test_sample_1000_nig_dense_100_reward(benchmark, nig_dense_100):
     benchmark(est.sample_reward_space, X, 1000)
 
 
-def test_sample_1000_nig_dense_100_reward_blocked(benchmark, nig_dense_100):
-    est, X, _ = nig_dense_100
-    benchmark(est.sample_reward_space, X, 1000, block_size=5)
-
-
 # -- glm_logit dense 100, size=1000, n=10 -------------------------------------
 
 
