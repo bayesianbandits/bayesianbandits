@@ -61,8 +61,8 @@ Unreleased
   -- 13x to 17x the Cholesky that preceded it, and the largest single term
   in a pull-and-update round -- to save nothing, since solving against
   ``U`` costs the same per draw as multiplying by the inverse.
-  ``DenseFactor.colorize`` now calls ``dtrsm``, which also keeps the draw
-  inside scipy's BLAS pool. A dense ``size = 1`` pull plus update at
+  ``DenseFactor``'s draw (``sample_at``, below) now calls ``dtrsm``, which
+  also keeps the draw inside scipy's BLAS pool. A dense ``size = 1`` pull plus update at
   :math:`d` = 1,000 falls from 106 ms to 11 ms. ``trace_inv`` genuinely
   needs the inverse and still builds it lazily, now through ``dtrtri``
   rather than a solve against a dense identity (#269)
@@ -161,25 +161,34 @@ Unreleased
   arms 854 ms to 87 ms and over ten stacked contexts 8.5 s to 0.8 s
   (#269)
 
-- ``half_solve`` takes a sparse right-hand side and returns it compact,
+- ``half_solve`` takes a sparse right-hand side and returns it split,
   and the marginal, reward-space and row-side joint paths hand it one.
-  Every caller reads a half-solve only through the Gram ``Bᵀ B``, and
-  for a sparse operand the rows at never-observed features it does not
-  touch are exactly zero -- so a partitioned factor now returns the
-  block rows plus one row per distinct never-observed feature touched,
-  ``(n_factored + t, k)``, with the same Gram, and never forms the
-  ``(n_features, k)`` operand or result those paths used to densify per
-  block: ``Θ(n_rows · n_features)`` on the marginal path became
-  ``Θ(n_rows · n_factored)``. ``PrecisionFactor.n_factored`` -- the
-  features the factor actually factors, all of them for a dense factor
-  -- is the unit every scratch bound and route gate on those paths now
-  uses in place of ``n_features``, so at :math:`2^{20}` features with 26k
-  observed the marginal path takes 80 rows per block instead of 2, and
-  the gates price the per-row path at what it costs. On the production
-  model, ``sample_marginal(size=1)`` over 96 arms goes from 1.7 s to
-  90 ms and over ten stacked contexts from 17.3 s to 0.97 s;
-  ``sample_reward_space(size=1)`` over 96 arms from 8.3 s to 0.13 s
-  (#269)
+  A partitioned factor returns a ``SparseHalfSolve``: the dense
+  ``(n_factored, k)`` half-solve at the features it factors, and the
+  never-observed part sparse, one row per distinct never-observed
+  feature the operand touches, no denser than the operand's own entries
+  there. The two Grams add to ``Bᵀ B``, and callers use them as they
+  come: the marginal path sums the sparse part's squared column norms in
+  ``O(nnz)``, and the reward-space and row-side paths keep it as a
+  sparse map from one normal per never-observed feature (per block, when
+  blocked) to the rows touching it -- a never-observed feature is a
+  scalar with variance ``1/Λ_jj``, and it stays one, never a dense row
+  of the QR. So neither the ``(n_features, k)`` operand those paths used
+  to densify per block nor a ``(t, k)`` block for the ``t`` never-observed
+  features touched is ever formed: ``Θ(n_rows · n_features)`` on the
+  marginal path became ``Θ(n_rows · n_factored + nnz(X))``, whatever the
+  rows touch. ``PrecisionFactor.n_factored`` -- the features the factor
+  actually factors, all of them for a dense factor -- is the unit every
+  scratch bound and route gate on those paths now uses in place of
+  ``n_features``, so at :math:`2^{20}` features with 26k observed the
+  marginal path takes 80 rows per block instead of 2, and the gates
+  price the per-row path at what it costs. On the production model,
+  ``sample_marginal(size=1)`` over 96 arms goes from 1.7 s to 90 ms and
+  over ten stacked contexts from 17.3 s to 0.97 s;
+  ``sample_reward_space(size=1)`` over 96 arms from 8.3 s to 0.13 s. On
+  a cold model (20 of 200k features observed) ``sample_marginal`` over
+  3,000 rows touching 72k never-observed features runs in 28 ms at a
+  9 MB peak where the densified block took 0.85 s and 3.5 GB (#269)
 
 - Scaling is a field on every precision factor, not a wrapper.
   ``ScaledSparseFactor`` is removed; ``CholmodSparseFactor``,
@@ -315,13 +324,18 @@ Unreleased
   row and column routes consume ``n_rows`` and :math:`|U|` normals per
   draw rather than one per feature. The draws are exact and jointly
   distributed either way (verified by per-row KS tests). Thompson sampling
-  (``size = 1``) never reduces, and on sparse models is bit-for-bit
-  unchanged (#269)
+  (``size = 1``) never reduces; on a sparse model whose every feature has
+  been observed it is bit-for-bit unchanged, but once some feature has
+  never been observed the partitioned factor draws one normal per block
+  feature plus one per distinct never-observed feature the query touches
+  (see ``sample_at`` above) rather than one per feature, so seeded
+  ``size = 1`` draws differ from earlier releases there too (#269)
 
 - Dense seeded draws change in the last bits, Thompson sampling included:
-  ``colorize`` solves against ``U`` instead of multiplying by an explicit
-  ``U^{-1}``, the same operation in exact arithmetic but a different
-  rounding order (the two agree to ~2e-16). No distribution changes (#269)
+  the dense factor's draw solves against ``U`` instead of multiplying by
+  an explicit ``U^{-1}``, the same operation in exact arithmetic but a
+  different rounding order (the two agree to ~2e-16). No distribution
+  changes (#269)
 
 1.4.0 (2026-07-31)
 ------------------

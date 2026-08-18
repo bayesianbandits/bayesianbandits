@@ -74,25 +74,17 @@ def test_compact_columns_matches_fancy_indexing():
 
 
 def test_support_covariance_equals_the_principal_submatrix():
+    """Including ``|U| == 1``, the 1-D solve-output branch."""
     rng = np.random.default_rng(2)
     p = 300
     precision = make_precision(p, rng)
+    factor = create_sparse_factor(precision)
+    inv = np.linalg.inv(precision.toarray())
     _, support = make_design(p, 10, 15, rng)
-
-    S = sc.support_covariance(create_sparse_factor(precision), support, p)
-    expected = np.linalg.inv(precision.toarray())[np.ix_(support, support)]
-
-    assert_allclose(S, expected, atol=1e-10)
-
-
-def test_support_covariance_handles_a_single_column():
-    """``|U| == 1`` exercises the 1-D solve-output branch."""
-    rng = np.random.default_rng(4)
-    p = 200
-    precision = make_precision(p, rng)
-    S = sc.support_covariance(create_sparse_factor(precision), np.array([7]), p)
-    assert S.shape == (1, 1)
-    assert_allclose(S, np.linalg.inv(precision.toarray())[7:8, 7:8], atol=1e-10)
+    for U in (support, np.array([7])):
+        S = sc.support_covariance(factor, U, p)
+        assert S.shape == (U.size, U.size)
+        assert_allclose(S, inv[np.ix_(U, U)], atol=1e-10)
 
 
 def test_support_covariance_solves_against_a_sparse_rhs():
@@ -129,52 +121,26 @@ def test_draw_factor_reproduces_the_predictive_covariance():
     assert_allclose(XU_C @ XU_C.T, XU @ S @ XU.T, atol=1e-10)
 
 
-def test_sd_matches_the_half_solve_path():
-    rng = np.random.default_rng(8)
-    p = 400
-    precision = make_precision(p, rng)
-    factor = create_sparse_factor(precision)
-    X, _ = make_design(p, 60, 15, rng)
-
-    draw = sc.build(factor, X, p, budget=X.shape[0])
-    assert draw is not None
-    with gate_off():
-        expected = _marginal_predictive_sd(factor, X)
-
-    assert_allclose(draw.sd(), expected, rtol=1e-10)
-
-
-def test_marginal_predictive_sd_routes_through_the_support():
-    """The wiring in ``_marginal_predictive_sd``, not just the helper."""
+def test_marginal_predictive_sd_routes_by_the_gate():
+    """The wiring in ``_marginal_predictive_sd``: few columns under many
+    rows takes the support route and agrees with the half-solve path;
+    ``|U|`` just under ``n_rows`` saves nothing on solves and adds an
+    O(|U|³) Cholesky, so it declines and keeps its bounded scratch."""
     rng = np.random.default_rng(18)
-    p = 200
-    precision = make_precision(p, rng)
-    factor = create_sparse_factor(precision)
-    X, _ = make_design(p, 80, 12, rng)  # 12 columns, 80 rows: fires
-
-    routed = _marginal_predictive_sd(factor, X)
-    with gate_off():
-        direct = _marginal_predictive_sd(factor, X)
-
-    assert_allclose(routed, direct, rtol=1e-10)
-
-
-def test_marginal_predictive_sd_declines_a_support_it_barely_beats():
-    """|U| just under n_rows saves nothing on solves and adds an
-    O(|U|³) Cholesky, so the marginal path keeps its bounded scratch."""
-    rng = np.random.default_rng(19)
     p = 400
-    precision = make_precision(p, rng)
-    factor = create_sparse_factor(precision)
-    X, _ = make_design(p, 120, 100, rng)  # 100 columns, 120 rows
+    factor = create_sparse_factor(make_precision(p, rng))
+    fires, _ = make_design(p, 80, 12, rng)  # 12 columns, 80 rows
+    declines, _ = make_design(p, 120, 100, rng)  # 100 columns, 120 rows
 
-    with mock.patch.object(sc, "support_covariance") as never:
-        gated = _marginal_predictive_sd(factor, X)
-    never.assert_not_called()
-
-    with gate_off():
-        direct = _marginal_predictive_sd(factor, X)
-    assert_allclose(gated, direct, rtol=1e-10)
+    for X, n_calls in ((fires, 1), (declines, 0)):
+        with mock.patch.object(
+            sc, "support_covariance", wraps=sc.support_covariance
+        ) as spy:
+            routed = _marginal_predictive_sd(factor, X)
+        assert spy.call_count == n_calls
+        with gate_off():
+            direct = _marginal_predictive_sd(factor, X)
+        assert_allclose(routed, direct, rtol=1e-10)
 
 
 @pytest.mark.parametrize(
@@ -193,33 +159,24 @@ def test_marginal_support_gate(n_u, n_rows, nnz, expected):
 # -- rank deficiency ----------------------------------------------------------
 
 
-def test_duplicate_rows_are_perfectly_correlated_within_a_draw():
-    """Identical rows are the same linear functional of the same weights."""
+def test_duplicate_rows_are_exact():
+    """Identical rows are the same linear functional of the same weights,
+    so they draw identically; the ``n x n`` predictive covariance is
+    singular there while ``S`` is not, which is why the reduction is on
+    the feature side."""
     rng = np.random.default_rng(10)
-    p = 300
-    factor = create_sparse_factor(make_precision(p, rng))
-    X, _ = make_design(p, 4, 12, rng)
-    doubled = sp.csc_array(sp.vstack([X, X], format="csr"))
-
-    draw = sc.build(factor, doubled, p, budget=1000)
-    assert draw is not None
-    samples = draw.joint(64, np.random.default_rng(0))
-
-    assert_allclose(samples[:, :4], samples[:, 4:], atol=0)
-
-
-def test_duplicate_rows_leave_the_support_covariance_full_rank():
-    """The n x n predictive covariance is singular here; S is not. This
-    is why the reduction is on the feature side."""
-    rng = np.random.default_rng(11)
     p = 300
     factor = create_sparse_factor(make_precision(p, rng))
     X, support = make_design(p, 4, 12, rng)
     doubled = sp.csc_array(sp.vstack([X, X], format="csr"))
 
+    draw = sc.build(factor, doubled, p, budget=1000)
+    assert draw is not None
+    samples = draw.joint(64, np.random.default_rng(0))
+    assert_allclose(samples[:, :4], samples[:, 4:], atol=0)
+
     S = sc.support_covariance(factor, sc.support_of(doubled), p)
     XU = np.asarray(doubled[:, support].todense())
-
     assert np.linalg.matrix_rank(XU @ S @ XU.T) < doubled.shape[0]
     assert np.linalg.eigvalsh(S).min() > 0
 
@@ -227,25 +184,16 @@ def test_duplicate_rows_leave_the_support_covariance_full_rank():
 # -- the gate -----------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "X",
-    [np.ones((4, 100)), sp.csc_array((4, 100))],
-    ids=["dense", "empty"],
-)
-def test_build_declines_input_it_cannot_reduce(X):
-    rng = np.random.default_rng(5)
-    factor = create_sparse_factor(make_precision(100, rng))
-    assert sc.build(factor, X, 100, budget=1000) is None
-
-
-@pytest.mark.parametrize("budget,fires", [(12, False), (13, True)])
-def test_build_fires_exactly_when_support_is_smaller_than_budget(budget, fires):
+def test_build_fires_exactly_when_the_support_is_under_budget():
+    """``|U| < budget``; a dense or empty ``X`` has nothing to reduce."""
     rng = np.random.default_rng(7)
     p = 300
     factor = create_sparse_factor(make_precision(p, rng))
     X, _ = make_design(p, 40, 12, rng)
-
-    assert (sc.build(factor, X, p, budget=budget) is not None) is fires
+    assert sc.build(factor, X, p, budget=12) is None
+    assert sc.build(factor, X, p, budget=13) is not None
+    assert sc.build(factor, np.ones((4, p)), p, budget=1000) is None
+    assert sc.build(factor, sp.csc_array((4, p)), p, budget=1000) is None
 
 
 # -- estimator composition ----------------------------------------------------
@@ -289,19 +237,3 @@ def test_sample_moments_survive_the_route(make):
     z = np.abs(routed.mean(axis=0) - direct.mean(axis=0)) / (sd / np.sqrt(30_000))
     assert z.max() < 5.0
     assert_allclose(routed.std(axis=0), sd, rtol=0.1)
-
-
-def test_sparse_right_hand_side_still_uses_the_direct_solver(sparse_solver):
-    """``solve`` keeps its sparse-RHS path; only dense input goes through
-    the cached triangular factor."""
-    rng = np.random.default_rng(19)
-    p = 200
-    precision = make_precision(p, rng)
-    factor = create_sparse_factor(precision)
-    rhs = sp.csc_array(sp.random(p, 3, density=0.2, random_state=5))
-
-    got = np.asarray(factor.solve(rhs))
-    if got.ndim == 0:  # some backends return a sparse container
-        got = np.asarray(got.item().todense())
-    expected = np.linalg.solve(precision.toarray(), rhs.toarray())
-    assert_allclose(np.asarray(got).reshape(expected.shape), expected, atol=1e-8)

@@ -8,7 +8,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
 from scipy.linalg.blas import dgemm, dgemv, dsymv  # type: ignore
-from scipy.sparse import csc_array, diags, eye, issparse
+from scipy.sparse import block_diag, csc_array, csr_array, diags, eye, issparse
 from scipy.special import expit
 from scipy.stats import (
     Covariance,
@@ -47,6 +47,7 @@ from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
     SparseFactor,
+    SparseHalfSolve,
     create_sparse_factor,
     scale_factor,
 )
@@ -810,9 +811,23 @@ def _invalidate_cached_properties(
     return wrapper
 
 
-# Cap on the dense (n_features, block) scratch densified from a sparse
-# X in _marginal_predictive_sd: ~2M float64 elements = 16 MB per array.
+# Cap on the dense (n_factored, block) half-solve scratch for a sparse X
+# in _marginal_predictive_sd and the reward-space paths: ~2M float64
+# elements = 16 MB per array.
 _MARGINAL_SD_BLOCK_ELEMS = 2**21
+
+
+def _half_solve_rows(
+    factor: PrecisionFactor, X_rows: Union[NDArray[Any], csc_array]
+) -> SparseHalfSolve:
+    """``factor.half_solve(X_rows.T)`` as a :class:`SparseHalfSolve` either
+    way; a dense ``X`` populates every feature, so it has nothing to split
+    off. Sparse models accept dense ``X`` too, so dispatch on the actual
+    type."""
+    if issparse(X_rows):
+        return cast(SparseHalfSolve, factor.half_solve(cast(Any, X_rows).T))
+    B = np.asarray(factor.half_solve(np.asarray(X_rows, dtype=np.float64).T))
+    return SparseHalfSolve(B, csc_array((0, B.shape[1]), dtype=np.float64))
 
 
 def _marginal_support_is_cheaper(n_u: int, n_rows: int, precision_nnz: int) -> bool:
@@ -847,9 +862,9 @@ def _marginal_predictive_sd(
     Neither :math:`\\Lambda^{-1}` nor any :math:`n \\times n` matrix is
     ever formed; the cost is linear in the number of prediction rows.
     A sparse ``X`` is handed over sparse in row blocks: the factor
-    half-solves at the features it factors and returns a compact
-    ``(n_factored + t, rows)`` block, so the scratch, and the block size
-    that bounds it, are in ``factor.n_factored`` rather than
+    half-solves at the features it factors and returns the never-observed
+    part sparse (:class:`SparseHalfSolve`), so the scratch, and the block
+    size that bounds it, are in ``factor.n_factored`` rather than
     ``n_features`` -- at :math:`2^{20}` features with 26k observed that
     is 80 rows per block instead of 2, and no pass over the never
     observed features at all.
@@ -885,8 +900,9 @@ def _marginal_predictive_sd(
     var = np.empty(n_rows, dtype=np.float64)
     for start in range(0, n_rows, block):
         stop = min(n_rows, start + block)
-        B = np.asarray(factor.half_solve(X_rows[start:stop].T), dtype=np.float64)
-        var[start:stop] = np.einsum("ij,ij->j", B, B)
+        B = _half_solve_rows(factor, X_rows[start:stop])
+        var[start:stop] = np.einsum("ij,ij->j", B.block, B.block)
+        var[start:stop] += B.trivial.power(2).sum(axis=0)
     return cast(NDArray[np.float64], np.sqrt(var))
 
 
@@ -990,32 +1006,61 @@ def _reward_space_is_cheaper(
 
 
 class _RowSpaceDraw:
-    """Zero-mean joint draws from an ``n x n`` lower factor of the
-    predictive covariance -- the row-side counterpart of
-    :class:`~bayesianbandits._support_covariance.SupportDraw`."""
+    """Joint draws from ``L Lᵀ + M Mᵀ = X Λ⁻¹ Xᵀ`` -- the row-side
+    counterpart of :class:`~bayesianbandits._support_covariance.SupportDraw`.
 
-    __slots__ = ("_L",)
+    ``L`` is one ``(n, n)`` lower factor, or ``(n_blocks, k, k)`` of them
+    for blocked draws (joint within a block, independent across); ``M``
+    is the sparse map from one normal per never-observed feature to the
+    rows touching it, ``(n, 0)`` when there are none.
+    """
 
-    def __init__(self, L: NDArray[np.float64]) -> None:
-        self._L = L
+    __slots__ = ("L", "M")
+
+    def __init__(self, L: NDArray[np.float64], M: csr_array) -> None:
+        self.L = L
+        self.M = M
 
     def joint(
         self,
         size: int,
         rng: np.random.Generator,
         mean: Optional[NDArray[np.float64]] = None,
+        scale: Optional[NDArray[np.float64]] = None,
     ) -> NDArray[np.float64]:
-        """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
+        """``size`` draws from ``N(mean, L Lᵀ + M Mᵀ)``, shape ``(size, n)``.
 
-        ``mean`` is accumulated inside the same ``dgemm`` rather than
-        added by the caller, which would cost a second ``(size, n_rows)``
-        array; omit it when the caller has to rescale the zero-mean draw
-        first, as the multivariate-t path does.
+        ``scale`` multiplies the zero-mean part per draw, ``(size,)`` or
+        ``(size, n_blocks)`` when blocked, for the NIG multivariate-t
+        mixing; it is folded into ``z`` and ``mean`` accumulated inside
+        the ``dgemm``, so neither costs a second ``(size, n)`` array.
         """
-        z = standard_normal_f(rng, size, self._L.shape[0])
-        if mean is None:
-            return cast(NDArray[np.float64], dgemm(1.0, z, self._L, trans_b=1))
-        return affine_lower_factor(mean, z, self._L)
+        L, M = self.L, self.M
+        if L.ndim == 2:
+            z = standard_normal_f(rng, size, L.shape[0])
+            if scale is not None:
+                z *= scale[:, np.newaxis]
+            if mean is None:
+                out = cast(NDArray[np.float64], dgemm(1.0, z, L, trans_b=1))
+            else:
+                out = affine_lower_factor(mean, z, L)
+        else:
+            n_blocks, k, _ = L.shape
+            z = rng.standard_normal((n_blocks, size, k))
+            if scale is not None:
+                z *= scale.T[:, :, np.newaxis]
+            out = _blocked_colorize(L, z)
+            if mean is not None:
+                out += mean
+        n_pairs = cast("tuple[int, int]", M.shape)[1]
+        if n_pairs:
+            # (n, size), the sparse product's natural orientation
+            e = np.asarray(M @ rng.standard_normal((n_pairs, size)), dtype=np.float64)
+            if scale is not None:
+                # per draw, or per (draw, block) spread over the block's rows
+                e *= scale if L.ndim == 2 else np.repeat(scale, L.shape[1], axis=1).T
+            out += e.T
+        return out
 
 
 def build_joint_reduction(
@@ -1053,52 +1098,52 @@ def build_joint_reduction(
     )
     if support_draw is not None:
         return support_draw
-    if row_ok:
-        # sparse X goes over sparse: the factor half-solves at its block
-        # and returns a compact result whose Gram is the same
-        rhs = X.T if issparse(X) else np.asarray(X, dtype=np.float64).T
-        B = np.asarray(factor.half_solve(rhs), dtype=np.float64).reshape(-1, n_rows)
-        return _RowSpaceDraw(lower_predictive_sqrt(B, n_rows))
-    return None
+    return _row_space_draw(factor, X) if row_ok else None
 
 
-def _predictive_cholesky_from_factor(
+def _trivial_map(trivial: csc_array, block_size: int) -> csr_array:
+    """The blocked ``M``: ``trivial`` is the ``(t, k)`` part of a
+    :class:`SparseHalfSolve` over ``k`` consecutive rows in blocks of
+    ``block_size``; the map is ``(k, n_pairs)``, one column per distinct
+    (block, feature) pair, so a feature two blocks share gets an
+    independent normal in each and ``M Mᵀ = trivialᵀ trivial``
+    block-diagonally."""
+    entries = trivial.tocoo()
+    t, k = cast("tuple[int, int]", trivial.shape)
+    key = (entries.col // block_size) * t + entries.row
+    pairs, inverse = np.unique(key, return_inverse=True)
+    return csr_array(
+        (entries.data, (entries.col, inverse.ravel())), shape=(k, pairs.size)
+    )
+
+
+def _row_space_draw(
     factor: PrecisionFactor,
-    coef: NDArray[np.float64],
     X: Union[NDArray[Any], csc_array],
     block_size: Optional[int] = None,
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Predictive mean and lower-triangular square root(s) of :math:`X \\Lambda^{-1} X^T`.
+) -> _RowSpaceDraw:
+    """The two-part square root of :math:`X \\Lambda^{-1} X^T`.
 
     ``B = factor.half_solve(X.T)`` satisfies ``B.T @ B = X Λ⁻¹ Xᵀ``, so
     the ``R`` of its QR is an exact square root even for linearly
     dependent rows, where a Cholesky of the explicit covariance would
-    fail (see :func:`lower_predictive_sqrt`).
+    fail (see :func:`lower_predictive_sqrt`). For a sparse ``X`` only the
+    dense block of the half-solve goes through the QR; its never-observed
+    part is a diagonal covariance read through ``X`` and stays one, as
+    the sparse map ``M`` (see :class:`SparseHalfSolve`), so the scratch
+    is sized in ``factor.n_factored`` whatever the rows touch.
 
-    With ``block_size=k``, one ``(k, k)`` factor is returned per
-    consecutive group of ``k`` rows, shape ``(n_blocks, k, k)``: joint
-    within a group, nothing across groups. Blocked mode chunks the dense
-    half-solve scratch under ``_MARGINAL_SD_BLOCK_ELEMS``; full mode
-    half-solves a sparse ``X`` all at once. A sparse ``X`` goes over
-    sparse: the factor half-solves at the features it factors and
-    returns a compact ``(n_factored + t, rows)`` block with the same
-    Gram, so the scratch is sized in ``factor.n_factored``.
+    With ``block_size=k``, one ``(k, k)`` factor per consecutive group
+    of ``k`` rows, shape ``(n_blocks, k, k)``: joint within a group,
+    nothing across groups, and ``M`` block-diagonal to match. Blocked
+    mode chunks the dense half-solve scratch under
+    ``_MARGINAL_SD_BLOCK_ELEMS``; full mode half-solves ``X`` all at once.
     """
-
-    def half_solve_rows(rows: slice) -> NDArray[np.float64]:
-        # Dispatch on the actual type: sparse models accept dense X too
-        # (check_array's accept_sparse only *permits* sparse input)
-        X_rows = X_row_sliceable[rows]
-        rhs = X_rows.T if issparse(X_rows) else np.asarray(X_rows, dtype=np.float64).T
-        return np.asarray(factor.half_solve(rhs), dtype=np.float64)
-
-    mean = _predictive_mean(X, coef)
-    n = mean.shape[0]
-    X_row_sliceable: Any = X
-
+    n = cast("tuple[int, int]", X.shape)[0]
     if block_size is None:
-        B = half_solve_rows(slice(0, n)).reshape(-1, n)
-        return mean, lower_predictive_sqrt(B, n)
+        B = _half_solve_rows(factor, X)
+        # one normal per never-observed feature the rows touch: M = trivialᵀ
+        return _RowSpaceDraw(lower_predictive_sqrt(B.block, n), B.trivial.T)
 
     if block_size <= 0 or n % block_size:
         raise ValueError(
@@ -1112,21 +1157,25 @@ def _predictive_cholesky_from_factor(
     chunk_blocks = max(
         1, _MARGINAL_SD_BLOCK_ELEMS // max(1, factor.n_factored * block_size)
     )
+    X_row_sliceable: Any = X
     if issparse(X) and n_blocks > chunk_blocks:
         # Rows are CSC's minor axis, so slicing rows per chunk would scan
         # all of X's nnz each chunk; slice from a CSR copy when chunking
         X_row_sliceable = cast(csc_array, X).tocsr()
     L = np.empty((n_blocks, block_size, block_size))
+    maps: list[csr_array] = []
     for start in range(0, n_blocks, chunk_blocks):
         stop = min(start + chunk_blocks, n_blocks)
-        B = half_solve_rows(slice(start * block_size, stop * block_size))
-        B = B.reshape(-1, (stop - start) * block_size)
-        blocks = B.reshape(B.shape[0], stop - start, block_size).transpose(1, 0, 2)
+        rows = slice(start * block_size, stop * block_size)
+        B = _half_solve_rows(factor, X_row_sliceable[rows])
+        blocks = B.block.reshape(B.block.shape[0], stop - start, block_size)
         # Per-block dgeqrf rather than numpy's batched QR, which would
         # leave scipy's BLAS pool; see ``lower_predictive_sqrt``.
-        for offset, block in enumerate(blocks):
+        for offset, block in enumerate(blocks.transpose(1, 0, 2)):
             L[start + offset] = lower_predictive_sqrt(block, block_size)
-    return mean, L
+        # consecutive rows, pairs per chunk: the maps stack block-diagonally
+        maps.append(_trivial_map(B.trivial, block_size))
+    return _RowSpaceDraw(L, cast(csr_array, block_diag(maps, format="csr")))
 
 
 def _blocked_colorize(
@@ -1162,19 +1211,24 @@ class _RewardSpacePredictiveMixin:
 
     def _predictive_cholesky(
         self, X: Union[NDArray[Any], csc_array], block_size: Optional[int] = None
-    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-        """Predictive mean and lower square root(s) of
+    ) -> tuple[NDArray[np.float64], _RowSpaceDraw]:
+        """Predictive mean and :class:`_RowSpaceDraw` of
         :math:`X \\Lambda^{-1} X^T` for validated ``X``. Unscaled for the
         NIG subclass: ``sample_reward_space`` applies ``b/a`` itself."""
-        return _predictive_cholesky_from_factor(
-            self._precision_factor, self.coef_, X, block_size
+        return _predictive_mean(X, self.coef_), _row_space_draw(
+            self._precision_factor, X, block_size
         )
 
     def _validated_for_sampling(
         self, X: Union[NDArray[Any], csc_array]
     ) -> Union[NDArray[Any], csc_array]:
         """Shared ``sample``/``sample_reward_space`` preamble: validate
-        ``X`` and initialize the prior if the model is unfitted.
+        ``X``, initialize the prior if the model is unfitted, and check
+        the feature count against ``coef_``.
+
+        The width check is explicit: a sparse ``X`` reaches the
+        weight-space path through its support only, which would read a
+        too-narrow ``X`` as if its missing features were zero.
 
         Not copied: every consumer only reads ``X``, matching ``sample``.
         """
@@ -1185,6 +1239,12 @@ class _RewardSpacePredictiveMixin:
             check_is_fitted(self, "coef_")
         except NotFittedError:
             self._initialize_prior(X_pred)
+        if X_pred.shape[1] != self.coef_.shape[0]:
+            raise ValueError(
+                f"X has {X_pred.shape[1]} features, but "
+                f"{type(self).__name__} is expecting {self.coef_.shape[0]} "
+                "features as input."
+            )
         return X_pred
 
 
@@ -1612,21 +1672,14 @@ scipy.sparse.csc_array
         --------
         predict : Point predictions using the posterior mean.
         """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            self._initialize_prior(X)
-
-        X_sample = check_array(
-            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = self._validated_for_sampling(X)
 
         # Exact joint draws through the cheapest reduction of Cov(Xw);
         # same distribution as weight space, different random stream.
         support_draw = build_joint_reduction(
             self._precision_factor,
             X_sample,
-            X_sample.shape[1],
+            self.coef_.shape[0],
             size,
             self.sparse,
         )
@@ -1741,14 +1794,8 @@ scipy.sparse.csc_array
         sample_marginal : iid per-row draws for per-row statistics.
         """
         X_sample = self._validated_for_sampling(X)
-        mean, L = self._predictive_cholesky(X_sample, block_size)
-        if block_size is None:
-            z = standard_normal_f(self.random_state_, size, mean.shape[0])
-            return affine_lower_factor(mean, z, L)
-        z = self.random_state_.standard_normal(
-            (mean.shape[0] // block_size, size, block_size)
-        )
-        return cast(NDArray[np.float64], mean + _blocked_colorize(L, z))
+        mean, draw = self._predictive_cholesky(X_sample, block_size)
+        return draw.joint(size, self.random_state_, mean)
 
     @_invalidate_cached_properties
     def decay(
@@ -2142,14 +2189,7 @@ scipy.sparse.csc_array
         --------
         predict : Point predictions using the posterior mean.
         """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            self._initialize_prior(X)
-
-        X_sample = check_array(
-            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = self._validated_for_sampling(X)
         df = 2 * self.a_
 
         # ``shape_`` carries the (b/a) factor; the chi-square mixing is
@@ -2157,7 +2197,7 @@ scipy.sparse.csc_array
         support_draw = build_joint_reduction(
             self.shape_,
             X_sample,
-            X_sample.shape[1],
+            self.coef_.shape[0],
             size,
             self.sparse,
         )
@@ -2274,25 +2314,17 @@ scipy.sparse.csc_array
         sample_marginal : iid per-row draws for per-row statistics.
         """
         X_sample = self._validated_for_sampling(X)
-        mean, L = self._predictive_cholesky(X_sample, block_size)
+        mean, draw = self._predictive_cholesky(X_sample, block_size)
         df = 2.0 * self.a_
-        if block_size is None:
-            z = standard_normal_f(self.random_state_, size, mean.shape[0])
-            g = self.random_state_.chisquare(df, size=size)
-            # t draw: location + sqrt(df/g) · (shape-chol @ z), with the
-            # (b/a) shape scaling folded into the per-draw scale so the
-            # mean accumulates inside the same GEMM.
-            scale = np.sqrt((self.b_ / self.a_) * df / g)
-            z *= scale[:, np.newaxis]
-            return affine_lower_factor(mean, z, L)
-        n_blocks = mean.shape[0] // block_size
-        z = self.random_state_.standard_normal((n_blocks, size, block_size))
-        # one chi-square per (draw, block): joint t within a block,
+        # t draw: location + sqrt(df/g) · (shape-chol @ z), with the (b/a)
+        # shape scaling folded into the per-draw scale; one chi-square per
+        # draw, or per (draw, block) when blocked: joint t within a block,
         # independence across blocks
-        g = self.random_state_.chisquare(df, size=(size, n_blocks))
+        g = self.random_state_.chisquare(
+            df, size=size if block_size is None else (size, mean.shape[0] // block_size)
+        )
         scale = np.sqrt((self.b_ / self.a_) * df / g)
-        y = _blocked_colorize(L, z * scale.T[:, :, np.newaxis])
-        return cast(NDArray[np.float64], mean + y)
+        return draw.joint(size, self.random_state_, mean, scale)
 
     @_invalidate_cached_properties
     def decay(
@@ -2876,20 +2908,13 @@ scipy.sparse.csc_array
         --------
         predict : Point predictions using the posterior mean.
         """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            self._initialize_prior(X)
-
-        X_sample = check_array(
-            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
+        X_sample = self._validated_for_sampling(X)
 
         # The reduction draws eta; the inverse link is elementwise either way.
         support_draw = build_joint_reduction(
             self._precision_factor,
             X_sample,
-            X_sample.shape[1],
+            self.coef_.shape[0],
             size,
             self.sparse,
         )
@@ -2983,16 +3008,8 @@ scipy.sparse.csc_array
         sample_marginal : iid per-row draws for per-row statistics.
         """
         X_sample = self._validated_for_sampling(X)
-        mean, L = self._predictive_cholesky(X_sample, block_size)
-        if block_size is None:
-            z = standard_normal_f(self.random_state_, size, mean.shape[0])
-            eta = affine_lower_factor(mean, z, L)
-        else:
-            z = self.random_state_.standard_normal(
-                (mean.shape[0] // block_size, size, block_size)
-            )
-            eta = mean + _blocked_colorize(L, z)
-        return self._inverse_link(cast(NDArray[np.float64], eta))
+        mean, draw = self._predictive_cholesky(X_sample, block_size)
+        return self._inverse_link(draw.joint(size, self.random_state_, mean))
 
     @_invalidate_cached_properties
     def decay(

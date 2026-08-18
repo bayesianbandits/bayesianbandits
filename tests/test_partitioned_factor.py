@@ -16,6 +16,7 @@ from numpy.testing import assert_allclose, assert_array_equal
 
 from bayesianbandits import NormalRegressor
 from bayesianbandits._sparse_bayesian_linear_regression import (
+    SparseHalfSolve,
     create_sparse_factor,
     scale_factor,
     takahashi_diagonal,
@@ -61,9 +62,13 @@ def test_trivial_columns_are_exactly_the_uncoupled_ones():
     assert_array_equal(trivial_columns(precision), expected)
 
 
-def test_explicit_zero_off_diagonal_keeps_a_column_in_the_block():
-    """A stored zero is structure as far as the pattern knows; erring
-    toward the block costs speed, never correctness."""
+def test_detection_errs_toward_the_block():
+    """Three ways a column can look trivial without being one, or be
+    trivial without being safe to treat so, each left in the block: a
+    stored explicit zero off the diagonal (structure as far as the
+    pattern knows), triangular storage (the coupling sits in the other
+    column), and a non-positive diagonal (left to the backends' non-SPD
+    behaviour, unchanged)."""
     rng = np.random.default_rng(1)
     p = 30
     precision, observed = make_precision(p, 12, rng)
@@ -81,25 +86,14 @@ def test_explicit_zero_off_diagonal_keeps_a_column_in_the_block():
     assert with_zero.nnz == precision.nnz + 2
     assert j not in trivial_columns(with_zero)
 
-
-def test_triangular_storage_is_never_partitioned():
-    """In upper-only storage a coupled column can hold just its diagonal;
-    the pattern check must see the coupling from the other side."""
-    p = 20
-    off = np.full(p - 1, -0.3)
-    tri = sp.diags([off, np.full(p, 2.0), off], [-1, 0, 1])
-    upper = sp.csc_array(sp.triu(tri))
+    off = np.full(19, -0.3)
+    upper = sp.csc_array(sp.triu(sp.diags([off, np.full(20, 2.0), off], [-1, 0, 1])))
     assert (upper.indptr[1:] - upper.indptr[:-1] == 1).any()  # looks trivial
     assert trivial_columns(upper).size == 0
 
-
-def test_nonpositive_trivial_diagonal_is_not_partitioned():
-    """Leave the non-SPD error behaviour to the backends, unchanged."""
-    p = 10
-    d = np.full(p, 2.0)
+    d = np.full(10, 2.0)
     d[3] = -1.0
-    precision = sp.csc_array(sp.diags(d))
-    assert 3 not in trivial_columns(precision)
+    assert 3 not in trivial_columns(sp.csc_array(sp.diags(d)))
 
 
 # -- the protocol against dense truth ----------------------------------------
@@ -156,50 +150,39 @@ def test_solve_with_a_sparse_rhs_matches_dense(m, fmt, index_dtype):
     assert_allclose(out.toarray(), dense_inverse(precision) @ B.toarray(), rtol=1e-10)
 
 
-@pytest.mark.parametrize("dense_X", [False, True])
-def test_half_solve_gram_is_the_predictive_covariance(dense_X):
-    """Both a sparse X (rows outside its support are zero) and a dense X
-    (every row populated, including never-observed features)."""
+def test_half_solve_dense_rhs_gram_is_the_predictive_covariance():
+    """A dense operand populates every row, never-observed features
+    included, and comes back dense in factor-row order."""
     rng = np.random.default_rng(6)
     p = 48
     precision, observed = make_precision(p, 20, rng)
     factor = create_sparse_factor(precision)
-    if dense_X:
-        X = rng.standard_normal((7, p))
-    else:
-        X = sp.csc_array(sp.random(7, p, density=0.15, random_state=6))
-    B = np.asarray(factor.half_solve(np.asarray(X.T.toarray() if not dense_X else X.T)))
-    Xd = X.toarray() if not dense_X else X
-    assert_allclose(B.T @ B, Xd @ dense_inverse(precision) @ Xd.T, atol=1e-10)
+    X = rng.standard_normal((7, p))
+    B = np.asarray(factor.half_solve(X.T))
+    assert B.shape == (p, 7)
+    assert_allclose(B.T @ B, X @ dense_inverse(precision) @ X.T, atol=1e-10)
 
 
 # -- sample_at ---------------------------------------------------------------
 
 
 def test_sample_at_covariance_is_the_inverse_submatrix():
-    """Mixed observed / never-observed features, unsorted."""
+    """Mixed observed / never-observed features, unsorted; and every
+    feature for ``None``."""
     rng = np.random.default_rng(7)
     p = 48
     precision, observed = make_precision(p, 20, rng)
     factor = create_sparse_factor(precision)
     unobserved = np.setdiff1d(np.arange(p), observed)
-    features = np.array([observed[3], unobserved[5], unobserved[0], observed[0]])
-
-    G = factor.sample_at(features, 40_000, np.random.default_rng(0))
-    assert G.shape == (features.size, 40_000)
-    want = dense_inverse(precision)[np.ix_(features, features)]
-    assert_allclose(np.cov(G), want, atol=0.05 * np.abs(want).max())
-
-
-def test_sample_at_none_covers_every_feature():
-    rng = np.random.default_rng(17)
-    p = 30
-    precision, _ = make_precision(p, 12, rng)
-    factor = create_sparse_factor(precision)
-    G = factor.sample_at(None, 40_000, np.random.default_rng(0))
-    assert G.shape == (p, 40_000)
-    want = dense_inverse(precision)
-    assert_allclose(np.cov(G), want, atol=0.05 * np.abs(want).max())
+    inv = dense_inverse(precision)
+    for features in (
+        np.array([observed[3], unobserved[5], unobserved[0], observed[0]]),
+        None,
+    ):
+        G = factor.sample_at(features, 40_000, np.random.default_rng(0))
+        want = inv if features is None else inv[np.ix_(features, features)]
+        assert G.shape == (want.shape[0], 40_000)
+        assert_allclose(np.cov(G), want, atol=0.05 * np.abs(want).max())
 
 
 def test_sample_at_repeats_a_feature_exactly():
@@ -241,7 +224,10 @@ def test_sample_at_draws_only_the_normals_it_needs(m):
     assert used.random() == twin.random()
 
 
-def test_logdet_and_trace_inv_match_dense():
+def test_logdet_trace_inv_and_get_L_csc_match_dense():
+    """``logdet`` and ``trace_inv`` against dense truth, and ``get_L_csc``
+    is a Cholesky factor of some permutation of the matrix: same
+    eigenvalues, and its diagonal and Takahashi trace reproduce the two."""
     rng = np.random.default_rng(8)
     p = 48
     precision, _ = make_precision(p, 20, rng)
@@ -249,33 +235,13 @@ def test_logdet_and_trace_inv_match_dense():
     _, ld = np.linalg.slogdet(precision.toarray())
     assert_allclose(factor.logdet(), ld, rtol=1e-10)
     assert_allclose(factor.trace_inv(), np.trace(dense_inverse(precision)), rtol=1e-10)
-
-
-def test_solve_cost_counts_only_the_block():
-    rng = np.random.default_rng(9)
-    p = 48
-    precision, observed = make_precision(p, 20, rng)
-    factor = create_sparse_factor(precision)
-    n_trivial = p - observed.size
-    assert factor.solve_cost == precision.nnz - n_trivial
-
-
-def test_get_L_csc_factors_a_permutation_of_the_matrix():
-    """``L Lᵀ = P Λ Pᵀ`` for some permutation ``P``: the eigenvalues and
-    the Takahashi trace agree with the full matrix, and the diagonal
-    reproduces the log-determinant."""
-    rng = np.random.default_rng(10)
-    p = 48
-    precision, _ = make_precision(p, 20, rng)
-    factor = create_sparse_factor(precision)
     L = factor.get_L_csc()
-    LLt = (L @ L.T).toarray()
     assert_allclose(
-        np.sort(np.linalg.eigvalsh(LLt)),
+        np.sort(np.linalg.eigvalsh((L @ L.T).toarray())),
         np.sort(np.linalg.eigvalsh(precision.toarray())),
         rtol=1e-8,
     )
-    assert_allclose(2.0 * np.sum(np.log(L.diagonal())), factor.logdet(), rtol=1e-10)
+    assert_allclose(2.0 * np.sum(np.log(L.diagonal())), ld, rtol=1e-10)
     assert_allclose(np.sum(takahashi_diagonal(L)), factor.trace_inv(), rtol=1e-10)
 
 
@@ -292,8 +258,10 @@ def test_scaled_factor_composes_over_the_partition():
     Mt = np.asarray(factor.half_solve(np.eye(p)))
     assert_allclose(Mt.T @ Mt, inv, atol=1e-10)
     X = sp.csc_array(sp.random(6, p, density=0.2, random_state=44))
-    B = np.asarray(factor.half_solve(X.T))  # sparse rhs, compact result
-    assert_allclose(B.T @ B, X.toarray() @ inv @ X.toarray().T, atol=1e-10)
+    B = factor.half_solve(X.T)  # sparse rhs, split result
+    assert isinstance(B, SparseHalfSolve)
+    gram = B.block.T @ B.block + (B.trivial.T @ B.trivial).toarray()
+    assert_allclose(gram, X.toarray() @ inv @ X.toarray().T, atol=1e-10)
     G = factor.sample_at(None, 40_000, np.random.default_rng(0))
     assert_allclose(np.cov(G), inv, atol=0.05 * np.abs(inv).max())
     _, ld = np.linalg.slogdet(s * precision.toarray())
@@ -304,37 +272,29 @@ def test_scaled_factor_composes_over_the_partition():
 # -- refactorization ---------------------------------------------------------
 
 
-def test_refactorize_when_the_observed_set_grows():
-    """A later update couples a feature that was trivial before."""
+def test_refactorize_follows_the_new_matrix():
+    """Same pattern with new values (the trivial diagonal must be
+    re-read), then a pattern where a later update couples a feature that
+    was trivial before (the partition must be redone)."""
     rng = np.random.default_rng(12)
     p = 40
     A1, observed = make_precision(p, 16, rng)
     factor = create_sparse_factor(A1)
-    j = np.setdiff1d(np.arange(p), observed)[0]
-    k = observed[0]
-    A2 = sp.lil_array(A1)
-    A2[j, k] = 0.4
-    A2[k, j] = 0.4
-    A2[j, j] += 1.0
-    A2 = sp.csc_array(A2)
-
-    refactored = factor.refactorize(A2)
     b = rng.standard_normal(p)
-    assert_allclose(refactored.solve(b), dense_inverse(A2) @ b, rtol=1e-10)
-    assert_allclose(refactored.trace_inv(), np.trace(dense_inverse(A2)), rtol=1e-10)
 
-
-def test_refactorize_with_the_same_observed_set():
-    """New values, same pattern: the trivial diagonal must be re-read."""
-    rng = np.random.default_rng(13)
-    p = 40
-    A1, _ = make_precision(p, 16, rng)
-    factor = create_sparse_factor(A1)
     A2 = sp.csc_array(A1 * 1.7)  # scales every entry, block and trivial alike
+    same = factor.refactorize(A2)
+    assert_allclose(same.solve(b), dense_inverse(A2) @ b, rtol=1e-10)
 
-    refactored = factor.refactorize(A2)
-    b = rng.standard_normal(p)
-    assert_allclose(refactored.solve(b), dense_inverse(A2) @ b, rtol=1e-10)
+    j, k = np.setdiff1d(np.arange(p), observed)[0], observed[0]
+    A3 = sp.lil_array(A1)
+    A3[j, k] = A3[k, j] = 0.4
+    A3[j, j] += 1.0
+    A3 = sp.csc_array(A3)
+    grown = factor.refactorize(A3)
+    assert grown.n_factored == observed.size + 1
+    assert_allclose(grown.solve(b), dense_inverse(A3) @ b, rtol=1e-10)
+    assert_allclose(grown.trace_inv(), np.trace(dense_inverse(A3)), rtol=1e-10)
 
 
 # -- the property that made this worth doing ---------------------------------
@@ -441,9 +401,10 @@ def test_stacked_contexts_with_distinct_supports_have_the_right_joint_law():
 
 
 @pytest.mark.parametrize("m", [24, 60])
-def test_n_factored_is_what_the_factor_factors(m):
+def test_n_factored_and_solve_cost_count_only_the_block(m):
     """The observed block for a sparse factor, unchanged by scaling;
-    every feature for a dense one."""
+    every feature for a dense one; the per-solve cost is the block's
+    stored entries."""
     from scipy.linalg import cholesky
 
     from bayesianbandits._sparse_bayesian_linear_regression import DenseFactor
@@ -453,17 +414,19 @@ def test_n_factored_is_what_the_factor_factors(m):
     precision, observed = make_precision(p, m, rng)
     factor = create_sparse_factor(precision)
     assert factor.n_factored == observed.size
+    assert factor.solve_cost == precision.nnz - (p - observed.size)
     assert scale_factor(factor, 2.0).n_factored == observed.size
     U = cholesky(precision.toarray(), lower=False)
     assert DenseFactor(_U=U, _n_features=p).n_factored == p
 
 
 @pytest.mark.parametrize("m", [24, 60])
-def test_half_solve_sparse_rhs_is_compact_with_the_same_gram(m):
-    """For a sparse ``b`` the result keeps the block rows and one row per
-    distinct never-observed feature ``b`` touches -- nothing else -- and
-    ``Bᵀ B`` is still ``bᵀ Λ⁻¹ b``. With nothing trivial it is the dense
-    half-solve of the same operand."""
+def test_half_solve_sparse_rhs_splits_with_the_same_gram(m):
+    """For a sparse ``b`` the result is the dense block half-solve plus a
+    sparse trivial part with one row per distinct never-observed feature
+    ``b`` touches -- nothing else, and no denser than ``b``'s trivial
+    entries -- and the two Grams add to ``bᵀ Λ⁻¹ b``. With nothing
+    trivial the block is the dense half-solve of the same operand."""
     rng = np.random.default_rng(43)
     p = 60
     precision, observed = make_precision(p, m, rng)
@@ -481,19 +444,32 @@ def test_half_solve_sparse_rhs_is_compact_with_the_same_gram(m):
     X = sp.csc_array(X)
     b = X.T  # (p, 5), sparse
 
-    B = np.asarray(factor.half_solve(b))
+    B = factor.half_solve(b)
+    assert isinstance(B, SparseHalfSolve)
     touched = 2 if unobserved.size else 0
-    assert B.shape == (factor.n_factored + touched, 5)
+    assert B.block.shape == (factor.n_factored, 5)
+    assert B.trivial.shape == (touched, 5)
+    assert B.trivial.nnz == (3 if unobserved.size else 0)
     Xd = X.toarray()
-    assert_allclose(B.T @ B, Xd @ dense_inverse(precision) @ Xd.T, atol=1e-10)
-    if not unobserved.size:
-        assert_allclose(B, factor.half_solve(b.toarray()), rtol=1e-12)
+    gram = B.block.T @ B.block + (B.trivial.T @ B.trivial).toarray()
+    assert_allclose(gram, Xd @ dense_inverse(precision) @ Xd.T, atol=1e-10)
+    if unobserved.size:
+        # trivial rows are value / sqrt(Λ_jj), ascending by feature
+        diag = precision.diagonal()
+        want = np.zeros((2, 5))
+        want[0, 0], want[0, 3] = 0.7 / np.sqrt(diag[j]), -1.1 / np.sqrt(diag[j])
+        want[1, 2] = 0.4 / np.sqrt(diag[k])
+        assert_allclose(B.trivial.toarray(), want, rtol=1e-12)
+    else:
+        assert_allclose(B.block, factor.half_solve(b.toarray()), rtol=1e-12)
 
 
-def test_marginal_sd_over_the_half_solve_path_in_several_chunks():
-    """The chunked half-solve path against dense truth, with the support
-    route gated off and the block budget forced small enough that many
-    chunks run, each handing the factor a sparse block of rows."""
+def test_marginal_sd_over_both_routes_matches_dense_truth():
+    """The marginal path over a partitioned factor, both ways: the
+    chunked half-solve (support route gated off, block budget forced
+    small so many chunks run, each handing the factor a sparse block of
+    rows), and the support route (many rows over few columns, some of
+    them never observed, so it fires and solves over the split)."""
     from unittest import mock
 
     from bayesianbandits import _estimators as E
@@ -504,10 +480,10 @@ def test_marginal_sd_over_the_half_solve_path_in_several_chunks():
     p = 80
     precision, observed = make_precision(p, 32, rng)
     factor = create_sparse_factor(precision)
+    inv = dense_inverse(precision)
+
     X = sp.csc_array(sp.random(37, p, density=0.1, random_state=45))
     Xd = X.toarray()
-    want = np.sqrt(np.einsum("ij,jk,ik->i", Xd, dense_inverse(precision), Xd))
-
     with (
         mock.patch.object(sc, "build", lambda *a, **k: None),
         mock.patch.object(E, "_MARGINAL_SD_BLOCK_ELEMS", 3 * factor.n_factored),
@@ -518,18 +494,9 @@ def test_marginal_sd_over_the_half_solve_path_in_several_chunks():
             factor, "half_solve", lambda b: seen.append(b.shape[1]) or real(b)
         ):
             got = _marginal_predictive_sd(factor, X)
-    assert_allclose(got, want, rtol=1e-10)
+    assert_allclose(got, np.sqrt(np.einsum("ij,jk,ik->i", Xd, inv, Xd)), rtol=1e-10)
     assert len(seen) == 13 and max(seen) == 3  # 37 rows in blocks of 3
 
-
-def test_marginal_sd_over_the_support_route_matches_dense_truth():
-    """Many rows over few columns: the support route fires."""
-    from bayesianbandits._estimators import _marginal_predictive_sd
-
-    rng = np.random.default_rng(46)
-    p = 80
-    precision, observed = make_precision(p, 32, rng)
-    factor = create_sparse_factor(precision)
     cols = np.concatenate([observed[:5], np.setdiff1d(np.arange(p), observed)[:2]])
     rows_, cols_, vals_ = [], [], []
     for i in range(120):
@@ -539,8 +506,12 @@ def test_marginal_sd_over_the_support_route_matches_dense_truth():
             vals_.append(rng.standard_normal())
     X = sp.csc_array(sp.csr_array((vals_, (rows_, cols_)), shape=(120, p)))
     Xd = X.toarray()
-    want = np.sqrt(np.einsum("ij,jk,ik->i", Xd, dense_inverse(precision), Xd))
-    assert_allclose(_marginal_predictive_sd(factor, X), want, rtol=1e-10)
+    with mock.patch.object(
+        sc, "support_covariance", wraps=sc.support_covariance
+    ) as sc_:
+        got = _marginal_predictive_sd(factor, X)
+    sc_.assert_called_once()
+    assert_allclose(got, np.sqrt(np.einsum("ij,jk,ik->i", Xd, inv, Xd)), rtol=1e-10)
 
 
 def test_a_feature_seen_alone_stays_trivial_and_seen_together_joins_the_block():

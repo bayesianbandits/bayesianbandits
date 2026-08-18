@@ -7,6 +7,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
+    NamedTuple,
     Optional,
     TypeVar,
     Union,
@@ -199,6 +200,24 @@ def _merge(
     return out
 
 
+class SparseHalfSolve(NamedTuple):
+    """A half-solve against a sparse right-hand side, in two parts whose
+    Gram add: ``Bᵀ B = blockᵀ block + trivialᵀ trivial``.
+
+    ``block`` is the dense ``(n_factored, k)`` half-solve at the features
+    the factor factors; ``trivial`` is sparse ``(t, k)``, one row per
+    distinct never-observed feature the right-hand side touches
+    (ascending), holding ``value / sqrt(Λ_jj)`` at that entry's column.
+    ``t`` is bounded by the right-hand side's nonzeros, not by anything
+    the factor knows, so it is never densified: callers read a half-solve
+    through its Gram or draw with it (``blockᵀ z₁ + trivialᵀ z₂``), and
+    both split across the parts.
+    """
+
+    block: NDArray[np.float64]
+    trivial: csc_array
+
+
 class _SparseRhs:
     """A sparse right-hand side split for the partitioned solve: its
     observed rows densified for the block solver, its trivial entries
@@ -280,22 +299,21 @@ class _SparseRhs:
         )
         return cast(csc_array, out + scaled)
 
-    def compact_trivial(self, trivial_diag: NDArray[np.float64]) -> NDArray[np.float64]:
-        """The trivial part of a half-solve, compact: one row per
-        *distinct* trivial feature the right-hand side touches, holding
-        ``value / sqrt(Λ_jj)`` at that entry's column, in ascending
-        feature order. Rows for trivial features it does not touch would
-        be zero and are omitted; see
-        :meth:`CholmodSparseFactor.half_solve`."""
+    def compact_trivial(
+        self, trivial_diag: NDArray[np.float64], scale: float = 1.0
+    ) -> csc_array:
+        """The trivial part of a half-solve, the sparse ``(t, k)`` of
+        :class:`SparseHalfSolve`: one row per *distinct* trivial feature
+        the right-hand side touches, ascending, holding
+        ``value / sqrt(scale · Λ_jj)`` at that entry's column."""
         _, k = self.shape
         if self.trivial_val.size == 0:
-            return np.empty((0, k), dtype=np.float64)
+            return csc_array((0, k), dtype=np.float64)
         distinct, inverse = np.unique(self.trivial_rank, return_inverse=True)
-        out = np.zeros((distinct.size, k), dtype=np.float64)
-        out[inverse, self.trivial_col] = self.trivial_val / np.sqrt(
-            trivial_diag[self.trivial_rank]
+        values = self.trivial_val / np.sqrt(scale * trivial_diag[self.trivial_rank])
+        return csc_array(
+            (values, (inverse.ravel(), self.trivial_col)), shape=(distinct.size, k)
         )
-        return out
 
 
 def _stack(
@@ -483,29 +501,29 @@ class CholmodSparseFactor:
             / root
         )
 
-    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+    def half_solve(
+        self, b: NDArray[np.floating[Any]]
+    ) -> Union[NDArray[np.float64], SparseHalfSolve]:
         """Apply the transpose of the ``sample_at`` operator: L^{-1} P b.
 
         If ``M`` is the operator ``sample_at`` applies to its normals
         (``M M^T = Λ^{-1}``), this
         returns ``M^T b``, so ``half_solve(X.T).T @ half_solve(X.T)``
         equals ``X Λ^{-1} X^T`` -- a half-solve per column against the
-        cached factor, without ever forming ``Λ^{-1}``. The result is in
-        factor-row order.
-
-        A sparse ``b`` comes back *compact*: the block rows, then one row
-        per distinct trivial feature ``b`` touches; the trivial rows it
-        does not touch would be zero and are omitted (see
-        :class:`_SparseRhs`). Every caller reads a half-solve only
-        through the Gram ``Bᵀ B``, which dropping zero rows leaves
-        unchanged, and it is what keeps the marginal and reward-space
-        paths at ``O(n_factored)`` per column rather than ``O(n)``.
+        cached factor, without ever forming ``Λ^{-1}``. A dense ``b``
+        comes back dense in factor-row order (block rows, then the
+        trivial features ascending); a sparse ``b`` comes back as a
+        :class:`SparseHalfSolve`, its trivial part never densified, which
+        keeps the marginal and reward-space paths at ``O(n_factored)``
+        per column plus ``O(nnz)`` whatever ``b`` touches.
         """
         root = np.sqrt(self._scale)
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
             block = self._factor.solve(rhs.block[self._factor.perm], system="L")
-            return _stack(block, rhs.compact_trivial(self._trivial_diag)) / root
+            return SparseHalfSolve(
+                block / root, rhs.compact_trivial(self._trivial_diag, self._scale)
+            )
         block = self._factor.solve(b[self._observed][self._factor.perm], system="L")
         rest = b[self._trivial] / _column_scale(np.sqrt(self._trivial_diag), b.ndim)
         return _stack(block, rest) / root
@@ -674,7 +692,9 @@ class SuperLUSparseFactor:
         L_unit = csc_array(self._L @ diags(invdiag))
         return L_unit, invdiag
 
-    def half_solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
+    def half_solve(
+        self, b: NDArray[np.floating[Any]]
+    ) -> Union[NDArray[np.float64], SparseHalfSolve]:
         """Apply the transpose of the ``sample_at`` operator: L^{-1} P b.
 
         Same contract as :meth:`CholmodSparseFactor.half_solve`, against
@@ -685,12 +705,9 @@ class SuperLUSparseFactor:
         overwriting both operands is safe).
         """
         L_unit, invdiag = self._half_solve_factor
-        if issparse(b):
-            rhs = _SparseRhs(b, self._observed, self._trivial)
-            operand, rest = rhs.block, rhs.compact_trivial(self._trivial_diag)
-        else:
-            operand = b[self._observed]
-            rest = b[self._trivial] / _column_scale(np.sqrt(self._trivial_diag), b.ndim)
+        root = np.sqrt(self._scale)
+        rhs = _SparseRhs(b, self._observed, self._trivial) if issparse(b) else None
+        operand = b[self._observed] if rhs is None else rhs.block
         y = spsolve_triangular(
             L_unit,
             operand[self._perm],
@@ -699,7 +716,13 @@ class SuperLUSparseFactor:
             overwrite_A=True,
             overwrite_b=True,
         )
-        return _stack(y * _column_scale(invdiag, y.ndim), rest) / np.sqrt(self._scale)
+        y *= _column_scale(invdiag / root, y.ndim)
+        if rhs is not None:
+            return SparseHalfSolve(
+                y, rhs.compact_trivial(self._trivial_diag, self._scale)
+            )
+        rest = b[self._trivial] / _column_scale(np.sqrt(self._trivial_diag), b.ndim)
+        return _stack(y, rest / root)
 
     def logdet(self) -> float:
         """Log-determinant of the factored matrix.

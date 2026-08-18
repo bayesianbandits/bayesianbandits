@@ -140,6 +140,9 @@ def affine_lower_factor(
     :func:`standard_normal_f` and ``L`` from :func:`lower_predictive_sqrt`
     are both F-contiguous, so neither operand is copied."""
     out = np.empty((z.shape[0], L.shape[0]), dtype=np.float64, order="F")
+    if out.shape[0] == 0:
+        # f2py rejects a zero-row ``c``; nothing to draw anyway
+        return out
     out[:] = mean
     return cast(
         NDArray[np.float64],
