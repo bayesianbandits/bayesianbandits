@@ -1184,14 +1184,16 @@ def _blocked_colorize(
 ) -> NDArray[np.float64]:
     """``L_b @ z_{s,b}`` for every block ``b`` and draw ``s``.
 
-    ``L``: ``(n_blocks, k, k)``; ``z``: ``(n_blocks, size, k)``; returns
-    ``(size, n_blocks * k)``, written directly in C order.
+    ``L`` has shape ``(n_blocks, k, k)``, ``z`` has shape
+    ``(n_blocks, size, k)``; returns shape ``(size, n_blocks * k)``,
+    draw-contiguous per the sampling layout contract (see
+    :func:`~bayesianbandits._blas_helpers.draw_contiguous`).
     """
     n_blocks, size, k = z.shape
-    out = np.empty((size, n_blocks, k))
-    np.matmul(z, L.transpose(0, 2, 1), out=out.transpose(1, 0, 2))
-    # explicit column count: reshape(size, -1) is ambiguous when size == 0
-    return out.reshape(size, n_blocks * k)
+    out = np.empty((n_blocks, k, size))
+    np.matmul(L, z.transpose(0, 2, 1), out=out)
+    # explicit column count: reshape(-1, size) is ambiguous when size == 0
+    return out.reshape(n_blocks * k, size).T
 
 
 class _RewardSpacePredictiveMixin:
@@ -1725,7 +1727,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -1767,7 +1770,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row.
+            Independent marginal draws for each row. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -1775,7 +1779,7 @@ scipy.sparse.csc_array
         predict : Point predictions using the posterior mean.
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
-        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        z = standard_normal_f(self.random_state_, size, mean.shape[0])
         return cast(NDArray[np.float64], mean + sd * z)
 
     def sample_reward_space(
@@ -1826,7 +1830,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2223,7 +2228,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2266,7 +2272,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row.
+            Independent marginal draws for each row. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2275,10 +2282,11 @@ scipy.sparse.csc_array
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
         df = 2.0 * self.a_
-        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        z = standard_normal_f(self.random_state_, size, mean.shape[0])
         # one chi-square per (draw, row) cell: rows must be fully
-        # independent, not merely marginally exact
-        g = self.random_state_.chisquare(df, size=(size, mean.shape[0]))
+        # independent, not merely marginally exact; transposed fill for
+        # the draw-contiguous layout
+        g = self.random_state_.chisquare(df, size=(mean.shape[0], size)).T
         # the (b/a) scale factor and the df/g mixing fold into one
         # per-cell scale
         scale = np.sqrt((self.b_ / self.a_) * df / g)
@@ -2320,7 +2328,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2918,7 +2927,8 @@ scipy.sparse.csc_array
         samples : ndarray of shape (size, n_samples)
             Predicted values for each posterior sample. For
             ``link='logit'``, probabilities in [0, 1]. For
-            ``link='log'``, expected counts (positive reals).
+            ``link='log'``, expected counts (positive reals). Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2957,7 +2967,8 @@ scipy.sparse.csc_array
         -------
         samples : ndarray of shape (size, n_samples)
             Independent marginal draws for each row, on the response
-            scale of the link.
+            scale of the link. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2965,7 +2976,7 @@ scipy.sparse.csc_array
         predict : Point predictions using the posterior mean.
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
-        z = self.random_state_.standard_normal((size, mean.shape[0]))
+        z = standard_normal_f(self.random_state_, size, mean.shape[0])
         return self._inverse_link(mean + sd * z)
 
     def sample_reward_space(
@@ -3001,7 +3012,8 @@ scipy.sparse.csc_array
         -------
         samples : ndarray of shape (size, n_samples)
             Predicted values for each posterior sample, on the response
-            scale of the link.
+            scale of the link. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------

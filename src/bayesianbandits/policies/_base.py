@@ -46,18 +46,18 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         samples that learner once for all arms rather than coming
         through here.
         """
-        samples = np.array(
+        # Stacking transposed builds (n_arms, n_contexts, size) in one
+        # copy with the draw axis contiguous (the layout contract).
+        return np.array(
             [
                 (
                     arm.sample_marginal
                     if self.consumes == DrawKind.MARGINAL_ONLY
                     else arm.sample
-                )(X, size)
+                )(X, size).T
                 for arm in arms
             ]
         )
-        # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-        return samples.transpose(0, 2, 1)
 
     def update(
         self,

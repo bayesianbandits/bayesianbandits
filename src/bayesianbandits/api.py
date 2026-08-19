@@ -88,6 +88,7 @@ from ._arm import (
     resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
+from ._blas_helpers import draw_contiguous
 from ._draw_kind import DrawKind
 from ._memory import MemoryUsageMixin
 from .policies import (  # noqa: F401
@@ -116,6 +117,9 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     Defaults to ``JOINT`` on :class:`PolicyDefaultUpdate`, which is
     always correct and never the cheapest; a policy scoring each arm
     on its own should say ``MARGINAL_ONLY``.
+
+    The agents also keep a layout contract: the tensor handed to
+    ``select`` always has a unit-stride draw axis.
     """
 
     @overload
@@ -1159,8 +1163,10 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             Reshaped array with shape (n_arms, n_contexts, size, ...)
         """
         if samples.ndim == 2:
-            # 2D case: (size, n_contexts*n_arms) -> (n_arms, n_contexts, size)
-            return samples.T.reshape(n_arms, n_contexts, -1)
+            # 2D case: (size, n_contexts*n_arms) -> (n_arms, n_contexts, size);
+            # draw_contiguous no-ops for contract-conforming learners and
+            # normalizes the layout otherwise
+            return draw_contiguous(samples.T.reshape(n_arms, n_contexts, -1))
         else:
             # 3D+ case: (size, n_contexts*n_arms, ...) -> (n_arms, n_contexts, size, ...)
             samples_moved = np.moveaxis(samples, 0, 1)  # Move size to position 1

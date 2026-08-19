@@ -147,3 +147,32 @@ def affine_lower_factor(
         NDArray[np.float64],
         dgemm(1.0, z, L, trans_b=1, beta=1.0, c=out, overwrite_c=True),
     )
+
+
+#: Slab byte budget for :func:`draw_contiguous`: keeps a slab's source
+#: block L2-resident while it is scattered out.
+_COPY_SLAB_BYTES = 1 << 20
+
+
+def draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``samples`` with a unit-stride draw (last) axis, copying if needed.
+
+    The sampling layout contract (``tests/test_sample_layout.py``): the
+    ``(size, n)`` entry points return draws with ``samples.T``
+    C-contiguous -- their final projections are dgemm outputs or
+    transposed products, so this costs nothing -- and agents hand
+    policies tensors whose draw axis is unit-stride, normalizing here
+    for learners that only promise shape. Conforming input passes
+    through untouched. Copies slab-wise: numpy's own strided copy walks
+    the draw axis outermost and runs ~3x slower on large tensors.
+    """
+    if samples.dtype == np.float64 and samples.strides[-1] == samples.itemsize:
+        return samples
+    n_leading = int(np.prod(samples.shape[:-1]))
+    n_draws = samples.shape[-1]
+    out = np.empty(samples.shape, dtype=np.float64)
+    slab = max(1, min(n_draws, _COPY_SLAB_BYTES // max(1, n_leading * 8)))
+    for start in range(0, n_draws, slab):
+        stop = start + slab
+        out[..., start:stop] = samples[..., start:stop]
+    return out

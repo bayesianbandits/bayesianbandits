@@ -73,6 +73,10 @@ where = ["src"]
 bayesianbandits = ["*.pyx"]
 
 [tool.pytest.ini_options]
+# Bare `pytest` must never collect benchmarks/: pytest-benchmark runs them
+# as tests without any flag, and the slow 1M-feature cases allocate enough
+# to OOM a development VM. Run them explicitly per the README/CLAUDE.md.
+testpaths = ["tests", "src"]
 addopts = "--doctest-modules -v"
 filterwarnings = "ignore::DeprecationWarning"
 markers = [

@@ -1,0 +1,179 @@
+"""The sampling layout contract.
+
+Learner boundary: ``sample``, ``sample_marginal``, and
+``sample_reward_space`` return ``(size, n)`` draws with ``samples.T``
+C-contiguous (each row's draws adjacent), at no cost -- the projection
+is computed transposed. Policy boundary: agents hand ``select`` a
+tensor with a unit-stride draw axis, normalizing only for learners that
+break the contract. ``size == 1`` is contiguous either way, which is
+what keeps Thompson sampling's draw stream bit-for-bit stable.
+"""
+
+from typing import Any, List
+
+import numpy as np
+import pytest
+from scipy.sparse import csc_array
+from scipy.sparse import random as sparse_random
+
+from bayesianbandits import (
+    Arm,
+    ArmColumnFeaturizer,
+    BayesianGLM,
+    ContextualAgent,
+    LipschitzContextualAgent,
+    NormalInverseGammaRegressor,
+    NormalRegressor,
+    ThompsonSampling,
+)
+
+
+def make_learner(kind: str, sparse: bool):
+    if kind == "normal":
+        return NormalRegressor(alpha=1.0, beta=1.0, sparse=sparse, random_state=7)
+    if kind == "nig":
+        return NormalInverseGammaRegressor(sparse=sparse, random_state=7)
+    if kind == "glm_logit":
+        return BayesianGLM(alpha=1.0, link="logit", sparse=sparse, random_state=7)
+    if kind == "glm_log":
+        return BayesianGLM(alpha=1.0, link="log", sparse=sparse, random_state=7)
+    raise ValueError(kind)
+
+
+def make_X(n_rows: int, n_feats: int, sparse: bool):
+    if sparse:
+        return csc_array(
+            sparse_random(n_rows, n_feats, density=0.5, random_state=3, format="csc")
+        )
+    return np.random.default_rng(3).normal(size=(n_rows, n_feats))
+
+
+def fit(learner, n_feats: int, sparse: bool):
+    X = make_X(6, n_feats, sparse)
+    y = np.arange(6, dtype=np.float64)
+    learner.partial_fit(X, y)
+    return learner
+
+
+def assert_draw_contiguous(samples: np.ndarray, size: int, n_rows: int):
+    assert samples.shape == (size, n_rows)
+    assert samples.T.flags.c_contiguous
+
+
+LEARNERS = ["normal", "nig", "glm_logit", "glm_log"]
+
+
+class TestLearnerContract:
+    """(size, n) entry points return draw-contiguous arrays."""
+
+    @pytest.mark.parametrize("kind", LEARNERS)
+    @pytest.mark.parametrize("sparse", [False, True])
+    @pytest.mark.parametrize("size", [1, 7])
+    @pytest.mark.parametrize("fitted", [True, False])
+    def test_sample(self, kind: str, sparse: bool, size: int, fitted: bool):
+        learner = make_learner(kind, sparse)
+        if fitted:
+            fit(learner, 5, sparse)
+        X = make_X(4, 5, sparse)
+        assert_draw_contiguous(learner.sample(X, size=size), size, 4)
+
+    @pytest.mark.parametrize("kind", LEARNERS)
+    @pytest.mark.parametrize("sparse", [False, True])
+    @pytest.mark.parametrize("size", [1, 7])
+    def test_sample_marginal(self, kind: str, sparse: bool, size: int):
+        learner = fit(make_learner(kind, sparse), 5, sparse)
+        X = make_X(4, 5, sparse)
+        assert_draw_contiguous(learner.sample_marginal(X, size=size), size, 4)
+
+    @pytest.mark.parametrize("kind", LEARNERS)
+    @pytest.mark.parametrize("sparse", [False, True])
+    @pytest.mark.parametrize("size", [1, 7])
+    @pytest.mark.parametrize("block_size", [None, 2])
+    def test_sample_reward_space(
+        self, kind: str, sparse: bool, size: int, block_size: Any
+    ):
+        learner = fit(make_learner(kind, sparse), 5, sparse)
+        X = make_X(4, 5, sparse)
+        assert_draw_contiguous(
+            learner.sample_reward_space(X, size, block_size=block_size), size, 4
+        )
+
+    @pytest.mark.parametrize("kind", ["normal", "nig", "glm_logit"])
+    def test_sample_through_the_row_reduction(self, kind: str):
+        # Two rows and many draws routes sample() through the row-side
+        # support reduction; the contract must hold through that path too.
+        learner = fit(make_learner(kind, True), 40, True)
+        X = make_X(2, 40, True)
+        samples = learner.sample(X, size=50)
+        assert_draw_contiguous(samples, 50, 2)
+
+
+class RecordingPolicy(ThompsonSampling):
+    """Thompson sampling that records the stride of what select receives."""
+
+    def __init__(self, samples_needed_override: int):
+        super().__init__()
+        self._samples_needed = samples_needed_override
+        self.seen: List[Any] = []
+
+    @property
+    def samples_needed(self) -> int:
+        return self._samples_needed
+
+    def select(self, samples, arms, rng, top_k=None):  # type: ignore[override]
+        self.seen.append((samples.shape, samples.strides[-1] == samples.itemsize))
+        return [arms[0] for _ in range(samples.shape[1])]
+
+
+class TestPolicyBoundary:
+    """Agents hand select a tensor whose draw axis is unit-stride."""
+
+    def test_shared_learner_agent(self):
+        policy = RecordingPolicy(samples_needed_override=9)
+        agent = LipschitzContextualAgent(
+            arms=[Arm(i, reward_function=None, learner=None) for i in range(5)],
+            policy=policy,
+            arm_featurizer=ArmColumnFeaturizer(column_name="pid"),
+            learner=NormalRegressor(alpha=1.0, beta=1.0),
+            random_seed=0,
+        )
+        X = np.random.default_rng(0).normal(size=(3, 2))
+        agent.pull(X)
+        agent.update(X, np.zeros(3))
+        agent.pull(X)
+        assert policy.seen and all(ok for _, ok in policy.seen)
+        assert all(shape == (5, 3, 9) for shape, _ in policy.seen)
+
+    def test_per_arm_agent(self):
+        policy = RecordingPolicy(samples_needed_override=9)
+        agent = ContextualAgent(
+            arms=[
+                Arm(i, learner=NormalInverseGammaRegressor(random_state=i))
+                for i in range(4)
+            ],
+            policy=policy,
+            random_seed=0,
+        )
+        X = np.random.default_rng(0).normal(size=(3, 2))
+        agent.pull(X)
+        assert policy.seen and all(ok for _, ok in policy.seen)
+        assert all(shape == (4, 3, 9) for shape, _ in policy.seen)
+
+    def test_nonconforming_learner_is_normalized(self):
+        class COrderNormal(NormalRegressor):
+            """Violates the learner contract: C-ordered (size, n)."""
+
+            def sample(self, X, size=1):
+                return np.ascontiguousarray(super().sample(X, size))
+
+        policy = RecordingPolicy(samples_needed_override=9)
+        agent = LipschitzContextualAgent(
+            arms=[Arm(i, reward_function=None, learner=None) for i in range(5)],
+            policy=policy,
+            arm_featurizer=ArmColumnFeaturizer(column_name="pid"),
+            learner=COrderNormal(alpha=1.0, beta=1.0),
+            random_seed=0,
+        )
+        X = np.random.default_rng(0).normal(size=(3, 2))
+        agent.pull(X)
+        assert policy.seen and all(ok for _, ok in policy.seen)

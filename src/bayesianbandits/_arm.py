@@ -660,8 +660,9 @@ def _sample_context_major_blocks(
     Permutes the arm-major stack (row ``a * n_contexts + c``)
     context-major so each context's arm rows form one consecutive
     jointly-drawn block, samples, and restores the (arm, context) axes.
-    Returns shape ``(n_arms, n_contexts, size)``, a zero-copy view of
-    the drawn array.
+    Returns shape ``(n_arms, n_contexts, size)``: a zero-copy
+    draw-contiguous view for a contract-conforming sampler, one reshape
+    copy otherwise.
     """
     if n_arms == 1 or n_contexts == 1:
         # the permutation is the identity; skip the gather-copy
@@ -670,7 +671,7 @@ def _sample_context_major_blocks(
         perm = _context_major_permutation(n_arms, n_contexts)
         X_ctx_major = _take_rows(X_stacked, perm)
     drawn = joint_sampler(X_ctx_major, size=size)
-    return drawn.reshape(size, n_contexts, n_arms).transpose(2, 1, 0)
+    return drawn.T.reshape(n_contexts, n_arms, size).transpose(1, 0, 2)
 
 
 def posterior_identity(learner: Any) -> Any:
