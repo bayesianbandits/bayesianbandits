@@ -1,19 +1,11 @@
 """Benchmarks for ``InformationDirectedSampling.select``.
 
-Sampling is not the bottleneck for IDS: at realistic arm counts the
-decision itself dominates a pull, so this file benchmarks ``select``
-directly on a pre-drawn tensor.
-
-Two things drive its cost. The first is *layout*: agents hand a policy
-the learner's ``(size, n_rows)`` output as a transposed view, which
-leaves the draw axis with the largest stride, and the conditional-mean
-contraction falls off BLAS entirely in that layout. The ``_view`` and
-``_carray`` pairs measure what that costs and what the internal copy
-buys back. The second is the *pair scan*, which grows as ``n_arms^2``
-per context and is what the ``96_arms`` cases stress.
-
-``top_k`` re-solves the subgame once per slot, so its cost is linear in
-the slate size; ``top_k_4`` guards that multiplier.
+The decision, not sampling, dominates an IDS pull at realistic arm
+counts, so these run ``select`` on a pre-drawn tensor. The ``_view`` /
+``_carray`` pairs measure the layout normalization (agents hand policies
+a transposed view whose draw axis would otherwise carry the largest
+stride); the ``96_arms`` cases stress the pair scan; ``top_k_4`` guards
+the per-slot multiplier.
 """
 
 import numpy as np
@@ -27,11 +19,7 @@ class _Arm:
 
 
 def _draws(n_arms, n_contexts, size, seed=0):
-    """A pre-drawn tensor in the layout an agent actually produces.
-
-    ``LipschitzContextualAgent`` reshapes ``(size, n_contexts * n_arms)``
-    and transposes, so the draw axis ends up outermost in memory.
-    """
+    """A pre-drawn tensor in the draw-major view layout."""
     drawn = np.random.default_rng(seed).standard_normal((size, n_arms, n_contexts))
     return drawn.transpose(1, 2, 0)
 

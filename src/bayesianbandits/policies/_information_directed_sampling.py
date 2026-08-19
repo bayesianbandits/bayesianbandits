@@ -26,116 +26,74 @@ def _vids_statistics(
     mu: Optional[NDArray[np.float64]] = None,
     indicator: Optional[NDArray[np.bool_]] = None,
 ) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Monte Carlo estimates of expected regret and variance-based information gain.
+    """Monte Carlo regret and information-gain estimates, ``(n_arms, n_contexts)``.
 
-    Parameters
-    ----------
-    samples : NDArray[np.float64]
-        Joint posterior samples, shape ``(n_arms, n_contexts, n_draws)``.
-        Draw ``m`` must be coherent across arms within a context: the
-        conditional means below condition on which arm is optimal *within
-        the same draw*.
-    alive : NDArray[np.bool_]
-        Shape ``(n_arms, n_contexts)``. Dead arms are excluded from the
-        argmax (they cannot be "the optimal arm"), and their returned
-        statistics are meaningless.
-    masked, mu : NDArray[np.float64], optional
-        Precomputed ``np.where(alive[:, :, np.newaxis], samples, -np.inf)``
-        and ``samples.mean(axis=-1)``. The top_k slot loop maintains
-        ``masked`` in place across slots rather than re-materializing it
-        here each slot. When ``mu`` is omitted, the means are recovered
-        from the conditional-sum GEMM at no cost (its columns partition
-        the draws, so its row sums are the arms' draw totals) rather than
-        by a pass over the tensor.
-    indicator : NDArray[np.bool_], optional
-        Boolean scratch buffer shaped like ``samples``. The top_k slot
-        loop passes one in so the largest allocation here happens once per
-        ``select`` rather than once per slot.
+    ``delta[a, c]`` estimates :math:`\\mathbb{E}[\\max_{a'} \\theta_{a'}] -
+    \\mathbb{E}[\\theta_a]` over alive arms, clipped at zero; ``v[a, c]``
+    estimates :math:`\\sum_{a'} p(a') (\\mathbb{E}[\\theta_a \\mid A^* = a']
+    - \\mathbb{E}[\\theta_a])^2`, how much arm ``a``'s mean moves upon
+    learning which alive arm is optimal. ``samples`` is
+    ``(n_arms, n_contexts, n_draws)`` and must be jointly coherent across
+    arms within a draw; dead arms are excluded from the argmax and their
+    returned statistics are meaningless. ``masked``, ``mu``, and
+    ``indicator`` let the top_k slot loop reuse the alive-masked tensor,
+    the means, and the boolean scratch across slots.
 
-    Returns
-    -------
-    delta, v : NDArray[np.float64]
-        Shape ``(n_arms, n_contexts)``. ``delta[a, c]`` estimates
-        :math:`\\mathbb{E}[\\max_{a'} \\theta_{a'}] - \\mathbb{E}[\\theta_a]`
-        over alive arms, clipped at zero. ``v[a, c]`` estimates
-        :math:`\\sum_{a'} p(a') (\\mathbb{E}[\\theta_a \\mid A^* = a'] -
-        \\mathbb{E}[\\theta_a])^2`, the variance of arm ``a``'s posterior
-        mean under resolution of which alive arm is optimal.
-
-    Notes
-    -----
-    The conditioning is only over arms that win at least one draw:
-    :math:`p(A^* = b) = 0` for every other arm, so its term in
-    :math:`v` is exactly zero and its conditional means are never read.
-    The conditional-sum GEMM therefore runs over ``M`` columns rather
-    than ``n_arms``, where ``M`` is the number of ever-optimal arms per
-    context -- typically far below ``n_arms`` once the posterior has any
-    shape (often single digits at 96 arms). Cost drops from
-    :math:`O(K^2 S)` to :math:`O(K M S)` per context with the result
-    unchanged, since only zero-weight terms are dropped.
+    Only arms winning at least one draw enter the conditioning
+    (:math:`p(A^* = b) = 0` zeroes every other term exactly), so the
+    conditional-sum GEMM runs over the ``M`` ever-optimal arms per
+    context rather than all ``K``: ``O(K M S)`` with ``M`` typically
+    single digits.
     """
     n_arms, n_contexts, n_draws = samples.shape
     if masked is None:
         masked = np.where(alive[:, :, np.newaxis], samples, -np.inf)
     means = mu  # (n_arms, n_contexts); derived from the GEMM below if None
 
-    # The max, not the argmax. Everything downstream wants the *indicator*
-    # of the optimal arm rather than its label, and numpy reduces over a
-    # leading axis with a generic loop: argmax over axis 0 of this tensor
-    # costs several times the contiguous max plus the equality pass that
-    # produces the indicator directly.
+    # max + equality pass: cheaper than argmax over the leading axis,
+    # and downstream wants the indicator, not the label
     rho = masked.max(axis=0)  # (n_contexts, n_draws)
     is_opt: NDArray[np.bool_] = (
         np.empty_like(samples, dtype=np.bool_) if indicator is None else indicator
     )
     np.equal(masked, rho, out=is_opt)
-    # summing bool promotes elementwise to int64 and runs ~4x slower than
-    # a uint16 accumulator, which n_draws < 2**16 makes exact
+    # a uint16 accumulator beats bool->int64 promotion ~4x; exact below 2**16
     count_dtype = np.uint16 if n_draws < 2**16 else np.int64
     counts = np.add.reduce(
         is_opt.view(np.uint8), axis=-1, dtype=count_dtype
     )  # (n_arms, n_contexts); zero for dead arms
 
-    # Gather the ever-optimal arms per context, padded to the widest
-    # context with never-optimal arms (whose weight is zero, so padding
-    # contributes nothing).
+    # gather the ever-optimal arms per context; padding with
+    # never-optimal arms contributes zero weight
     ever = counts > 0
     m_max = int(ever.sum(axis=0).max())
     opt_idx = np.argsort(~ever, axis=0, kind="stable")[:m_max].T  # (C, M)
     ctx_col = np.arange(n_contexts)[:, np.newaxis]
     weights = is_opt[opt_idx, ctx_col, :].astype(np.float64)  # (C, M, n_draws)
     if int(counts.sum()) != n_contexts * n_draws:
-        # Exact ties are measure-zero for a continuous posterior but not
-        # impossible: duplicate arms under a shared learner draw identical
-        # rewards. Split a tied draw evenly so p_opt stays a probability.
-        # Every marked arm is ever-optimal, so the per-draw total over the
-        # gathered columns is the full total.
+        # exact ties (e.g. duplicate arms under a shared learner): split
+        # a tied draw evenly so p_opt stays a probability
         weights /= weights.sum(axis=1, keepdims=True)
     counts_sub = weights.sum(axis=-1)  # (C, M)
     p_opt = counts_sub / n_draws
-    # cond_sums[c, a, b]: sum of arm a's draws over the draws where
-    # ever-optimal arm b is optimal, as a batched GEMM over contexts
+    # cond_sums[c, a, b]: arm a's draw total where ever-optimal arm b wins
     cond_sums = np.matmul(samples.transpose(1, 0, 2), weights.transpose(0, 2, 1))
     row_sums = cond_sums.sum(axis=-1)  # (C, K): each arm's full draw sum
     if means is None:
-        # The gathered columns carry total weight one on every draw, so
-        # cond_sums' rows already hold each arm's full draw sum: the mean
-        # falls out of the GEMM and needs no pass over the tensor.
+        # the weight columns partition the draws, so the row sums are
+        # already each arm's draw total: no extra pass for the means
         means = row_sums.T / n_draws
 
-    # E[max] from the same GEMM: entry (c, opt_idx[c, m], m) sums the
-    # winning arm's own draws over the draws it wins, i.e. rho over those
-    # draws (on a tied draw every marked arm equals the max, so the split
-    # weights still add rho exactly once). Summing over m totals rho.
-    # Taking regret as a difference of cond_sums entries keeps the
-    # zero-regret case *exactly* zero: an always-optimal arm's rho_sums
-    # and row_sums are the same float, so its ratio classifies as 0, not
-    # as an ulp of regret with no gain (which would read as resolved).
+    # E[max] from the same GEMM: the winning arm's entry sums rho over
+    # its winning draws (ties still add rho exactly once). Regret as a
+    # difference of cond_sums entries keeps an always-optimal arm's
+    # regret *exactly* zero, where an ulp of regret with zero gain would
+    # flip its ratio from 0 to inf.
     rho_sums = cond_sums[ctx_col, opt_idx, np.arange(m_max)[np.newaxis, :]].sum(axis=1)
     delta = np.clip((rho_sums[:, np.newaxis] - row_sums).T / n_draws, 0.0, None)
 
-    # guard the zero-count columns only: a split tie leaves fractional
-    # counts, which clamping up to one would silently rescale
+    # guard zero-count columns only: split ties leave fractional counts,
+    # which clamping up to one would rescale
     nonzero = np.where(counts_sub > 0.0, counts_sub, 1.0)
     mu_cond = cond_sums / nonzero[:, np.newaxis, :]
     # counts == 0 leaves mu_cond at 0, but p_opt == 0 zeroes the term anyway
@@ -154,52 +112,34 @@ def _optimal_two_point(
 ]:
     """Per context, the two-point distribution minimizing the information ratio.
 
-    The minimizer of :math:`\\Delta(\\pi)^2 / v(\\pi)` over distributions
-    :math:`\\pi` is supported on at most two arms (Russo & Van Roy 2018,
-    Prop. 6), so it suffices to scan pairs ``(a, b)``. For a fixed pair,
-    with mixing weight ``q`` on ``a``, the ratio is
-    ``(A q + B)^2 / (C q + D)`` where ``A = delta_a - delta_b``,
-    ``B = delta_b``, ``C = v_a - v_b``, ``D = v_b``; its stationary points
-    are ``q = -B / A`` (zero regret) and ``q = (C B - 2 A D) / (A C)``, so
-    the minimum over ``q`` in ``[0, 1]`` is attained at one of those
-    (clipped) or an endpoint.
+    The minimizer of :math:`\\Delta(\\pi)^2 / v(\\pi)` is supported on at
+    most two arms (Russo & Van Roy 2018, Prop. 6), so scanning pairs
+    suffices. For a pair with weight ``q`` on ``a`` the ratio is
+    ``(A q + B)^2 / (C q + D)`` with ``A = delta_a - delta_b``,
+    ``B = delta_b``, ``C = v_a - v_b``, ``D = v_b``; its stationary
+    points are ``q = -B / A`` and ``q = (C B - 2 A D) / (A C)``, so the
+    minimum over ``[0, 1]`` is at one of those or an endpoint.
 
-    Four reductions cut the scan well below its ``K^2 x 4`` face value
-    without excluding any candidate that could be the optimum, so the
-    minimum is the same:
+    The scan is cut far below ``K^2 x 4`` without excluding a possible
+    optimum: the endpoints are the single-arm ratios, whose minimum is
+    one ``O(K)`` sweep; ``q = -B / A`` is never strictly interior once
+    regret is clipped at zero (``B >= 0`` forces it outside ``(0, 1)``);
+    only the Pareto frontier of the ``(v_a, delta_a)`` points can
+    support an optimal mixture, since moving weight from a dominated arm
+    to its dominator never increases the ratio; and
+    ``f(q; a, b) == f(1 - q; b, a)`` halves the pairs. What remains is
+    one interior root per unordered frontier pair,
+    ``O(K log K + m^2)`` per context with ``m`` typically single digits.
 
-    * The endpoints ``q = 0`` and ``q = 1`` evaluate to the *single-arm*
-      ratios ``delta_b^2 / v_b`` and ``delta_a^2 / v_a``. Their minimum
-      over all pairs is the best single-arm ratio, an ``O(K)`` sweep per
-      context instead of ``O(K^2)``.
-    * ``q = -B / A`` never lands strictly inside ``(0, 1)``. Regret is
-      clipped at zero, so ``B >= 0``, and the root is ``<= 0`` when
-      ``A > 0`` and ``>= 1`` when ``A < 0``: an endpoint either way, and
-      hence already covered by the sweep above.
-    * Only the Pareto frontier of the ``(v_a, delta_a)`` points can
-      support an optimal mixture. If ``a'`` weakly dominates ``a``
-      (``v_a' >= v_a`` and ``delta_a' <= delta_a``), moving ``a``'s
-      weight to ``a'`` cannot increase :math:`\\Delta(\\pi)` and cannot
-      decrease :math:`v(\\pi)`, so it cannot increase the ratio: some
-      optimal pair lies within the non-dominated set. The frontier is
-      found by one sort per context, and the interior-root scan runs
-      over its ``m`` members -- typically single digits -- rather than
-      all ``K`` arms: ``O(K log K + m^2)`` per context.
-    * ``f(q; a, b) == f(1 - q; b, a)``, so scanning ordered pairs does
-      exactly twice the work of scanning unordered ones. Only the
-      interior root survives, over ``m (m - 1) / 2`` frontier pairs.
-
-    Ratio conventions: a mixture with exactly zero regret has ratio 0
-    (optimal no matter the gain); positive regret with zero gain has ratio
-    ``inf``. Dead arms are excluded from the scan.
+    A mixture with exactly zero regret has ratio 0; positive regret with
+    zero gain has ratio ``inf``. Dead arms are excluded.
 
     Returns
     -------
     a_idx, b_idx, q, ratio : NDArray
-        Each shape ``(n_contexts,)``: play ``a_idx`` with probability ``q``,
-        else ``b_idx``, achieving information ratio ``ratio``. An
-        infinite ``ratio`` means no alive pair has any information gain
-        with nonzero regret everywhere (the posterior has resolved).
+        Each ``(n_contexts,)``: play ``a_idx`` with probability ``q``,
+        else ``b_idx``, achieving ``ratio``; ``inf`` means the posterior
+        has resolved.
     """
     n_arms, n_contexts = delta.shape
     ctx_idx = np.arange(n_contexts)
@@ -215,10 +155,8 @@ def _optimal_two_point(
     if n_arms < 2:
         return s_idx, s_idx, np.ones(n_contexts), s_ratio
 
-    # Pareto frontier per context: sort by v descending (dead arms are
-    # pushed last and can never dominate) and keep each arm whose regret
-    # strictly undercuts every higher-v arm's. Every excluded arm is
-    # weakly dominated by a kept one, so the kept set suffices.
+    # Pareto frontier: sort by v descending (dead arms last, never
+    # dominating), keep arms whose regret undercuts every higher-v arm's
     delta_eff = np.where(alive, delta, np.inf)
     v_key = np.where(alive, v, -1.0)
     order = np.argsort(-v_key, axis=0, kind="stable")  # (K, C)
@@ -239,12 +177,9 @@ def _optimal_two_point(
     d_front = delta[keep_idx, ctx_col]  # (C, m)
     v_front = v[keep_idx, ctx_col]
 
-    # Interior stationary point, one per unordered frontier pair. The
-    # pair list is ragged: contexts contribute only their own frontier's
-    # pairs, so one context with a large frontier does not inflate the
-    # scan for every other context (frontier sizes are heavy-tailed in
-    # practice: most contexts resolve to one or two arms while a few
-    # keep many).
+    # Ragged pair list: each context contributes only its own frontier's
+    # pairs (frontier sizes are heavy-tailed, so one wide context must
+    # not inflate the scan for the rest)
     iu_a, iu_b = np.triu_indices(m_max, k=1)
     in_ctx = iu_b[np.newaxis, :] < m_counts[:, np.newaxis]  # (C, n_pairs)
     ctx_rep, pair_rep = np.nonzero(in_ctx)  # row-major: sorted by context
@@ -259,8 +194,8 @@ def _optimal_two_point(
 
     with np.errstate(divide="ignore", invalid="ignore"):
         q = (c_gain * d_b - 2.0 * a_delta * v_b) / (a_delta * c_gain)
-    # NaN (a zero denominator) and roots outside the open interval both
-    # drop out here: a clipped root is an endpoint, already scanned.
+    # NaN and out-of-interval roots drop out: a clipped root is an
+    # endpoint, already scanned
     interior = (q > 0.0) & (q < 1.0)
     q = np.where(interior, q, 0.0)
 
@@ -269,14 +204,12 @@ def _optimal_two_point(
     ratio = np.full_like(num, np.inf)
     np.divide(num, den, out=ratio, where=interior & (den > 0.0))
 
-    # Segment minimum per context: ``ctx_rep`` is sorted, so each
-    # context's pairs form one contiguous run.
+    # segment minimum per context: ctx_rep is sorted, runs contiguous
     present = np.flatnonzero(m_counts >= 2)
     seg_starts = np.searchsorted(ctx_rep, present)
     seg_min = np.minimum.reduceat(ratio, seg_starts)
-    # first pair achieving its segment's minimum (exact float equality
-    # with the reduction's own output; inf == inf keeps resolved
-    # contexts consistent, and take_pair discards them below)
+    # first achiever per segment (exact equality with the reduction's
+    # own output; inf == inf is fine, take_pair discards those below)
     seg_of = np.searchsorted(present, ctx_rep)
     achievers = np.flatnonzero(ratio == seg_min[seg_of])
     _, first = np.unique(seg_of[achievers], return_index=True)
@@ -444,12 +377,9 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     def __init__(self, samples: int = 1000):
         self.samples = samples
 
-    #: Information gain conditions on which arm is the argmax within a
-    #: draw, so arms must be jointly distributed; decisions are solved
-    #: per context, so the dependence across contexts is never read.
-    #: That is exactly ``CONTEXT_JOINT``, which lets an agent serve this
-    #: with per-context reward-space blocks -- far cheaper than fully
-    #: joint draws at this policy's sample counts.
+    #: Information gain conditions on the within-draw argmax (arms must
+    #: be jointly distributed) but each context is solved on its own:
+    #: exactly ``CONTEXT_JOINT``.
     consumes = DrawKind.CONTEXT_JOINT
 
     @property
@@ -490,12 +420,9 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         n_slots = 1 if top_k is None else min(top_k, n_arms)
 
         alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
-        # masked is maintained in place across slots (dead arms' draws
-        # set to -inf) instead of re-materialized; the means fall out of
-        # each slot's conditional-sum GEMM, so no pass computes them
+        # masked (dead arms at -inf) and the boolean scratch are
+        # maintained across slots instead of re-materialized per slot
         masked = samples if n_slots == 1 else samples.copy()
-        # the argmax indicator is the largest array the statistics touch;
-        # allocate it once and let every slot write into it
         indicator = np.empty_like(samples, dtype=np.bool_)
         ctx_idx = np.arange(n_contexts)
         choices = np.empty((n_slots, n_contexts), dtype=np.intp)
