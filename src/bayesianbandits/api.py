@@ -88,6 +88,7 @@ from ._arm import (
     resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
+from ._blas_helpers import draw_contiguous
 from ._draw_kind import DrawKind
 from .policies import (  # noqa: F401
     EpsilonGreedy,
@@ -115,6 +116,12 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     Defaults to ``JOINT`` on :class:`PolicyDefaultUpdate`, which is
     always correct and never the cheapest; a policy scoring each arm
     on its own should say ``MARGINAL_ONLY``.
+
+    Alongside this distributional contract the agents keep a *layout*
+    contract: the ``(n_arms, n_contexts, samples_needed)`` tensor
+    handed to ``select`` always has a unit-stride draw axis, so
+    reductions and contractions over draws run at full speed. Policies
+    may rely on it and never need defensive copies.
     """
 
     @overload
@@ -1158,8 +1165,13 @@ class LipschitzContextualAgent(Generic[TokenType]):
             Reshaped array with shape (n_arms, n_contexts, size, ...)
         """
         if samples.ndim == 2:
-            # 2D case: (size, n_contexts*n_arms) -> (n_arms, n_contexts, size)
-            return samples.T.reshape(n_arms, n_contexts, -1)
+            # 2D case: (size, n_contexts*n_arms) -> (n_arms, n_contexts, size).
+            # For a learner honoring the layout contract (draw-contiguous
+            # output, i.e. samples.T C-contiguous) this view is already
+            # draw-contiguous; draw_contiguous is then a no-op flags check,
+            # and otherwise normalizes with one slabbed copy so policies
+            # never see a draw axis with the largest stride.
+            return draw_contiguous(samples.T.reshape(n_arms, n_contexts, -1))
         else:
             # 3D+ case: (size, n_contexts*n_arms, ...) -> (n_arms, n_contexts, size, ...)
             samples_moved = np.moveaxis(samples, 0, 1)  # Move size to position 1

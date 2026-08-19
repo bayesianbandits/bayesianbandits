@@ -135,3 +135,62 @@ def affine_lower_factor(
         NDArray[np.float64],
         dgemm(1.0, z, L, trans_b=1, beta=1.0, c=out, overwrite_c=True),
     )
+
+
+def project_draws(
+    weights: NDArray[np.float64], X: Union[NDArray[np.float64], csc_array]
+) -> NDArray[np.float64]:
+    """``weights @ X.T`` -- shape ``(size, n_rows)`` -- draw-contiguous.
+
+    Computed as ``(X @ weights.T).T``: the transpose of the same product,
+    so every element is the same inner product, but the result is written
+    with each *row's draws* contiguous in memory (``samples.T`` is
+    C-contiguous). That is the layout contract of the sampling entry
+    points: agents transpose ``(size, n_rows)`` output into
+    ``(n_arms, n_contexts, size)`` views for the policies, and this
+    orientation makes those views draw-contiguous without a copy.
+
+    ``size == 1`` keeps the original orientation and BLAS call: a
+    single-row result is contiguous either way, and Thompson sampling's
+    bit-for-bit stability across versions pins that exact call.
+    """
+    if weights.shape[0] == 1:
+        return cast(NDArray[np.float64], weights @ X.T)
+    return cast(NDArray[np.float64], (X @ weights.T).T)
+
+
+#: Byte budget for one slab of :func:`draw_contiguous`'s copy. Sized to
+#: keep the source block of a slab resident in L2 while it is scattered
+#: out to its transposed destination.
+_COPY_SLAB_BYTES = 1 << 20
+
+
+def draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``samples`` with its trailing (draw) axis contiguous, copying if needed.
+
+    The policy boundary's layout contract: a ``(n_arms, n_contexts,
+    n_draws)`` tensor whose draw axis is unit-stride, so reductions and
+    contractions over draws run at full speed. Conforming learners make
+    the agents' transposed reshapes satisfy this for free; this helper
+    is the normalization for tensors that do not (e.g. a third-party
+    learner returning C-ordered ``(size, n_rows)``), whose transposed
+    view leaves the draw axis with the *largest* stride -- a layout
+    under which draw-axis BLAS contractions degrade by orders of
+    magnitude.
+
+    numpy's own copy of such a view walks the draw axis outermost and
+    touches a fresh cache line per element. Copying a slab of draws at
+    a time keeps the source block resident while it is scattered out,
+    about three times faster on large tensors. Conforming input is
+    returned untouched.
+    """
+    if samples.dtype == np.float64 and samples.strides[-1] == samples.itemsize:
+        return samples
+    n_leading = int(np.prod(samples.shape[:-1]))
+    n_draws = samples.shape[-1]
+    out = np.empty(samples.shape, dtype=np.float64)
+    slab = max(1, min(n_draws, _COPY_SLAB_BYTES // max(1, n_leading * 8)))
+    for start in range(0, n_draws, slab):
+        stop = start + slab
+        out[..., start:stop] = samples[..., start:stop]
+    return out

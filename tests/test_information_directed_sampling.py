@@ -17,8 +17,8 @@ from bayesianbandits import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
+from bayesianbandits._blas_helpers import draw_contiguous
 from bayesianbandits.policies._information_directed_sampling import (
-    _draw_contiguous,
     _optimal_two_point,
     _sample_information_ratio_minimizer,
     _vids_statistics,
@@ -357,34 +357,43 @@ class TestVidsStatistics:
 
 
 class TestDrawContiguous:
-    """The draw-major copy that fronts ``select``."""
+    """The layout normalization that fronts ``select``."""
 
     @pytest.mark.parametrize("shape", [(7, 5, 61), (1, 1, 3), (4, 1, 130), (3, 9, 1)])
-    def test_matches_ascontiguousarray(self, shape):
+    def test_normalizes_a_draw_major_view(self, shape):
         n_arms, n_contexts, n_draws = shape
         drawn = np.random.default_rng(0).normal(size=(n_draws, n_arms, n_contexts))
         view = drawn.transpose(1, 2, 0)
-        out = _draw_contiguous(view)
-        assert out.flags.c_contiguous
+        out = draw_contiguous(view)
+        assert out.strides[-1] == out.itemsize
         np.testing.assert_array_equal(out, view)
 
     def test_contiguous_input_is_not_copied(self):
         samples = np.zeros((3, 2, 5))
-        assert _draw_contiguous(samples) is samples
+        assert draw_contiguous(samples) is samples
+
+    def test_draw_contiguous_view_is_not_copied(self):
+        # The blocked reward-space route yields an (arm, context, draw)
+        # view whose draw axis is contiguous but whose leading axes are
+        # swapped in memory. That satisfies the layout contract as-is.
+        drawn = np.zeros((4, 3, 11))  # (C, K, S) in memory
+        view = drawn.transpose(1, 0, 2)
+        assert not view.flags.c_contiguous
+        assert draw_contiguous(view) is view
 
     def test_slabbing_covers_every_draw(self):
         # A shape whose slab size does not divide the draw count: the
         # final short slab must still be copied.
-        from bayesianbandits.policies import _information_directed_sampling as ids
+        from bayesianbandits import _blas_helpers
 
         drawn = np.random.default_rng(1).normal(size=(37, 4, 3))
         view = drawn.transpose(1, 2, 0)
-        original = ids._COPY_SLAB_BYTES
+        original = _blas_helpers._COPY_SLAB_BYTES
         try:
-            ids._COPY_SLAB_BYTES = 4 * 3 * 8 * 5  # five draws per slab
-            out = ids._draw_contiguous(view)
+            _blas_helpers._COPY_SLAB_BYTES = 4 * 3 * 8 * 5  # five draws per slab
+            out = _blas_helpers.draw_contiguous(view)
         finally:
-            ids._COPY_SLAB_BYTES = original
+            _blas_helpers._COPY_SLAB_BYTES = original
         np.testing.assert_array_equal(out, view)
 
 

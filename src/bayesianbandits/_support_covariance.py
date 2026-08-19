@@ -136,16 +136,20 @@ class SupportDraw:
         """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
 
         Rows within one draw share a weight vector, matching ``sample``.
+        Returned draw-contiguous (``result.T`` is C-contiguous), per the
+        sampling layout contract: the projection is computed transposed,
+        which is the same inner products written row-major by prediction
+        row rather than by draw.
         """
         ZC = rng.standard_normal((size, self._C.shape[0])) @ self._C.T
-        out = np.empty((size, self._n_rows), dtype=np.float64)
+        out = np.empty((self._n_rows, size), dtype=np.float64)
         block = self._row_block()
         for start in range(0, self._n_rows, block):
             stop = min(self._n_rows, start + block)
-            out[:, start:stop] = (
-                ZC @ np.asarray(self._XU[start:stop].todense(), dtype=np.float64).T
+            out[start:stop] = (
+                np.asarray(self._XU[start:stop].todense(), dtype=np.float64) @ ZC.T
             )
-        return out
+        return out.T
 
     def sd(self) -> NDArray[np.float64]:
         """Per-row predictive standard deviations, shape ``(n_rows,)``."""

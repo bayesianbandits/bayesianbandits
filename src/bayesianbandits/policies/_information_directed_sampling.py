@@ -14,39 +14,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._blas_helpers import draw_contiguous
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
-
-#: Byte budget for one slab of the draw-major copy below. Sized to keep
-#: the source block of a slab resident in L2 while it is scattered out.
-_COPY_SLAB_BYTES = 1 << 20
-
-
-def _draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
-    """``samples`` as a C-ordered ``(n_arms, n_contexts, n_draws)`` tensor.
-
-    Agents hand this tensor to a policy as a transposed view of the
-    learner's ``(size, n_rows)`` output, which leaves the draw axis with
-    the *largest* stride. Every statistic below reduces or contracts over
-    draws, and the conditional-mean GEMM falls off BLAS entirely in that
-    layout: materializing the natural order first costs one pass and buys
-    back two orders of magnitude.
-
-    numpy's own copy walks the draw axis outermost and so touches a fresh
-    cache line per element. Copying a slab of draws at a time keeps the
-    source block resident while it is scattered out, which runs about
-    three times faster on the large shapes. Already-contiguous input is
-    returned untouched.
-    """
-    if samples.dtype == np.float64 and samples.flags.c_contiguous:
-        return samples
-    n_arms, n_contexts, n_draws = samples.shape
-    out = np.empty(samples.shape, dtype=np.float64)
-    slab = max(1, min(n_draws, _COPY_SLAB_BYTES // max(1, n_arms * n_contexts * 8)))
-    for start in range(0, n_draws, slab):
-        stop = start + slab
-        out[:, :, start:stop] = samples[:, :, start:stop]
-    return out
 
 
 def _vids_statistics(
@@ -116,7 +86,7 @@ def _vids_statistics(
     # produces the indicator directly.
     rho = masked.max(axis=0)  # (n_contexts, n_draws)
     is_opt: NDArray[np.bool_] = (
-        np.empty(samples.shape, dtype=np.bool_) if indicator is None else indicator
+        np.empty_like(samples, dtype=np.bool_) if indicator is None else indicator
     )
     np.equal(masked, rho, out=is_opt)
     # summing bool promotes elementwise to int64 and runs ~4x slower than
@@ -515,7 +485,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms by minimizing the information ratio over pre-generated samples."""
-        samples = _draw_contiguous(samples)
+        samples = draw_contiguous(samples)
         n_arms, n_contexts, _ = samples.shape
         n_slots = 1 if top_k is None else min(top_k, n_arms)
 
@@ -526,7 +496,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         masked = samples if n_slots == 1 else samples.copy()
         # the argmax indicator is the largest array the statistics touch;
         # allocate it once and let every slot write into it
-        indicator = np.empty(samples.shape, dtype=np.bool_)
+        indicator = np.empty_like(samples, dtype=np.bool_)
         ctx_idx = np.arange(n_contexts)
         choices = np.empty((n_slots, n_contexts), dtype=np.intp)
         for slot in range(n_slots):

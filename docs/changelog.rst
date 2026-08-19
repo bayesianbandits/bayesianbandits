@@ -109,6 +109,30 @@ Unreleased
 
 **Performance**
 
+- The sampling entry points now keep a layout contract: ``sample``,
+  ``sample_marginal``, and ``sample_reward_space`` return their
+  ``(size, n)`` draws *draw-contiguous* (``samples.T`` is C-contiguous,
+  each row's draws adjacent in memory). This costs nothing -- the final
+  projection is computed transposed, the same inner products written the
+  other way round -- and it makes the ``(n_arms, n_contexts, size)``
+  views the agents build for policies draw-contiguous with **zero
+  copies**. The agents in turn guarantee that layout at the policy
+  boundary, normalizing with one slabbed copy only for a third-party
+  learner that returns C-ordered draws; policies may rely on a
+  unit-stride draw axis and never need defensive copies. Previously the
+  draw axis carried the *largest* stride in the tensor, degrading
+  draw-axis BLAS contractions by orders of magnitude (the IDS entry
+  below) and quantile scans by half.
+
+  ``size=1`` output is contiguous in either orientation, so its exact
+  BLAS call is kept and Thompson sampling's draw stream stays
+  bit-for-bit identical. On a dense 96-arm, 64-context agent at
+  ``samples=1000``, an IDS pull drops from 75 ms to 44 ms (the layout
+  copy disappears) and an ``UpperConfidenceBound`` pull from 238 ms to
+  206 ms (the quantile runs contiguous). Seeded draws on the (also
+  unreleased) marginal and blocked reward-space paths shift, since
+  their normals now fill transposed; distributions are unchanged (#272)
+
 - ``InformationDirectedSampling.select`` no longer reads its draws
   through the agent's transposed view. Agents hand a policy the learner's
   ``(size, n_rows)`` output reshaped and transposed, which leaves the draw
