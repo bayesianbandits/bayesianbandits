@@ -46,10 +46,8 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         samples that learner once for all arms rather than coming
         through here.
         """
-        # Stacking each arm's (size, n_contexts) draws transposed writes
-        # the (n_arms, n_contexts, size) tensor directly in C order: the
-        # same single copy the stack always was, but the draw axis comes
-        # out contiguous, per the policy boundary's layout contract.
+        # Stacking transposed builds (n_arms, n_contexts, size) in one
+        # copy with the draw axis contiguous (the layout contract).
         return np.array(
             [
                 (

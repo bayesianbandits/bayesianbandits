@@ -658,10 +658,9 @@ def _sample_context_major_blocks(
     Permutes the arm-major stack (row ``a * n_contexts + c``)
     context-major so each context's arm rows form one consecutive
     jointly-drawn block, samples, and restores the (arm, context) axes.
-    Returns shape ``(n_arms, n_contexts, size)``. For a sampler honoring
-    the layout contract (draw-contiguous ``(size, n)`` output) this is a
-    zero-copy draw-contiguous view; reshaping through the transpose lets
-    numpy fall back to one copy for a sampler that does not.
+    Returns shape ``(n_arms, n_contexts, size)``: a zero-copy
+    draw-contiguous view for a contract-conforming sampler, one reshape
+    copy otherwise.
     """
     if n_arms == 1 or n_contexts == 1:
         # the permutation is the identity; skip the gather-copy

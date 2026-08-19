@@ -136,10 +136,8 @@ class SupportDraw:
         """``size`` jointly-distributed draws, shape ``(size, n_rows)``.
 
         Rows within one draw share a weight vector, matching ``sample``.
-        Returned draw-contiguous (``result.T`` is C-contiguous), per the
-        sampling layout contract: the projection is computed transposed,
-        which is the same inner products written row-major by prediction
-        row rather than by draw.
+        Projected transposed so the result is draw-contiguous (see
+        :func:`~bayesianbandits._blas_helpers.project_draws`).
         """
         ZC = rng.standard_normal((size, self._C.shape[0])) @ self._C.T
         out = np.empty((self._n_rows, size), dtype=np.float64)

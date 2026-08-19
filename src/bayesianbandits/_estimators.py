@@ -1096,10 +1096,8 @@ def _blocked_colorize(
 
     ``L`` has shape ``(n_blocks, k, k)``, ``z`` has shape
     ``(n_blocks, size, k)``; returns shape ``(size, n_blocks * k)``,
-    draw-contiguous (``result.T`` is C-contiguous) per the sampling
-    layout contract: the batched GEMM writes each block's rows with
-    their draws adjacent, so neither the draw tensor nor the result is
-    copied through a transposed intermediate.
+    draw-contiguous per the sampling layout contract (see
+    :func:`~bayesianbandits._blas_helpers.project_draws`).
     """
     n_blocks, size, k = z.shape
     out = np.empty((n_blocks, k, size))
@@ -1600,9 +1598,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -1681,9 +1678,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Independent marginal draws for each row. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -1753,9 +1749,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2173,9 +2168,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2256,9 +2250,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Independent marginal draws for each row. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2269,8 +2262,8 @@ scipy.sparse.csc_array
         df = 2.0 * self.a_
         z = standard_normal_f(self.random_state_, size, mean.shape[0])
         # one chi-square per (draw, row) cell: rows must be fully
-        # independent, not merely marginally exact; drawn transposed so
-        # the result inherits the draw-contiguous layout contract
+        # independent, not merely marginally exact; transposed fill for
+        # the draw-contiguous layout
         g = self.random_state_.chisquare(df, size=(mean.shape[0], size)).T
         # the (b/a) scale factor and the df/g mixing fold into one
         # per-cell scale
@@ -2317,9 +2310,8 @@ scipy.sparse.csc_array
         Returns
         -------
         samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            Predicted values for each posterior draw. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -2930,9 +2922,8 @@ scipy.sparse.csc_array
         samples : ndarray of shape (size, n_samples)
             Predicted values for each posterior sample. For
             ``link='logit'``, probabilities in [0, 1]. For
-            ``link='log'``, expected counts (positive reals). Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            ``link='log'``, expected counts (positive reals). Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -3005,9 +2996,8 @@ scipy.sparse.csc_array
         -------
         samples : ndarray of shape (size, n_samples)
             Independent marginal draws for each row, on the response
-            scale of the link. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            scale of the link. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------
@@ -3052,9 +3042,8 @@ scipy.sparse.csc_array
         -------
         samples : ndarray of shape (size, n_samples)
             Predicted values for each posterior sample, on the response
-            scale of the link. Draw-contiguous:
-            ``samples.T`` is C-contiguous, so transposed views of the
-            draws are cheap.
+            scale of the link. Draw-contiguous
+            (``samples.T`` is C-contiguous).
 
         See Also
         --------

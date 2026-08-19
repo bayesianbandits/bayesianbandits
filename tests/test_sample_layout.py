@@ -1,23 +1,12 @@
 """The sampling layout contract.
 
-Two guarantees, at the two boundaries where draws change hands:
-
-**Learner boundary.** The ``(size, n)`` sampling entry points --
-``sample``, ``sample_marginal``, ``sample_reward_space`` -- return
-draw-contiguous arrays: ``samples.T`` is C-contiguous, i.e. each
-prediction row's draws are adjacent in memory. This costs nothing (the
-final projection is computed transposed, the same inner products the
-other way round) and makes every downstream transposed reshape
-contiguous for free. ``size == 1`` satisfies the contract in either
-orientation, which is what lets Thompson sampling's exact BLAS call --
-and hence its bit-for-bit draw stream -- stay untouched.
-
-**Policy boundary.** Agents hand ``select`` an
-``(n_arms, n_contexts, size)`` tensor whose draw axis is unit-stride.
-For conforming learners this is the free consequence of the learner
-contract; for a learner that only promises shape, the agent normalizes
-with one slabbed copy rather than letting a policy discover that
-draw-axis reductions run against the largest stride in the tensor.
+Learner boundary: ``sample``, ``sample_marginal``, and
+``sample_reward_space`` return ``(size, n)`` draws with ``samples.T``
+C-contiguous (each row's draws adjacent), at no cost -- the projection
+is computed transposed. Policy boundary: agents hand ``select`` a
+tensor with a unit-stride draw axis, normalizing only for learners that
+break the contract. ``size == 1`` is contiguous either way, which is
+what keeps Thompson sampling's draw stream bit-for-bit stable.
 """
 
 from typing import Any, List
