@@ -20,6 +20,7 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Concatenate, ParamSpec, Self, TypeGuard
 
+from ._blas_helpers import draw_contiguous
 from ._memory import MemoryUsageMixin
 
 HAS_PANDAS = importlib.util.find_spec("pandas") is not None
@@ -602,15 +603,12 @@ def resolve_reward_space_sampler(
 
     Returns a ``(X, size) -> samples`` callable bound to the learner's
     ``sample_reward_space`` with ``block_size`` applied, only when it is
-    safe *and* profitable to use: ``sample_reward_space`` must be
-    defined at or above any ``sample`` override (see
-    :func:`_defines_before_sample` -- the two are distributionally
-    identical for the built-in learners, but not necessarily for a
-    subclass), and the learner's ``_use_reward_space`` flop model must
-    prefer reward space for this ``(n_rows, size)`` shape. A learner
-    that defines ``sample_reward_space`` without the ``_use_reward_space``
-    gate is never routed to reward space. Returns None otherwise;
-    callers fall back to ``sample``, which is always correct.
+    safe *and* profitable: safe means defined at or above any ``sample``
+    override (:func:`_defines_before_sample`), profitable means the
+    learner's ``_use_reward_space`` flop model prefers reward space for
+    this ``(n_rows, size)`` shape; without that gate a learner is never
+    routed here. Returns None otherwise; callers fall back to
+    ``sample``, which is always correct.
     """
     if not _defines_before_sample(learner, "sample_reward_space"):
         return None
@@ -660,9 +658,10 @@ def _sample_context_major_blocks(
     Permutes the arm-major stack (row ``a * n_contexts + c``)
     context-major so each context's arm rows form one consecutive
     jointly-drawn block, samples, and restores the (arm, context) axes.
-    Returns shape ``(n_arms, n_contexts, size)``: a zero-copy
-    draw-contiguous view for a contract-conforming sampler, one reshape
-    copy otherwise.
+    Returns shape ``(n_arms, n_contexts, size)`` with a unit-stride draw
+    axis: a zero-copy view for a contract-conforming sampler, one
+    normalizing copy (:func:`~bayesianbandits._blas_helpers.draw_contiguous`)
+    otherwise.
     """
     if n_arms == 1 or n_contexts == 1:
         # the permutation is the identity; skip the gather-copy
@@ -671,7 +670,7 @@ def _sample_context_major_blocks(
         perm = _context_major_permutation(n_arms, n_contexts)
         X_ctx_major = _take_rows(X_stacked, perm)
     drawn = joint_sampler(X_ctx_major, size=size)
-    return drawn.T.reshape(n_contexts, n_arms, size).transpose(1, 0, 2)
+    return draw_contiguous(drawn.T.reshape(n_contexts, n_arms, size).transpose(1, 0, 2))
 
 
 def posterior_identity(learner: Any) -> Any:

@@ -6,45 +6,22 @@ Unreleased
 
 **Breaking changes**
 
-- Policies declare what they *consume* rather than which sampling methods
-  they tolerate. The ``marginal_ok`` and ``reward_space_ok`` flags on
-  ``PolicyProtocol`` are replaced by a single ``consumes: DrawKind``,
-  naming the weakest draws a policy can correctly consume over a totally
-  ordered lattice::
+- ``PolicyProtocol`` gains a ``consumes: DrawKind`` attribute, naming the
+  weakest draws a policy can correctly consume over a totally ordered
+  lattice::
 
       MARGINAL_ONLY  <  CONTEXT_JOINT  <  JOINT
 
   Agents satisfy it with anything at least that strong and pick whichever
-  is cheapest, so no policy names a sampling method any more. Supplying
-  more structure than asked is always sound, so an agent may widen the
-  requirement silently and can never narrow it: ``max`` is the only
-  combinator, and ``JOINT`` is the default, meaning a policy that does not
-  consider this gets correctness rather than speed.
+  is cheapest (see ``DrawKind`` for the semantics). Custom, structurally
+  typed policies should declare a ``consumes`` attribute;
+  ``PolicyDefaultUpdate`` and the agents default it to ``JOINT``, which
+  is always correct and never the cheapest.
 
-  Migration is mechanical: ``marginal_ok = True`` becomes
-  ``consumes = DrawKind.MARGINAL_ONLY``, ``reward_space_ok = True``
-  becomes ``consumes = DrawKind.CONTEXT_JOINT``, and both ``False``
-  becomes ``consumes = DrawKind.JOINT``.
-
-  The flags could not express ``CONTEXT_JOINT`` at all. Per-context
-  reward-space blocks are joint across the arms of one context and
-  independent across contexts, which is strictly between marginal and
-  fully joint draws; it is what ``InformationDirectedSampling`` needs, and
-  it was previously implied by a method name rather than stated. The two
-  booleans were also independent over levels that are not, so they could
-  be set to combinations with no coherent meaning (#270)
-
-- The ``elementwise`` opt-out on batch reward functions is removed, along
-  with ``is_elementwise_batch_reward``. A supplied
-  ``batch_reward_function`` now always widens the agent's requirement to
-  at least ``CONTEXT_JOINT``. The attribute was an unverifiable promise
-  that a function mapped each draw cell independently, and a wrong one
-  silently manufactured spread that quantile-based policies read as
-  uncertainty. Joint draws are no longer expensive enough to be worth that
-  risk, now that they reduce through the cheapest of three exact routes.
-  Agents supplying no reward function, or per-arm reward functions only,
-  are unaffected: those normalize to ``batch_identity``, which combines
-  nothing and does not widen (#270)
+  ``CONTEXT_JOINT`` is new: per-context reward-space blocks are joint
+  across the arms of one context and independent across contexts, which
+  is strictly between marginal and fully joint draws. It is what
+  ``InformationDirectedSampling`` needs (#270)
 
 - ``ContextualAgent`` and ``Agent`` now require each arm to have its own
   learner, and raise from ``add_arm`` (so also from the constructor) when
@@ -52,10 +29,10 @@ Unreleased
   features, so arms sharing a learner were statistically
   indistinguishable; worse, the policies on that path sample one arm at a
   time, which draws a separate weight vector per arm and silently
-  discards the dependence a shared posterior implies. A policy declaring
-  ``marginal_ok = False`` could therefore ask for joint draws and receive
-  independent ones: on arms sharing a learner, measured cross-arm
-  correlation was 0.00 where the true value was 1.00. Sharing one model
+  discards the dependence a shared posterior implies. A policy requiring
+  joint draws could therefore ask for them and receive independent ones:
+  on arms sharing a learner, measured cross-arm correlation was 0.00
+  where the true value was 1.00. Sharing one model
   across arms is ``LipschitzContextualAgent``'s job -- it distinguishes
   arms with an ``arm_featurizer`` and samples the shared learner once for
   all of them -- and the error says so. Two distinct ``LearnerPipeline``

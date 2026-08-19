@@ -7,6 +7,7 @@ from typing import (
     Optional,
     Tuple,
     Union,
+    cast,
     overload,
 )
 
@@ -19,11 +20,38 @@ from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
 
+def _finite_draws(
+    samples: NDArray[np.float64], rng: np.random.Generator
+) -> NDArray[np.float64]:
+    """Replace non-finite draws so one overflow cannot pin a decision.
+
+    A single ``inf`` or ``nan`` (a log-link GLM overflowing, say) makes
+    that context's regret and gain non-finite for *every* arm, and the
+    resolved-posterior fallback would then deterministically play the
+    overflowed arm on every call. Each offending draw is replaced, for
+    all arms of its context, by a random finite draw of the same
+    context, keeping within-draw coherence; a context with no finite
+    draw is zeroed, leaving its arms tied. Finite inputs pass through.
+    """
+    finite = np.isfinite(samples)
+    if finite.all():
+        return samples
+    samples = samples.copy()
+    good_draw = cast(NDArray[np.bool_], np.all(finite, axis=0))  # (n_contexts, n_draws)
+    for ctx in np.flatnonzero(~np.all(good_draw, axis=1)):
+        good = np.flatnonzero(good_draw[ctx])
+        bad = np.flatnonzero(~good_draw[ctx])
+        if good.size == 0:
+            samples[:, ctx, :] = 0.0
+        else:
+            samples[:, ctx, bad] = samples[:, ctx, rng.choice(good, size=bad.size)]
+    return samples
+
+
 def _vids_statistics(
     samples: NDArray[np.float64],
     alive: NDArray[np.bool_],
     masked: Optional[NDArray[np.float64]] = None,
-    mu: Optional[NDArray[np.float64]] = None,
     indicator: Optional[NDArray[np.bool_]] = None,
 ) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Monte Carlo regret and information-gain estimates, ``(n_arms, n_contexts)``.
@@ -35,9 +63,10 @@ def _vids_statistics(
     learning which alive arm is optimal. ``samples`` is
     ``(n_arms, n_contexts, n_draws)`` and must be jointly coherent across
     arms within a draw; dead arms are excluded from the argmax and their
-    returned statistics are meaningless. ``masked``, ``mu``, and
-    ``indicator`` let the top_k slot loop reuse the alive-masked tensor,
-    the means, and the boolean scratch across slots.
+    returned statistics are meaningless. ``masked`` and ``indicator``
+    let the top_k slot loop reuse the alive-masked tensor and the
+    boolean scratch across slots. Every entry of ``samples`` must be
+    finite: one ``inf`` or ``nan`` draw poisons its context's row sums.
 
     Only arms winning at least one draw enter the conditioning
     (:math:`p(A^* = b) = 0` zeroes every other term exactly), so the
@@ -48,7 +77,6 @@ def _vids_statistics(
     n_arms, n_contexts, n_draws = samples.shape
     if masked is None:
         masked = np.where(alive[:, :, np.newaxis], samples, -np.inf)
-    means = mu  # (n_arms, n_contexts); derived from the GEMM below if None
 
     # max + equality pass: cheaper than argmax over the leading axis,
     # and downstream wants the indicator, not the label
@@ -79,10 +107,9 @@ def _vids_statistics(
     # cond_sums[c, a, b]: arm a's draw total where ever-optimal arm b wins
     cond_sums = np.matmul(samples.transpose(1, 0, 2), weights.transpose(0, 2, 1))
     row_sums = cond_sums.sum(axis=-1)  # (C, K): each arm's full draw sum
-    if means is None:
-        # the weight columns partition the draws, so the row sums are
-        # already each arm's draw total: no extra pass for the means
-        means = row_sums.T / n_draws
+    # the weight columns partition the draws, so the row sums are
+    # already each arm's draw total: no extra pass for the means
+    means = row_sums.T / n_draws  # (n_arms, n_contexts)
 
     # E[max] from the same GEMM: the winning arm's entry sums rho over
     # its winning draws (ties still add rho exactly once). Regret as a
@@ -415,7 +442,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms by minimizing the information ratio over pre-generated samples."""
-        samples = draw_contiguous(samples)
+        samples = _finite_draws(draw_contiguous(samples), rng)
         n_arms, n_contexts, _ = samples.shape
         n_slots = 1 if top_k is None else min(top_k, n_arms)
 

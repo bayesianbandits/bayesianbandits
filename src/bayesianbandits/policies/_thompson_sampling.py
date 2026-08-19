@@ -95,11 +95,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         return "ThompsonSampling()"
 
     #: Requires joint draws (arms compared within a shared posterior
-    #: draw), so marginal sampling must not be used.
+    #: draw), so marginal sampling must not be used. Draws one sample
+    #: per pull, for which weight-space ``sample`` is always the
+    #: cheaper joint path.
     consumes = DrawKind.JOINT
-
-    #: Draws one sample per pull, for which weight-space ``sample`` is
-    #: always the cheaper joint path.
 
     @property
     def samples_needed(self) -> int:

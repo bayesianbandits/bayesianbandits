@@ -93,14 +93,6 @@ class TestAgentWiring:
         assert len(agent.pull(rng.standard_normal((3, d)))) == 3
         assert calls["n"] == 1
 
-    def test_lipschitz_agent_falls_back_when_the_gate_declines(self):
-        rng = np.random.default_rng(0)
-        agent = self._make_lipschitz(NormalRegressor(alpha=1.0, beta=1.0))
-        X = rng.standard_normal((3, 2))
-        agent.pull(X)
-        agent.update(X, rng.standard_normal(3))
-        assert len(agent.pull(X)) == 3
-
     def test_pipeline_forwards_reward_space(self):
         rng = np.random.default_rng(0)
         model = NormalRegressor(alpha=1.0, beta=1.0, random_state=0)

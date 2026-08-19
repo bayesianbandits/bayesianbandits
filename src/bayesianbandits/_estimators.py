@@ -984,26 +984,34 @@ def _weight_space_rows(
 
 
 def _reward_space_is_cheaper(
-    n: int, d: int, size: int, sparse: bool, precision_nnz: int
+    n: int,
+    d: int,
+    size: int,
+    sparse: bool,
+    precision_nnz: int,
+    block_size: Optional[int] = None,
 ) -> bool:
     """Is the row-side reduction cheaper than weight space for this call?
 
     Both pay in triangular solves against the cached factor: ``n`` for
     the row side, ``size`` for weight space. Requiring ``2n <= size``
     leaves the other half of the weight-space budget to cover the row
-    side's QR (``n²·d``) and draws (``n²·size``), which the remaining
+    side's QR (``n·k·d``) and draws (``n·k·size``), which the remaining
     guards check against what weight space spends per solve: ``d²``
     dense, ``nnz`` sparse. Dense also needs ``n <= d`` (fewer normals per
-    draw); sparse also caps the ``(d, n)`` half-solve scratch at the
+    draw); sparse also caps the ``(d, k)`` half-solve scratch at the
     marginal path's element budget. ``d`` is what the factor factors --
     ``factor.n_factored`` -- which for a sparse factor is its observed
-    block, the true row count of that scratch.
+    block, the true row count of that scratch. ``k`` is the rows per
+    jointly drawn block: ``block_size`` for the blocked path, ``n``
+    itself for full-mode draws, recovering the ``n²`` terms.
     """
+    k = n if block_size is None else block_size
     if 2 * n > size:
         return False
     if sparse:
-        return n * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * n <= precision_nnz
-    return n <= d and 2 * n * n <= d * d
+        return k * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * k <= precision_nnz
+    return n <= d and 2 * n * k <= d * d
 
 
 class _RowSpaceDraw:
@@ -1265,18 +1273,10 @@ class _RewardSpacePredictiveMixin:
             # Unfitted: no cached factor or dimensions to reason about
             # yet, and the prior predictive is cheap either way
             return False
-        # The full-mode guards of :func:`_reward_space_is_cheaper` with
-        # the per-block work substituted: each QR and draw runs over
-        # ``block_size`` rows, so the budget terms scale by ``k`` rather
-        # than ``n``.
         factor = self._precision_factor
-        d = factor.n_factored
-        k = n if block_size is None else block_size
-        if 2 * n > size:
-            return False
-        if self.sparse:
-            return k * d <= _MARGINAL_SD_BLOCK_ELEMS and 2 * n * k <= factor.solve_cost
-        return n <= d and 2 * n * k <= d * d
+        return _reward_space_is_cheaper(
+            n, factor.n_factored, size, self.sparse, factor.solve_cost, block_size
+        )
 
     def _validated_for_sampling(
         self, X: Union[NDArray[Any], csc_array]

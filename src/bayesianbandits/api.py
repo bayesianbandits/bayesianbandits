@@ -103,23 +103,13 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     consumes: DrawKind
     """The weakest posterior draws this policy can correctly consume.
 
-    Declaring a requirement rather than permitting a sampling method is
-    what keeps the choice of method entirely on the agent's side: it
-    may satisfy this with anything at least this strong (see
-    :class:`~bayesianbandits.DrawKind`), and picks whichever is
-    cheapest for the learner and draw count at hand.
-
-    An agent may *widen* this. A ``LipschitzContextualAgent`` carrying
-    a ``batch_reward_function`` widens to at least ``CONTEXT_JOINT``,
-    because that function runs before the policy and may combine arms
-    within a draw. It is never narrowed.
-
-    Defaults to ``JOINT`` on :class:`PolicyDefaultUpdate`, which is
-    always correct and never the cheapest; a policy scoring each arm
-    on its own should say ``MARGINAL_ONLY``.
-
-    The agents also keep a layout contract: the tensor handed to
-    ``select`` always has a unit-stride draw axis.
+    An agent satisfies this with anything at least as strong, picking
+    whichever method is cheapest, and may widen it but never narrow it
+    (see :class:`~bayesianbandits.DrawKind` for the semantics).
+    Defaults to ``JOINT`` on :class:`PolicyDefaultUpdate`, always
+    correct and never the cheapest. The agents also keep a layout
+    contract: the tensor handed to ``select`` always has a unit-stride
+    draw axis.
     """
 
     @overload
@@ -902,10 +892,10 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         Because the function sees a whole draw at once, it may combine
         arms *within* one draw -- share of total, cannibalization,
         softmax over a slate. Supplying one therefore widens the
-        agent's draw requirement to at least
-        :attr:`~bayesianbandits.DrawKind.CONTEXT_JOINT`, whatever the
-        policy itself reads, so the arms of a draw are jointly
-        distributed when the function runs.
+        agent's draw requirement to
+        :attr:`~bayesianbandits.DrawKind.JOINT`, whatever the policy
+        itself reads, so the whole draw is jointly distributed when
+        the function runs.
 
         A per-arm ``Arm.reward_function`` is always applied one arm at
         a time and never affects sampling.
@@ -1319,23 +1309,19 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         X_enriched = self.arm_featurizer.transform(X, action_tokens=action_tokens)
         # Shape: (n_contexts * n_arms, n_features_enriched)
 
-        # 3. Get samples from learner (SINGLE MODEL CALL). Policies that
-        # consume only per-(arm, context) statistics opt into iid
-        # marginal draws, which are exact for them and much cheaper.
-        # Policies that consume each context independently but need
-        # joint draws across arms (e.g. IDS) opt into per-context
-        # reward-space blocks instead.
+        # 3. Get samples from learner (SINGLE MODEL CALL), by the
+        # cheapest method at least as strong as the policy's
+        # ``consumes`` (see DrawKind).
         n_arms, n_contexts = len(self.arms), len(X)
         samples = None
         reshaped = None
         # A batch reward function runs before the policy (step 5) and
-        # sees a whole draw, so it may combine arms within one -- share
-        # of total, cannibalization, a softmax over a slate. That needs
-        # the arms of a draw jointly distributed whatever the policy
-        # itself reads, so widen. ``batch_identity`` combines nothing.
-        required = self.policy.consumes
+        # may combine anything within a draw, so widen all the way;
+        # ``batch_identity`` combines nothing. Structurally typed
+        # policies that predate ``consumes`` get the safe default.
+        required = getattr(self.policy, "consumes", DrawKind.JOINT)
         if self.batch_reward_function not in (None, batch_identity):
-            required = max(required, DrawKind.CONTEXT_JOINT)
+            required = DrawKind.JOINT
 
         if required == DrawKind.MARGINAL_ONLY:
             sampler = resolve_marginal_sampler(self.learner)
@@ -1392,7 +1378,9 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
                     f"batch_reward_function returned wrong shape. "
                     f"Expected shape[:3]={expected_shape}, got shape={result.shape}"
                 )
-            samples = result
+            # the function may hand back any layout; re-establish the
+            # unit-stride draw axis the policy is promised
+            samples = draw_contiguous(result) if result.ndim == 3 else result
         else:
             # Fall back to individual arm functions
             from ._arm import apply_reward_function

@@ -12,7 +12,12 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from .._arm import Learner, resolve_marginal_sampler, resolve_reward_space_sampler
+from .._arm import (
+    Learner,
+    _defines_before_sample,
+    resolve_marginal_sampler,
+    resolve_reward_space_sampler,
+)
 from .._memory import MemoryUsageMixin
 
 X_contra = TypeVar("X_contra", contravariant=True)
@@ -300,13 +305,13 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
     ) -> NDArray[np.float64]:
         """Sample joint draws in reward space from the posterior predictive.
 
-        Forwards to the learner's ``sample_reward_space`` when it is
-        safe and profitable (see
-        :func:`bayesianbandits._arm.resolve_reward_space_sampler`),
-        falling back to joint ``sample`` otherwise. The fallback is
-        fully joint across all rows -- a superset of the per-block
-        joint guarantee -- so callers consuming per-block statistics
-        stay correct either way.
+        Forwards to the learner's ``sample_reward_space`` whenever that
+        is safe to call (defined at or above any ``sample`` override),
+        so a pipeline answers exactly as its wrapped estimator would.
+        Whether reward space is *profitable* for a shape is the
+        caller's question (:meth:`_use_reward_space`), not this
+        method's. The unsafe case falls back to fully joint ``sample``,
+        a superset of the per-block guarantee.
 
         Parameters
         ----------
@@ -325,11 +330,14 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
             Joint samples for each row
         """
         X_transformed = self._apply_transformers(X)
-        n_rows = int(X_transformed.shape[0])
-        sampler = resolve_reward_space_sampler(self._learner, n_rows, size, block_size)
-        if sampler is None:
+        if not _defines_before_sample(self._learner, "sample_reward_space"):
             return self._learner.sample(X_transformed, size)
-        return sampler(X_transformed, size)
+        return cast(
+            NDArray[np.float64],
+            cast(Any, self._learner).sample_reward_space(
+                X_transformed, size, block_size=block_size
+            ),
+        )
 
     def partial_fit(
         self,

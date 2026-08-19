@@ -153,25 +153,35 @@ def affine_lower_factor(
 #: block L2-resident while it is scattered out.
 _COPY_SLAB_BYTES = 1 << 20
 
+#: Fewest draws per slab worth slabbing for. Below this each output row
+#: is re-touched once per draw and numpy's own strided copy, which walks
+#: the draw axis outermost, is the faster of the two.
+_MIN_SLAB_DRAWS = 64
+
 
 def draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
     """``samples`` with a unit-stride draw (last) axis, copying if needed.
 
     The sampling layout contract (``tests/test_sample_layout.py``): the
     ``(size, n)`` entry points return draws with ``samples.T``
-    C-contiguous -- their final projections are dgemm outputs or
-    transposed products, so this costs nothing -- and agents hand
-    policies tensors whose draw axis is unit-stride, normalizing here
-    for learners that only promise shape. Conforming input passes
-    through untouched. Copies slab-wise: numpy's own strided copy walks
-    the draw axis outermost and runs ~3x slower on large tensors.
+    C-contiguous, and agents hand policies tensors whose draw axis is
+    unit-stride, normalizing here for learners that only promise shape.
+    Conforming input passes through untouched, whatever its float
+    width. Copies slab-wise while a slab holds at least
+    :data:`_MIN_SLAB_DRAWS` draws (numpy's own strided copy walks the
+    draw axis outermost, ~3x slower there); below that the slab loop
+    would re-touch every output row per draw, and numpy's copy takes
+    over.
     """
-    if samples.dtype == np.float64 and samples.strides[-1] == samples.itemsize:
+    if samples.dtype.kind == "f" and samples.strides[-1] == samples.itemsize:
         return samples
+    dtype = samples.dtype if samples.dtype.kind == "f" else np.dtype(np.float64)
     n_leading = int(np.prod(samples.shape[:-1]))
     n_draws = samples.shape[-1]
-    out = np.empty(samples.shape, dtype=np.float64)
-    slab = max(1, min(n_draws, _COPY_SLAB_BYTES // max(1, n_leading * 8)))
+    slab = min(n_draws, _COPY_SLAB_BYTES // max(1, n_leading * dtype.itemsize))
+    if slab < min(n_draws, _MIN_SLAB_DRAWS):
+        return np.ascontiguousarray(samples, dtype=dtype)
+    out = np.empty(samples.shape, dtype=dtype)
     for start in range(0, n_draws, slab):
         stop = start + slab
         out[..., start:stop] = samples[..., start:stop]

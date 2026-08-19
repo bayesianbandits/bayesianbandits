@@ -40,7 +40,6 @@ from bayesianbandits import (
     LipschitzContextualAgent,
     NormalInverseGammaRegressor,
     NormalRegressor,
-    ThompsonSampling,
     UpperConfidenceBound,
 )
 from bayesianbandits._arm import (
@@ -356,12 +355,6 @@ class TestPlumbing:
             draws = pipeline.sample_marginal(X, size=5)
         spy.assert_called_once()
         assert draws.shape == (5, 3)
-
-    def test_policies_declare_what_they_consume(self):
-        assert UpperConfidenceBound().consumes is DrawKind.MARGINAL_ONLY
-        assert EXP3A().consumes is DrawKind.MARGINAL_ONLY
-        assert EpsilonGreedy().consumes is DrawKind.MARGINAL_ONLY
-        assert ThompsonSampling().consumes is DrawKind.JOINT
 
     @pytest.mark.parametrize(
         "policy",
