@@ -18,6 +18,7 @@ from bayesianbandits import (
     NormalRegressor,
 )
 from bayesianbandits.policies._information_directed_sampling import (
+    _draw_contiguous,
     _optimal_two_point,
     _sample_information_ratio_minimizer,
     _vids_statistics,
@@ -187,6 +188,45 @@ class TestPairOptimizer:
         )
         assert picks.tolist() == [0]
 
+    def test_dominated_arms_cannot_change_the_optimum(self):
+        """The scan runs over the (v, delta) Pareto frontier only. Moving a
+        dominated arm's weight to its dominator never increases the ratio,
+        so adding dominated arms must leave the minimum unchanged."""
+        rng = np.random.default_rng(11)
+        for _ in range(5):
+            delta = rng.uniform(0.1, 1.0, size=(3, 2))
+            v = rng.uniform(0.1, 1.0, size=(3, 2))
+            *_, ratio_small = _optimal_two_point(delta, v, np.ones((3, 2), dtype=bool))
+            # dominated: higher regret, lower gain than arm 0
+            extra_d = delta[0] + rng.uniform(0.1, 0.5, size=(4, 2))
+            extra_v = np.maximum(v[0] - rng.uniform(0.1, 0.5, size=(4, 2)), 0.0)
+            delta_big = np.vstack([delta, extra_d])
+            v_big = np.vstack([v, extra_v])
+            *_, ratio_big = _optimal_two_point(
+                delta_big, v_big, np.ones((7, 2), dtype=bool)
+            )
+            np.testing.assert_allclose(ratio_big, ratio_small, rtol=1e-12)
+
+    def test_ragged_frontiers_are_solved_per_context(self):
+        """One context with a large frontier next to one already resolved:
+        each must get its own optimum (the ragged pair list must not mix
+        pairs across contexts)."""
+        n_arms = 8
+        # context 0: everything on the frontier (delta falls as v rises);
+        # context 1: arm 0 dominates outright
+        delta = np.empty((n_arms, 2))
+        v = np.empty((n_arms, 2))
+        delta[:, 0] = np.linspace(1.0, 0.1, n_arms)
+        v[:, 0] = np.linspace(0.1, 1.0, n_arms)
+        delta[:, 1] = np.linspace(0.5, 1.2, n_arms)
+        v[:, 1] = np.linspace(1.0, 0.2, n_arms)
+        alive = np.ones((n_arms, 2), dtype=bool)
+        a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
+        for c in range(2):
+            reference = pairwise_grid_min_ratio(delta[:, c], v[:, c])
+            assert ratio[c] <= reference + 1e-12
+            assert reference - ratio[c] <= 1e-4 * max(1.0, reference)
+
 
 class TestVidsStatistics:
     """Monte Carlo regret and information-gain estimates."""
@@ -241,6 +281,111 @@ class TestVidsStatistics:
 
         np.testing.assert_allclose(v_joint, 2 / np.pi, rtol=0.05)
         np.testing.assert_allclose(v_indep[1, 0], 1 / np.pi, rtol=0.05)
+
+    def test_never_optimal_arms_carry_no_conditioning_weight(self):
+        """v sums over p(A* = b), which is zero for arms that never win a
+        draw; the implementation drops those columns from the conditioning
+        entirely. Statistics must match the unrestricted formula."""
+        rng = np.random.default_rng(8)
+        n_arms, n_draws = 40, 500
+        # two contenders and 38 arms that never win
+        samples = rng.normal(0.0, 0.1, size=(n_arms, 2, n_draws))
+        samples[0] += 5.0
+        samples[1] += 5.0
+        alive = np.ones((n_arms, 2), dtype=bool)
+        delta, v = _vids_statistics(samples, alive)
+
+        # unrestricted reference: full one-hot conditioning
+        masked = samples
+        argmax_idx = masked.argmax(axis=0)
+        onehot = (argmax_idx[:, :, None] == np.arange(n_arms)).astype(np.float64)
+        counts = onehot.sum(axis=1).T
+        p_opt = counts / n_draws
+        cond = np.matmul(samples.transpose(1, 0, 2), onehot).transpose(1, 2, 0)
+        mu_cond = cond / np.maximum(counts, 1.0)[None, :, :]
+        means = samples.mean(axis=-1)
+        v_ref = np.einsum("bc,abc->ac", p_opt, (mu_cond - means[:, None, :]) ** 2)
+        np.testing.assert_allclose(v, v_ref, atol=1e-12)
+        assert (counts > 0).sum(axis=0).max() <= 2  # the premise held
+
+    def test_derived_means_keep_zero_regret_exact(self):
+        """The means and E[max] are both recovered from the conditional-sum
+        GEMM rather than by passes over the tensor. For an always-optimal
+        arm the two recoveries read the same float, so its regret is
+        *exactly* zero -- an ulp of regret with zero gain would flip its
+        ratio from 0 (play it outright) to inf (posterior looks resolved).
+        Sums whose draws don't reduce exactly under reordering probe this."""
+        rng = np.random.default_rng(21)
+        n_arms, n_draws = 7, 337
+        samples = rng.normal(0.0, 1.0, size=(n_arms, 3, n_draws)) / 3.0
+        samples[4] += 100.0  # arm 4 wins every draw in every context
+        alive = np.ones((n_arms, 3), dtype=bool)
+        delta, v = _vids_statistics(samples, alive)
+        assert (delta[4] == 0.0).all()
+        a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
+        assert (ratio == 0.0).all()
+
+    def test_tied_optima_split_evenly(self):
+        # Duplicate arms under a shared learner draw identical rewards, so
+        # the argmax is a genuine tie. The optimal-arm indicator is built
+        # by comparing against the max rather than by argmax, which marks
+        # every tied arm: splitting the draw evenly across them keeps
+        # p(A* = a) a probability and treats the twins symmetrically.
+        twin = np.array([[[2.0, 0.0]], [[2.0, 0.0]], [[1.0, 1.0]]])
+        alive = np.ones((3, 1), dtype=bool)
+        delta, v = _vids_statistics(twin, alive)
+
+        # rho* = mean(max) = 1.5 and mu = [1, 1, 1], so regret is uniform
+        np.testing.assert_allclose(delta, [[0.5], [0.5], [0.5]])
+        # each twin takes half of draw 0, so p = [1/4, 1/4, 1/2]. A twin's
+        # conditional mean is 2 when either twin is optimal and 0 when
+        # arm 2 is, a unit move either way; arm 2's is 1 throughout.
+        np.testing.assert_allclose(v, [[1.0], [1.0], [0.0]])
+
+    def test_layout_does_not_change_the_statistics(self):
+        # Agents hand ``select`` a transposed view whose draw axis has the
+        # largest stride; the fast path materializes C order first.
+        drawn = np.random.default_rng(4).normal(size=(200, 6, 3))  # (draws, arms, ctx)
+        view = drawn.transpose(1, 2, 0)
+        assert not view.flags.c_contiguous
+        alive = np.ones((6, 3), dtype=bool)
+
+        from_view = _vids_statistics(view, alive)
+        from_copy = _vids_statistics(np.ascontiguousarray(view), alive)
+        for got, want in zip(from_view, from_copy):
+            np.testing.assert_allclose(got, want)
+
+
+class TestDrawContiguous:
+    """The draw-major copy that fronts ``select``."""
+
+    @pytest.mark.parametrize("shape", [(7, 5, 61), (1, 1, 3), (4, 1, 130), (3, 9, 1)])
+    def test_matches_ascontiguousarray(self, shape):
+        n_arms, n_contexts, n_draws = shape
+        drawn = np.random.default_rng(0).normal(size=(n_draws, n_arms, n_contexts))
+        view = drawn.transpose(1, 2, 0)
+        out = _draw_contiguous(view)
+        assert out.flags.c_contiguous
+        np.testing.assert_array_equal(out, view)
+
+    def test_contiguous_input_is_not_copied(self):
+        samples = np.zeros((3, 2, 5))
+        assert _draw_contiguous(samples) is samples
+
+    def test_slabbing_covers_every_draw(self):
+        # A shape whose slab size does not divide the draw count: the
+        # final short slab must still be copied.
+        from bayesianbandits.policies import _information_directed_sampling as ids
+
+        drawn = np.random.default_rng(1).normal(size=(37, 4, 3))
+        view = drawn.transpose(1, 2, 0)
+        original = ids._COPY_SLAB_BYTES
+        try:
+            ids._COPY_SLAB_BYTES = 4 * 3 * 8 * 5  # five draws per slab
+            out = ids._draw_contiguous(view)
+        finally:
+            ids._COPY_SLAB_BYTES = original
+        np.testing.assert_array_equal(out, view)
 
 
 class TestSelect:
@@ -306,6 +451,26 @@ class TestSelect:
         policy = InformationDirectedSampling()
         (slate,) = policy.select(samples, arms, np.random.default_rng(0), top_k=4)
         assert [a.action_token for a in slate] == [1, 3, 2, 0]
+
+    def test_select_accepts_a_transposed_view(self):
+        # The agent's draw tensor is a view, not a C-ordered array.
+        drawn = np.random.default_rng(9).normal(size=(400, 4, 3))
+        view = drawn.transpose(1, 2, 0)
+        arms = self.make_arms(4)
+        policy = InformationDirectedSampling()
+
+        from_view = policy.select(view, arms, np.random.default_rng(2))
+        from_copy = policy.select(
+            np.ascontiguousarray(view), arms, np.random.default_rng(2)
+        )
+        assert from_view == from_copy
+
+    def test_select_does_not_mutate_its_input(self):
+        samples = np.random.default_rng(6).normal(size=(4, 2, 150))
+        before = samples.copy()
+        policy = InformationDirectedSampling()
+        policy.select(samples, self.make_arms(4), np.random.default_rng(0), top_k=3)
+        np.testing.assert_array_equal(samples, before)
 
 
 class TestPolicyBasics:

@@ -17,12 +17,44 @@ from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
+#: Byte budget for one slab of the draw-major copy below. Sized to keep
+#: the source block of a slab resident in L2 while it is scattered out.
+_COPY_SLAB_BYTES = 1 << 20
+
+
+def _draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``samples`` as a C-ordered ``(n_arms, n_contexts, n_draws)`` tensor.
+
+    Agents hand this tensor to a policy as a transposed view of the
+    learner's ``(size, n_rows)`` output, which leaves the draw axis with
+    the *largest* stride. Every statistic below reduces or contracts over
+    draws, and the conditional-mean GEMM falls off BLAS entirely in that
+    layout: materializing the natural order first costs one pass and buys
+    back two orders of magnitude.
+
+    numpy's own copy walks the draw axis outermost and so touches a fresh
+    cache line per element. Copying a slab of draws at a time keeps the
+    source block resident while it is scattered out, which runs about
+    three times faster on the large shapes. Already-contiguous input is
+    returned untouched.
+    """
+    if samples.dtype == np.float64 and samples.flags.c_contiguous:
+        return samples
+    n_arms, n_contexts, n_draws = samples.shape
+    out = np.empty(samples.shape, dtype=np.float64)
+    slab = max(1, min(n_draws, _COPY_SLAB_BYTES // max(1, n_arms * n_contexts * 8)))
+    for start in range(0, n_draws, slab):
+        stop = start + slab
+        out[:, :, start:stop] = samples[:, :, start:stop]
+    return out
+
 
 def _vids_statistics(
     samples: NDArray[np.float64],
     alive: NDArray[np.bool_],
     masked: Optional[NDArray[np.float64]] = None,
     mu: Optional[NDArray[np.float64]] = None,
+    indicator: Optional[NDArray[np.bool_]] = None,
 ) -> Tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Monte Carlo estimates of expected regret and variance-based information gain.
 
@@ -39,8 +71,16 @@ def _vids_statistics(
         statistics are meaningless.
     masked, mu : NDArray[np.float64], optional
         Precomputed ``np.where(alive[:, :, np.newaxis], samples, -np.inf)``
-        and ``samples.mean(axis=-1)``. The top_k slot loop maintains these
-        across slots rather than re-materializing them here each slot.
+        and ``samples.mean(axis=-1)``. The top_k slot loop maintains
+        ``masked`` in place across slots rather than re-materializing it
+        here each slot. When ``mu`` is omitted, the means are recovered
+        from the conditional-sum GEMM at no cost (its columns partition
+        the draws, so its row sums are the arms' draw totals) rather than
+        by a pass over the tensor.
+    indicator : NDArray[np.bool_], optional
+        Boolean scratch buffer shaped like ``samples``. The top_k slot
+        loop passes one in so the largest allocation here happens once per
+        ``select`` rather than once per slot.
 
     Returns
     -------
@@ -51,30 +91,87 @@ def _vids_statistics(
         :math:`\\sum_{a'} p(a') (\\mathbb{E}[\\theta_a \\mid A^* = a'] -
         \\mathbb{E}[\\theta_a])^2`, the variance of arm ``a``'s posterior
         mean under resolution of which alive arm is optimal.
+
+    Notes
+    -----
+    The conditioning is only over arms that win at least one draw:
+    :math:`p(A^* = b) = 0` for every other arm, so its term in
+    :math:`v` is exactly zero and its conditional means are never read.
+    The conditional-sum GEMM therefore runs over ``M`` columns rather
+    than ``n_arms``, where ``M`` is the number of ever-optimal arms per
+    context -- typically far below ``n_arms`` once the posterior has any
+    shape (often single digits at 96 arms). Cost drops from
+    :math:`O(K^2 S)` to :math:`O(K M S)` per context with the result
+    unchanged, since only zero-weight terms are dropped.
     """
-    n_arms, _, n_draws = samples.shape
+    n_arms, n_contexts, n_draws = samples.shape
     if masked is None:
         masked = np.where(alive[:, :, np.newaxis], samples, -np.inf)
-    means: NDArray[np.float64] = (
-        samples.mean(axis=-1) if mu is None else mu
-    )  # (n_arms, n_contexts)
-    argmax_idx = masked.argmax(axis=0)  # (n_contexts, n_draws)
-    # the values at the argmax are the max: gather them rather than
-    # sweeping the full (n_arms, n_contexts, n_draws) tensor a second time
-    rho_star = np.take_along_axis(masked, argmax_idx[np.newaxis], axis=0)[0].mean(
-        axis=-1
-    )  # (n_contexts,)
-    delta = np.clip(rho_star[np.newaxis, :] - means, 0.0, None)
+    means = mu  # (n_arms, n_contexts); derived from the GEMM below if None
 
-    onehot = (argmax_idx[:, :, np.newaxis] == np.arange(n_arms)).astype(np.float64)
-    counts = onehot.sum(axis=1).T  # (n_arms, n_contexts); zero for dead arms
-    p_opt = counts / n_draws
-    # cond_sums[a, b, c]: sum of arm a's draws over the draws where b is
-    # optimal, as a batched GEMM over contexts (much faster than einsum here)
-    cond_sums = np.matmul(samples.transpose(1, 0, 2), onehot).transpose(1, 2, 0)
-    mu_cond = cond_sums / np.maximum(counts, 1.0)[np.newaxis, :, :]
+    # The max, not the argmax. Everything downstream wants the *indicator*
+    # of the optimal arm rather than its label, and numpy reduces over a
+    # leading axis with a generic loop: argmax over axis 0 of this tensor
+    # costs several times the contiguous max plus the equality pass that
+    # produces the indicator directly.
+    rho = masked.max(axis=0)  # (n_contexts, n_draws)
+    is_opt: NDArray[np.bool_] = (
+        np.empty(samples.shape, dtype=np.bool_) if indicator is None else indicator
+    )
+    np.equal(masked, rho, out=is_opt)
+    # summing bool promotes elementwise to int64 and runs ~4x slower than
+    # a uint16 accumulator, which n_draws < 2**16 makes exact
+    count_dtype = np.uint16 if n_draws < 2**16 else np.int64
+    counts = np.add.reduce(
+        is_opt.view(np.uint8), axis=-1, dtype=count_dtype
+    )  # (n_arms, n_contexts); zero for dead arms
+
+    # Gather the ever-optimal arms per context, padded to the widest
+    # context with never-optimal arms (whose weight is zero, so padding
+    # contributes nothing).
+    ever = counts > 0
+    m_max = int(ever.sum(axis=0).max())
+    opt_idx = np.argsort(~ever, axis=0, kind="stable")[:m_max].T  # (C, M)
+    ctx_col = np.arange(n_contexts)[:, np.newaxis]
+    weights = is_opt[opt_idx, ctx_col, :].astype(np.float64)  # (C, M, n_draws)
+    if int(counts.sum()) != n_contexts * n_draws:
+        # Exact ties are measure-zero for a continuous posterior but not
+        # impossible: duplicate arms under a shared learner draw identical
+        # rewards. Split a tied draw evenly so p_opt stays a probability.
+        # Every marked arm is ever-optimal, so the per-draw total over the
+        # gathered columns is the full total.
+        weights /= weights.sum(axis=1, keepdims=True)
+    counts_sub = weights.sum(axis=-1)  # (C, M)
+    p_opt = counts_sub / n_draws
+    # cond_sums[c, a, b]: sum of arm a's draws over the draws where
+    # ever-optimal arm b is optimal, as a batched GEMM over contexts
+    cond_sums = np.matmul(samples.transpose(1, 0, 2), weights.transpose(0, 2, 1))
+    row_sums = cond_sums.sum(axis=-1)  # (C, K): each arm's full draw sum
+    if means is None:
+        # The gathered columns carry total weight one on every draw, so
+        # cond_sums' rows already hold each arm's full draw sum: the mean
+        # falls out of the GEMM and needs no pass over the tensor.
+        means = row_sums.T / n_draws
+
+    # E[max] from the same GEMM: entry (c, opt_idx[c, m], m) sums the
+    # winning arm's own draws over the draws it wins, i.e. rho over those
+    # draws (on a tied draw every marked arm equals the max, so the split
+    # weights still add rho exactly once). Summing over m totals rho.
+    # Taking regret as a difference of cond_sums entries keeps the
+    # zero-regret case *exactly* zero: an always-optimal arm's rho_sums
+    # and row_sums are the same float, so its ratio classifies as 0, not
+    # as an ulp of regret with no gain (which would read as resolved).
+    rho_sums = cond_sums[ctx_col, opt_idx, np.arange(m_max)[np.newaxis, :]].sum(axis=1)
+    delta = np.clip((rho_sums[:, np.newaxis] - row_sums).T / n_draws, 0.0, None)
+
+    # guard the zero-count columns only: a split tie leaves fractional
+    # counts, which clamping up to one would silently rescale
+    nonzero = np.where(counts_sub > 0.0, counts_sub, 1.0)
+    mu_cond = cond_sums / nonzero[:, np.newaxis, :]
     # counts == 0 leaves mu_cond at 0, but p_opt == 0 zeroes the term anyway
-    v = np.einsum("bc,abc->ac", p_opt, (mu_cond - means[:, np.newaxis, :]) ** 2)
+    dev = mu_cond - means.T[:, :, np.newaxis]
+    dev *= dev
+    v = np.matmul(dev, p_opt[:, :, np.newaxis])[:, :, 0].T
     return delta, v
 
 
@@ -89,13 +186,38 @@ def _optimal_two_point(
 
     The minimizer of :math:`\\Delta(\\pi)^2 / v(\\pi)` over distributions
     :math:`\\pi` is supported on at most two arms (Russo & Van Roy 2018,
-    Prop. 6), so it suffices to scan all ordered pairs ``(a, b)``. For a
-    fixed pair, with mixing weight ``q`` on ``a``, the ratio is
+    Prop. 6), so it suffices to scan pairs ``(a, b)``. For a fixed pair,
+    with mixing weight ``q`` on ``a``, the ratio is
     ``(A q + B)^2 / (C q + D)`` where ``A = delta_a - delta_b``,
     ``B = delta_b``, ``C = v_a - v_b``, ``D = v_b``; its stationary points
     are ``q = -B / A`` (zero regret) and ``q = (C B - 2 A D) / (A C)``, so
     the minimum over ``q`` in ``[0, 1]`` is attained at one of those
     (clipped) or an endpoint.
+
+    Four reductions cut the scan well below its ``K^2 x 4`` face value
+    without excluding any candidate that could be the optimum, so the
+    minimum is the same:
+
+    * The endpoints ``q = 0`` and ``q = 1`` evaluate to the *single-arm*
+      ratios ``delta_b^2 / v_b`` and ``delta_a^2 / v_a``. Their minimum
+      over all pairs is the best single-arm ratio, an ``O(K)`` sweep per
+      context instead of ``O(K^2)``.
+    * ``q = -B / A`` never lands strictly inside ``(0, 1)``. Regret is
+      clipped at zero, so ``B >= 0``, and the root is ``<= 0`` when
+      ``A > 0`` and ``>= 1`` when ``A < 0``: an endpoint either way, and
+      hence already covered by the sweep above.
+    * Only the Pareto frontier of the ``(v_a, delta_a)`` points can
+      support an optimal mixture. If ``a'`` weakly dominates ``a``
+      (``v_a' >= v_a`` and ``delta_a' <= delta_a``), moving ``a``'s
+      weight to ``a'`` cannot increase :math:`\\Delta(\\pi)` and cannot
+      decrease :math:`v(\\pi)`, so it cannot increase the ratio: some
+      optimal pair lies within the non-dominated set. The frontier is
+      found by one sort per context, and the interior-root scan runs
+      over its ``m`` members -- typically single digits -- rather than
+      all ``K`` arms: ``O(K log K + m^2)`` per context.
+    * ``f(q; a, b) == f(1 - q; b, a)``, so scanning ordered pairs does
+      exactly twice the work of scanning unordered ones. Only the
+      interior root survives, over ``m (m - 1) / 2`` frontier pairs.
 
     Ratio conventions: a mixture with exactly zero regret has ratio 0
     (optimal no matter the gain); positive regret with zero gain has ratio
@@ -110,48 +232,100 @@ def _optimal_two_point(
         with nonzero regret everywhere (the posterior has resolved).
     """
     n_arms, n_contexts = delta.shape
-    a_delta = delta[:, np.newaxis, :] - delta[np.newaxis, :, :]  # (K, K, C)
-    b_delta = np.broadcast_to(delta[np.newaxis, :, :], a_delta.shape)
-    c_gain = v[:, np.newaxis, :] - v[np.newaxis, :, :]
-    d_gain = np.broadcast_to(v[np.newaxis, :, :], a_delta.shape)
+    ctx_idx = np.arange(n_contexts)
+
+    # Endpoints: the best degenerate distribution, O(K * C).
+    single = np.full(delta.shape, np.inf)
+    np.divide(delta * delta, v, out=single, where=v > 0.0)
+    single[delta == 0.0] = 0.0
+    single = np.where(alive, single, np.inf)
+    s_idx = single.argmin(axis=0)
+    s_ratio = single[s_idx, ctx_idx]
+
+    if n_arms < 2:
+        return s_idx, s_idx, np.ones(n_contexts), s_ratio
+
+    # Pareto frontier per context: sort by v descending (dead arms are
+    # pushed last and can never dominate) and keep each arm whose regret
+    # strictly undercuts every higher-v arm's. Every excluded arm is
+    # weakly dominated by a kept one, so the kept set suffices.
+    delta_eff = np.where(alive, delta, np.inf)
+    v_key = np.where(alive, v, -1.0)
+    order = np.argsort(-v_key, axis=0, kind="stable")  # (K, C)
+    d_ord = np.take_along_axis(delta_eff, order, axis=0)
+    run_min = np.minimum.accumulate(d_ord, axis=0)
+    prev_min = np.empty_like(run_min)
+    prev_min[0] = np.inf
+    prev_min[1:] = run_min[:-1]
+    keep_ord = d_ord < prev_min  # (K, C); dead arms sort behind alive ones
+    m_counts = keep_ord.sum(axis=0)
+    m_max = int(m_counts.max())
+    if m_max < 2:
+        return s_idx, s_idx, np.ones(n_contexts), s_ratio
+
+    pos = np.argsort(~keep_ord, axis=0, kind="stable")[:m_max]  # (m, C)
+    keep_idx = np.take_along_axis(order, pos, axis=0).T  # (C, m)
+    ctx_col = ctx_idx[:, np.newaxis]
+    d_front = delta[keep_idx, ctx_col]  # (C, m)
+    v_front = v[keep_idx, ctx_col]
+
+    # Interior stationary point, one per unordered frontier pair. The
+    # pair list is ragged: contexts contribute only their own frontier's
+    # pairs, so one context with a large frontier does not inflate the
+    # scan for every other context (frontier sizes are heavy-tailed in
+    # practice: most contexts resolve to one or two arms while a few
+    # keep many).
+    iu_a, iu_b = np.triu_indices(m_max, k=1)
+    in_ctx = iu_b[np.newaxis, :] < m_counts[:, np.newaxis]  # (C, n_pairs)
+    ctx_rep, pair_rep = np.nonzero(in_ctx)  # row-major: sorted by context
+    i_loc = iu_a[pair_rep]
+    j_loc = iu_b[pair_rep]
+    d_a = d_front[ctx_rep, i_loc]
+    d_b = d_front[ctx_rep, j_loc]
+    v_a = v_front[ctx_rep, i_loc]
+    v_b = v_front[ctx_rep, j_loc]
+    a_delta = d_a - d_b
+    c_gain = v_a - v_b
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        root_zero = -b_delta / a_delta
-        root_interior = (c_gain * b_delta - 2.0 * a_delta * d_gain) / (a_delta * c_gain)
+        q = (c_gain * d_b - 2.0 * a_delta * v_b) / (a_delta * c_gain)
+    # NaN (a zero denominator) and roots outside the open interval both
+    # drop out here: a clipped root is an endpoint, already scanned.
+    interior = (q > 0.0) & (q < 1.0)
+    q = np.where(interior, q, 0.0)
 
-    # Running elementwise minimum over the four q candidates, rather than
-    # stacking them into (4, K, K, C) tensors: peak memory stays a few
-    # (K, K, C) arrays instead of several 4x-sized ones
-    best_ratio = np.full(a_delta.shape, np.inf)
-    best_q = np.zeros(a_delta.shape)
-    q_candidates = (
-        0.0,
-        1.0,
-        np.clip(np.nan_to_num(root_zero, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0),
-        np.clip(
-            np.nan_to_num(root_interior, nan=0.0, posinf=1.0, neginf=0.0), 0.0, 1.0
-        ),
-    )
-    for q_cand in q_candidates:
-        num = (a_delta * q_cand + b_delta) ** 2
-        den = c_gain * q_cand + d_gain
-        ratio = np.full_like(num, np.inf)
-        np.divide(num, den, out=ratio, where=den > 0.0)
-        ratio[num == 0.0] = 0.0
-        better = ratio < best_ratio
-        best_q = np.where(better, q_cand, best_q)
-        np.minimum(best_ratio, ratio, out=best_ratio)
+    num = (a_delta * q + d_b) ** 2
+    den = c_gain * q + v_b
+    ratio = np.full_like(num, np.inf)
+    np.divide(num, den, out=ratio, where=interior & (den > 0.0))
 
-    pair_alive = alive[:, np.newaxis, :] & alive[np.newaxis, :, :]
-    best_ratio = np.where(pair_alive, best_ratio, np.inf)
+    # Segment minimum per context: ``ctx_rep`` is sorted, so each
+    # context's pairs form one contiguous run.
+    present = np.flatnonzero(m_counts >= 2)
+    seg_starts = np.searchsorted(ctx_rep, present)
+    seg_min = np.minimum.reduceat(ratio, seg_starts)
+    # first pair achieving its segment's minimum (exact float equality
+    # with the reduction's own output; inf == inf keeps resolved
+    # contexts consistent, and take_pair discards them below)
+    seg_of = np.searchsorted(present, ctx_rep)
+    achievers = np.flatnonzero(ratio == seg_min[seg_of])
+    _, first = np.unique(seg_of[achievers], return_index=True)
+    best = achievers[first]  # one flat pair index per present context
 
-    flat_ratio = best_ratio.reshape(n_arms * n_arms, n_contexts)
-    pair_idx = flat_ratio.argmin(axis=0)  # (C,)
-    ctx_idx = np.arange(n_contexts)
-    a_idx = pair_idx // n_arms
-    b_idx = pair_idx % n_arms
-    q = best_q.reshape(n_arms * n_arms, n_contexts)[pair_idx, ctx_idx]
-    return a_idx, b_idx, q, flat_ratio[pair_idx, ctx_idx]
+    p_ratio = np.full(n_contexts, np.inf)
+    p_ratio[present] = seg_min
+    q_ctx = np.zeros(n_contexts)
+    q_ctx[present] = q[best]
+    a_ctx = np.zeros(n_contexts, dtype=np.intp)
+    b_ctx = np.zeros(n_contexts, dtype=np.intp)
+    a_ctx[present] = keep_idx[present, i_loc[best]]
+    b_ctx[present] = keep_idx[present, j_loc[best]]
+
+    take_pair = p_ratio < s_ratio
+    a_idx = np.where(take_pair, a_ctx, s_idx)
+    b_idx = np.where(take_pair, b_ctx, s_idx)
+    q_best = np.where(take_pair, q_ctx, 1.0)
+    return a_idx, b_idx, q_best, np.where(take_pair, p_ratio, s_ratio)
 
 
 def _sample_information_ratio_minimizer(
@@ -341,18 +515,24 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms by minimizing the information ratio over pre-generated samples."""
+        samples = _draw_contiguous(samples)
         n_arms, n_contexts, _ = samples.shape
         n_slots = 1 if top_k is None else min(top_k, n_arms)
 
         alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
-        # mu is alive-invariant; masked is maintained in place across
-        # slots (dead arms' draws set to -inf) instead of re-materialized
-        mu = samples.mean(axis=-1)
-        masked = samples if n_slots == 1 else samples.astype(np.float64, copy=True)
+        # masked is maintained in place across slots (dead arms' draws
+        # set to -inf) instead of re-materialized; the means fall out of
+        # each slot's conditional-sum GEMM, so no pass computes them
+        masked = samples if n_slots == 1 else samples.copy()
+        # the argmax indicator is the largest array the statistics touch;
+        # allocate it once and let every slot write into it
+        indicator = np.empty(samples.shape, dtype=np.bool_)
         ctx_idx = np.arange(n_contexts)
         choices = np.empty((n_slots, n_contexts), dtype=np.intp)
         for slot in range(n_slots):
-            delta, v = _vids_statistics(samples, alive, masked=masked, mu=mu)
+            delta, v = _vids_statistics(
+                samples, alive, masked=masked, indicator=indicator
+            )
             picks = _sample_information_ratio_minimizer(delta, v, alive, rng)
             choices[slot] = picks
             alive[picks, ctx_idx] = False
