@@ -102,6 +102,115 @@ Unreleased
 
 **Performance**
 
+- ``InformationDirectedSampling.select`` no longer reads its draws
+  through the agent's transposed view. Agents hand a policy the learner's
+  ``(size, n_rows)`` output reshaped and transposed, which leaves the draw
+  axis with the largest stride. Every statistic IDS forms reduces or
+  contracts over draws, and the conditional-mean contraction, a batched
+  ``(n_arms, size) x (size, n_arms)`` product per context, falls off BLAS
+  entirely in that layout: at 96 arms, 8 contexts and ``samples=1000`` it
+  took 907 ms through the view and 0.8 ms on the same numbers in C order.
+  ``select`` now materializes C order first, one slab of draws at a time
+  so the transpose itself stays cache-resident.
+
+  Both halves of the decision are also reduced, exactly. The regret and
+  information-gain estimates condition only on arms that win at least one
+  draw: :math:`p(A^* = b) = 0` for every other arm, so its term in
+  :math:`v_a` is identically zero, and the conditional-mean contraction
+  runs over the :math:`M` ever-optimal arms per context rather than all
+  :math:`K` (:math:`M` is typically single digits at 96 arms once the
+  posterior has any shape). The optimal-arm *indicator* is likewise taken
+  straight from a comparison against the per-draw maximum, rather than an
+  ``argmax`` over the leading axis and a one-hot expansion of it; its
+  count reduction accumulates in ``uint16`` (exact below 2^16 draws)
+  instead of promoting each boolean to ``int64``, which is 4x. Two
+  further passes over the tensor vanish algebraically: the conditional
+  sums' columns partition the draws, so their row sums are the arms' full
+  draw sums (the means) and their winning-arm entries total
+  :math:`\mathbb{E}[\max]` -- and because an always-optimal arm's two
+  recoveries read the same float, its regret is *exactly* zero, keeping
+  the zero-regret ratio classification exact rather than
+  summation-order-dependent.
+
+  The pair scan evaluated four candidate mixing weights over all
+  :math:`K^2` ordered pairs; three of the four are redundant and most
+  pairs cannot win. The endpoints ``q = 0`` and ``q = 1`` are the
+  single-arm ratios, whose minimum is an :math:`O(K)` sweep; the
+  zero-regret root can never land strictly inside ``(0, 1)`` once regret
+  is clipped at zero, so it is always one of those endpoints; only the
+  Pareto frontier of the :math:`(v_a, \Delta_a)` points can support an
+  optimal mixture, since moving weight from a dominated arm to its
+  dominator never increases the ratio; and
+  ``f(q; a, b) = f(1 - q; b, a)`` halves the remaining scan. What
+  survives is one interior stationary point per unordered frontier pair,
+  evaluated over a ragged per-context pair list (frontier sizes are
+  heavy-tailed, so one wide context must not inflate the scan for the
+  rest): :math:`O(K \log K + m^2)` per context with :math:`m` the
+  frontier size, typically single digits, in place of
+  :math:`O(K^2 \cdot 4)`. No reduction excludes a candidate that could
+  be the optimum, so the selected mixture is identical.
+
+  End to end on a dense 96-arm agent at ``samples=1000``, a pull goes
+  from 612 ms to 13 ms at 8 contexts and from 4.4 s to 75 ms at 64
+  contexts, and a ``top_k=4`` slate at 8 contexts from 1.50 s to 20 ms.
+  A 20-arm, 8-context pull goes from 6.1 ms to 1.6 ms. What remains in
+  ``select`` is one slabbed transpose copy plus three single passes and
+  one GEMM read over the draw tensor, each running at measured
+  single-threaded numpy bandwidth -- further gains would need threaded
+  or fused native passes, not a better algorithm. Only IDS is affected:
+  the other policies read per-arm, per-context statistics that the
+  view's layout does not penalize, so nothing else pays for the copy
+  (#270)
+
+- Joint ``sample`` draws now reduce through whichever exact route is
+  cheapest. :math:`\operatorname{Cov}(Xw) = X \Lambda^{-1} X^T` has rank at
+  most :math:`\min(n_{\text{rows}}, |U|, p)`, and there is a reduction to a
+  small square root on each side, so the three routes differ only in how
+  many triangular solves against the cached factor they cost:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - route
+       - solves
+       - square root
+     * - weight space
+       - ``size``
+       - :math:`p \times p`, cached
+     * - row side
+       - ``n_rows``
+       - :math:`n_{\text{rows}} \times n_{\text{rows}}`
+     * - column side
+       - :math:`|U|`
+       - :math:`|U| \times |U|`
+
+  The choice is therefore :math:`\min(\text{size}, n_{\text{rows}}, |U|)`,
+  three exactly known integers, and the gate holds no calibration
+  constants. Weight space is the one whose square root is *cached* -- it
+  factors :math:`\Lambda`, which does not depend on ``X`` -- so it builds
+  nothing and pays per draw, while the other two refactor on every call.
+  That is why neither can win at small ``size``: there is nothing to
+  amortize. ``size = 1`` therefore always stays on weight space, and
+  Thompson sampling is bit-for-bit unchanged.
+
+  Previously the column side was chosen inside ``sample`` and the row side
+  out at the agent behind a policy flag, so neither could account for what
+  the other would have picked. Measured end-to-end over 36 dense shapes
+  (:math:`p` in {100, 1000}, ``n_rows`` in {1, 10, 32, 96, 320}, ``size``
+  in {1, 100, 500, 1000}): no regressions, and speedups to 45.9x. Sparse
+  gains reach 860x (:math:`p` = 100,000, one row, ``size`` = 1000: 6.0 s to
+  7.0 ms) (#269)
+
+- Every step of the reward-space path after the half-solve is taken from
+  ``scipy.linalg`` rather than ``numpy`` (``dgeqrf`` for the QR, ``dgemm``
+  for the draws, ``dgemv`` for the predictive mean). ``numpy`` and
+  ``scipy`` bind separate copies of OpenBLAS, each with its own thread
+  pool, and alternating between them within one call parks and unparks
+  both. On a 28-core box that cost more than every flop on the path: a
+  100x100 QR took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through
+  ``dgeqrf``. Reward-space sampling is up to 102x faster than before this
+  routing (#269)
+
 - A number of performance updates to posterior sampling on
   ``NormalRegressor``, ``NormalInverseGammaRegressor`` and ``BayesianGLM``,
   none of which changes a distribution. Joint ``sample`` draws go through
