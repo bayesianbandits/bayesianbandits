@@ -109,19 +109,6 @@ Unreleased
 
 **Performance**
 
-- The sampling entry points keep a layout contract: ``sample``,
-  ``sample_marginal``, and ``sample_reward_space`` return ``(size, n)``
-  draws with ``samples.T`` C-contiguous, at no cost (the projection is
-  computed transposed -- the same inner products). The
-  ``(n_arms, n_contexts, size)`` tensors agents build for policies are
-  then draw-contiguous with zero copies, where previously the draw axis
-  carried the largest stride in the tensor; agents normalize with one
-  copy for learners that break the contract. ``size=1`` keeps its exact
-  BLAS call, so Thompson sampling stays bit-for-bit identical. A dense
-  96-arm, 64-context IDS pull drops from 75 ms to 44 ms and UCB from
-  238 ms to 206 ms. Seeded draws on the (also unreleased) marginal and
-  blocked reward-space paths shift; distributions are unchanged (#272)
-
 - ``InformationDirectedSampling.select`` no longer reads its draws
   through the agent's transposed view. Agents hand a policy the learner's
   ``(size, n_rows)`` output reshaped and transposed, which leaves the draw
