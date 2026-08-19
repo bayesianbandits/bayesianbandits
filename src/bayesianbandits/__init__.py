@@ -107,6 +107,20 @@ posterior. Pass to the ``approximator`` argument.
     LaplaceApproximator
     RVGAApproximator
 
+Memory Accounting
+=================
+Agents, arms, learners, and precision factors each carry a
+``memory_usage`` property reporting the bytes they retain, broken down
+by part. The same walk is available as a function for anything else.
+Buffers reachable more than once -- a precision matrix shared with its
+factorization, a learner shared across arms -- are charged once, so a
+total is what dropping the object would free.
+
+.. autosummary::
+
+    memory_usage
+    MemoryUsage
+
 """
 
 from ._arm import Arm
@@ -124,6 +138,7 @@ from ._estimators import (
     NormalRegressor,
 )
 from ._gaussian import LaplaceApproximator, RVGAApproximator
+from ._memory import MemoryUsage, memory_usage
 from .api import (
     Agent,
     ContextualAgent,
@@ -151,6 +166,8 @@ __all__ = [
     "NormalRegressor",
     "LaplaceApproximator",
     "RVGAApproximator",
+    "MemoryUsage",
+    "memory_usage",
     "Agent",
     "ContextualAgent",
     "LipschitzContextualAgent",

@@ -11,6 +11,8 @@ from scipy.sparse import csc_array
 from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
 
+from ._memory import MemoryUsageMixin
+
 # Type aliases
 ArrayType = Union[NDArray[np.float64], csc_array]
 LinkFunction = Literal["logit", "log"]
@@ -406,7 +408,7 @@ class PosteriorApproximator(Protocol):
 
 
 @dataclass
-class LaplaceApproximator(PosteriorApproximator):
+class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
     """Laplace approximation via iteratively reweighted least squares (IRLS).
 
     Approximates the posterior of a Bayesian GLM by finding the MAP
@@ -917,7 +919,7 @@ def update_gaussian_posterior_rvga(
 
 
 @dataclass
-class RVGAApproximator(PosteriorApproximator):
+class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
     """R-VGA posterior approximation via expected curvature.
 
     Replaces Laplace's point-estimate curvature with expected curvature

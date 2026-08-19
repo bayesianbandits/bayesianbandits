@@ -86,6 +86,7 @@ from ._arm import (
     resolve_marginal_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
+from ._memory import MemoryUsageMixin
 from .policies import (  # noqa: F401
     EpsilonGreedy,
     ThompsonSampling,
@@ -206,7 +207,7 @@ def _reject_shared_learner(
         )
 
 
-class ContextualAgent(Generic[ContextType, TokenType]):
+class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
     """
     Agent for a contextual multi-armed bandit problem.
 
@@ -539,7 +540,7 @@ class ContextualAgent(Generic[ContextType, TokenType]):
             arm.decay(X, decay_rate=decay_rate)
 
 
-class Agent(Generic[TokenType]):
+class Agent(MemoryUsageMixin, Generic[TokenType]):
     """
     Agent for a non-contextual (classic) multi-armed bandit problem.
 
@@ -806,7 +807,7 @@ class Agent(Generic[TokenType]):
         self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
 
 
-class LipschitzContextualAgent(Generic[TokenType]):
+class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
     """
     Contextual agent with a shared learner and a configurable design matrix.
 
