@@ -18,13 +18,15 @@ While the API is still evolving, this library is already being used in productio
 * **Fast**: `bayesianbandits` is built on top of already fast scientific Python libraries, but, if installed, will also use SuiteSparse to further speed up matrix operations on sparse matrices. Handling tens or even hundreds of thousands of features in a sparse model is no problem.
 * **sklearn pipeline integration**: Use sklearn pipelines and transformers to preprocess data before feeding it into your bandit.
 * **Adversarial bandits (EXP3A)**: Robust performance in non-stationary and adversarial environments.
-* **Flexible**: Pick from a variety of policy algorithms, including Thompson sampling, upper confidence bound, and epsilon-greedy. Pick from a variety of prior distributions, including beta, gamma, normal, and normal-inverse-gamma.
+* **Information-directed sampling**: `InformationDirectedSampling` exploits cross-arm correlation under shared learners, balancing expected regret against information gain.
+* **Empirical Bayes estimators**: Automatic hyperparameter tuning via evidence maximization, for when you don't want to hand-tune priors or the environment may be non-stationary.
+* **Flexible**: Pick from a variety of policy algorithms, including Thompson sampling, upper confidence bound, epsilon-greedy, and information-directed sampling. Pick from a variety of prior distributions, including beta, gamma, normal, normal-inverse-gamma, and GLM posteriors.
 * **Extensible**: `bayesianbandits` provides simple interfaces for creating custom policies and priors.
 * **Well-tested**: `bayesianbandits` is well-tested, with nearly 100% test coverage.
 
 ## Compatibility
 
-`bayesianbandits` is tested with Python 3.10, 3.11, 3.12, 3.13, and 3.14 with `scikit-learn` 1.5.2, 1.6.1, 1.7.2, 1.8.0.
+`bayesianbandits` is tested with Python 3.10, 3.11, 3.12, 3.13, and 3.14 with `scikit-learn` 1.6.1, 1.7.2, 1.8.0, and 1.9.0.
 
 Requires NumPy >= 2.0 and SciPy >= 1.14. For CHOLMOD sparse support, requires `scikit-sparse` >= 0.5.0, which in turn requires SuiteSparse >= 7.4.0.
 
@@ -80,12 +82,12 @@ agent.update(context, np.array([15.0]))
 For shared learning across arms via the design matrix:
 
 ```python
-from bayesianbandits import LipschitzContextualAgent, ArmColumnFeaturizer, NormalRegressor
+from bayesianbandits import LipschitzContextualAgent, ArmColumnFeaturizer, NormalRegressor, ThompsonSampling
 
 # Single shared learner across all arms
 agent = LipschitzContextualAgent(
     arms=[Arm(i) for i in range(100)],  # 100 arms sharing knowledge
-    learner=NormalRegressor(),
+    learner=NormalRegressor(alpha=1.0, beta=1.0),
     arm_featurizer=ArmColumnFeaturizer(column_name='article_id'),
     policy=ThompsonSampling()
 )
