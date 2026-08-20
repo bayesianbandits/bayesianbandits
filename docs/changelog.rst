@@ -38,6 +38,15 @@ Unreleased
   all of them -- and the error says so. Two distinct ``LearnerPipeline``
   objects wrapping the same estimator also count as sharing (#267)
 
+- ``mackay_update_nig`` and ``mackay_update_glm`` are removed (private,
+  never exported or documented). They were evidence-maximization
+  updates written ahead of the empirical-Bayes NIG and GLM estimators
+  that would call them; neither shipped, so nothing in the package has
+  ever used them. The Gamma sibling that did ship,
+  ``negbin_update_gamma_poisson``, stays. Should those estimators be
+  built, both functions and their tests are recoverable from history
+  (#273)
+
 - ``multivariate_t_sample_from_covariance`` is removed (private, never
   exported or documented). It reimplemented
   ``scipy.stats.multivariate_t.rvs`` against a ``Covariance`` object,
