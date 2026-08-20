@@ -45,7 +45,7 @@ Unreleased
   routes; the tests that used it as an oracle now compare against
   ``scipy.stats.multivariate_t`` directly. Its removal also drops this
   package's only import of a private scipy internal
-  (``scipy.stats._multivariate._squeeze_output``)
+  (``scipy.stats._multivariate._squeeze_output``) (#273)
 
 - The batched arm-sampling path is removed: ``batch_sample_arms``,
   ``can_batch_arms``, ``stack_features``, and the ``LearnerWithTransform``
@@ -99,7 +99,7 @@ Unreleased
   nothing and removes the copy. Sparse joint draws over many rows gain
   3.4x on the draw itself at 2000 rows by 500 draws (7.8x by 2000) and
   2.5x end to end on ``sample``. Draws move in the last bits, the
-  accumulation order being the transposed one's
+  accumulation order being the transposed one's (#273)
 
 - The layout normalization behind every agent's draw tensor
   (``draw_contiguous``) now slabs its copy whenever a slab holds a full
@@ -116,7 +116,7 @@ Unreleased
   of one, two or four draws) still take numpy's copy. Values are
   unchanged; only in-library callers handing over a non-conforming
   layout are affected, since the agents' own tensors already conform
-  and pass through untouched
+  and pass through untouched (#273)
 
 - ``sample_marginal`` builds its draws through in-place passes over the
   normals rather than an expression per operator. ``mean + sd * z``
@@ -127,7 +127,7 @@ Unreleased
   itself. The ``NormalInverseGammaRegressor`` also folds its
   multivariate-t scale into the chi-square draws in place, where it
   spent three more temporaries of the same size. Values, random stream
-  and layout are all unchanged
+  and layout are all unchanged (#273)
 
 - ``InformationDirectedSampling.select`` reads each arm's win count off
   the tally it already computes rather than reducing the
@@ -136,12 +136,12 @@ Unreleased
   weight row sums to exactly its arm's win count. Ties still take the
   reduction, since splitting a tied draw leaves fractional counts.
   Bit-identical decisions, about 7% off the whole of ``select`` at 96
-  arms by 64 contexts
+  arms by 64 contexts (#273)
 
 - The precision factors skip their scale division when they carry no
   scale, which is every factor but a decayed one and the
   Normal-Inverse-Gamma shape. It was a full pass over, and a second
-  allocation of, an operand-sized array to divide by one
+  allocation of, an operand-sized array to divide by one (#273)
 
 - ``InformationDirectedSampling.select`` is 50-100x faster, exactly.
   It normalizes its draw tensor to draw-contiguous layout first (the
