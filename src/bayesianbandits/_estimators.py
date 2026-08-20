@@ -7,16 +7,14 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar, Union,
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from scipy.linalg import cho_factor, cho_solve, cholesky
-from scipy.linalg.blas import dgemm, dgemv, dsymv  # type: ignore
+from scipy.linalg.blas import dgemv, dsymv  # type: ignore
 from scipy.sparse import block_diag, csc_array, csr_array, diags, eye, issparse
 from scipy.special import expit
 from scipy.stats import (
     Covariance,
     dirichlet,
     gamma,
-    multivariate_normal,
 )
-from scipy.stats._multivariate import _squeeze_output
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
 from sklearn.utils.validation import (
     NotFittedError,
@@ -33,6 +31,7 @@ from ._blas_helpers import (
     dense_matmul_bt,
     dense_matvec,
     lower_predictive_sqrt,
+    marginal_draw,
     standard_normal_f,
     update_precision_dense,
 )
@@ -1034,7 +1033,7 @@ class _RowSpaceDraw:
         self,
         size: int,
         rng: np.random.Generator,
-        mean: Optional[NDArray[np.float64]] = None,
+        mean: NDArray[np.float64],
         scale: Optional[NDArray[np.float64]] = None,
     ) -> NDArray[np.float64]:
         """``size`` draws from ``N(mean, L Lᵀ + M Mᵀ)``, shape ``(size, n)``.
@@ -1049,18 +1048,14 @@ class _RowSpaceDraw:
             z = standard_normal_f(rng, size, L.shape[0])
             if scale is not None:
                 z *= scale[:, np.newaxis]
-            if mean is None:
-                out = cast(NDArray[np.float64], dgemm(1.0, z, L, trans_b=1))
-            else:
-                out = affine_lower_factor(mean, z, L)
+            out = affine_lower_factor(mean, z, L)
         else:
             n_blocks, k, _ = L.shape
             z = rng.standard_normal((n_blocks, size, k))
             if scale is not None:
                 z *= scale.T[:, :, np.newaxis]
             out = _blocked_colorize(L, z)
-            if mean is not None:
-                out += mean
+            out += mean
         n_pairs = cast("tuple[int, int]", M.shape)[1]
         if n_pairs:
             # (n, size), the sparse product's natural orientation
@@ -1780,7 +1775,7 @@ scipy.sparse.csc_array
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
         z = standard_normal_f(self.random_state_, size, mean.shape[0])
-        return cast(NDArray[np.float64], mean + sd * z)
+        return marginal_draw(mean, sd, z)
 
     def sample_reward_space(
         self,
@@ -2288,9 +2283,11 @@ scipy.sparse.csc_array
         # the draw-contiguous layout
         g = self.random_state_.chisquare(df, size=(mean.shape[0], size)).T
         # the (b/a) scale factor and the df/g mixing fold into one
-        # per-cell scale
-        scale = np.sqrt((self.b_ / self.a_) * df / g)
-        return cast(NDArray[np.float64], mean + (sd * z) * scale)
+        # per-cell scale, written over the chi-square draws nothing else
+        # holds rather than through a temporary per operator
+        scale = np.divide((self.b_ / self.a_) * df, g, out=g)
+        np.sqrt(scale, out=scale)
+        return marginal_draw(mean, sd, z, scale)
 
     def sample_reward_space(
         self,
@@ -2404,64 +2401,6 @@ scipy.sparse.csc_array
         self.b_ = prior_decay * self.b_
         if "_precision_factor" in self.__dict__:
             self._precision_factor = scale_factor(self._precision_factor, prior_decay)
-
-
-def multivariate_t_sample_from_covariance(
-    loc: Optional[NDArray[np.float64]],
-    shape: Covariance,
-    df: float = 1,
-    size: Union[int, tuple[int, ...]] = 1,
-    random_state: Union[int, np.random.Generator, None] = None,
-):
-    """
-    Sample from a multivariate t distribution with the given mean and covariance.
-
-    Parameters
-    ----------
-    loc : NDArray[np.float64]
-        Mean of the distribution.
-    shape : Covariance
-        Covariance of the distribution.
-    df : float, default=1
-        Degrees of freedom of the distribution.
-    size : int, default=1
-        Number of samples to draw.
-    random_state : int, np.random.Generator, or None, default=None
-        Random state for the model.
-
-    Returns
-    -------
-    samples : NDArray[np.float64]
-        Samples from the distribution.
-
-    Notes
-    -----
-    This function is a reimplementation of `scipy.stats.multivariate_t.rvs` that
-    uses a `Covariance` object instead of a covariance matrix.
-    """
-    rng = np.random.default_rng(random_state)
-
-    x = rng.chisquare(df, size=size) / df
-
-    z = multivariate_normal.rvs(
-        0,
-        shape,  # type: ignore
-        size=size,  # type: ignore[arg-type]  # scipy stubs say int; tuples work
-        random_state=rng,
-    )
-    # rvs squeezes singleton axes (size=1 or 1-dimensional shape) and
-    # returns a single draw for empty sizes; restore ``(*size, dim)`` so
-    # the chi-square scaling broadcasts per draw. ``size`` may be an int
-    # or a tuple, so shape the result after ``x`` rather than ``size``.
-    dim = shape.shape[-1]
-    if np.prod(np.shape(x), dtype=int) == 0:
-        z = np.zeros(np.shape(x) + (dim,))
-    else:
-        z = np.asarray(z).reshape(np.shape(x) + (dim,))
-    if loc is None:
-        loc = np.zeros_like(z)
-    samples = loc + z / np.sqrt(x)[..., None]
-    return _squeeze_output(samples)
 
 
 class BayesianGLM(
@@ -2977,7 +2916,7 @@ scipy.sparse.csc_array
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
         z = standard_normal_f(self.random_state_, size, mean.shape[0])
-        return self._inverse_link(mean + sd * z)
+        return self._inverse_link(marginal_draw(mean, sd, z))
 
     def sample_reward_space(
         self,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Union, cast
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -11,7 +11,6 @@ from scipy.linalg.lapack import dgeqrf, dgeqrf_lwork  # type: ignore[attr-define
 from scipy.sparse import csc_array
 
 __all__ = [
-    "dgemv",
     "dsymv",
     "dsyrk",
     "update_precision_dense",
@@ -21,6 +20,7 @@ __all__ = [
     "dense_matmul_bt",
     "standard_normal_f",
     "affine_lower_factor",
+    "marginal_draw",
 ]
 
 _Array = Union[NDArray[Any], csc_array]
@@ -149,14 +149,45 @@ def affine_lower_factor(
     )
 
 
+def marginal_draw(
+    mean: NDArray[np.float64],
+    sd: NDArray[np.float64],
+    z: NDArray[np.float64],
+    scale: Optional[NDArray[np.float64]] = None,
+) -> NDArray[np.float64]:
+    """``mean + sd * z``, or ``mean + sd * z * scale``, written over ``z``.
+
+    The marginal counterpart of :func:`affine_lower_factor`: ``z`` comes
+    fresh from :func:`standard_normal_f` and nothing else holds it, so
+    every factor folds in as an in-place pass. Written as an expression
+    each operator allocates its own ``(size, n_rows)`` temporary and
+    reads it back for the next, which measured 3.6x the fused cost at
+    2000 rows by 500 draws (5.6 ms against 1.5). The result keeps
+    ``z``'s layout, so ``standard_normal_f``'s draw-contiguity carries
+    through (see :func:`draw_contiguous`).
+    """
+    np.multiply(z, sd, out=z)
+    if scale is not None:
+        np.multiply(z, scale, out=z)
+    np.add(z, mean, out=z)
+    return z
+
+
 #: Slab byte budget for :func:`draw_contiguous`: keeps a slab's source
 #: block L2-resident while it is scattered out.
 _COPY_SLAB_BYTES = 1 << 20
 
-#: Fewest draws per slab worth slabbing for. Below this each output row
-#: is re-touched once per draw and numpy's own strided copy, which walks
-#: the draw axis outermost, is the faster of the two.
-_MIN_SLAB_DRAWS = 64
+#: Fewest draws per slab worth slabbing for. What decides it is the
+#: contiguous run each write lays down, not the draws per slab: eight
+#: float64 draws is one cache line, and below that a slab's writes touch
+#: less than a line apiece while re-reading every output row per pass,
+#: which is where numpy's own strided copy (walking the draw axis
+#: outermost) wins. Above it the slab loop wins by up to 5x -- at
+#: ``(96, 64, 1000)``, 20.4 ms against numpy's 54.7 -- and over a sweep
+#: of eleven shapes this threshold picks the faster branch in nine, its
+#: worst regression 1.11x on a 0.16 ms array. It is a cache-line count,
+#: so it does not scale with :data:`_COPY_SLAB_BYTES`.
+_MIN_SLAB_DRAWS = 8
 
 
 def draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -168,10 +199,11 @@ def draw_contiguous(samples: NDArray[np.float64]) -> NDArray[np.float64]:
     unit-stride, normalizing here for learners that only promise shape.
     Conforming input passes through untouched, whatever its float
     width. Copies slab-wise while a slab holds at least
-    :data:`_MIN_SLAB_DRAWS` draws (numpy's own strided copy walks the
-    draw axis outermost, ~3x slower there); below that the slab loop
-    would re-touch every output row per draw, and numpy's copy takes
-    over.
+    :data:`_MIN_SLAB_DRAWS` draws, which keeps the source block
+    L2-resident while it is scattered out and beats numpy's own strided
+    copy (which walks the draw axis outermost) by up to 5x; below that
+    the slab loop would re-touch every output row for less than a cache
+    line of writes, and numpy's copy takes over.
     """
     if samples.dtype.kind == "f" and samples.strides[-1] == samples.itemsize:
         return samples

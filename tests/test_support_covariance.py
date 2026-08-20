@@ -172,7 +172,7 @@ def test_duplicate_rows_are_exact():
 
     draw = sc.build(factor, doubled, p, budget=1000)
     assert draw is not None
-    samples = draw.joint(64, np.random.default_rng(0))
+    samples = draw.joint(64, np.random.default_rng(0), np.zeros(doubled.shape[0]))
     assert_allclose(samples[:, :4], samples[:, 4:], atol=0)
 
     S = sc.support_covariance(factor, sc.support_of(doubled), p)

@@ -1,14 +1,12 @@
 from pathlib import Path
-from unittest.mock import patch
 
 import joblib
 import numpy as np
 import pytest
 import scipy.sparse as sp
-from numpy.testing import assert_allclose, assert_array_almost_equal
+from numpy.testing import assert_allclose
 from scipy.stats import Covariance, multivariate_normal, multivariate_t
 
-from bayesianbandits._estimators import multivariate_t_sample_from_covariance
 from bayesianbandits._sparse_bayesian_linear_regression import (
     CholmodSparseFactor,
     DenseFactor,
@@ -112,46 +110,6 @@ class TestSparseFactor:
 
         assert_allclose(sparse_emp_cov, scipy_emp_cov, atol=0.05)
 
-    def test_mvt_sample_scipy_vs_bb(self, precision_matrix):
-        scipy_cov = Covariance.from_precision(precision_matrix)
-
-        rs_1 = np.random.default_rng(0)
-        rs_2 = np.random.default_rng(0)
-
-        # The way that multivariate_t uses the random state is different from
-        # how we use it, so we're going to mock out the multivariate normal sampling
-        # in our implementation (as our above tests show that it's correct) and
-        # just test the t distribution sampling.
-        with patch("bayesianbandits._estimators.multivariate_normal.rvs") as mock_mvn:
-            mock_mvn.side_effect = lambda mean, shape, size, random_state: (
-                random_state.multivariate_normal(
-                    np.zeros(scipy_cov.shape[0]), shape, size=size
-                )
-            )
-            sparse_samples = multivariate_t_sample_from_covariance(
-                loc=None, shape=scipy_cov.covariance, size=100, random_state=rs_1, df=3
-            )
-
-        scipy_samples = multivariate_t.rvs(
-            loc=None, shape=scipy_cov.covariance, size=100, random_state=rs_2, df=3
-        )
-
-        assert_array_almost_equal(sparse_samples, scipy_samples)
-
-    def test_mvt_sample_tuple_size_and_empty(self, precision_matrix):
-        """Tuple ``size`` and ``size=0`` follow numpy conventions
-        (regression: a ``reshape(size, -1)`` once broke both)."""
-        scipy_cov = Covariance.from_precision(precision_matrix)
-        d = scipy_cov.shape[0]
-        draws = multivariate_t_sample_from_covariance(
-            loc=None, shape=scipy_cov, size=(2, 4), random_state=0, df=5
-        )
-        assert np.asarray(draws).shape == (2, 4, d)
-        empty = multivariate_t_sample_from_covariance(
-            loc=None, shape=scipy_cov, size=0, random_state=0, df=5
-        )
-        assert np.asarray(empty).shape == (0, d)
-
     @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
     def test_logdet_matches_dense(self, precision_matrix, solver):
         """logdet via sparse factor matches np.linalg.slogdet for both solvers."""
@@ -168,9 +126,9 @@ class TestSparseFactor:
         rng = np.random.default_rng(0)
         x = rng.chisquare(300, 80000) / 300
         sparse_samples = factor.sample_at(None, 80000, rng).T / np.sqrt(x)[:, None]
-        scipy_samples = multivariate_t_sample_from_covariance(
+        scipy_samples = multivariate_t.rvs(
             loc=None,
-            shape=scipy_cov,
+            shape=scipy_cov.covariance,
             size=80000,
             random_state=0,
             df=300,

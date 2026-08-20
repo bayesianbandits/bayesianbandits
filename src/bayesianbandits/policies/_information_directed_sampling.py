@@ -102,7 +102,12 @@ def _vids_statistics(
         # exact ties (e.g. duplicate arms under a shared learner): split
         # a tied draw evenly so p_opt stays a probability
         weights /= weights.sum(axis=1, keepdims=True)
-    counts_sub = weights.sum(axis=-1)  # (C, M)
+        counts_sub = weights.sum(axis=-1)  # (C, M), fractional once split
+    else:
+        # untied, so a weight row sums to exactly its arm's win count,
+        # which ``counts`` already holds: gather those rather than
+        # reduce the (C, M, n_draws) block a second time
+        counts_sub = counts[opt_idx, ctx_col].astype(np.float64)
     p_opt = counts_sub / n_draws
     # cond_sums[c, a, b]: arm a's draw total where ever-optimal arm b wins
     cond_sums = np.matmul(samples.transpose(1, 0, 2), weights.transpose(0, 2, 1))

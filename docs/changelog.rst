@@ -38,6 +38,15 @@ Unreleased
   all of them -- and the error says so. Two distinct ``LearnerPipeline``
   objects wrapping the same estimator also count as sharing (#267)
 
+- ``multivariate_t_sample_from_covariance`` is removed (private, never
+  exported or documented). It reimplemented
+  ``scipy.stats.multivariate_t.rvs`` against a ``Covariance`` object,
+  and nothing has called it since joint draws moved to the reduction
+  routes; the tests that used it as an oracle now compare against
+  ``scipy.stats.multivariate_t`` directly. Its removal also drops this
+  package's only import of a private scipy internal
+  (``scipy.stats._multivariate._squeeze_output``)
+
 - The batched arm-sampling path is removed: ``batch_sample_arms``,
   ``can_batch_arms``, ``stack_features``, and the ``LearnerWithTransform``
   protocol (all private). It could only engage for arms sharing a
@@ -78,6 +87,61 @@ Unreleased
   statistics only (#258)
 
 **Performance**
+
+- The support-covariance route writes each row block's draws straight
+  into the output buffer. The result has to be C-ordered
+  ``(n_rows, size)`` for its transpose to satisfy the layout contract,
+  and ``dgemm`` builds Fortran-ordered results, so taking each block
+  back as a return value made it a transposed copy of itself into the
+  buffer: the whole output moved twice, the second time at the ~2 GB/s
+  a strided copy runs rather than the ~20 a contiguous one does. Handing
+  ``dgemm`` the block's own transpose as its output operand costs
+  nothing and removes the copy. Sparse joint draws over many rows gain
+  3.4x on the draw itself at 2000 rows by 500 draws (7.8x by 2000) and
+  2.5x end to end on ``sample``. Draws move in the last bits, the
+  accumulation order being the transposed one's
+
+- The layout normalization behind every agent's draw tensor
+  (``draw_contiguous``) now slabs its copy whenever a slab holds a full
+  cache line of draws, where it previously required 64 of them and fell
+  back to numpy's strided copy below that. What decides which copy wins
+  is the contiguous run each write lays down, not the number of draws
+  per slab, and eight float64 draws is already a whole line. The old
+  threshold therefore declined exactly where the slab loop wins most:
+  a tensor with wide leading axes gets a small slab *because* it is
+  wide, so 96 arms by 64 contexts by 1000 draws took the fallback and
+  paid 57.6 ms where slabbing costs 21.5. Over a sweep of eleven shapes
+  the new threshold picks the faster branch in nine, worst regression
+  1.11x on a 0.16 ms array, and the shapes the guard exists for (a slab
+  of one, two or four draws) still take numpy's copy. Values are
+  unchanged; only in-library callers handing over a non-conforming
+  layout are affected, since the agents' own tensors already conform
+  and pass through untouched
+
+- ``sample_marginal`` builds its draws through in-place passes over the
+  normals rather than an expression per operator. ``mean + sd * z``
+  allocates a ``(size, n_rows)`` temporary per operator and reads each
+  back for the next; folding them into ``z``, which nothing else holds,
+  measured 3.6x on that arithmetic (5.6 ms to 1.5 at 2000 rows by 500
+  draws) and 1.29x end to end, the remainder being the Gaussian RNG
+  itself. The ``NormalInverseGammaRegressor`` also folds its
+  multivariate-t scale into the chi-square draws in place, where it
+  spent three more temporaries of the same size. Values, random stream
+  and layout are all unchanged
+
+- ``InformationDirectedSampling.select`` reads each arm's win count off
+  the tally it already computes rather than reducing the
+  ``(n_contexts, M, n_draws)`` weight block a second time, whenever no
+  draw is exactly tied. The two agree by construction there: an untied
+  weight row sums to exactly its arm's win count. Ties still take the
+  reduction, since splitting a tied draw leaves fractional counts.
+  Bit-identical decisions, about 7% off the whole of ``select`` at 96
+  arms by 64 contexts
+
+- The precision factors skip their scale division when they carry no
+  scale, which is every factor but a decayed one and the
+  Normal-Inverse-Gamma shape. It was a full pass over, and a second
+  allocation of, an operand-sized array to divide by one
 
 - ``InformationDirectedSampling.select`` is 50-100x faster, exactly.
   It normalizes its draw tensor to draw-contiguous layout first (the

@@ -185,6 +185,18 @@ def _column_scale(values: NDArray[np.float64], ndim: int) -> NDArray[np.float64]
     return values if ndim == 1 else values[:, np.newaxis]
 
 
+def _unscale(out: Any, scale: float) -> Any:
+    """``out / scale``, or ``out`` itself when the factor carries no scale.
+
+    Every caller here divides something it has just built, so handing it
+    back undivided is safe, and it drops a full pass over (and a second
+    allocation of) an operand-sized array whenever ``scale`` is one --
+    which is every factor but a decayed one and the Normal-Inverse-Gamma
+    shape (see :func:`scale_factor`).
+    """
+    return out if scale == 1.0 else out / scale
+
+
 def _merge(
     observed: Union[NDArray[np.intp], slice],
     trivial: NDArray[np.intp],
@@ -461,11 +473,11 @@ class CholmodSparseFactor(MemoryUsageMixin):
             rhs = _SparseRhs(b, self._observed, self._trivial)
             block = np.asarray(self._factor.solve(rhs.block), dtype=np.float64)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
-            return cast(NDArray[np.float64], out / self._scale)
+            return cast(NDArray[np.float64], _unscale(out, self._scale))
         block = np.asarray(self._factor.solve(b[self._observed]), dtype=np.float64)
         rest = b[self._trivial] / _column_scale(self._trivial_diag, b.ndim)
         out = _merge(self._observed, self._trivial, block, rest, b.shape)
-        return cast(NDArray[np.float64], out / self._scale)
+        return cast(NDArray[np.float64], _unscale(out, self._scale))
 
     def sample_at(
         self,
@@ -493,14 +505,15 @@ class CholmodSparseFactor(MemoryUsageMixin):
             Z = _normals(rng, size, m + self._trivial.size)
             block = self._factor.solve(Z[:m], system="Lt")[self._inv_perm]
             rest = Z[m:] / np.sqrt(self._trivial_diag)[:, np.newaxis]
-            return _merge(self._observed, self._trivial, block, rest, Z.shape) / root
+            return _unscale(
+                _merge(self._observed, self._trivial, block, rest, Z.shape), root
+            )
         is_trivial, block_pos, rank = _locate(self._observed, self._trivial, features)
         block = self._factor.solve(_normals(rng, size, m), system="Lt")[
             self._inv_perm[block_pos]
         ]
-        return (
-            _scatter_draws(is_trivial, block, rank, self._trivial_diag, size, rng)
-            / root
+        return _unscale(
+            _scatter_draws(is_trivial, block, rank, self._trivial_diag, size, rng), root
         )
 
     def half_solve(
@@ -524,11 +537,12 @@ class CholmodSparseFactor(MemoryUsageMixin):
             rhs = _SparseRhs(b, self._observed, self._trivial)
             block = self._factor.solve(rhs.block[self._factor.perm], system="L")
             return SparseHalfSolve(
-                block / root, rhs.compact_trivial(self._trivial_diag, self._scale)
+                _unscale(block, root),
+                rhs.compact_trivial(self._trivial_diag, self._scale),
             )
         block = self._factor.solve(b[self._observed][self._factor.perm], system="L")
         rest = b[self._trivial] / _column_scale(np.sqrt(self._trivial_diag), b.ndim)
-        return _stack(block, rest) / root
+        return _unscale(_stack(block, rest), root)
 
     def logdet(self) -> float:
         """Log-determinant: the block's via CHOLMOD, plus the trivial
@@ -654,12 +668,12 @@ class SuperLUSparseFactor(MemoryUsageMixin):
             rhs = _SparseRhs(b, self._observed, self._trivial)
             block = np.asarray(self._lu.solve(rhs.block), dtype=np.float64)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
-            return cast(NDArray[np.float64], out / self._scale)
+            return cast(NDArray[np.float64], _unscale(out, self._scale))
         b = np.asarray(b, dtype=np.float64)
         block = np.asarray(self._lu.solve(b[self._observed]), dtype=np.float64)
         rest = b[self._trivial] / _column_scale(self._trivial_diag, b.ndim)
         out = _merge(self._observed, self._trivial, block, rest, b.shape)
-        return cast(NDArray[np.float64], out / self._scale)
+        return cast(NDArray[np.float64], _unscale(out, self._scale))
 
     def sample_at(
         self,
@@ -674,14 +688,15 @@ class SuperLUSparseFactor(MemoryUsageMixin):
             Z = _normals(rng, size, m + self._trivial.size)
             block = spsolve_triangular(self._Lt_csc, Z[:m], lower=False)[self._inv_perm]
             rest = Z[m:] / np.sqrt(self._trivial_diag)[:, np.newaxis]
-            return _merge(self._observed, self._trivial, block, rest, Z.shape) / root
+            return _unscale(
+                _merge(self._observed, self._trivial, block, rest, Z.shape), root
+            )
         is_trivial, block_pos, rank = _locate(self._observed, self._trivial, features)
         block = spsolve_triangular(self._Lt_csc, _normals(rng, size, m), lower=False)[
             self._inv_perm[block_pos]
         ]
-        return (
-            _scatter_draws(is_trivial, block, rank, self._trivial_diag, size, rng)
-            / root
+        return _unscale(
+            _scatter_draws(is_trivial, block, rank, self._trivial_diag, size, rng), root
         )
 
     @cached_property
@@ -724,7 +739,7 @@ class SuperLUSparseFactor(MemoryUsageMixin):
                 y, rhs.compact_trivial(self._trivial_diag, self._scale)
             )
         rest = b[self._trivial] / _column_scale(np.sqrt(self._trivial_diag), b.ndim)
-        return _stack(y, rest / root)
+        return _stack(y, _unscale(rest, root))
 
     def logdet(self) -> float:
         """Log-determinant of the factored matrix.
@@ -847,7 +862,7 @@ class DenseFactor(MemoryUsageMixin):
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         out = cho_solve((self._U, False), b, check_finite=False)
-        return cast(NDArray[np.float64], out / self._scale)
+        return cast(NDArray[np.float64], _unscale(out, self._scale))
 
     def sample_at(
         self,
@@ -886,7 +901,7 @@ class DenseFactor(MemoryUsageMixin):
         """
         rhs = cast(Any, b).toarray() if issparse(b) else b
         out = solve_triangular(self._U, rhs, trans=1, lower=False, check_finite=False)
-        return cast(NDArray[np.float64], out / np.sqrt(self._scale))
+        return cast(NDArray[np.float64], _unscale(out, np.sqrt(self._scale)))
 
     def logdet(self) -> float:
         """log|sΛ| = 2·sum(log(diag(U))) + d·log s."""
