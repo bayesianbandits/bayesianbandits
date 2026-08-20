@@ -148,24 +148,26 @@ class SupportDraw:
         ``scale`` multiplies the zero-mean part per draw, ``(size,)``, for
         the NIG multivariate-t mixing; ``mean`` is broadcast into the
         output buffer rather than added by the caller, which would cost
-        a second ``(size, n_rows)`` array.
+        a second ``(size, n_rows)`` array. Projected transposed so the
+        result is draw-contiguous (see
+        :func:`~bayesianbandits._blas_helpers.draw_contiguous`).
         """
         Z = standard_normal_f(rng, size, self._C.shape[0])
         if scale is not None:
             Z *= scale[:, np.newaxis]
         ZC = dgemm(1.0, Z, self._C, trans_b=1)
-        out = np.empty((size, self._n_rows), dtype=np.float64)
+        out = np.empty((self._n_rows, size), dtype=np.float64)
         if mean is not None:
-            out[:] = mean
+            out[:] = mean[:, np.newaxis]
         block = self._row_block()
         for start in range(0, self._n_rows, block):
             stop = min(self._n_rows, start + block)
-            drawn = dgemm(1.0, ZC, self._dense_rows(start, stop))
+            drawn = dgemm(1.0, self._dense_rows(start, stop), ZC, trans_a=1, trans_b=1)
             if mean is None:
-                out[:, start:stop] = drawn
+                out[start:stop] = drawn
             else:
-                out[:, start:stop] += drawn
-        return out
+                out[start:stop] += drawn
+        return out.T
 
     def sd(self) -> NDArray[np.float64]:
         """Per-row predictive standard deviations, shape ``(n_rows,)``."""

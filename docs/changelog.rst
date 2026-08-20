@@ -6,16 +6,33 @@ Unreleased
 
 **Breaking changes**
 
+- ``PolicyProtocol`` gains a ``consumes: DrawKind`` attribute, naming the
+  weakest draws a policy can correctly consume over a totally ordered
+  lattice::
+
+      MARGINAL_ONLY  <  CONTEXT_JOINT  <  JOINT
+
+  Agents satisfy it with anything at least that strong and pick whichever
+  is cheapest (see ``DrawKind`` for the semantics). Custom, structurally
+  typed policies should declare a ``consumes`` attribute;
+  ``PolicyDefaultUpdate`` and the agents default it to ``JOINT``, which
+  is always correct and never the cheapest.
+
+  ``CONTEXT_JOINT`` is new: per-context reward-space blocks are joint
+  across the arms of one context and independent across contexts, which
+  is strictly between marginal and fully joint draws. It is what
+  ``InformationDirectedSampling`` needs (#270)
+
 - ``ContextualAgent`` and ``Agent`` now require each arm to have its own
   learner, and raise from ``add_arm`` (so also from the constructor) when
   two arms share one. Neither agent gives arms a way to differ in
   features, so arms sharing a learner were statistically
   indistinguishable; worse, the policies on that path sample one arm at a
   time, which draws a separate weight vector per arm and silently
-  discards the dependence a shared posterior implies. A policy declaring
-  ``marginal_ok = False`` could therefore ask for joint draws and receive
-  independent ones: on arms sharing a learner, measured cross-arm
-  correlation was 0.00 where the true value was 1.00. Sharing one model
+  discards the dependence a shared posterior implies. A policy requiring
+  joint draws could therefore ask for them and receive independent ones:
+  on arms sharing a learner, measured cross-arm correlation was 0.00
+  where the true value was 1.00. Sharing one model
   across arms is ``LipschitzContextualAgent``'s job -- it distinguishes
   arms with an ``arm_featurizer`` and samples the shared learner once for
   all of them -- and the error says so. Two distinct ``LearnerPipeline``
@@ -31,6 +48,15 @@ Unreleased
   law, so the remaining path needs no batching (#267)
 
 **New features**
+
+- ``InformationDirectedSampling``: a variance-based information-directed
+  sampling (IDS) policy after Russo & Van Roy (2018). Each round it
+  estimates every arm's expected regret and variance-based information
+  gain from joint Monte Carlo posterior draws and samples from the
+  two-arm distribution minimizing the information ratio
+  :math:`\Delta(\pi)^2 / v(\pi)`, exploiting cross-arm correlation under
+  shared learners. ``top_k`` returns sequential IDS draws without
+  replacement, each slot re-solving the subgame of remaining arms (#270)
 
 - ``sample_reward_space`` on ``NormalRegressor``,
   ``NormalInverseGammaRegressor``, and ``BayesianGLM``: joint draws from
@@ -52,6 +78,70 @@ Unreleased
   statistics only (#258)
 
 **Performance**
+
+- ``InformationDirectedSampling.select`` is 50-100x faster, exactly.
+  It normalizes its draw tensor to draw-contiguous layout first (the
+  agents' transposed views left the draw axis with the largest stride,
+  which alone made the conditional-mean GEMM 1000x slower), conditions
+  only on the arms that win at least one draw (every other arm's
+  :math:`p(A^* = b)` term is identically zero), recovers the means and
+  :math:`\mathbb{E}[\max]` from that GEMM's own entries instead of
+  separate passes, and scans only the Pareto frontier of the
+  :math:`(v_a, \Delta_a)` points for the optimal pair (moving weight
+  from a dominated arm to its dominator never increases the ratio), one
+  interior root per unordered frontier pair. No step excludes a possible
+  optimum, so the selected mixture is identical. A dense 96-arm pull at
+  ``samples=1000`` goes from 612 ms to 13 ms at 8 contexts and 4.4 s to
+  75 ms at 64; ``top_k=4`` from 1.50 s to 20 ms (#270)
+
+- Joint ``sample`` draws now reduce through whichever exact route is
+  cheapest. :math:`\operatorname{Cov}(Xw) = X \Lambda^{-1} X^T` has rank at
+  most :math:`\min(n_{\text{rows}}, |U|, p)`, and there is a reduction to a
+  small square root on each side, so the three routes differ only in how
+  many triangular solves against the cached factor they cost:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - route
+       - solves
+       - square root
+     * - weight space
+       - ``size``
+       - :math:`p \times p`, cached
+     * - row side
+       - ``n_rows``
+       - :math:`n_{\text{rows}} \times n_{\text{rows}}`
+     * - column side
+       - :math:`|U|`
+       - :math:`|U| \times |U|`
+
+  The choice is therefore :math:`\min(\text{size}, n_{\text{rows}}, |U|)`,
+  three exactly known integers, and the gate holds no calibration
+  constants. Weight space is the one whose square root is *cached* -- it
+  factors :math:`\Lambda`, which does not depend on ``X`` -- so it builds
+  nothing and pays per draw, while the other two refactor on every call.
+  That is why neither can win at small ``size``: there is nothing to
+  amortize. ``size = 1`` therefore always stays on weight space, and
+  Thompson sampling is bit-for-bit unchanged.
+
+  Previously the column side was chosen inside ``sample`` and the row side
+  out at the agent behind a policy flag, so neither could account for what
+  the other would have picked. Measured end-to-end over 36 dense shapes
+  (:math:`p` in {100, 1000}, ``n_rows`` in {1, 10, 32, 96, 320}, ``size``
+  in {1, 100, 500, 1000}): no regressions, and speedups to 45.9x. Sparse
+  gains reach 860x (:math:`p` = 100,000, one row, ``size`` = 1000: 6.0 s to
+  7.0 ms) (#269)
+
+- Every step of the reward-space path after the half-solve is taken from
+  ``scipy.linalg`` rather than ``numpy`` (``dgeqrf`` for the QR, ``dgemm``
+  for the draws, ``dgemv`` for the predictive mean). ``numpy`` and
+  ``scipy`` bind separate copies of OpenBLAS, each with its own thread
+  pool, and alternating between them within one call parks and unparks
+  both. On a 28-core box that cost more than every flop on the path: a
+  100x100 QR took 81 ms through ``numpy.linalg.qr`` and 0.9 ms through
+  ``dgeqrf``. Reward-space sampling is up to 102x faster than before this
+  routing (#269)
 
 - A number of performance updates to posterior sampling on
   ``NormalRegressor``, ``NormalInverseGammaRegressor`` and ``BayesianGLM``,
@@ -80,13 +170,13 @@ Unreleased
   through the marginal path (they consume only per-arm, per-context
   statistics, for which marginal draws are exact), giving large speedups
   for their Monte Carlo estimates, dense and sparse alike.
-  ``ThompsonSampling`` is unchanged, byte-for-byte.
-  Custom policies can opt in by setting ``marginal_ok = True`` (declared
-  on ``PolicyProtocol``), and subclasses of the built-in policies can
-  opt out with ``marginal_ok = False``, which their ``__call__`` and the
-  agents both honor. The marginal path is never used for a learner whose
-  class overrides ``sample`` without also overriding ``sample_marginal``,
-  so customized joint sampling is not silently bypassed (#258)
+  ``ThompsonSampling`` is unchanged, byte-for-byte. Custom policies opt in
+  by declaring ``consumes = DrawKind.MARGINAL_ONLY``, and subclasses of the
+  built-in policies opt out with ``consumes = DrawKind.JOINT``, which their
+  ``__call__`` and the agents both honor. The marginal path is never used
+  for a learner whose class overrides ``sample`` without also overriding
+  ``sample_marginal``, so customized joint sampling is not silently
+  bypassed (#258)
 
 - The marginal path is likewise never used when a
   ``LipschitzContextualAgent`` carries a user-supplied
@@ -94,12 +184,10 @@ Unreleased
   may combine arms within it (share of total, cannibalization, softmax
   over a slate), which requires the arms of a draw to be jointly
   distributed; iid marginal draws leave such a reward's mean intact but
-  manufacture spread that a quantile-based policy reads as uncertainty.
-  A batch function that maps each ``(arm, context, draw)`` cell
-  independently can opt back into the faster path by carrying a truthy
-  ``elementwise`` attribute. Per-arm ``Arm.reward_function``s are applied
-  one arm at a time and never affect sampling, so the common cases --
-  no reward function, or per-arm functions only -- keep the speedup (#258)
+  manufacture spread that a quantile-based policy reads as uncertainty. A
+  per-arm ``Arm.reward_function`` is applied one arm at a time and never
+  affects sampling, so the common cases -- no reward function, or per-arm
+  functions only -- keep the speedup (#258)
 
 - ``sample`` and ``sample_marginal`` no longer copy ``X`` while validating
   it. Neither mutates the validated array nor retains a reference to it,
@@ -109,14 +197,14 @@ Unreleased
 **Behavioral changes**
 
 - Seeded agent trajectories under ``UpperConfidenceBound``, ``EXP3A``, and
-  ``EpsilonGreedy`` change: the marginal path consumes different amounts
-  of randomness than joint sampling. Per-row marginals are identical
-  (verified by KS tests) and decisions converge to the same choices as
-  ``samples`` grows, but for arms sharing one model the per-arm Monte
-  Carlo estimates no longer share weight draws, so finite-sample
-  selection noise among near-tied arms increases; raise ``samples`` to
-  compensate (marginal draws are much cheaper per draw), or opt the
-  policy out with ``marginal_ok = False`` (#258)
+  ``EpsilonGreedy`` change: the marginal path consumes different amounts of
+  randomness than joint sampling. Per-row marginals are identical (verified
+  by KS tests) and decisions converge to the same choices as ``samples``
+  grows, but for arms sharing one model the per-arm Monte Carlo estimates
+  no longer share weight draws, so finite-sample selection noise among
+  near-tied arms increases; raise ``samples`` to compensate (marginal draws
+  are much cheaper per draw), or opt the policy out with
+  ``consumes = DrawKind.JOINT`` (#258)
 
 - Seeded ``sample`` trajectories change: a reduced draw consumes
   ``n_rows`` or :math:`|U|` normals rather than one per feature, a

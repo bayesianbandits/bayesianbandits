@@ -12,7 +12,12 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from .._arm import Learner, resolve_marginal_sampler
+from .._arm import (
+    Learner,
+    _defines_before_sample,
+    resolve_marginal_sampler,
+    resolve_reward_space_sampler,
+)
 from .._memory import MemoryUsageMixin
 
 X_contra = TypeVar("X_contra", contravariant=True)
@@ -286,6 +291,53 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         """
         X_transformed = self._apply_transformers(X)
         return resolve_marginal_sampler(self._learner)(X_transformed, size)
+
+    def _use_reward_space(
+        self, n: int, size: int, block_size: Optional[int] = None
+    ) -> bool:
+        """Forward the reward-space flop gate to the wrapped learner."""
+        return (
+            resolve_reward_space_sampler(self._learner, n, size, block_size) is not None
+        )
+
+    def sample_reward_space(
+        self, X: X_contra, size: int = 1, *, block_size: Optional[int] = None
+    ) -> NDArray[np.float64]:
+        """Sample joint draws in reward space from the posterior predictive.
+
+        Forwards to the learner's ``sample_reward_space`` whenever that
+        is safe to call (defined at or above any ``sample`` override),
+        so a pipeline answers exactly as its wrapped estimator would.
+        Whether reward space is *profitable* for a shape is the
+        caller's question (:meth:`_use_reward_space`), not this
+        method's. The unsafe case falls back to fully joint ``sample``,
+        a superset of the per-block guarantee.
+
+        Parameters
+        ----------
+        X : X_contra
+            Input data (enriched features from ArmFeaturizer)
+        size : int, default=1
+            Number of samples to draw
+        block_size : int, optional
+            Forwarded to the learner: rows are drawn jointly within
+            consecutive blocks of this many rows and independently
+            across blocks.
+
+        Returns
+        -------
+        samples : NDArray[np.float64]
+            Joint samples for each row
+        """
+        X_transformed = self._apply_transformers(X)
+        if not _defines_before_sample(self._learner, "sample_reward_space"):
+            return self._learner.sample(X_transformed, size)
+        return cast(
+            NDArray[np.float64],
+            cast(Any, self._learner).sample_reward_space(
+                X_transformed, size, block_size=block_size
+            ),
+        )
 
     def partial_fit(
         self,

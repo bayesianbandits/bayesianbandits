@@ -12,14 +12,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
+from .._draw_kind import DrawKind
 
 
 class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
-    #: Safe default satisfying ``PolicyProtocol``: joint ``sample``
-    #: draws serve every policy. Subclasses opt into cheaper sampling
-    #: modes by overriding this (see
-    #: :class:`~bayesianbandits.api.PolicyProtocol` for the semantics).
-    marginal_ok: bool = False
+    #: Safe default satisfying ``PolicyProtocol``: fully joint draws
+    #: serve every policy. Subclasses declare a weaker requirement to
+    #: get cheaper draws (see :class:`~bayesianbandits.DrawKind`).
+    consumes: DrawKind = DrawKind.JOINT
 
     def _draw_samples(
         self,
@@ -29,10 +29,12 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
     ) -> NDArray[np.float64]:
         """Draw ``(n_arms, n_contexts, size)`` samples for ``select``.
 
-        Samples each arm from its own learner, marginally when
-        ``marginal_ok`` (iid per-row draws are exact for policies
-        consuming only per-(arm, context) statistics) and jointly
-        otherwise.
+        Samples each arm from its own learner, marginally when the
+        policy consumes ``MARGINAL_ONLY`` (iid per-row draws are exact
+        for policies reading only per-(arm, context) statistics) and
+        jointly otherwise. ``CONTEXT_JOINT`` and ``JOINT`` coincide
+        here: every arm has its own learner, so there is no cross-arm
+        dependence for a context block to preserve.
 
         Drawing one arm at a time is the correct joint law here because
         agents using this path give every arm an independent learner --
@@ -44,14 +46,18 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         samples that learner once for all arms rather than coming
         through here.
         """
-        samples = np.array(
+        # Stacking transposed builds (n_arms, n_contexts, size) in one
+        # copy with the draw axis contiguous (the layout contract).
+        return np.array(
             [
-                (arm.sample_marginal if self.marginal_ok else arm.sample)(X, size)
+                (
+                    arm.sample_marginal
+                    if self.consumes == DrawKind.MARGINAL_ONLY
+                    else arm.sample
+                )(X, size).T
                 for arm in arms
             ]
         )
-        # Convert from (n_arms, size, n_contexts) to (n_arms, n_contexts, size)
-        return samples.transpose(0, 2, 1)
 
     def update(
         self,

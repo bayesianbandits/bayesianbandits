@@ -26,7 +26,17 @@ Policy Functions
    bayesianbandits.EpsilonGreedy
    bayesianbandits.ThompsonSampling
    bayesianbandits.UpperConfidenceBound
+   bayesianbandits.InformationDirectedSampling
    bayesianbandits.EXP3A
+
+Every policy declares the weakest posterior draws it can correctly
+consume. An agent supplies anything at least that strong and picks
+whichever is cheapest, so a policy never names a sampling method.
+
+.. autosummary::
+   :toctree: generated/
+
+   bayesianbandits.DrawKind
 
 Pipelines
 ---------
