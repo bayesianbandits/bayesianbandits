@@ -141,6 +141,18 @@ class TestAgentWiring:
         assert resolve_reward_space_sampler(est, 10, 1000) is None
         assert (est.sample(rng.standard_normal((10, 101)), size=50) >= 0.0).all()
 
+    def test_resolver_ignores_instance_level_methods(self):
+        """A learner carrying ``sample_reward_space`` as an instance
+        attribute defines nothing on its class, so the MRO walk finds
+        neither method and the resolver declines."""
+
+        class Shell:
+            pass
+
+        learner = Shell()
+        learner.sample_reward_space = lambda X, size=1, block_size=None: None  # type: ignore[attr-defined]
+        assert resolve_reward_space_sampler(learner, 4, 100, 2) is None
+
     def test_resolver_skips_unfitted_models(self):
         est = NormalRegressor(alpha=1.0, beta=1.0)
         assert resolve_reward_space_sampler(est, 10, 1000) is None

@@ -337,6 +337,23 @@ class TestDrawContiguous:
             _blas_helpers._COPY_SLAB_BYTES, _blas_helpers._MIN_SLAB_DRAWS = original
         np.testing.assert_array_equal(out, view)
 
+    def test_wide_leading_axes_fall_back_to_numpy_copy(self):
+        # A slab below _MIN_SLAB_DRAWS re-touches every output row per
+        # draw, so numpy's copy takes over; the result must still be
+        # unit-stride and equal.
+        from bayesianbandits import _blas_helpers
+
+        drawn = np.random.default_rng(2).normal(size=(100, 6, 9))
+        view = drawn.transpose(1, 2, 0)
+        original = _blas_helpers._COPY_SLAB_BYTES
+        try:
+            _blas_helpers._COPY_SLAB_BYTES = 6 * 9 * 8 * 2  # two draws per slab
+            out = _blas_helpers.draw_contiguous(view)
+        finally:
+            _blas_helpers._COPY_SLAB_BYTES = original
+        assert out.strides[-1] == out.itemsize
+        np.testing.assert_array_equal(out, view)
+
 
 class TestSelect:
     """Policy-level selection semantics."""
@@ -407,6 +424,23 @@ class TestSelect:
             np.ascontiguousarray(view), arms, np.random.default_rng(2)
         )
         assert from_view == from_copy
+
+    def test_non_finite_draws_cannot_pin_a_context(self):
+        # One overflowed draw (a log-link GLM under a wide prior) must
+        # not make the resolved-posterior fallback play the overflowed
+        # arm deterministically; a context with no finite draw at all is
+        # zeroed rather than raising.
+        rng = np.random.default_rng(0)
+        samples = rng.normal(size=(3, 2, 100))
+        samples[1] += 5.0  # arm 1 is clearly best
+        samples[2, 0, 3] = np.inf  # poisons context 0 unguarded
+        samples[:, 1, :] = np.nan  # context 1 has no finite draw
+        arms = self.make_arms(3)
+        policy = InformationDirectedSampling()
+        for _ in range(10):
+            chosen = policy.select(samples, arms, rng)
+            assert chosen[0] is arms[1]
+            assert chosen[1] in arms  # tied context still selects
 
     def test_select_does_not_mutate_its_input(self):
         samples = np.random.default_rng(6).normal(size=(4, 2, 150))

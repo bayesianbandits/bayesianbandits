@@ -168,7 +168,7 @@ def _optimal_two_point(
         else ``b_idx``, achieving ``ratio``; ``inf`` means the posterior
         has resolved.
     """
-    n_arms, n_contexts = delta.shape
+    n_contexts = delta.shape[1]
     ctx_idx = np.arange(n_contexts)
 
     # Endpoints: the best degenerate distribution, O(K * C).
@@ -178,9 +178,6 @@ def _optimal_two_point(
     single = np.where(alive, single, np.inf)
     s_idx = single.argmin(axis=0)
     s_ratio = single[s_idx, ctx_idx]
-
-    if n_arms < 2:
-        return s_idx, s_idx, np.ones(n_contexts), s_ratio
 
     # Pareto frontier: sort by v descending (dead arms last, never
     # dominating), keep arms whose regret undercuts every higher-v arm's
