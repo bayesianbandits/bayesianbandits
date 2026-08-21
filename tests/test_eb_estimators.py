@@ -5,6 +5,8 @@ from unittest import mock
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
+from numpy.testing import assert_allclose
 from sklearn.base import clone
 
 from bayesianbandits import (
@@ -579,6 +581,31 @@ class TestPriorScalar:
         before = (model.alpha, model.beta)
         model.partial_fit(X[20:], y[20:])
         assert (model.alpha, model.beta) != before
+
+
+class TestShiftDiagonal:
+    """``_shift_diagonal`` adds ``shift * I`` to a sparse precision in place."""
+
+    @staticmethod
+    def _model():
+        return EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=True)
+
+    def test_zero_shift_is_a_no_op(self):
+        model = self._model()
+        cov_inv = sp.csc_array(sp.eye_array(4, format="csc"))
+        before = cov_inv.data.copy()
+        model._shift_diagonal(cov_inv, 0.0)
+        assert np.array_equal(cov_inv.data, before)
+        assert "_diag_pos" not in model.__dict__
+
+    def test_missing_diagonal_entry_falls_back_to_setdiag(self):
+        model = self._model()
+        cov_inv = sp.csc_array(sp.diags_array([1.0, 0.0, 1.0], format="csc"))
+        cov_inv.eliminate_zeros()
+        assert cov_inv.nnz == 2
+        model._shift_diagonal(cov_inv, 0.5)
+        assert_allclose(cov_inv.diagonal(), [1.5, 0.5, 1.5])
+        assert "_diag_pos" not in model.__dict__
 
 
 @pytest.mark.parametrize("sparse", [True, False])
