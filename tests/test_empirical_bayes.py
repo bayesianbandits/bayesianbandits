@@ -438,7 +438,7 @@ class TestLogEvidenceFromUpdates:
         y = X @ w + rng.standard_normal(n) * 0.5
         mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
 
-        _, _, result = mackay_update_normal_online(
+        result = mackay_update_normal_online(
             mu_n,
             precision,
             alpha,
@@ -450,7 +450,7 @@ class TestLogEvidenceFromUpdates:
             factor=_make_dense_factor(precision),
         )
         expected = _log_evidence_normal_hand(X, y, mu_n, precision, alpha, beta)
-        np.testing.assert_allclose(result, expected, atol=1e-10)
+        np.testing.assert_allclose(result.log_evidence, expected, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +508,7 @@ class TestSufficientStats:
 
         # Craft sufficient stats so RSS = yTy - 2*m'XTy + m'XTXm <= 0.
         # Set eff_yTy = 0 and eff_XTy large so RSS goes negative.
-        alpha_new, beta_new, _ = mackay_update_normal_online(
+        update = mackay_update_normal_online(
             mu_n,
             precision,
             alpha,
@@ -519,7 +519,8 @@ class TestSufficientStats:
             eff_XTy=mu_n * 1000.0,
             factor=_make_dense_factor(precision),
         )
-        assert beta_new == beta
+        assert update.beta == beta
+        assert not update.rejected
 
     def test_online_rejects_pathological_beta_alpha_ratio(self) -> None:
         """When beta_new/alpha_new would exceed the guardrail, keep old hyperparams."""
@@ -537,7 +538,7 @@ class TestSufficientStats:
         # Set yTy = 3e16 + 1e-20 so RSS = 1e-20
         eff_yTy = mTXTXm + 1e-20
 
-        alpha_new, beta_new, _ = mackay_update_normal_online(
+        update = mackay_update_normal_online(
             mu_n,
             precision,
             alpha,
@@ -549,8 +550,9 @@ class TestSufficientStats:
             factor=_make_dense_factor(precision),
         )
         # beta_new/alpha_new would be astronomically large; guardrail rejects
-        assert alpha_new == alpha
-        assert beta_new == beta
+        assert update.alpha == alpha
+        assert update.beta == beta
+        assert update.rejected
 
     def test_online_sparse_precision_matvec(self) -> None:
         """mackay_update_normal_online handles sparse precision @ dense mu_n."""
@@ -566,7 +568,7 @@ class TestSufficientStats:
         precision_sparse = csc_array(precision_dense)
 
         # Dense reference
-        alpha_dense, beta_dense, _ = mackay_update_normal_online(
+        dense_update = mackay_update_normal_online(
             mu_n,
             precision_dense,
             alpha,
@@ -579,7 +581,7 @@ class TestSufficientStats:
         )
 
         # Sparse path (now exact via Takahashi)
-        alpha_sparse, beta_sparse, _ = mackay_update_normal_online(
+        sparse_update = mackay_update_normal_online(
             mu_n,
             precision_sparse,
             alpha,
@@ -591,8 +593,8 @@ class TestSufficientStats:
             factor=create_sparse_factor(precision_sparse),
         )
 
-        np.testing.assert_allclose(alpha_sparse, alpha_dense, atol=1e-10)
-        np.testing.assert_allclose(beta_sparse, beta_dense, atol=1e-10)
+        np.testing.assert_allclose(sparse_update.alpha, dense_update.alpha, atol=1e-10)
+        np.testing.assert_allclose(sparse_update.beta, dense_update.beta, atol=1e-10)
 
 
 # ---------------------------------------------------------------------------
