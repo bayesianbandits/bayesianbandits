@@ -796,6 +796,13 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
             self.coef_[x.item()] *= decay_rate
 
 
+def _scaled_identity_f(n: int, scale: float) -> NDArray[np.float64]:
+    """``scale * I`` as a Fortran-ordered array, in one pass."""
+    out = np.zeros((n, n), dtype=np.float64, order="F")
+    np.fill_diagonal(out, scale)
+    return out
+
+
 def _invalidate_cached_properties(
     func: Callable[Concatenate[SelfType, Params], ReturnType],  # type: ignore
 ) -> Callable[Concatenate[SelfType, Params], ReturnType]:
@@ -1432,7 +1439,20 @@ scipy.sparse.csc_array
         # Exclude cached C extension objects that cannot be pickled
         state = super().__getstate__()  # type: ignore
         state.pop("_precision_factor", None)
+        state.pop("_factor_hint", None)
         return state
+
+    def _sparse_factor(self, precision: csc_array) -> SparseFactor:
+        """A factor of ``precision``, refactorized from the previous one
+        when the sparsity pattern is unchanged (``refactorize`` checks).
+        The previous factor is the cached ``_precision_factor``, or
+        ``_factor_hint`` where an estimator had to drop that."""
+        hint: Optional[SparseFactor] = self.__dict__.get("_precision_factor")
+        if hint is None:
+            hint = self.__dict__.pop("_factor_hint", None)
+        if hint is None:
+            return create_sparse_factor(precision)
+        return hint.refactorize(precision)
 
     def fit(
         self,
@@ -1493,7 +1513,8 @@ scipy.sparse.csc_array
         if self.sparse:
             self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
         else:
-            self.cov_inv_ = np.eye(self.n_features_) * self.alpha
+            # Fortran order, as dsyrk/dsymv/cho_factor want; avoids a relayout copy
+            self.cov_inv_ = _scaled_identity_f(self.n_features_, self.alpha)
 
     @cached_property
     def _precision_factor(self) -> PrecisionFactor:
@@ -1506,7 +1527,7 @@ scipy.sparse.csc_array
         """
         if self.sparse:
             assert isinstance(self.cov_inv_, csc_array)
-            return create_sparse_factor(self.cov_inv_)
+            return self._sparse_factor(self.cov_inv_)
         else:
             cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
             return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
@@ -1565,7 +1586,8 @@ scipy.sparse.csc_array
         assert X.shape is not None  # for the type checker
         prior_decay = self.learning_rate ** X.shape[0]
 
-        # Apply weights to X and y
+        y_weighted = y * effective_weights
+
         if self.sparse:
             # Element-wise scaling avoids constructing a diagonal matrix.
             # Absorb beta into weights so X_weighted^T @ X_weighted = beta * X^T W X
@@ -1576,32 +1598,27 @@ scipy.sparse.csc_array
                 csc_array,
                 prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted,
             )
-        else:
-            # For dense matrices, use broadcasting for efficiency
-            w_sqrt = np.sqrt(effective_weights)
-            X_weighted = X * w_sqrt[:, np.newaxis]
-            # Fused X^T W X + prior via dsyrk (upper triangle only)
-            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
-            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
-
-        # Apply weights to y for the linear term
-        y_weighted = y * effective_weights
-
-        if self.sparse:
             # Scale vectors instead of sparse matrices to avoid copies
-            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ (
-                self.beta * y_weighted
+            eta = cast(
+                NDArray[np.float64],
+                self.cov_inv_ @ (prior_decay * self.coef_)
+                + X.T @ (self.beta * y_weighted),
             )
-            eta = cast(NDArray[np.float64], eta)
-            assert isinstance(cov_inv, csc_array)
-            factor: PrecisionFactor = create_sparse_factor(cov_inv)
+            factor: PrecisionFactor = self._sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
-            # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X * w_sqrt[:, np.newaxis]
+            # before the in-place update of cov_inv_ below
             eta = compute_eta_dense(
                 prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
+            prior_scaled = np.asfortranarray(self.cov_inv_)
+            if prior_decay != 1.0:
+                prior_scaled *= prior_decay
+            # Fused X^T W X + prior via dsyrk (upper triangle only)
+            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
             cho = cho_factor(cov_inv, lower=False, check_finite=False)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
@@ -2144,7 +2161,7 @@ scipy.sparse.csc_array
             eta = prior_cov_coef + X.T @ y_weighted
             eta = cast(NDArray[np.float64], eta)
             assert isinstance(V_n, csc_array)
-            factor: PrecisionFactor = create_sparse_factor(V_n)
+            factor: PrecisionFactor = self._sparse_factor(V_n)
             m_n = factor.solve(eta)
             self._precision_factor = factor
         else:
@@ -2599,9 +2616,7 @@ scipy.sparse.csc_array
         if self.sparse:
             self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
         else:
-            self.cov_inv_ = cast(
-                NDArray[np.float64], np.eye(self.n_features_) * self.alpha
-            )
+            self.cov_inv_ = _scaled_identity_f(self.n_features_, self.alpha)
 
         # A cached factor from a previous fit would be stale against
         # the freshly-reset cov_inv_; drop it.
