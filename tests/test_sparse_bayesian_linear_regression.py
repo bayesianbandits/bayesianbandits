@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest import mock
 
 import joblib
 import numpy as np
@@ -221,6 +222,22 @@ class TestRefactorize:
         fresh = create_sparse_factor(A2, solver=SparseSolver.CHOLMOD)
         b = np.random.default_rng(0).standard_normal(A2.shape[0])
         assert_allclose(refactored.solve(b), fresh.solve(b), rtol=1e-12)
+
+
+class TestCholmodLogdet:
+    def test_logdet_sorts_an_unsorted_factor(self):
+        """``logdet`` reads each column's first stored entry as the
+        diagonal, so an unsorted ``L`` from the backend must be sorted."""
+        A = sp.csc_array(np.array([[4.0, 1.0], [1.0, 3.0]]))
+        factor = create_sparse_factor(A, solver=SparseSolver.CHOLMOD)
+        L = sp.csc_array(factor._factor.L)
+        # reverse the first column's entries so the diagonal is no longer first
+        L.indices[:2] = L.indices[:2][::-1]
+        L.data[:2] = L.data[:2][::-1]
+        L.has_sorted_indices = False
+        factor._factor = mock.Mock(L=L)
+        factor.__dict__.pop("_L_csc", None)
+        assert_allclose(factor.logdet(), np.linalg.slogdet(A.toarray())[1])
 
 
 class TestHalfSolve:

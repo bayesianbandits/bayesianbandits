@@ -11,7 +11,7 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import NamedTuple, Union, cast
+from typing import Any, NamedTuple, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,6 +24,12 @@ from ._sparse_bayesian_linear_regression import (
 )
 
 _LOG_2PI = math.log(2.0 * math.pi)
+
+
+def _dot(a: NDArray[Any], b: NDArray[Any]) -> float:
+    """``a · b`` without BLAS: ``ddot`` wakes a thread pool for a
+    memory-bound reduction, milliseconds against microseconds."""
+    return float(np.einsum("i,i", a, b))
 
 
 class MacKayUpdate(NamedTuple):
@@ -173,7 +179,7 @@ def mackay_update_normal_online(
         and whether the guardrail rejected the update.
     """
     p = cast(tuple[int, int], precision.shape)[0]
-    mu_norm_sq = float(mu_n @ mu_n)
+    mu_norm_sq = _dot(mu_n, mu_n)
 
     ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
@@ -196,7 +202,7 @@ def mackay_update_normal_online(
     # Beta update from sufficient statistics.
     # XᵀX_decayed = (Λ − prior_scalar·I) / β
     m = mu_n
-    mTXTy = float(m @ eff_XTy)
+    mTXTy = _dot(m, eff_XTy)
 
     # dsymv reads only the upper triangle (safe for upper-triangle-only
     # dense precision matrices produced by dsyrk).
@@ -205,7 +211,7 @@ def mackay_update_normal_online(
     else:
         prec_m = dsymv(1.0, precision, m)
     XTX_m = prec_m - prior_scalar * m
-    mTXTXm = float(m @ XTX_m) / beta
+    mTXTXm = _dot(m, XTX_m) / beta
 
     rss = eff_yTy - 2.0 * mTXTy + mTXTXm
 

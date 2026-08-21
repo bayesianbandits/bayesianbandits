@@ -34,7 +34,6 @@ from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
-    create_sparse_factor,
     scale_factor,
 )
 
@@ -413,8 +412,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         if self.sparse:
             cov_inv = cast(csc_array, self.cov_inv_)
             cov_inv *= beta_ratio
-            if diag_correction != 0.0:
-                cov_inv.setdiag(cov_inv.diagonal() + diag_correction)
+            self._shift_diagonal(cov_inv, diag_correction)
             self.cov_inv_ = cov_inv
         else:
             self.cov_inv_ *= beta_ratio
@@ -429,7 +427,14 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     self._precision_factor, beta_ratio
                 )
             else:
-                del self._precision_factor
+                self._drop_factor()
+
+    def _drop_factor(self) -> None:
+        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
+        refactorizes from: a diagonal shift leaves the pattern alone."""
+        factor = self.__dict__.pop("_precision_factor")
+        if self.sparse:
+            self._factor_hint = factor
 
     def _reinject_prior(self, prior_reinjection: float) -> None:
         """Add stabilized prior re-injection to the precision diagonal.
@@ -442,13 +447,37 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             return
         if self.sparse:
             cov_inv = cast(csc_array, self.cov_inv_)
-            cov_inv.setdiag(cov_inv.diagonal() + prior_reinjection)
+            self._shift_diagonal(cov_inv, prior_reinjection)
             self.cov_inv_ = cov_inv
         else:
             diag_idx = np.diag_indices_from(self.cov_inv_)
             self.cov_inv_[diag_idx] += prior_reinjection
         if "_precision_factor" in self.__dict__:
-            del self._precision_factor
+            self._drop_factor()
+
+    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
+        """``cov_inv += shift * I`` in place.
+
+        The diagonal is always stored (the prior is ``alpha * I``), so
+        its positions, found once per pattern by running ``diagonal()``
+        over entry numbers and cached against the index array's
+        identity, make this a gather-add; ``setdiag`` relocates it on
+        every call.
+        """
+        if shift == 0.0:
+            return
+        cached = self.__dict__.get("_diag_pos")
+        if cached is None or cached[0] is not cov_inv.indices:
+            values = cov_inv.data
+            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
+            pos = cov_inv.diagonal().astype(np.intp) - 1
+            cov_inv.data = values
+            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
+                cov_inv.setdiag(cov_inv.diagonal() + shift)
+                return
+            cached = (cov_inv.indices, pos)
+            self._diag_pos = cached
+        cov_inv.data[cached[1]] += shift
 
     @_invalidate_cached_properties
     def _fit_helper(
@@ -491,45 +520,38 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
 
         prior_decay = self.learning_rate ** X.shape[0]
 
+        y_weighted = y * effective_weights
+
         if self.sparse:
             # Element-wise scaling; absorb beta into weights
             assert isinstance(X, csc_array)
             w_sqrt = np.sqrt(self.beta * effective_weights)
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
-            cov_inv = cast(
-                csc_array,
-                prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted,
+            prior = cast(csc_array, self.cov_inv_)
+            if prior_decay != 1.0:
+                prior.data *= prior_decay  # in place; eta below uses it too
+            cov_inv = cast(csc_array, prior + X_weighted.T @ X_weighted)
+            self._shift_diagonal(cov_inv, reinjection)
+            eta = cast(
+                NDArray[np.float64], prior @ self.coef_ + X.T @ (self.beta * y_weighted)
             )
-            # Fold in the prior reinjection
-            cov_inv.setdiag(cov_inv.diagonal() + reinjection)
-        else:
-            # Fused X^T W X + prior via dsyrk (upper triangle only)
-            w_sqrt = np.sqrt(effective_weights)
-            X_weighted = X * w_sqrt[:, np.newaxis]
-            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
-            # Add reinjection to diagonal before dsyrk
-            diag_idx = np.diag_indices_from(prior_scaled)
-            prior_scaled[diag_idx] += reinjection
-            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
-
-        # Apply weights to y for the linear term
-        y_weighted = y * effective_weights
-
-        if self.sparse:
-            # Scale vectors instead of sparse matrices
-            eta = self.cov_inv_ @ (prior_decay * self.coef_) + X.T @ (
-                self.beta * y_weighted
-            )
-            eta = cast(NDArray[np.float64], eta)
-            assert isinstance(cov_inv, csc_array)
-            factor: PrecisionFactor = create_sparse_factor(cov_inv)
+            factor: PrecisionFactor = self._sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
-            # eta = prior_decay * cov_inv_ @ coef_ + beta * X^T @ y_weighted
+            w_sqrt = np.sqrt(effective_weights)
+            X_weighted = X * w_sqrt[:, np.newaxis]
+            # before the in-place update of cov_inv_ below
             eta = compute_eta_dense(
                 prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
+            prior_scaled = np.asfortranarray(self.cov_inv_)
+            if prior_decay != 1.0:
+                prior_scaled *= prior_decay
+            diag_idx = np.diag_indices_from(prior_scaled)
+            prior_scaled[diag_idx] += reinjection
+            # Fused X^T W X + prior via dsyrk (upper triangle only)
+            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
             cho = cho_factor(cov_inv, lower=False, check_finite=False)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
@@ -580,14 +602,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         """
         had_prior_scalar = hasattr(self, "_prior_scalar")
 
-        # Clear cached factor so _fit_helper creates a fresh one.
-        # The sparsity pattern may change with new X, and a stale
-        # permutation can cause catastrophic fill-in (O(n^2) instead
-        # of O(nnz)).  Reuse is only safe inside the EB loop where X
-        # is fixed.
-        if "_precision_factor" in self.__dict__:
-            del self._precision_factor
-
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
         prior_decay = self.learning_rate**n_samples
 
@@ -637,7 +651,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         X_fit, y = check_X_y(
             X,  # type: ignore
             y,
-            copy=True,
+            copy=False,
             ensure_2d=True,
             dtype=np.float64,
             accept_sparse="csc" if self.sparse else False,
