@@ -581,6 +581,108 @@ class TestPriorScalar:
         assert (model.alpha, model.beta) != before
 
 
+@pytest.mark.parametrize("sparse", [True, False])
+class TestEBReporting:
+    """EB should expose the objective it maximizes, and say when it stops.
+
+    ``_eb_mackay_step_online`` used to discard the log evidence it had
+    already computed, so ``log_evidence_`` went stale after ``fit`` --
+    unlike the Dirichlet and Gamma estimators, which refresh theirs on
+    every ``partial_fit`` -- and a guardrail rejection left no trace at
+    all.
+    """
+
+    @staticmethod
+    def _data(seed=0):
+        rng = np.random.default_rng(seed)
+        X = rng.standard_normal((60, 5))
+        y = X @ rng.standard_normal(5) + 0.1 * rng.standard_normal(60)
+        return X, y
+
+    def test_log_evidence_is_refreshed_by_partial_fit(self, sparse):
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:30], y[:30])
+        after_fit = model.log_evidence_
+
+        model.partial_fit(X[30:], y[30:])
+        assert np.isfinite(model.log_evidence_)
+        assert model.log_evidence_ != after_fit
+
+    def test_log_evidence_matches_the_online_update(self, sparse):
+        """The recorded value is the one the MacKay step computed."""
+        from bayesianbandits._empirical_bayes import mackay_update_normal_online
+
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:30], y[:30])
+
+        captured = {}
+        real = mackay_update_normal_online
+
+        def spy(*args, **kwargs):
+            result = real(*args, **kwargs)
+            captured["log_evidence"] = result.log_evidence
+            return result
+
+        with mock.patch(
+            "bayesianbandits._eb_estimators.mackay_update_normal_online", spy
+        ):
+            model.partial_fit(X[30:], y[30:])
+
+        assert model.log_evidence_ == captured["log_evidence"]
+
+    def test_healthy_fit_rejects_nothing(self, sparse):
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X, y)
+        assert model.eb_updates_rejected_ == 0
+
+        model.partial_fit(X[:5], y[:5])
+        assert model.eb_updates_rejected_ == 0
+
+    def test_rejected_updates_are_counted_and_leave_hyperparameters_alone(self, sparse):
+        """A guardrail rejection is visible instead of silent."""
+        from bayesianbandits._empirical_bayes import MacKayUpdate
+
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:30], y[:30])
+        alpha, beta = model.alpha, model.beta
+        before = model.eb_updates_rejected_
+
+        rejection = MacKayUpdate(alpha, beta, -123.5, True)
+        with mock.patch(
+            "bayesianbandits._eb_estimators.mackay_update_normal_online",
+            return_value=rejection,
+        ):
+            model.partial_fit(X[30:40], y[30:40])
+            model.partial_fit(X[40:50], y[40:50])
+
+        assert model.eb_updates_rejected_ == before + 2
+        assert model.alpha == alpha
+        assert model.beta == beta
+        assert model.log_evidence_ == -123.5
+
+    def test_fit_resets_the_rejection_count(self, sparse):
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:30], y[:30])
+        model.eb_updates_rejected_ = 7
+        model.fit(X, y)
+        assert model.eb_updates_rejected_ == 0
+
+    def test_reporting_state_exists_without_an_explicit_fit(self, sparse):
+        """sample() then partial_fit skips fit(), so the state starts there."""
+        X, y = self._data()
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.sample(X[:1])  # initializes the prior without fitting
+        model.partial_fit(X, y)
+
+        assert model.eb_updates_rejected_ >= 0
+        assert np.isfinite(model.log_evidence_)
+
+
 # ---------------------------------------------------------------------------
 # EmpiricalBayesDirichletClassifier
 # ---------------------------------------------------------------------------

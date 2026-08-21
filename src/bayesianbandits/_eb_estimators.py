@@ -97,13 +97,22 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
     Attributes
     ----------
     log_evidence_ : float
-        Log marginal likelihood at convergence (after ``fit``), or
-        ``-inf`` if ``n_eb_iter=0``.
+        Log marginal likelihood at the most recent MacKay step --
+        the last iteration of ``fit``, then refreshed by every
+        ``partial_fit`` -- or ``-inf`` if ``n_eb_iter=0``. Under
+        forgetting this is the evidence of the *decayed* data.
     n_eb_iterations_ : int
         Number of EB iterations performed during the last ``fit``.
     eb_converged_ : bool
         Whether the EB loop converged within ``eb_tol`` during
         the last ``fit``.
+    eb_updates_rejected_ : int
+        Number of MacKay updates declined by the ill-conditioning
+        guardrail since the last ``fit``, counting both ``fit``'s own
+        iterations and every ``partial_fit`` since. A nonzero and
+        growing count means the hyperparameters are pinned and the
+        estimator is no longer maximizing the evidence -- see the
+        ``beta``/``alpha`` guardrail in :mod:`._empirical_bayes`.
 
     See Also
     --------
@@ -209,8 +218,14 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         self.trace_method = trace_method
 
     def _eb_mackay_step_online(self) -> None:
-        """MacKay step using accumulated sufficient statistics for beta."""
-        alpha_new, beta_new, _ = mackay_update_normal_online(
+        """MacKay step using accumulated sufficient statistics for beta.
+
+        Records the log evidence and whether the guardrail declined the
+        update, so a stalled EB loop is visible rather than silent --
+        the Dirichlet and Gamma estimators already keep their evidence
+        across ``partial_fit``.
+        """
+        update = mackay_update_normal_online(
             self.coef_,
             self.cov_inv_,
             self.alpha,
@@ -222,8 +237,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             factor=self._precision_factor,
             trace_method=self.trace_method,
         )
-        self.alpha = alpha_new
-        self.beta = beta_new
+        self.alpha = update.alpha
+        self.beta = update.beta
+        self.log_evidence_ = update.log_evidence
+        if update.rejected:
+            self.eb_updates_rejected_ += 1
 
     def _accumulate_stats(
         self,
@@ -285,6 +303,8 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
 
         prior_decay = self.learning_rate ** y.shape[0]
 
+        self.eb_updates_rejected_ = 0
+
         if self.n_eb_iter > 0:
             # Sufficient stats are constant during batch fitting (no decay)
             effective_n = float(y.shape[0])
@@ -305,7 +325,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                 # After a fresh fit: Λ = prior_decay·α·I + β·XᵀWX
                 self._prior_scalar = prior_decay * self.alpha
 
-                alpha_new, beta_new, log_ev = mackay_update_normal_online(
+                update = mackay_update_normal_online(
                     self.coef_,
                     self.cov_inv_,
                     self.alpha,
@@ -317,8 +337,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     factor=self._precision_factor,
                     trace_method=self.trace_method,
                 )
-                self.alpha = alpha_new
-                self.beta = beta_new
+                self.alpha = update.alpha
+                self.beta = update.beta
+                log_ev = update.log_evidence
+                if update.rejected:
+                    self.eb_updates_rejected_ += 1
                 iterations = i + 1
 
                 if abs(log_ev - prev_evidence) < self.eb_tol:
@@ -605,6 +628,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             #   cov_inv_ = prior_decay * alpha_old * I + beta_old * X^T X
             # so the prior contribution to the diagonal is prior_decay * alpha_old.
             self._prior_scalar = prior_decay * alpha_old
+            # fit() never ran on this path, so the EB reporting state that
+            # _eb_mackay_step_online maintains has to start here.
+            self.eb_updates_rejected_ = 0
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
 
         X_fit, y = check_X_y(
             X,  # type: ignore

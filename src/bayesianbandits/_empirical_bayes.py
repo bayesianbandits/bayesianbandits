@@ -11,7 +11,7 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import Union, cast
+from typing import NamedTuple, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,6 +24,23 @@ from ._sparse_bayesian_linear_regression import (
 )
 
 _LOG_2PI = math.log(2.0 * math.pi)
+
+
+class MacKayUpdate(NamedTuple):
+    """One MacKay hyperparameter update.
+
+    ``rejected`` marks an update the ill-conditioning guardrail declined:
+    ``alpha`` and ``beta`` come back unchanged, so the estimator did not
+    maximize the evidence on that step.  It is reported rather than
+    inferred from the returned values so callers can surface a stalled
+    EB loop instead of it failing silently.
+    """
+
+    alpha: float
+    beta: float
+    log_evidence: float
+    rejected: bool
+
 
 # Guardrails for MacKay hyperparameter updates.
 # In the underdetermined regime (p >> n), MacKay can drive α→0 and β→∞.
@@ -124,7 +141,7 @@ def mackay_update_normal_online(
     eff_XTy: NDArray[np.float64],
     factor: PrecisionFactor,
     trace_method: str = "auto",
-) -> tuple[float, float, float]:
+) -> MacKayUpdate:
     """MacKay update using accumulated sufficient statistics for beta.
 
     Uses decayed sufficient statistics (effective_n, yᵀy, Xᵀy) and
@@ -151,7 +168,9 @@ def mackay_update_normal_online(
 
     Returns
     -------
-    (alpha_new, beta_new, log_evidence)
+    MacKayUpdate
+        The new hyperparameters, the log evidence at the *current* ones,
+        and whether the guardrail rejected the update.
     """
     p = cast(tuple[int, int], precision.shape)[0]
     mu_norm_sq = float(mu_n @ mu_n)
@@ -197,7 +216,8 @@ def mackay_update_normal_online(
         beta_new = beta
 
     # Reject pathological updates.
-    if beta_new / alpha_new > _MAX_BETA_ALPHA_RATIO:
+    rejected = beta_new / alpha_new > _MAX_BETA_ALPHA_RATIO
+    if rejected:
         alpha_new = alpha
         beta_new = beta
 
@@ -209,7 +229,7 @@ def mackay_update_normal_online(
         - 0.5 * effective_n * _LOG_2PI
     )
 
-    return alpha_new, beta_new, log_ev
+    return MacKayUpdate(alpha_new, beta_new, log_ev, rejected)
 
 
 def _dirichlet_multinomial_log_evidence(
