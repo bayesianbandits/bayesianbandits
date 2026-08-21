@@ -18,6 +18,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import LinAlgError, cho_solve, solve_triangular  # type: ignore
 from scipy.linalg.blas import dtrsm  # type: ignore[attr-defined]
+from scipy.linalg.lapack import dlantr as _dlantr  # type: ignore[attr-defined]
 from scipy.linalg.lapack import dtrtri  # type: ignore[attr-defined]
 from scipy.sparse import (  # type: ignore  # type: ignore
     block_diag,
@@ -842,14 +843,15 @@ class DenseFactor(MemoryUsageMixin):
         ``dtrtri`` inverts the triangle at a third of the flops of
         solving against a dense identity, but writes only the upper
         triangle of its result, leaving whatever ``cho_factor`` left
-        below the diagonal, hence the ``triu``.  ``_U`` itself is not
-        overwritten.
+        below the diagonal.  The strict lower triangle is therefore
+        garbage; every consumer reads the upper one only.  ``_U``
+        itself is not overwritten.
 
         A singular ``U`` is reported through ``info`` rather than
-        raised, and leaves the triangle untouched -- so the ``triu``
-        below would return ``U`` itself, and :meth:`trace_inv` a
-        plausible number rather than an error.  Raise instead, matching
-        the ``solve_triangular`` this replaced.
+        raised, and leaves the triangle untouched -- so this
+        would return ``U`` itself, and :meth:`trace_inv` a plausible
+        number rather than an error.  Raise instead, matching the
+        ``solve_triangular`` this replaced.
         """
         U_inv, info = dtrtri(self._U, lower=0)
         if info > 0:
@@ -858,7 +860,7 @@ class DenseFactor(MemoryUsageMixin):
             )
         if info < 0:
             raise ValueError(f"dtrtri: illegal value in argument {-info}")
-        return cast(NDArray[np.float64], np.triu(U_inv))
+        return cast(NDArray[np.float64], U_inv)
 
     def solve(self, b: NDArray[np.floating[Any]]) -> NDArray[np.float64]:
         out = cho_solve((self._U, False), b, check_finite=False)
@@ -910,8 +912,15 @@ class DenseFactor(MemoryUsageMixin):
         )
 
     def trace_inv(self) -> float:
-        """tr((sΛ)⁻¹) = ||U⁻¹||²_F / s."""
-        return float(np.sum(self._U_inv**2)) / self._scale
+        """tr((sΛ)⁻¹) = ||U⁻¹||²_F / s.
+
+        ``dlantr`` reads the triangle in place, so the Frobenius norm
+        costs neither the ``triu`` copy nor the squared temporary that
+        ``sum(U_inv ** 2)`` allocates -- two p x p arrays that dominate
+        this call once the inverse itself is in cache.
+        """
+        norm = _dlantr("F", self._U_inv, uplo="U", diag="N")
+        return float(norm) ** 2 / self._scale
 
 
 PrecisionFactor = SparseFactor | DenseFactor

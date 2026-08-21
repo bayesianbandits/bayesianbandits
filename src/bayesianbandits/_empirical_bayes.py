@@ -160,8 +160,16 @@ def mackay_update_normal_online(
 
     # gamma is the effective number of well-determined parameters,
     # bounded by (0, min(effective_n, p)].
+    #
+    # gamma = tr(Lambda^-1 . beta X^T X) = p - prior_scalar . tr(Lambda^-1),
+    # where prior_scalar is the prior's actual contribution to Lambda's
+    # diagonal.  Under forgetting that is learning_rate^n . alpha rather
+    # than alpha itself, and using alpha here drives gamma negative
+    # whenever many features are unobserved: every unobserved column
+    # contributes exactly 1 / prior_scalar to the trace, so the sum
+    # overshoots p and the clip below pins gamma to _EPS.
     _EPS = 1e-8
-    gamma = float(np.clip(p - alpha * tr_inv, _EPS, min(effective_n, p)))
+    gamma = float(np.clip(p - prior_scalar * tr_inv, _EPS, min(effective_n, p)))
 
     # Alpha update.
     alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha

@@ -498,6 +498,89 @@ class TestSampleWeight:
         assert not np.allclose(model_uniform.coef_, model_weighted.coef_)
 
 
+@pytest.mark.parametrize("sparse", [True, False])
+class TestPriorScalar:
+    """``_prior_scalar`` is the prior's real contribution to Λ's diagonal.
+
+    Under forgetting ``_fit_helper`` scales the prior by
+    ``learning_rate ** n_samples``, so ``alpha`` itself overstates it.
+    MacKay's ``gamma = p - prior_scalar * tr(Λ⁻¹)`` is sensitive to
+    that: every unobserved feature contributes exactly
+    ``1 / prior_scalar`` to the trace, so overstating the scalar pushes
+    the sum past ``p`` and drives gamma negative.
+    """
+
+    def test_prior_scalar_matches_precision_diagonal(self, sparse):
+        """The tracked scalar equals the prior floor of Λ's diagonal."""
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((200, 8))
+        y = X @ rng.standard_normal(8) + 0.1 * rng.standard_normal(200)
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse
+        )
+        model.fit(X, y)
+
+        diagonal = model.cov_inv_.diagonal() if sparse else np.diag(model.cov_inv_)
+        assert model._prior_scalar <= np.min(diagonal) * (1 + 1e-9)
+        assert model._prior_scalar == pytest.approx(
+            model.learning_rate ** X.shape[0] * model.alpha
+        )
+
+    def test_gamma_stays_in_range_when_features_are_unobserved(self, sparse):
+        """Wide data with all-zero columns keeps gamma in (0, min(n, p)].
+
+        With ``alpha`` in place of ``prior_scalar`` the trace overshoots
+        ``p``, gamma goes negative, and the clip plus the beta/alpha
+        guardrail silently reject every update -- EB becomes a no-op
+        exactly where it matters most.
+        """
+        rng = np.random.default_rng(0)
+        n_samples, n_features = 30, 400
+        X = np.zeros((n_samples, n_features))
+        # Only the first 20 features are ever observed.
+        X[:, :20] = rng.standard_normal((n_samples, 20))
+        y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(n_samples)
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+        )
+        model.fit(X, y)
+
+        gamma = n_features - model._prior_scalar * model._precision_factor.trace_inv()
+        assert 0 < gamma <= min(n_samples, n_features)
+
+    def test_eb_is_not_a_noop_on_wide_data(self, sparse):
+        """Hyperparameters actually move when most features are unobserved."""
+        rng = np.random.default_rng(0)
+        X = np.zeros((30, 400))
+        X[:, :20] = rng.standard_normal((30, 20))
+        y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(30)
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+        )
+        model.fit(X, y)
+
+        assert model.alpha != 1.0 or model.beta != 1.0
+        assert np.isfinite(model.log_evidence_)
+
+    def test_partial_fit_updates_hyperparameters_on_wide_data(self, sparse):
+        """The online MacKay step is not a no-op either."""
+        rng = np.random.default_rng(0)
+        X = np.zeros((30, 400))
+        X[:, :20] = rng.standard_normal((30, 20))
+        y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(30)
+
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+        )
+        model.fit(X[:20], y[:20])
+        before = (model.alpha, model.beta)
+        model.partial_fit(X[20:], y[20:])
+        assert (model.alpha, model.beta) != before
+
+
 # ---------------------------------------------------------------------------
 # EmpiricalBayesDirichletClassifier
 # ---------------------------------------------------------------------------

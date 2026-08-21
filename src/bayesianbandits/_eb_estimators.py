@@ -35,6 +35,7 @@ from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
     create_sparse_factor,
+    scale_factor,
 )
 
 
@@ -282,6 +283,8 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             accept_sparse="csc" if self.sparse else False,
         )
 
+        prior_decay = self.learning_rate ** y.shape[0]
+
         if self.n_eb_iter > 0:
             # Sufficient stats are constant during batch fitting (no decay)
             effective_n = float(y.shape[0])
@@ -299,8 +302,8 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             for i in range(self.n_eb_iter):
                 self._initialize_prior(X_fit)
                 self._fit_helper(X_fit, y, sample_weight)
-                # After fresh fit: Λ = α·I + β·XᵀX
-                self._prior_scalar = self.alpha
+                # After a fresh fit: Λ = prior_decay·α·I + β·XᵀWX
+                self._prior_scalar = prior_decay * self.alpha
 
                 alpha_new, beta_new, log_ev = mackay_update_normal_online(
                     self.coef_,
@@ -337,8 +340,9 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             self.n_eb_iterations_ = 0
             self.eb_converged_ = False
 
-        # After fit, the precision matrix is consistent with self.alpha.
-        self._prior_scalar = self.alpha
+        # The prior's contribution to the diagonal is the decayed alpha,
+        # not alpha itself -- _fit_helper scales the prior by prior_decay.
+        self._prior_scalar = prior_decay * self.alpha
 
         # Initialize sufficient statistics from the fit data.
         self._effective_n = float(y.shape[0])
@@ -366,8 +370,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         After MacKay changes α and β, rescale both components so the
         matrix is consistent with the new hyperparameters.
 
-        After correction, eagerly refactorizes so the factor is ready
-        for ``sample()`` without an extra factorization.
+        A pure rescale (``diag_correction == 0``, i.e. α and β moved by
+        the same ratio) is absorbed by the cached factorization, the way
+        ``decay`` absorbs its own. A diagonal shift is a rank-p change
+        that no cheap factor update covers, so there the factor is
+        dropped and the next ``sample()`` pays for a fresh one.
         """
         alpha_new = self.alpha
         beta_new = self.beta
@@ -394,7 +401,12 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
 
         self._prior_scalar = new_prior_scalar
         if "_precision_factor" in self.__dict__:
-            del self._precision_factor
+            if diag_correction == 0.0:
+                self._precision_factor = scale_factor(
+                    self._precision_factor, beta_ratio
+                )
+            else:
+                del self._precision_factor
 
     def _reinject_prior(self, prior_reinjection: float) -> None:
         """Add stabilized prior re-injection to the precision diagonal.
