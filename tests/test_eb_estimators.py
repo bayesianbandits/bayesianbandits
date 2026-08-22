@@ -1673,3 +1673,102 @@ class TestFailedUpdateLeavesEstimatorIntact:
         # Only the upper triangle of the dense precision is meaningful.
         assert np.array_equal(np.triu(_dense(est.cov_inv_)), np.triu(prec_before))
         assert np.array_equal(est.coef_, coef_before)
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+class TestSufficientStatsCarryTheRowWeights:
+    """The precision is built from ``XᵀWX`` with ``W`` the effective row
+    weights, so the sufficient statistics that assemble the RSS against it
+    have to carry the same ``W``. Mixing an unweighted ``yᵀy`` and ``Xᵀy``
+    with a weighted ``XᵀX`` gives a residual sum that is not a residual sum
+    of anything, and can come out negative.
+    """
+
+    @staticmethod
+    def _rss_as_computed(model, X, y):
+        """Rebuild the RSS ``mackay_update_normal_online`` forms."""
+        P = model.cov_inv_.toarray() if model.sparse else np.asarray(model.cov_inv_)
+        P = np.triu(P) + np.triu(P, 1).T
+        p = P.shape[0]
+        XTX = (P - model._prior_scalar * np.eye(p)) / model.beta
+        m = model.coef_
+        return model._eff_yTy - 2.0 * (m @ model._eff_XTy) + m @ XTX @ m
+
+    @pytest.mark.parametrize("learning_rate", [1.0, 0.9, 0.7])
+    def test_rss_is_the_weighted_residual_sum(
+        self, regression_data, sparse, learning_rate
+    ):
+        X, y = regression_data
+        X, y = X[:12], y[:12]
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+        )
+        model.fit(sp.csc_array(X) if sparse else X, y)
+
+        weights = learning_rate ** np.arange(12)[::-1]
+        expected = float(np.sum(weights * (y - X @ model.coef_) ** 2))
+        assert self._rss_as_computed(model, X, y) == pytest.approx(expected, rel=1e-8)
+
+    @pytest.mark.parametrize("learning_rate", [0.95, 0.9])
+    def test_a_multi_row_batch_still_tunes_beta(
+        self, regression_data, sparse, learning_rate
+    ):
+        """A negative RSS falls through to ``beta_new = beta``, so beta never
+        moved off its initial value for a batch of more than one row under
+        forgetting."""
+        X, y = regression_data
+        Xf = sp.csc_array(X) if sparse else X
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+        )
+        model.fit(Xf[:10], y[:10])
+        for i in range(10, 40, 5):
+            model.partial_fit(Xf[i : i + 5], y[i : i + 5])
+
+        assert model.beta != 1.0
+
+        one_at_a_time = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+        )
+        one_at_a_time.fit(Xf[:10], y[:10])
+        for i in range(10, 40):
+            one_at_a_time.partial_fit(Xf[i : i + 1], y[i : i + 1])
+
+        # Not equal (the posterior mean each RSS is taken at differs), but the
+        # same order; before the fix the batch path sat at the initial 1.0.
+        assert 0.5 < model.beta / one_at_a_time.beta < 2.0
+
+    def test_sample_weight_two_matches_duplicating_the_rows(
+        self, regression_data, sparse
+    ):
+        """The sklearn invariant, and the sharpest form of the bug: at
+        ``learning_rate=1`` there is no decay, so any discrepancy is
+        ``sample_weight`` alone."""
+        X, y = regression_data
+        X, y = X[:12], y[:12]
+        Xd, yd = np.repeat(X, 2, axis=0), np.repeat(y, 2)
+
+        def run(X_, y_, step, **kw):
+            model = EmpiricalBayesNormalRegressor(
+                alpha=1.0, beta=1.0, sparse=sparse, learning_rate=1.0
+            )
+            Xf = sp.csc_array(X_) if sparse else X_
+            sw = kw.get("sample_weight")
+            model.fit(
+                Xf[:step], y_[:step], sample_weight=None if sw is None else sw[:step]
+            )
+            for i in range(step, len(y_), step):
+                model.partial_fit(
+                    Xf[i : i + step],
+                    y_[i : i + step],
+                    sample_weight=None if sw is None else sw[i : i + step],
+                )
+            return model
+
+        weighted = run(X, y, 4, sample_weight=np.full(12, 2.0))
+        duplicated = run(Xd, yd, 8)
+
+        assert weighted._effective_n == pytest.approx(duplicated._effective_n)
+        assert weighted.beta == pytest.approx(duplicated.beta, rel=1e-8)
+        assert weighted.alpha == pytest.approx(duplicated.alpha, rel=1e-8)
+        assert_allclose(weighted.coef_, duplicated.coef_, atol=1e-12)

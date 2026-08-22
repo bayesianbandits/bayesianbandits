@@ -99,6 +99,27 @@ def _factorization_stats(
     return factor.logdet(), factor.trace_inv()
 
 
+def batch_sufficient_stats(
+    X: Union[NDArray[np.float64], csc_array],
+    y: NDArray[np.float64],
+    weights: NDArray[np.float64],
+) -> tuple[float, float, NDArray[np.float64]]:
+    """One batch's contribution to ``(effective_n, yᵀWy, XᵀWy)``.
+
+    ``W`` is the same effective row weighting the precision carries
+    (sample weight times within-batch decay), so the RSS that
+    :func:`mackay_update_normal_online` assembles from these and from
+    ``XᵀWX`` recovered out of the precision is one consistent weighted
+    residual sum rather than a mixture of weighted and unweighted terms.
+    """
+    y_weighted = y * weights
+    if issparse(X):
+        XTy = np.asarray(X.T @ y_weighted, dtype=np.float64).ravel()
+    else:
+        XTy = np.asarray(X.T @ y_weighted, dtype=np.float64)
+    return float(weights.sum()), float(y @ y_weighted), XTy
+
+
 def accumulate_sufficient_stats(
     effective_n: float,
     eff_yTy: float,
@@ -106,13 +127,9 @@ def accumulate_sufficient_stats(
     X: Union[NDArray[np.float64], csc_array],
     y: NDArray[np.float64],
     prior_decay: float,
+    weights: NDArray[np.float64],
 ) -> tuple[float, float, NDArray[np.float64]]:
-    """Update decayed sufficient statistics with new observations.
-
-    Maintains running (decayed) totals of:
-    - effective_n: effective number of observations
-    - eff_yTy: yᵀy (scalar)
-    - eff_XTy: Xᵀy (vector)
+    """Decay the running sufficient statistics and add a new batch.
 
     Parameters
     ----------
@@ -120,20 +137,18 @@ def accumulate_sufficient_stats(
     X : design matrix for new observations
     y : response vector for new observations
     prior_decay : decay factor to apply before accumulating
+    weights : effective row weights for the new batch
 
     Returns
     -------
     (effective_n, eff_yTy, eff_XTy) : updated sufficient statistics
     """
-    effective_n = effective_n * prior_decay + y.shape[0]
-    eff_yTy = eff_yTy * prior_decay + float(y @ y)
-    if issparse(X):
-        eff_XTy = np.asarray(
-            eff_XTy * prior_decay + np.asarray(X.T @ y).ravel(), dtype=np.float64
-        )
-    else:
-        eff_XTy = np.asarray(eff_XTy * prior_decay + X.T @ y, dtype=np.float64)
-    return effective_n, eff_yTy, eff_XTy
+    batch_n, batch_yTy, batch_XTy = batch_sufficient_stats(X, y, weights)
+    return (
+        effective_n * prior_decay + batch_n,
+        eff_yTy * prior_decay + batch_yTy,
+        np.asarray(eff_XTy * prior_decay + batch_XTy, dtype=np.float64),
+    )
 
 
 def mackay_update_normal_online(
