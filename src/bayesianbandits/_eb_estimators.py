@@ -609,7 +609,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             prior = cast(csc_array, self.cov_inv_)
             if prior_decay != 1.0:
-                prior.data *= prior_decay  # in place; prior_eta below uses it too
+                # New data array, not in-place: leaves cov_inv_ untouched if the solve below fails.
+                prior = csc_array(
+                    (prior.data * prior_decay, prior.indices, prior.indptr),
+                    shape=prior.shape,
+                )
             prior_eta = (
                 prior @ self.coef_ if pending_eta is None else prior_decay * pending_eta
             )
@@ -622,14 +626,12 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         else:
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            # before the in-place update of cov_inv_ below
             if pending_eta is None:
                 eta = compute_eta_dense(
                     prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
                 )
             else:
-                # As compute_eta_dense, with its dsymv already done: dgemv
-                # accumulates the data term into the same buffer.
+                # As compute_eta_dense, but dgemv accumulates onto the already-done dsymv term.
                 eta = dgemv(
                     self.beta,
                     X,
@@ -639,7 +641,9 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     y=prior_decay * pending_eta,
                     overwrite_y=True,
                 )
-            prior_scaled = np.asfortranarray(self.cov_inv_)
+            # Copy, not a view: dsyrk below writes this buffer, so aliasing cov_inv_
+            # would corrupt it before cho_factor gets a chance to reject the update.
+            prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay
             if reinjection != 0.0:

@@ -1626,3 +1626,50 @@ class TestEBGammaRegressor:
             f"Newton did not converge: log(a)-psi(a)={np.log(result[0]) - float(digamma(result[0])):.10f}, "
             f"target={target:.10f}, residual={residual:.2e}"
         )
+
+
+class TestFailedUpdateLeavesEstimatorIntact:
+    """A ``partial_fit`` that raises must not have moved the posterior."""
+
+    @pytest.mark.parametrize("cls", [NormalRegressor, EmpiricalBayesNormalRegressor])
+    @pytest.mark.parametrize("sparse", [False, True])
+    def test_partial_fit_that_raises_changes_nothing(self, cls, sparse) -> None:
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((30, 4))
+        y = rng.standard_normal(30)
+        X_fit = sp.csc_array(X) if sparse else X
+
+        est = cls(alpha=1.0, beta=1.0, learning_rate=0.9, sparse=sparse)
+        est.partial_fit(X_fit[:15], y[:15])
+
+        def _dense(matrix):
+            return np.asarray(
+                matrix.todense() if sparse else matrix, dtype=np.float64
+            ).copy()
+
+        prec_before = _dense(est.cov_inv_)
+        coef_before = est.coef_.copy()
+
+        if sparse:
+            # Inherited, so patching it on the base covers both estimators.
+            failure = mock.patch.object(
+                NormalRegressor,
+                "_sparse_factor",
+                side_effect=np.linalg.LinAlgError("boom"),
+            )
+        else:
+            module = (
+                "bayesianbandits._eb_estimators"
+                if cls is EmpiricalBayesNormalRegressor
+                else "bayesianbandits._estimators"
+            )
+            failure = mock.patch(
+                f"{module}.cho_factor", side_effect=np.linalg.LinAlgError("boom")
+            )
+
+        with failure, pytest.raises(np.linalg.LinAlgError):
+            est.partial_fit(X_fit[15:], y[15:])
+
+        # Only the upper triangle of the dense precision is meaningful.
+        assert np.array_equal(np.triu(_dense(est.cov_inv_)), np.triu(prec_before))
+        assert np.array_equal(est.coef_, coef_before)

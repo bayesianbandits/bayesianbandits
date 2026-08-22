@@ -139,13 +139,34 @@ cdef inline void _scalar_column(
     z_diag[j] = inv_l_jj * inv_l_jj * (1.0 + dot)
 
 
+# Workspace for one supernode's dense block, in doubles, laid out flat and
+# Fortran-ordered: L_SS (S x S) | M (S x S) | L_RS (m x S) | W (m x S) |
+# Z_B (m x cols). Z_B is a column panel of the symmetric Z_RR, sized so no
+# term grows with m * m — that's what keeps the peak workspace bounded
+# regardless of fill-in.
+cdef inline Py_ssize_t _dense_work(
+    int S, int m, Py_ssize_t panel_bytes, int *panel_cols
+) noexcept nogil:
+    cdef Py_ssize_t cols = 0
+    if m > 0:
+        cols = panel_bytes // (<Py_ssize_t>sizeof(double) * <Py_ssize_t>m)
+        if cols < 1:
+            cols = 1
+        elif cols > m:
+            cols = m
+    panel_cols[0] = <int>cols
+    return (2 * (<Py_ssize_t>S) * S + 2 * (<Py_ssize_t>m) * S
+            + cols * (<Py_ssize_t>m))
+
+
 def takahashi_diagonal(
     const double[::1] data,
     const int[::1] indices,
     const int[::1] indptr,
     int p,
-    int min_dense_work=16384,
     int min_dense_cols=4,
+    int max_dense_cols=1024,
+    Py_ssize_t panel_bytes=8388608,
 ):
     """Compute diag((LL')⁻¹) from CSC arrays of a lower-triangular L.
 
@@ -155,22 +176,30 @@ def takahashi_diagonal(
     indices : int32 array — CSC row indices
     indptr : int32 array — CSC column pointers
     p : int — matrix dimension
-    min_dense_work, min_dense_cols : int — a supernode of ``S`` columns
-        over ``m`` rows takes the dense BLAS path when ``S >= min_dense_cols``
-        and ``S * (S + m) >= min_dense_work``; smaller ones run the scalar
-        recursion per column.
+    min_dense_cols : int — supernodes with at least this many columns take
+        the dense BLAS path; narrower ones run the scalar recursion.
+        Internal: exposed for tests, not a tuning knob.
+    max_dense_cols : int — widest block column handed to the dense kernel;
+        wider supernodes are split. Bounds the ``S x S`` buffers at
+        ``2 * max_dense_cols ** 2`` (~17 MB at the default) regardless of
+        fill-in. Internal.
+    panel_bytes : int — cache-blocking size for the ``Z_RR`` column panel,
+        in bytes. Internal.
 
     Returns
     -------
     ndarray of float64, length p
     """
+    if p == 0:
+        return np.zeros(0, dtype=np.float64)
+
     cdef int nnz = data.shape[0]
     cdef double[::1] z_data = np.zeros(nnz, dtype=np.float64)
     cdef double[::1] z_diag = np.zeros(p, dtype=np.float64)
     cdef double[::1] z_work = np.zeros(p, dtype=np.float64)
 
     cdef int j, a, b, k, col_len, n_sub, col_start, max_sub
-    cdef double l_jj, z_ab
+    cdef double l_jj
 
     # First pass: handle trivial columns, find max_sub for z_col buffer.
     max_sub = 0
@@ -184,110 +213,153 @@ def takahashi_diagonal(
             if n_sub > max_sub:
                 max_sub = n_sub
 
-    cdef double[::1] z_col = np.zeros(max_sub, dtype=np.float64)
+    cdef double[::1] z_col = np.zeros(max(max_sub, 1), dtype=np.float64)
 
     # Supernode partition.
     cdef int[::1] starts = np.empty(p + 1, dtype=np.int32)
     cdef int n_super = _supernode_starts(indices, indptr, p, starts)
 
-    # Dense workspace, Fortran order, sized by the largest supernode.
-    cdef int s, f, l, S, m, max_S = 1, max_m = 0
+    # Split wide supernodes into balanced block columns, each itself a valid
+    # supernode of the columns to its right, so this bounds the S x S
+    # buffers without changing the algorithm.
+    cdef int s, f, l, S, m, cols = 0
+    cdef int[::1] blocks = np.empty(p + 1, dtype=np.int32)
+    cdef int n_blocks = 0, pieces, width
     for s in range(n_super):
         f = starts[s]
-        S = starts[s + 1] - f
-        m = indptr[f + 1] - indptr[f] - S
-        if S > max_S:
-            max_S = S
-        if m > max_m:
-            max_m = m
-    cdef double[::1, :] LSS = np.zeros((max_S, max_S), dtype=np.float64, order="F")
-    cdef double[::1, :] Linv = np.zeros((max_S, max_S), dtype=np.float64, order="F")
-    cdef double[::1, :] M = np.zeros((max_S, max_S), dtype=np.float64, order="F")
-    cdef double[::1, :] LRS = np.zeros((max(max_m, 1), max_S), dtype=np.float64, order="F")
-    cdef double[::1, :] W = np.zeros((max(max_m, 1), max_S), dtype=np.float64, order="F")
-    cdef double[::1, :] ZRR = np.zeros((max(max_m, 1), max(max_m, 1)), dtype=np.float64, order="F")
+        l = starts[s + 1]
+        S = l - f
+        if S <= max_dense_cols:
+            blocks[n_blocks] = f
+            n_blocks += 1
+            continue
+        pieces = (S + max_dense_cols - 1) // max_dense_cols
+        width = (S + pieces - 1) // pieces
+        j = f
+        while j < l:
+            blocks[n_blocks] = j
+            n_blocks += 1
+            j += width
+    blocks[n_blocks] = p
 
-    cdef int c0, c1, r, r0, r1, i, info
-    cdef int lda = max(max_m, 1)
-    cdef double one = 1.0, zero = 0.0, minus_one = -1.0
+    # One flat workspace sized to the largest single dense block (LAPACK
+    # ``lwork`` style), not a cross product of maxima over unrelated blocks.
+    cdef Py_ssize_t need, lwork = 0
+    for s in range(n_blocks):
+        f = blocks[s]
+        S = blocks[s + 1] - f
+        if S < min_dense_cols:
+            continue
+        m = indptr[f + 1] - indptr[f] - S
+        need = _dense_work(S, m, panel_bytes, &cols)
+        if need > lwork:
+            lwork = need
+    cdef double[::1] work = np.zeros(max(lwork, 1), dtype=np.float64)
+    cdef double *wbuf = &work[0]
+    cdef double *LSS
+    cdef double *M
+    cdef double *LRS
+    cdef double *W
+    cdef double *ZB
+
+    cdef int c0, r, r0, r1, i, info, q0, q1, nb
+    cdef double one = 1.0, minus_one = -1.0, zd, tmp
     cdef char *side_r = "R"
     cdef char *uplo_l = "L"
     cdef char *trans_n = "N"
     cdef char *trans_t = "T"
     cdef char *diag_n = "N"
 
-    # Backward pass over supernodes.
-    for s in range(n_super - 1, -1, -1):
-        f = starts[s]
-        l = starts[s + 1]
+    # Backward pass over block columns.
+    for s in range(n_blocks - 1, -1, -1):
+        f = blocks[s]
+        l = blocks[s + 1]
         S = l - f
         c0 = indptr[f]
-        c1 = indptr[f + 1]
-        m = c1 - c0 - S
+        m = indptr[f + 1] - c0 - S
 
-        if S < min_dense_cols or S * (S + m) < min_dense_work:
+        if S < min_dense_cols:
             for j in range(l - 1, f - 1, -1):  # column j reads Z's column j + 1
                 _scalar_column(j, data, indices, indptr, z_data, z_diag, z_work, z_col)
             continue
 
+        _dense_work(S, m, panel_bytes, &cols)
+        LSS = wbuf
+        M = LSS + (<Py_ssize_t>S) * S
+        LRS = M + (<Py_ssize_t>S) * S
+        W = LRS + (<Py_ssize_t>m) * S
+        ZB = W + (<Py_ssize_t>m) * S
+
         # Column f + k of L holds rows f+k .. l-1 (the lower triangle of
         # L_SS) followed by the m rows R below.
         for k in range(S):
-            j = f + k
-            col_start = indptr[j]
+            col_start = indptr[f + k]
             for i in range(k):
-                LSS[i, k] = 0.0
+                LSS[i + k * S] = 0.0
             for i in range(S - k):
-                LSS[k + i, k] = data[col_start + i]
+                LSS[k + i + k * S] = data[col_start + i]
             for i in range(m):
-                LRS[i, k] = data[col_start + S - k + i]
-
-        # Z_RR: every entry is in L's pattern and already computed.
-        for a in range(m):
-            r = indices[c0 + S + a]
-            ZRR[a, a] = z_diag[r]
-            r0 = indptr[r] + 1
-            r1 = indptr[r + 1]
-            for k in range(r0, r1):
-                z_work[indices[k]] = z_data[k]
-            for b in range(a + 1, m):
-                z_ab = z_work[indices[c0 + S + b]]
-                ZRR[b, a] = z_ab
-                ZRR[a, b] = z_ab
-            for k in range(r0, r1):
-                z_work[indices[k]] = 0.0
+                LRS[i + k * m] = data[col_start + S - k + i]
 
         if m > 0:
-            # W = Z_RR L_RS                                   (m x S)
-            dgemm(trans_n, trans_n, &m, &S, &m, &one, &ZRR[0, 0], &lda,
-                  &LRS[0, 0], &lda, &zero, &W[0, 0], &lda)
+            # W = Z_RR L_RS without forming Z_RR: split it into D + Z + Z'
+            # (Z strictly lower) and walk Z one column panel at a time.
+            for a in range(m):
+                zd = z_diag[indices[c0 + S + a]]
+                for k in range(S):
+                    W[a + k * m] = zd * LRS[a + k * m]
+            q0 = 0
+            while q0 < m:
+                q1 = q0 + cols
+                if q1 > m:
+                    q1 = m
+                nb = q1 - q0
+                for b in range(q0, q1):
+                    r = indices[c0 + S + b]
+                    r0 = indptr[r] + 1
+                    r1 = indptr[r + 1]
+                    for k in range(r0, r1):
+                        z_work[indices[k]] = z_data[k]
+                    for a in range(b + 1):
+                        ZB[a + (b - q0) * m] = 0.0
+                    for a in range(b + 1, m):
+                        ZB[a + (b - q0) * m] = z_work[indices[c0 + S + a]]
+                    for k in range(r0, r1):
+                        z_work[indices[k]] = 0.0
+                # W += Z_B L_RS[B, :]
+                dgemm(trans_n, trans_n, &m, &S, &nb, &one, ZB, &m,
+                      LRS + q0, &m, &one, W, &m)
+                # W += (Z_B)' L_RS, landing on rows B of W
+                dgemm(trans_t, trans_n, &nb, &S, &m, &one, ZB, &m,
+                      LRS, &m, &one, W + q0, &m)
+                q0 = q1
             # Z_RS = -W L_SS^{-1}                              (in place in W)
             dtrsm(side_r, uplo_l, trans_n, diag_n, &m, &S, &minus_one,
-                  &LSS[0, 0], &max_S, &W[0, 0], &lda)
+                  LSS, &S, W, &m)
 
-        # M = L_SS^{-T} - Z_RS^T L_RS                         (S x S)
-        for k in range(S):
-            for i in range(S):
-                Linv[i, k] = LSS[i, k]
-        dtrtri(uplo_l, diag_n, &S, &Linv[0, 0], &max_S, &info)
-        for k in range(S):
-            for i in range(S):
-                M[i, k] = Linv[k, i]
+        # M = L_SS^{-T} - Z_RS' L_RS                          (S x S)
+        for i in range((<Py_ssize_t>S) * S):
+            M[i] = LSS[i]
+        dtrtri(uplo_l, diag_n, &S, M, &S, &info)
+        for k in range(S):  # transpose in place; dtrtri left the zeros above
+            for i in range(k + 1, S):
+                tmp = M[i + k * S]
+                M[i + k * S] = M[k + i * S]
+                M[k + i * S] = tmp
         if m > 0:
-            dgemm(trans_t, trans_n, &S, &S, &m, &minus_one, &W[0, 0], &lda,
-                  &LRS[0, 0], &lda, &one, &M[0, 0], &max_S)
+            dgemm(trans_t, trans_n, &S, &S, &m, &minus_one, W, &m,
+                  LRS, &m, &one, M, &S)
         # Z_SS = M L_SS^{-1}
         dtrsm(side_r, uplo_l, trans_n, diag_n, &S, &S, &one,
-              &LSS[0, 0], &max_S, &M[0, 0], &max_S)
+              LSS, &S, M, &S)
 
         # Store Z's columns in L's pattern.
         for k in range(S):
-            j = f + k
-            col_start = indptr[j]
-            z_diag[j] = M[k, k]
+            col_start = indptr[f + k]
+            z_diag[f + k] = M[k + k * S]
             for i in range(1, S - k):
-                z_data[col_start + i] = M[k + i, k]
+                z_data[col_start + i] = M[k + i + k * S]
             for i in range(m):
-                z_data[col_start + S - k + i] = W[i, k]
+                z_data[col_start + S - k + i] = W[i + k * m]
 
     return np.asarray(z_diag)

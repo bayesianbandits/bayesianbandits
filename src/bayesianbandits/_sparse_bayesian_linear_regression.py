@@ -79,10 +79,10 @@ def takahashi_diagonal(L_csc: csc_array) -> NDArray[np.float64]:
     diagonal of ``A⁻¹`` exactly by backward recursion through ``L``'s
     sparsity structure. Cost is ``O(Σⱼ nⱼ²)`` in the sub-diagonal counts
     ``nⱼ``, the same order as the Cholesky that produced ``L``; columns
-    sharing a sub-diagonal structure (a supernode) go through BLAS as
-    one dense block, above a threshold chosen to pay even with an
-    oversubscribed BLAS thread pool (callers that pin BLAS to one
-    thread can lower ``min_dense_work``).
+    sharing a sub-diagonal structure (a supernode) go through BLAS as one
+    dense block. Wide supernodes are split into block columns and their
+    dense ``Z_RR`` is formed one column panel at a time, so workspace stays
+    bounded regardless of fill-in.
 
     Delegates to a Cython implementation. Lives beside the factors
     because it reads a Cholesky factor and nothing else; consumers want
