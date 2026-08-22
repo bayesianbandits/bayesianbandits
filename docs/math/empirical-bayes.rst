@@ -26,19 +26,23 @@ In addition to the symbols defined in :doc:`normal`:
    * - :math:`s_t`
      - Cumulative (decayed) prior contribution to the precision
        diagonal (stored as ``_prior_scalar``)
+   * - :math:`\mathbf{W}`
+     - Diagonal of effective row weights for a batch: ``sample_weight``
+       times within-batch decay, :math:`w_i = \text{sw}_i\,\gamma^{n-1-i}`.
+       The same :math:`\mathbf{W}` the precision update uses.
    * - :math:`N_{\text{eff}}`
-     - Decayed effective sample size (stored as ``_effective_n``)
-   * - :math:`\mathbf{y}^\top\!\mathbf{y}_{\text{eff}}`
-     - Decayed sum of squared targets (stored as ``_eff_yTy``)
-   * - :math:`\mathbf{X}^\top\!\mathbf{y}_{\text{eff}}`
-     - Decayed cross-product vector (stored as ``_eff_XTy``)
+     - Decayed, weighted effective sample size (stored as ``_effective_n``)
+   * - :math:`\mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}`
+     - Decayed, weighted sum of squared targets (stored as ``_eff_yTy``)
+   * - :math:`\mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}`
+     - Decayed, weighted cross-product vector (stored as ``_eff_XTy``)
 
 
 MacKay's evidence maximization
 -------------------------------
 
 Given the posterior precision
-:math:`\boldsymbol{\Lambda} = s_t \mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{X}_{\text{eff}}`
+:math:`\boldsymbol{\Lambda} = s_t \mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}`
 and the posterior mean :math:`\boldsymbol{\mu}_n`, MacKay's update
 rules [1]_ adjust :math:`\alpha` and :math:`\beta` to maximize the
 log marginal likelihood (evidence).
@@ -95,30 +99,44 @@ squares, which requires :math:`N`, :math:`\mathbf{y}^\top\mathbf{y}`,
 of these directly. Online, you need to maintain them as running totals
 under decay.
 
+Every row of a batch enters the precision through the effective weight
+matrix :math:`\mathbf{W} = \operatorname{diag}(w_i)`, with
+:math:`w_i = \text{sw}_i\,\gamma^{n-1-i}` (the user's ``sample_weight``
+times within-batch decay, so the oldest row of the batch is decayed the
+most). The statistics must carry the same :math:`\mathbf{W}`: the
+residual sum below is only a residual sum if all four of its terms are
+weighted alike. Mixing an unweighted :math:`\mathbf{y}^\top\mathbf{y}`
+with a weighted :math:`\mathbf{X}^\top\mathbf{W}\mathbf{X}` yields a
+quantity that can come out negative.
+
 Three of the four are scalar or vector quantities that accumulate
 naturally:
 
 .. math::
 
-   N_{\text{eff}} &\leftarrow \gamma^n\, N_{\text{eff}} + n_{\text{new}} \\
-   \mathbf{y}^\top\!\mathbf{y}_{\text{eff}}
-   &\leftarrow \gamma^n\, \mathbf{y}^\top\!\mathbf{y}_{\text{eff}}
-   + \mathbf{y}_{\text{new}}^\top \mathbf{y}_{\text{new}} \\
-   \mathbf{X}^\top\!\mathbf{y}_{\text{eff}}
-   &\leftarrow \gamma^n\, \mathbf{X}^\top\!\mathbf{y}_{\text{eff}}
-   + \mathbf{X}_{\text{new}}^\top \mathbf{y}_{\text{new}}
+   N_{\text{eff}} &\leftarrow \gamma^n\, N_{\text{eff}}
+   + \operatorname{tr}(\mathbf{W}) \\
+   \mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   &\leftarrow \gamma^n\, \mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   + \mathbf{y}_{\text{new}}^\top \mathbf{W} \mathbf{y}_{\text{new}} \\
+   \mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   &\leftarrow \gamma^n\, \mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   + \mathbf{X}_{\text{new}}^\top \mathbf{W} \mathbf{y}_{\text{new}}
 
-The fourth, :math:`\mathbf{X}^\top\!\mathbf{X}_{\text{eff}}`, is a
+With unit ``sample_weight`` and one row per update, :math:`\mathbf{W}`
+is the identity and these reduce to the plain decayed totals.
+
+The fourth, :math:`\mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}`, is a
 :math:`p \times p` matrix that would be expensive to store separately.
 Instead, it is recovered from the precision matrix:
 
 .. math::
 
-   \mathbf{X}^\top\!\mathbf{X}_{\text{eff}}
+   \mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}
    = \frac{\boldsymbol{\Lambda} - s_t\,\mathbf{I}}{\beta}
 
 This works because
-:math:`\boldsymbol{\Lambda} = s_t\,\mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{X}_{\text{eff}}`
+:math:`\boldsymbol{\Lambda} = s_t\,\mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}`
 by construction, and the tracked prior scalar :math:`s_t` separates
 the prior and data contributions exactly, even after multiple rounds
 of decay.
@@ -129,9 +147,9 @@ are:
 .. math::
 
    \text{RSS}
-   = \mathbf{y}^\top\!\mathbf{y}_{\text{eff}}
-   - 2\,\boldsymbol{\mu}_n^\top \mathbf{X}^\top\!\mathbf{y}_{\text{eff}}
-   + \boldsymbol{\mu}_n^\top \mathbf{X}^\top\!\mathbf{X}_{\text{eff}}\,
+   = \mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   - 2\,\boldsymbol{\mu}_n^\top \mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   + \boldsymbol{\mu}_n^\top \mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}\,
      \boldsymbol{\mu}_n
 
 .. math::
@@ -205,7 +223,7 @@ The precision decomposes as:
 .. math::
 
    \boldsymbol{\Lambda}
-   = s_t\,\mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{X}_{\text{eff}}
+   = s_t\,\mathbf{I} + \beta\,\mathbf{X}^\top\!\mathbf{W}\mathbf{X}_{\text{eff}}
 
 The correction rescales each component independently:
 
@@ -260,10 +278,10 @@ During ``decay``, the sufficient statistics are also decayed:
 .. math::
 
    N_{\text{eff}} &\leftarrow \gamma^n\, N_{\text{eff}} \\
-   \mathbf{y}^\top\!\mathbf{y}_{\text{eff}}
-   &\leftarrow \gamma^n\, \mathbf{y}^\top\!\mathbf{y}_{\text{eff}} \\
-   \mathbf{X}^\top\!\mathbf{y}_{\text{eff}}
-   &\leftarrow \gamma^n\, \mathbf{X}^\top\!\mathbf{y}_{\text{eff}}
+   \mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   &\leftarrow \gamma^n\, \mathbf{y}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}} \\
+   \mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
+   &\leftarrow \gamma^n\, \mathbf{X}^\top\!\mathbf{W}\mathbf{y}_{\text{eff}}
 
 
 Hyperparameter semantics
