@@ -589,3 +589,63 @@ class TestEBGLMGuardrail:
         model.eb_updates_rejected_ = 4
         model.fit(X, y)
         assert model.eb_updates_rejected_ == 0
+
+
+class TestFailedPartialFitLeavesEBStateIntact:
+    """A ``partial_fit`` that raises must not have moved the EB bookkeeping."""
+
+    @staticmethod
+    def _fitted(sparse):
+        X, y = _simulate("log", n=40, p=4)
+        model = EmpiricalBayesGLM(link="log", learning_rate=0.9, sparse=sparse)
+        return model.fit(_X(X, sparse), y), X, y
+
+    @pytest.mark.parametrize("sparse", [False, True])
+    def test_prior_scalar_and_floor_survive_a_raising_update(self, sparse):
+        model, X, y = self._fitted(sparse)
+        before = (model._prior_scalar, model._pending_floor, model.alpha)
+
+        with mock.patch.object(
+            model.approximator_,
+            "update_posterior",
+            side_effect=np.linalg.LinAlgError("injected"),
+        ):
+            with pytest.raises(np.linalg.LinAlgError):
+                model.partial_fit(_X(X[:5], sparse), y[:5])
+
+        assert (model._prior_scalar, model._pending_floor, model.alpha) == before
+
+    @pytest.mark.parametrize("sparse", [False, True])
+    def test_a_failed_update_does_not_change_the_next_one(self, sparse):
+        clean, X, y = self._fitted(sparse)
+        poisoned, _, _ = self._fitted(sparse)
+
+        with mock.patch.object(
+            poisoned.approximator_,
+            "update_posterior",
+            side_effect=np.linalg.LinAlgError("injected"),
+        ):
+            with pytest.raises(np.linalg.LinAlgError):
+                poisoned.partial_fit(_X(X[:5], sparse), y[:5])
+
+        clean.partial_fit(_X(X[:5], sparse), y[:5])
+        poisoned.partial_fit(_X(X[:5], sparse), y[:5])
+
+        assert poisoned.alpha == clean.alpha
+        assert poisoned._prior_scalar == clean._prior_scalar
+        np.testing.assert_array_equal(poisoned.coef_, clean.coef_)
+        np.testing.assert_allclose(_dense_prec(poisoned), _dense_prec(clean))
+
+    def test_a_first_ever_partial_fit_that_raises_leaves_no_prior_scalar(self):
+        X, y = _simulate("log", n=40, p=4)
+        model = EmpiricalBayesGLM(link="log", learning_rate=0.9)
+
+        with mock.patch.object(
+            EmpiricalBayesGLM,
+            "fit",
+            side_effect=np.linalg.LinAlgError("injected"),
+        ):
+            with pytest.raises(np.linalg.LinAlgError):
+                model.partial_fit(X[:5], y[:5])
+
+        assert not hasattr(model, "_prior_scalar")

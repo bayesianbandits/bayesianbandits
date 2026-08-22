@@ -66,6 +66,15 @@ class _StabilizedPriorMixin:
         if self.sparse:
             self._factor_hint = factor
 
+    def _restore_prior_scalar(self, prior_scalar_old: Optional[float]) -> None:
+        """Put ``_prior_scalar`` back where a failed update found it, and
+        remove it entirely if the update was the one that would have
+        created it."""
+        if prior_scalar_old is None:
+            self.__dict__.pop("_prior_scalar", None)
+        else:
+            self.__dict__["_prior_scalar"] = prior_scalar_old
+
     def _reinject_prior(self, prior_reinjection: float) -> None:
         """Add stabilized prior re-injection to the precision diagonal.
 
@@ -722,6 +731,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         decay : Increase uncertainty without observing new data.
         """
         had_prior_scalar = hasattr(self, "_prior_scalar")
+        prior_scalar_old = self.__dict__.get("_prior_scalar")
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
         prior_decay = self.learning_rate**n_samples
@@ -753,6 +763,11 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
 
         try:
             result = super().partial_fit(X, y, sample_weight)
+        except Exception:
+            # cov_inv_ never moved, so an advanced _prior_scalar would name a
+            # prior contribution the precision does not have.
+            self._restore_prior_scalar(prior_scalar_old)
+            raise
         finally:
             self._pending_reinjection = 0.0
             if self._pending_prior_eta is not None:
@@ -1360,6 +1375,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         decay : Increase uncertainty without observing new data.
         """
         had_prior_scalar = hasattr(self, "_prior_scalar")
+        prior_scalar_old = self.__dict__.get("_prior_scalar")
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
         prior_decay = self.learning_rate**n_samples
@@ -1372,9 +1388,16 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
         alpha_old = self.alpha
 
-        result = super().partial_fit(X, y, sample_weight)
-
-        self._pending_floor = 0.0
+        try:
+            result = super().partial_fit(X, y, sample_weight)
+        except Exception:
+            # cov_inv_ never moved, so an advanced _prior_scalar would name a
+            # prior contribution the precision does not have.
+            self._restore_prior_scalar(prior_scalar_old)
+            raise
+        finally:
+            # A floor left standing would be re-applied to every later update.
+            self._pending_floor = 0.0
 
         if not had_prior_scalar:
             if hasattr(self, "_prior_scalar"):
