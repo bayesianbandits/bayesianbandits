@@ -1,6 +1,7 @@
 """Tests for EmpiricalBayesGLM."""
 
 import pickle
+from copy import deepcopy
 from typing import cast
 from unittest import mock
 
@@ -280,6 +281,54 @@ class TestEBGLM:
         np.testing.assert_allclose(
             model._prior_scalar, g * s_logical + (1 - g) * model.alpha
         )
+
+    def test_decay_moves_the_mean_with_the_pending_shift(self, link, sparse):
+        """A booked shift is only exact if the mode moves with it. The
+        quadratic model puts it at ``Λ_new⁻¹·Λ_old·θ_old``; landing the
+        shift on the diagonal alone would leave a mean that still belongs
+        to the old alpha, and keep leaving it as the shifts compound."""
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, learning_rate=1.0, sparse=sparse).fit(
+            _X(X, sparse), y
+        )
+        alpha_old = model.alpha
+        model.alpha = 0.5 * alpha_old
+        model._correct_precision(alpha_old)
+        shift = model._pending_shift
+        prec_old = _dense_prec(model)
+        coef_old = model.coef_.copy()
+        expected = np.linalg.solve(
+            prec_old + shift * np.eye(X.shape[1]), prec_old @ coef_old
+        )
+
+        model.decay(_X(X[:2], sparse), decay_rate=1.0)
+
+        assert not np.allclose(expected, coef_old)  # the shift really moves it
+        np.testing.assert_allclose(model.coef_, expected, atol=1e-10)
+
+    def test_pending_shift_lands_the_same_through_decay_or_partial_fit(
+        self, link, sparse
+    ):
+        """The deferral has two consumers and they have to agree: updating
+        after a decay that landed the shift must match letting the next
+        ``partial_fit`` fold it into its own solve."""
+        X, y = _simulate(link, n=300)
+        model = EmpiricalBayesGLM(
+            link=link, learning_rate=1.0, n_eb_iter=1, sparse=sparse
+        )
+        model.partial_fit(_X(X[:100], sparse), y[:100])
+        model.partial_fit(_X(X[100:200], sparse), y[100:200])
+        assert model._pending_shift != 0.0
+
+        through_decay, through_fit = deepcopy(model), deepcopy(model)
+        through_decay.decay(_X(X[:1], sparse), decay_rate=1.0)
+        through_decay.partial_fit(_X(X[200:], sparse), y[200:])
+        through_fit.partial_fit(_X(X[200:], sparse), y[200:])
+
+        np.testing.assert_allclose(through_decay.coef_, through_fit.coef_, atol=1e-10)
+        # Loose only against the secant finder's own stopping point; landing
+        # the shift without the re-solve moves alpha by percents, not ulps.
+        np.testing.assert_allclose(through_decay.alpha, through_fit.alpha, rtol=1e-6)
 
     def test_correct_precision_noop(self, link, sparse):
         X, y = _simulate(link)

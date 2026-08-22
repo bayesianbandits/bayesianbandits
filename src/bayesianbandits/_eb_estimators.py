@@ -1226,14 +1226,19 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         return self
 
     @_invalidate_cached_properties
-    def _apply_alpha_now(self, alpha_old: float) -> None:
-        """Move the Laplace posterior to the current alpha immediately:
-        the inner EB iterations of ``partial_fit`` need the trace and
-        the mode under the new prior to take the next step. Same
-        quadratic model as :meth:`_correct_precision`; this pays the
-        factorization now instead of deferring it."""
-        ratio = self.alpha / alpha_old
-        shift = (ratio - 1.0) * self._prior_scalar
+    def _shift_and_resolve(self, shift: float) -> None:
+        """``Λ += shift·I``, carrying the mean with it.
+
+        Around the mode the quadratic model holds information
+        ``Λ_old·θ_old``, so the mode under the shifted precision is
+        ``Λ_new⁻¹·Λ_old·θ_old``. Shifting the diagonal and leaving
+        ``coef_`` alone would keep the precision right and the mean
+        wrong. Costs the factorization the shift invalidates, which is
+        why :meth:`_correct_precision` defers to callers that are
+        factorizing anyway.
+        """
+        if shift == 0.0:
+            return
         if self.sparse:
             cov_inv = cast(csc_array, self.cov_inv_)
             data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)
@@ -1242,10 +1247,31 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         else:
             data_eta = dsymv(1.0, self.cov_inv_, self.coef_)
             self.cov_inv_[np.diag_indices_from(self.cov_inv_)] += shift
-        self._prior_scalar *= ratio
         if "_precision_factor" in self.__dict__:
             self._drop_factor()
         self.coef_ = self._precision_factor.solve(data_eta)
+
+    def _flush_pending_shift(self) -> None:
+        """Land a shift booked by :meth:`_correct_precision`, mean and all.
+
+        ``_prior_scalar`` already counts the shift, so only the stored
+        precision and the mode move here.
+        """
+        shift = getattr(self, "_pending_shift", 0.0)
+        if shift == 0.0:
+            return
+        self._pending_shift = 0.0
+        self._shift_and_resolve(shift)
+
+    def _apply_alpha_now(self, alpha_old: float) -> None:
+        """Move the Laplace posterior to the current alpha immediately:
+        the inner EB iterations of ``partial_fit`` need the trace and
+        the mode under the new prior to take the next step. Same
+        quadratic model as :meth:`_correct_precision`; this pays the
+        factorization now instead of deferring it."""
+        ratio = self.alpha / alpha_old
+        self._shift_and_resolve((ratio - 1.0) * self._prior_scalar)
+        self._prior_scalar *= ratio
 
     def _eb_online_loop(self) -> float:
         """MacKay steps on the Laplace approximation in hand until alpha
@@ -1418,15 +1444,17 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
         prior_reinjection = 0.0
         if hasattr(self, "_prior_scalar"):
+            # Land any deferred alpha correction first, mean included.
+            # ``partial_fit`` folds that shift into its own solve for
+            # free; decay has no solve of its own, and adding the shift
+            # to the diagonal without one would decay a mean that still
+            # belongs to the old alpha. The shift has to land before the
+            # decay scales it, not alongside it.
+            self._flush_pending_shift()
             self._prior_scalar = (
                 prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
             )
-            # The pending alpha correction is part of the prior, so it
-            # decays with it; the diagonal is being shifted anyway.
-            prior_reinjection = (
-                1 - prior_decay
-            ) * self.alpha + prior_decay * self._pending_shift
-            self._pending_shift = 0.0
+            prior_reinjection = (1 - prior_decay) * self.alpha
         if hasattr(self, "_effective_n"):
             self._effective_n *= prior_decay
             self._eff_loglik *= prior_decay
