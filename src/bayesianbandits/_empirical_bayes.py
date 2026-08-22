@@ -288,6 +288,14 @@ def glm_log_likelihood(
     if link == "logit":
         terms = y * eta - np.logaddexp(0.0, eta)
     elif link == "log":
+        # Score the mean the model actually uses. ``log_link_and_derivative``
+        # defines it as ``exp(clip(eta, -700, 700))``, so evaluating
+        # ``exp(eta)`` here would score a different model, and would overflow
+        # to ``-inf`` on exactly the runs where the fit went badly enough to
+        # need the number: ``_eff_loglik`` decays a ``-inf`` to ``-inf``
+        # forever, and ``fit``'s ``abs(log_ev - prev_evidence) < eb_tol``
+        # becomes ``nan < tol``, which silently stops stopping early.
+        eta = np.clip(eta, -700.0, 700.0)
         terms = y * eta - np.exp(eta) - gammaln(y + 1.0)
     else:
         raise ValueError(f"Unknown link function: {link}")

@@ -15,6 +15,7 @@ from scipy.sparse import csc_array
 from scipy.special import expit
 from scipy.stats import bernoulli, poisson
 
+from bayesianbandits import EmpiricalBayesGLM
 from bayesianbandits._empirical_bayes import (
     _MAX_SECANT_LOG_STEP,
     MacKayGLMUpdate,
@@ -164,6 +165,47 @@ class TestGLMLogLikelihood:
             glm_log_likelihood(X_rep, y_rep, theta, "logit"),
             rtol=1e-12,
         )
+
+    def test_log_link_stays_finite_past_the_exp_overflow(self) -> None:
+        """The Laplace step fits ``exp(clip(eta, -700, 700))``, so the
+        likelihood scores that same mean. Unclipped, ``exp(eta)`` overflows
+        past ``eta = 709`` and returns ``-inf``, which ``partial_fit`` then
+        decays to ``-inf`` forever and ``fit``'s ``abs(log_ev - prev) <
+        eb_tol`` turns into ``nan < tol``, quietly disabling early stopping.
+        """
+        X = np.array([[1.0], [1.0]])
+        y = np.array([1.0, 2.0])
+        for eta in (710.0, 1e4, -1e4):
+            value = glm_log_likelihood(X, y, np.array([eta]), "log")
+            assert np.isfinite(value), f"eta={eta} gave {value}"
+        # Below the clip nothing moves.
+        np.testing.assert_allclose(
+            glm_log_likelihood(X, y, np.array([3.0]), "log"),
+            poisson.logpmf(y, np.exp(3.0)).sum(),
+            rtol=1e-12,
+        )
+
+    def test_online_log_likelihood_survives_an_overshooting_step(self) -> None:
+        """A reachable case: the Poisson Newton step overshoots on a batch
+        of large counts, leaving a finite ``coef_`` whose ``eta`` runs to
+        thousands. Unclipped that scores ``-inf``, and ``_eff_loglik``
+        decays a ``-inf`` to ``-inf`` for the life of the estimator."""
+        rng = np.random.default_rng(1063498084)
+        X1 = rng.standard_normal((21, 2)) * 0.6843477383116864
+        y1 = rng.poisson(rng.uniform(0, 3), size=21).astype(np.float64)
+        X2 = rng.standard_normal((8, 2)) * 0.6843477383116864
+        y2 = (
+            rng.poisson(rng.uniform(0, 3), size=8) * 10.0 ** rng.uniform(0, 6)
+        ).astype(np.float64)
+
+        model = EmpiricalBayesGLM(alpha=1.0938473052486514e-06, link="log", n_eb_iter=2)
+        model.partial_fit(X1, y1)
+        model.partial_fit(X2, y2)
+
+        assert np.all(np.isfinite(model.coef_))  # the fit itself is fine
+        assert np.max(np.abs(X2 @ model.coef_)) > 709  # only the scoring blows up
+        assert np.isfinite(model._eff_loglik)
+        assert np.isfinite(model.log_evidence_)
 
     def test_unknown_link_raises(self) -> None:
         X, y = _simulate("logit", 5, 2, seed=4)
