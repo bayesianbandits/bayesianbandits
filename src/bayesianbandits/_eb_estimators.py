@@ -889,10 +889,12 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
     MacKay's update treats the data Hessian as fixed in ``alpha``,
     while the Laplace evidence also depends on ``alpha`` through the
-    curvature at the mode, so the fixed point lies very near but not
-    exactly at the evidence maximum (relative discrepancies of order
-    1e-6 in practice), and the evidence can tick down by that much in
-    the final EB iterations.
+    curvature at the mode, so the fixed point lies near but not
+    exactly at the evidence maximum (``alpha`` within a few percent
+    of the maximizer in practice), and the evidence drifts down
+    slightly (of order 1e-4 in the log) over the final EB iterations.
+    The fixed point, which ``fit`` and ``partial_fit`` share, is the
+    target; the evidence is the convergence diagnostic.
 
     The EB loop accelerates MacKay's fixed-point iteration with a
     secant step on its residual in ``log(alpha)``, switching to
@@ -906,7 +908,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     successive evidence gains shrink with it, so ``eb_tol`` can be met
     while ``alpha`` is still far from the fixed point. The secant
     typically reaches the fixed point within ten iterations where the
-    plain iteration needs a hundred. A step that lowers the evidence
+    plain iteration needs a hundred. A step the guardrail rejects
     resets the acceleration, so the next step is a plain one.
 
     When ``learning_rate < 1``, *stabilized forgetting* [2]_ re-injects
