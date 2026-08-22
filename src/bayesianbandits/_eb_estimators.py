@@ -17,7 +17,7 @@ from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
-from ._blas_helpers import compute_eta_dense, update_precision_dense
+from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
     mackay_update_normal_online,
@@ -216,6 +216,38 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         self.eb_tol = eb_tol
         self.trace_method = trace_method
 
+    @property
+    def coef_(self) -> NDArray[np.float64]:
+        """Posterior mean, written by every fit like the plain attribute
+        it replaces -- with one solve deferred behind it.
+
+        When a MacKay step shifts the precision diagonal,
+        :meth:`_correct_precision` has to re-solve the mean against the
+        rescaled precision, and that solve needs a factorization the
+        cheap factor updates do not cover.  The next ``partial_fit``
+        factors its own updated precision anyway and needs only
+        ``Λ·coef_`` from this one -- which is the information vector the
+        solve was against.  So the solve is left pending here and paid
+        only when something actually reads the mean: ``predict``,
+        ``sample`` and ``decay`` all reach it through their fitted
+        checks, and ``partial_fit`` hands the pending vector straight to
+        :meth:`_fit_helper` instead.
+        """
+        eta = self.__dict__.pop("_pending_eta", None)
+        if eta is not None:
+            self.__dict__["_coef"] = self._precision_factor.solve(eta)
+        try:
+            return self.__dict__["_coef"]
+        except KeyError:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute 'coef_'"
+            ) from None
+
+    @coef_.setter
+    def coef_(self, value: NDArray[np.float64]) -> None:
+        self.__dict__.pop("_pending_eta", None)
+        self.__dict__["_coef"] = value
+
     def _eb_mackay_step_online(self) -> None:
         """MacKay step using accumulated sufficient statistics for beta.
 
@@ -390,13 +422,25 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             Λ = _prior_scalar·I + data_component
 
         After MacKay changes α and β, rescale both components so the
-        matrix is consistent with the new hyperparameters.
+        matrix is consistent with the new hyperparameters, then re-solve
+        the posterior mean against the rescaled matrix.
+
+        The mean is ``Λ⁻¹·η`` with ``η = β·Xᵀy`` (decayed): the prior has
+        zero mean, so it contributes nothing to the information vector.
+        Leaving ``coef_`` as it was would make the next ``partial_fit``
+        read ``Λ_new·θ_old`` as the prior information, silently
+        re-applying the old shrinkage and the old β. Since
+        ``Λ_old·θ_old = η_old`` exactly, the information under the new
+        noise precision is ``η_new = (β_new/β_old)·Λ_old·θ_old`` and the
+        corrected mean is ``Λ_new⁻¹·η_new``.
 
         A pure rescale (``diag_correction == 0``, i.e. α and β moved by
         the same ratio) is absorbed by the cached factorization, the way
-        ``decay`` absorbs its own. A diagonal shift is a rank-p change
-        that no cheap factor update covers, so there the factor is
-        dropped and the next ``sample()`` pays for a fresh one.
+        ``decay`` absorbs its own, and leaves the mean unchanged
+        (``Λ_new`` and ``η_new`` share the ratio). A diagonal shift is a
+        rank-p change that no cheap factor update covers, so there the
+        factor is dropped and the solve is deferred to whoever reads
+        ``coef_`` -- ``partial_fit`` needs only ``η_new`` and skips it.
         """
         alpha_new = self.alpha
         beta_new = self.beta
@@ -409,25 +453,50 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         new_prior_scalar = prior_scalar * (alpha_new / alpha_old)
         diag_correction = new_prior_scalar - beta_ratio * prior_scalar
 
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            cov_inv *= beta_ratio
-            self._shift_diagonal(cov_inv, diag_correction)
-            self.cov_inv_ = cov_inv
-        else:
-            self.cov_inv_ *= beta_ratio
-            if diag_correction != 0.0:
-                diag_idx = np.diag_indices_from(self.cov_inv_)
-                self.cov_inv_[diag_idx] += diag_correction
-
-        self._prior_scalar = new_prior_scalar
-        if "_precision_factor" in self.__dict__:
-            if diag_correction == 0.0:
+        if diag_correction == 0.0:
+            # Pure rescale: Λ and η share the ratio, so the mean is unchanged.
+            self._scale_precision(beta_ratio)
+            self._prior_scalar = new_prior_scalar
+            if "_precision_factor" in self.__dict__:
                 self._precision_factor = scale_factor(
                     self._precision_factor, beta_ratio
                 )
-            else:
-                self._drop_factor()
+            return
+
+        # Λ_old·θ_old, read before Λ is touched. The dense matrix is
+        # upper-triangle-only (dsyrk), which dsymv handles.
+        if self.sparse:
+            eta_old = np.asarray(
+                cast(csc_array, self.cov_inv_) @ self.coef_, dtype=np.float64
+            )
+        else:
+            eta_old = dsymv(1.0, self.cov_inv_, self.coef_)
+        eta_new = beta_ratio * eta_old
+
+        self._scale_precision(beta_ratio)
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            self._shift_diagonal(cov_inv, diag_correction)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += diag_correction
+
+        self._prior_scalar = new_prior_scalar
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+        # Leave the solve pending: see the ``coef_`` property.  Written
+        # past the setter, which clears exactly this.
+        self.__dict__["_pending_eta"] = eta_new
+
+    def _scale_precision(self, ratio: float) -> None:
+        """Multiply ``cov_inv_`` in place by ``ratio``."""
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            cov_inv *= ratio
+            self.cov_inv_ = cov_inv
+        else:
+            self.cov_inv_ *= ratio
 
     def _drop_factor(self) -> None:
         """Drop the cached factor, keeping it as the hint ``_sparse_factor``
@@ -486,17 +555,28 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:  # type: ignore[override]
-        """Override to fold prior reinjection into precision construction.
+        """Override to fold prior reinjection into precision construction,
+        and to take the prior information vector from ``partial_fit``.
 
         When ``_pending_reinjection > 0``, adds ``(1 - γ) · α · I`` to
         the precision during the decay + data update.  This means the
         factorization for the linear solve already reflects the
         reinjected prior — no separate ``_reinject_prior`` call or
         refactorization needed.
+
+        When ``_pending_prior_eta`` is set, a MacKay correction left the
+        posterior mean unsolved (see the ``coef_`` property) and handed
+        the information vector here instead.  ``Λ·coef_`` is exactly
+        that vector, so using it skips both the deferred solve and the
+        matvec that would undo it.
         """
         reinjection = getattr(self, "_pending_reinjection", 0.0)
-        if reinjection == 0.0:
-            # No reinjection needed — delegate to base class.
+        pending_eta = getattr(self, "_pending_prior_eta", None)
+        # Consumed here, so partial_fit can tell an update that raised
+        # before this point from one that used the vector.
+        self._pending_prior_eta = None
+        if reinjection == 0.0 and pending_eta is None:
+            # Nothing to fold in — delegate to base class.
             super()._fit_helper(X, y, sample_weight)
             return
 
@@ -529,12 +609,13 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             prior = cast(csc_array, self.cov_inv_)
             if prior_decay != 1.0:
-                prior.data *= prior_decay  # in place; eta below uses it too
+                prior.data *= prior_decay  # in place; prior_eta below uses it too
+            prior_eta = (
+                prior @ self.coef_ if pending_eta is None else prior_decay * pending_eta
+            )
             cov_inv = cast(csc_array, prior + X_weighted.T @ X_weighted)
             self._shift_diagonal(cov_inv, reinjection)
-            eta = cast(
-                NDArray[np.float64], prior @ self.coef_ + X.T @ (self.beta * y_weighted)
-            )
+            eta = cast(NDArray[np.float64], prior_eta + X.T @ (self.beta * y_weighted))
             factor: PrecisionFactor = self._sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._precision_factor = factor
@@ -542,14 +623,28 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
             # before the in-place update of cov_inv_ below
-            eta = compute_eta_dense(
-                prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
-            )
+            if pending_eta is None:
+                eta = compute_eta_dense(
+                    prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
+                )
+            else:
+                # As compute_eta_dense, with its dsymv already done: dgemv
+                # accumulates the data term into the same buffer.
+                eta = dgemv(
+                    self.beta,
+                    X,
+                    y_weighted,
+                    trans=1,
+                    beta=1.0,
+                    y=prior_decay * pending_eta,
+                    overwrite_y=True,
+                )
             prior_scaled = np.asfortranarray(self.cov_inv_)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay
-            diag_idx = np.diag_indices_from(prior_scaled)
-            prior_scaled[diag_idx] += reinjection
+            if reinjection != 0.0:
+                diag_idx = np.diag_indices_from(prior_scaled)
+                prior_scaled[diag_idx] += reinjection
             # Fused X^T W X + prior via dsyrk (upper triangle only)
             cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
@@ -621,12 +716,25 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
         )
 
+        # Hand any solve the last MacKay correction left pending to
+        # _fit_helper as the prior information vector -- it is Λ·coef_
+        # exactly.  Taken out of __dict__ here, before super()'s
+        # check_is_fitted would read coef_ and force the solve.
+        self._pending_prior_eta = self.__dict__.pop("_pending_eta", None)
+
         alpha_old = self.alpha
         beta_old = self.beta
 
-        result = super().partial_fit(X, y, sample_weight)
-
-        self._pending_reinjection = 0.0
+        try:
+            result = super().partial_fit(X, y, sample_weight)
+        finally:
+            self._pending_reinjection = 0.0
+            if self._pending_prior_eta is not None:
+                # The update raised before _fit_helper consumed it; hand
+                # it back so coef_ stays solvable and the correction is
+                # not silently dropped.
+                self.__dict__["_pending_eta"] = self._pending_prior_eta
+                self._pending_prior_eta = None
 
         if not had_prior_scalar:
             if hasattr(self, "_prior_scalar"):
