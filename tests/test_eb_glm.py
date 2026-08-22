@@ -649,3 +649,68 @@ class TestFailedPartialFitLeavesEBStateIntact:
                 model.partial_fit(X[:5], y[:5])
 
         assert not hasattr(model, "_prior_scalar")
+
+
+class TestEffectiveN:
+    """``_effective_n`` has to count a batch the way ``partial_fit`` would
+    have counted the same rows one at a time, which is the sum of the
+    within-batch decay weights rather than the row count."""
+
+    @pytest.mark.parametrize("learning_rate", [1.0, 0.9, 0.5])
+    def test_matches_the_summed_effective_weights(self, learning_rate):
+        X, y = _simulate("log", n=30, p=4)
+        model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate).fit(X, y)
+        expected = np.sum(learning_rate ** np.arange(30))
+        assert model._effective_n == pytest.approx(expected)
+
+    def test_counts_sample_weight(self):
+        X, y = _simulate("log", n=4, p=3)
+        w = np.array([2.0, 3.0, 1.0, 4.0])
+        model = EmpiricalBayesGLM(link="log", learning_rate=1.0)
+        model.fit(X, y, sample_weight=w)
+        assert model._effective_n == pytest.approx(w.sum())
+
+    def test_saturates_instead_of_growing_with_the_stream(self):
+        """Under forgetting the effective sample size converges to
+        ``1/(1-γ)``; the raw row count would run away from it."""
+        learning_rate = 0.9
+        X, y = _simulate("log", n=200, p=4)
+        model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
+        model.fit(X[:10], y[:10])
+        for i in range(10, 200, 10):
+            model.partial_fit(X[i : i + 10], y[i : i + 10])
+        assert model._effective_n == pytest.approx(1.0 / (1.0 - learning_rate))
+
+    def test_streaming_lands_where_one_batch_does(self):
+        learning_rate = 0.9
+        X, y = _simulate("log", n=50, p=4)
+        one = EmpiricalBayesGLM(link="log", learning_rate=learning_rate).fit(X, y)
+        streamed = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
+        streamed.fit(X[:10], y[:10])
+        for i in range(10, 50, 5):
+            streamed.partial_fit(X[i : i + 5], y[i : i + 5])
+        assert streamed._effective_n == pytest.approx(one._effective_n)
+
+    def test_a_batch_counts_the_same_as_the_rows_one_at_a_time(self):
+        """The invariant every other piece of the state keeps: one
+        ``partial_fit`` of n rows lands where n single-row calls do."""
+        learning_rate, n = 0.9, 6
+        X, y = _simulate("log", n=20, p=3)
+
+        def seeded():
+            model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
+            return model.fit(X[:14], y[:14])
+
+        batch, sequential = seeded(), seeded()
+        batch.partial_fit(X[14 : 14 + n], y[14 : 14 + n])
+        for i in range(14, 14 + n):
+            sequential.partial_fit(X[i : i + 1], y[i : i + 1])
+
+        assert batch._effective_n == pytest.approx(sequential._effective_n)
+
+    def test_a_single_row_is_unaffected(self):
+        """``compute_effective_weights`` leaves a one-row batch alone, so the
+        bandit-shaped update must count exactly 1."""
+        X, y = _simulate("log", n=20, p=3)
+        model = EmpiricalBayesGLM(link="log", learning_rate=0.9).fit(X[:1], y[:1])
+        assert model._effective_n == pytest.approx(1.0)

@@ -1109,6 +1109,17 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         )
         return glm_log_likelihood(X, y, self.coef_, self.link, weights)
 
+    def _effective_count(
+        self, n_samples: int, sample_weight: Optional[NDArray[Any]]
+    ) -> float:
+        """What this batch adds to ``_effective_n``: the sum of the effective
+        row weights, so n rows at once count what n single-row calls would."""
+        return float(
+            np.sum(
+                compute_effective_weights(n_samples, sample_weight, self.learning_rate)
+            )
+        )
+
     def _eb_mackay_step(self) -> MacKayGLMUpdate:
         update = mackay_update_glm(
             self.coef_,
@@ -1185,7 +1196,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self.eb_updates_rejected_ = 0
         self._pending_floor = 0.0
         self._pending_shift = 0.0
-        self._effective_n = float(y.shape[0])
+        self._effective_n = self._effective_count(y.shape[0], sample_weight)
 
         if self.n_eb_iter > 0:
             prev_evidence = -math.inf
@@ -1425,7 +1436,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             accept_sparse="csc" if self.sparse else False,
         )
 
-        self._effective_n = prior_decay * self._effective_n + float(y.shape[0])
+        self._effective_n = prior_decay * self._effective_n + self._effective_count(
+            y.shape[0], sample_weight
+        )
         self._eff_loglik = prior_decay * self._eff_loglik + self._log_likelihood(
             X_fit, y, sample_weight
         )
