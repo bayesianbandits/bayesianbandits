@@ -93,6 +93,31 @@ class TestEBGLM:
             assert evidences[i] >= evidences[i - 1] - 1e-3, evidences
         assert evidences[-1] > evidences[0] + 1.0
 
+    def test_secant_acceleration_is_load_bearing(self, link, sparse):
+        """Weak signal with p comparable to n puts the evidence maximum at
+        an alpha MacKay's fixed-point iteration crawls toward. The secant
+        reaches the same fixed point in a fraction of the iterations."""
+        import bayesianbandits._eb_estimators as ebm
+
+        X, y = _simulate(link, n=200, p=40, seed=7, alpha_true=2.0)
+        accelerated = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=30)
+        accelerated.fit(_X(X, sparse), y)
+        with mock.patch.object(
+            ebm, "secant_log_alpha", lambda u, h, up, hp: (u + h, False)
+        ):
+            plain = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=300)
+            plain.fit(_X(X, sparse), y)
+        assert accelerated.eb_converged_ and plain.eb_converged_
+        assert accelerated.n_eb_iterations_ <= plain.n_eb_iterations_
+        if link == "logit":
+            # The crawl: plain MacKay needs ~100 iterations to settle at
+            # eb_tol=1e-9, and at the default tolerance stops early (17)
+            # because successive evidence changes shrink with the step
+            # while alpha is still short.
+            assert accelerated.n_eb_iterations_ * 3 <= plain.n_eb_iterations_
+        assert 0.9 < accelerated.alpha / plain.alpha < 1.1
+        assert abs(accelerated.log_evidence_ - plain.log_evidence_) < 1e-2
+
     def test_convergence_flag(self, link, sparse):
         X, y = _simulate(link)
         model = EmpiricalBayesGLM(link=link, n_eb_iter=100, eb_tol=1e-6, sparse=sparse)

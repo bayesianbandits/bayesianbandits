@@ -4,6 +4,8 @@ computations on tiny problems."""
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray
@@ -14,9 +16,11 @@ from scipy.special import expit
 from scipy.stats import bernoulli, poisson
 
 from bayesianbandits._empirical_bayes import (
+    _MAX_SECANT_LOG_STEP,
     MacKayGLMUpdate,
     glm_log_likelihood,
     mackay_update_glm,
+    secant_log_alpha,
 )
 from bayesianbandits._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -369,3 +373,45 @@ class TestMacKayUpdateGLMGuardrail:
             factor=_make_dense_factor(precision),
         )
         np.testing.assert_allclose(update.alpha, 2.0 / (theta @ theta))
+
+
+class TestSecantLogAlpha:
+    """secant_log_alpha accelerates the fixed-point iteration u <- F(u)
+    through the residual h(u) = F(u) - u."""
+
+    def test_linear_fixed_point_is_hit_in_one_step(self) -> None:
+        # F(u) = r·u + c has the fixed point c / (1 - r); the residual is
+        # linear in u, so the secant lands on it exactly.
+        r, c = 0.5, 1.0
+        F = lambda u: r * u + c  # noqa: E731
+        u0, u1 = 0.0, F(0.0)
+        u2, used = secant_log_alpha(u1, F(u1) - u1, u0, F(u0) - u0)
+        assert used
+        np.testing.assert_allclose(u2, c / (1 - r))
+
+    def test_plain_step_without_contraction(self) -> None:
+        # Residual growing with u: slope >= 0, no contraction to exploit.
+        u, h = 1.0, 0.5
+        assert secant_log_alpha(u, h, 0.0, 0.2) == (u + h, False)
+
+    def test_plain_step_when_history_is_degenerate(self) -> None:
+        u, h = 1.0, 0.5
+        assert secant_log_alpha(u, h, 1.0, 0.3) == (u + h, False)
+        assert secant_log_alpha(u, h, 0.0, math.nan) == (u + h, False)
+
+    def test_never_steps_against_mackay(self) -> None:
+        # Negative slope but the root lies behind: h and step disagree in
+        # sign only if h changed sign, which the secant then refuses.
+        u, h = 1.0, -0.1
+        u_next, used = secant_log_alpha(u, h, 0.0, 0.3)
+        # slope = -0.4, step = -h/slope = -0.25: same sign as h, accepted
+        assert used and u_next == pytest.approx(u - 0.25)
+        u_next, used = secant_log_alpha(u, 0.1, 0.0, 0.3)
+        # slope = -0.2, step = 0.5 > 0 = sign of h: accepted
+        assert used and u_next == pytest.approx(1.5)
+
+    def test_step_is_capped(self) -> None:
+        # Nearly equal residuals extrapolate far; the cap bounds it.
+        u_next, used = secant_log_alpha(1.0, 0.5, 0.0, 0.5001)
+        assert used
+        assert u_next == pytest.approx(1.0 + _MAX_SECANT_LOG_STEP)

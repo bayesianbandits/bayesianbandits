@@ -26,6 +26,7 @@ from ._empirical_bayes import (
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
+    secant_log_alpha,
 )
 from ._estimators import (
     BayesianGLM,
@@ -891,6 +892,19 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     1e-6 in practice), and the evidence can tick down by that much in
     the final EB iterations.
 
+    The EB loop accelerates MacKay's fixed-point iteration with a
+    secant step on its residual in ``log(alpha)``
+    (:func:`~bayesianbandits._empirical_bayes.secant_log_alpha`). The
+    plain iteration contracts slowly when the evidence maximum lies at
+    large ``alpha`` (few, weakly informative observations relative to
+    the number of features, the usual bandit cold start): it then
+    moves ``alpha`` by a roughly constant factor per iteration, and
+    successive evidence gains shrink with it, so ``eb_tol`` can be met
+    while ``alpha`` is still far from the fixed point. The secant
+    typically reaches the fixed point within ten iterations where the
+    plain iteration needs a hundred. A step that lowers the evidence
+    resets the acceleration, so the next step is a plain one.
+
     When ``learning_rate < 1``, *stabilized forgetting* [2]_ re-injects
     ``(1 - γⁿ)·alpha`` onto the precision diagonal after each decay so
     the prior's contribution converges to ``alpha`` instead of
@@ -904,8 +918,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         Link function; see :class:`BayesianGLM`.
     n_eb_iter : int, default=10
         Maximum number of EB iterations during ``fit``. Each iteration
-        re-runs the posterior approximation from the prior and takes
-        one MacKay step. Set to 0 to disable EB tuning during ``fit``.
+        re-runs the posterior approximation from the prior (warm-started
+        at the previous mode) and takes one secant-accelerated MacKay
+        step. Set to 0 to disable EB tuning during ``fit``.
     eb_tol : float, default=1e-4
         Convergence tolerance on the change in log evidence between
         successive EB iterations.
@@ -1132,6 +1147,11 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             converged = False
             iterations = 0
             log_ev = -math.inf
+            # Secant history on the MacKay residual in log-alpha; see
+            # secant_log_alpha. Reset whenever a step lowered the
+            # evidence, so the next step is a plain MacKay step from
+            # the current point.
+            secant: Optional[tuple[float, float]] = None
 
             for i in range(self.n_eb_iter):
                 self._restart_from_prior(X_fit)
@@ -1140,6 +1160,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 self._prior_scalar = prior_decay * self.alpha
                 self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
 
+                alpha_in = self.alpha
                 self._eb_mackay_step()
                 log_ev = self.log_evidence_
                 iterations = i + 1
@@ -1147,6 +1168,15 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 if abs(log_ev - prev_evidence) < self.eb_tol:
                     converged = True
                     break
+
+                u = math.log(alpha_in)
+                h = math.log(self.alpha) - u
+                if log_ev < prev_evidence:
+                    secant = None
+                if secant is not None and h != 0.0:
+                    u_next, _ = secant_log_alpha(u, h, *secant)
+                    self.alpha = math.exp(u_next)
+                secant = (u, h)
                 prev_evidence = log_ev
 
             self._restart_from_prior(X_fit)

@@ -351,6 +351,49 @@ def mackay_update_glm(
     return MacKayGLMUpdate(alpha_new, log_ev, rejected)
 
 
+# The secant step is capped at this many natural-log units of alpha
+# (a factor of e^6 ~ 400): far beyond any single MacKay step, but a
+# wild extrapolation from two nearly equal residuals stays bounded.
+_MAX_SECANT_LOG_STEP = 6.0
+
+
+def secant_log_alpha(
+    u: float, h: float, u_prev: float, h_prev: float
+) -> tuple[float, bool]:
+    """One secant step on the MacKay residual in log-alpha.
+
+    MacKay's update is the fixed-point iteration ``u <- F(u)`` with
+    ``u = log(alpha)`` and ``F(u) = log(alpha_new)``.  Its residual
+    ``h(u) = F(u) - u`` vanishes at the fixed point, and near a fixed
+    point where ``F'`` is close to 1 (underdetermined problems, where
+    the evidence maximum lies at large alpha) the plain iteration
+    crawls by ``h`` per step while the root is ``h / (1 - F')`` away.
+    The secant through the last two residuals estimates that slope and
+    jumps to the root; since every evaluation of ``h`` already costs a
+    refit, the slope is free.
+
+    Returns the next ``u`` and whether the secant was used.  The plain
+    MacKay step ``u + h`` is taken when the secant slope is not
+    negative (``F' >= 1``, no contraction to accelerate) or the step
+    is not finite, and the step is capped at ``_MAX_SECANT_LOG_STEP``.
+    """
+    du = u - u_prev
+    dh = h - h_prev
+    if du == 0.0 or not math.isfinite(dh):
+        return u + h, False
+    slope = dh / du
+    if not slope < 0.0:
+        return u + h, False
+    step = -h / slope
+    if not math.isfinite(step):
+        return u + h, False
+    # Never step against the MacKay direction, and stay bounded.
+    if step * h < 0.0:
+        return u + h, False
+    step = max(-_MAX_SECANT_LOG_STEP, min(_MAX_SECANT_LOG_STEP, step))
+    return u + step, True
+
+
 def _dirichlet_multinomial_log_evidence(
     counts: NDArray[np.floating],
     count_totals: NDArray[np.floating],
