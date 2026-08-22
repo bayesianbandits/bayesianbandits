@@ -11,7 +11,7 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import Any, NamedTuple, Union, cast
+from typing import Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -413,6 +413,92 @@ def secant_log_alpha(
         return u + h, False
     step = max(-_MAX_SECANT_LOG_STEP, min(_MAX_SECANT_LOG_STEP, step))
     return u + step, True
+
+
+class SecantRootFinder:
+    """Root finder for the MacKay residual ``h(u)`` in ``u = log(alpha)``.
+
+    Until the residual has been seen with both signs the iteration is
+    the capped secant of :func:`secant_log_alpha` (plain MacKay step
+    when the secant is not trustworthy).  The first time two iterates
+    straddle the root they become a bracket, and from then on every
+    step is the Illinois variant of regula falsi (Dowell & Jarratt,
+    1971): the secant through the bracket's endpoints, which by
+    construction lands inside it, with the function value of an
+    endpoint halved whenever that endpoint is retained twice in a row
+    so a bent residual cannot pin the same endpoint forever.  The
+    bracket can only shrink, so the root never escapes, no step cap is
+    needed in that phase, and convergence is superlinear (order about
+    1.44).
+
+    ``next(u, h)`` takes the residual measured at ``u`` and returns the
+    next ``u``; ``reset()`` forgets everything (for callers that restart
+    from a plain MacKay step, e.g. after the evidence fell);
+    ``bracket_width`` is the width of the current bracket in log-alpha,
+    or infinity before one exists.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._prev: Optional[tuple[float, float]] = None
+        # Endpoints where h > 0 (alpha too small) and h < 0 (too large),
+        # each with its Illinois-scaled residual.
+        self._pos: Optional[tuple[float, float]] = None
+        self._neg: Optional[tuple[float, float]] = None
+        self._retained: Optional[str] = None
+        self._retained_count = 0
+
+    @property
+    def bracketed(self) -> bool:
+        return self._pos is not None and self._neg is not None
+
+    @property
+    def bracket_width(self) -> float:
+        if self._pos is None or self._neg is None:
+            return math.inf
+        return abs(self._pos[0] - self._neg[0])
+
+    def _record(self, u: float, h: float) -> None:
+        side = "pos" if h > 0.0 else "neg"
+        other = "neg" if side == "pos" else "pos"
+        if side == "pos":
+            self._pos = (u, h)
+        else:
+            self._neg = (u, h)
+        if not self.bracketed:
+            return
+        # The other endpoint was retained this round.
+        if self._retained == other:
+            self._retained_count += 1
+        else:
+            self._retained, self._retained_count = other, 1
+        if self._retained_count >= 2:
+            # Illinois: halve the retained endpoint's residual.
+            if other == "pos":
+                assert self._pos is not None
+                self._pos = (self._pos[0], 0.5 * self._pos[1])
+            else:
+                assert self._neg is not None
+                self._neg = (self._neg[0], 0.5 * self._neg[1])
+
+    def next(self, u: float, h: float) -> float:
+        if h == 0.0 or not math.isfinite(h):
+            return u
+        self._record(u, h)
+        if self._pos is not None and self._neg is not None:
+            u_pos, h_pos = self._pos
+            u_neg, h_neg = self._neg
+            u_next = (u_pos * h_neg - u_neg * h_pos) / (h_neg - h_pos)
+            self._prev = (u, h)
+            return u_next
+        if self._prev is None:
+            u_next = u + h
+        else:
+            u_next, _ = secant_log_alpha(u, h, *self._prev)
+        self._prev = (u, h)
+        return u_next
 
 
 def _dirichlet_multinomial_log_evidence(

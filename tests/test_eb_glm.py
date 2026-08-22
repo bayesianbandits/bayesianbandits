@@ -103,9 +103,7 @@ class TestEBGLM:
         X, y = _simulate(link, n=200, p=40, seed=7, alpha_true=2.0)
         accelerated = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=30)
         accelerated.fit(_X(X, sparse), y)
-        with mock.patch.object(
-            ebm, "secant_log_alpha", lambda u, h, up, hp: (u + h, False)
-        ):
+        with mock.patch.object(ebm.SecantRootFinder, "next", lambda self, u, h: u + h):
             plain = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=300)
             plain.fit(_X(X, sparse), y)
         assert accelerated.eb_converged_ and plain.eb_converged_

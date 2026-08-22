@@ -21,13 +21,13 @@ from typing_extensions import Self
 from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
     MacKayGLMUpdate,
+    SecantRootFinder,
     accumulate_sufficient_stats,
     glm_log_likelihood,
     mackay_update_glm,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
-    secant_log_alpha,
 )
 from ._estimators import (
     BayesianGLM,
@@ -895,8 +895,10 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     the final EB iterations.
 
     The EB loop accelerates MacKay's fixed-point iteration with a
-    secant step on its residual in ``log(alpha)``
-    (:func:`~bayesianbandits._empirical_bayes.secant_log_alpha`). The
+    secant step on its residual in ``log(alpha)``, switching to
+    bracketed (Illinois) regula falsi once two iterates straddle the
+    fixed point
+    (:class:`~bayesianbandits._empirical_bayes.SecantRootFinder`). The
     plain iteration contracts slowly when the evidence maximum lies at
     large ``alpha`` (few, weakly informative observations relative to
     the number of features, the usual bandit cold start): it then
@@ -1108,17 +1110,17 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         return update
 
     def _secant_alpha(
-        self, alpha_in: float, update: MacKayGLMUpdate, secant: Optional[tuple]
+        self, alpha_in: float, update: MacKayGLMUpdate, finder: SecantRootFinder
     ) -> tuple[float, float]:
-        """The residual ``h`` of this MacKay step in log-alpha and, when
-        there is a previous residual to take a secant through, the
-        accelerated alpha (clipped to the guardrail's band) in place of
-        ``update.alpha``; otherwise ``update.alpha`` itself."""
+        """The residual ``h`` of this MacKay step in log-alpha and the
+        alpha the root finder proposes from it, clipped to the
+        guardrail's band.  On the finder's first point this is the
+        plain MacKay step, ``update.alpha`` itself."""
         u = math.log(alpha_in)
         h = math.log(update.alpha) - u
-        if secant is None or h == 0.0:
+        if h == 0.0:
             return h, update.alpha
-        u_next, _ = secant_log_alpha(u, h, *secant)
+        u_next = finder.next(u, h)
         return h, min(max(math.exp(u_next), update.alpha_min), update.alpha_max)
 
     def fit(
@@ -1173,11 +1175,15 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             converged = False
             iterations = 0
             log_ev = -math.inf
-            # Secant history on the MacKay residual in log-alpha; see
-            # secant_log_alpha. Reset whenever a step lowered the
-            # evidence, so the next step is a plain MacKay step from
-            # the current point.
-            secant: Optional[tuple[float, float]] = None
+            # Root finder on the MacKay residual in log-alpha; see
+            # SecantRootFinder. The target is MacKay's fixed point (the
+            # root of the residual), which the online loop shares, not
+            # the evidence maximum: the two differ slightly because the
+            # fixed point holds the Hessian fixed in alpha, and the
+            # evidence drifts down by that much over the final steps.
+            # The finder is therefore reset only by the guardrail, not
+            # by an evidence decrease.
+            finder = SecantRootFinder()
 
             for i in range(self.n_eb_iter):
                 self._restart_from_prior(X_fit)
@@ -1195,10 +1201,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                     converged = True
                     break
 
-                if log_ev < prev_evidence or update.rejected:
-                    secant = None
-                h, self.alpha = self._secant_alpha(alpha_in, update, secant)
-                secant = None if update.rejected else (math.log(alpha_in), h)
+                h, self.alpha = self._secant_alpha(alpha_in, update, finder)
+                if update.rejected:
+                    finder.reset()
                 prev_evidence = log_ev
 
             self._restart_from_prior(X_fit)
@@ -1248,16 +1253,19 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         Returns the alpha of the stored posterior, which the caller
         defers the final correction from."""
         alpha_stored = self.alpha
-        secant: Optional[tuple[float, float]] = None
+        finder = SecantRootFinder()
         n_iter = max(1, self.n_eb_iter)
         for k in range(n_iter):
             update = self._eb_mackay_step()
             if update.rejected:
                 break
-            h, self.alpha = self._secant_alpha(alpha_stored, update, secant)
-            if abs(h) <= self.eb_alpha_tol or k == n_iter - 1:
+            h, self.alpha = self._secant_alpha(alpha_stored, update, finder)
+            if (
+                abs(h) <= self.eb_alpha_tol
+                or finder.bracket_width <= self.eb_alpha_tol
+                or k == n_iter - 1
+            ):
                 break
-            secant = (math.log(alpha_stored), h)
             self._apply_alpha_now(alpha_stored)
             alpha_stored = self.alpha
         return alpha_stored

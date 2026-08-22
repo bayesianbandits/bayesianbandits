@@ -18,6 +18,7 @@ from scipy.stats import bernoulli, poisson
 from bayesianbandits._empirical_bayes import (
     _MAX_SECANT_LOG_STEP,
     MacKayGLMUpdate,
+    SecantRootFinder,
     glm_log_likelihood,
     mackay_update_glm,
     secant_log_alpha,
@@ -458,3 +459,80 @@ class TestSecantLogAlpha:
         u_next, used = secant_log_alpha(1.0, 0.5, 0.0, 0.5001)
         assert used
         assert u_next == pytest.approx(1.0 + _MAX_SECANT_LOG_STEP)
+
+
+class TestSecantRootFinder:
+    @staticmethod
+    def _solve(h, u0, tol=1e-10, max_iter=50):
+        finder = SecantRootFinder()
+        u = u0
+        for k in range(max_iter):
+            hk = h(u)
+            if abs(hk) <= tol:
+                return u, k, finder
+            u = finder.next(u, hk)
+        raise AssertionError("did not converge")
+
+    def test_first_step_is_plain_mackay(self):
+        finder = SecantRootFinder()
+        assert finder.next(0.0, 0.3) == 0.3
+        assert not finder.bracketed
+        assert finder.bracket_width == math.inf
+
+    def test_zero_or_nonfinite_residual_stays_put(self):
+        finder = SecantRootFinder()
+        assert finder.next(1.0, 0.0) == 1.0
+        assert finder.next(1.0, math.nan) == 1.0
+
+    def test_linear_residual_converges_in_two_accelerated_steps(self):
+        # F'(u) = 0.9: the plain iteration moves 10% of the way per
+        # step; the secant through two points is exact on a line.
+        root = 3.0
+        u, k, _ = self._solve(lambda u: 0.1 * (root - u), u0=0.0)
+        assert abs(u - root) < 1e-9
+        assert k <= 3
+
+    def test_bracket_forms_on_sign_change_and_only_shrinks(self):
+        root = 1.0
+        h = lambda u: math.tanh(root - u)  # noqa: E731
+        finder = SecantRootFinder()
+        u = -4.0
+        widths = []
+        for _ in range(30):
+            hk = h(u)
+            if abs(hk) < 1e-12:
+                break
+            u = finder.next(u, hk)
+            if finder.bracketed:
+                widths.append(finder.bracket_width)
+        assert finder.bracketed
+        assert abs(u - root) < 1e-9
+        assert all(b <= a for a, b in zip(widths, widths[1:]))
+        assert widths[-1] < 1e-4
+
+    def test_illinois_beats_plain_regula_falsi_on_a_bent_residual(self):
+        # h(u) = 1 - e^u with a root at 0 is convex enough that plain
+        # regula falsi pins the left endpoint and converges linearly.
+        h = lambda u: (1.0 - math.exp(u)) * 0.5  # noqa: E731
+        u, k, finder = self._solve(h, u0=-5.0)
+        assert abs(u) < 1e-9
+        assert finder.bracketed
+        assert k < 20
+
+    def test_reset_forgets_the_bracket(self):
+        finder = SecantRootFinder()
+        finder.next(0.0, 1.0)
+        finder.next(2.0, -1.0)
+        assert finder.bracketed
+        finder.reset()
+        assert not finder.bracketed
+        assert finder.next(0.0, 0.3) == 0.3
+
+    def test_bracketed_step_lands_inside_the_bracket(self):
+        finder = SecantRootFinder()
+        finder.next(0.0, 1.0)
+        u = finder.next(5.0, -0.01)
+        assert 0.0 < u < 5.0
+        # A huge residual on one side cannot push the step outside.
+        u = finder.next(u, 1e6)
+        assert 0.0 < u < 5.0
