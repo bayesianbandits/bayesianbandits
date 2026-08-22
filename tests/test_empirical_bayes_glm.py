@@ -340,6 +340,49 @@ class TestMacKayUpdateGLMGuardrail:
         assert update.alpha == alpha
         assert np.isfinite(update.log_evidence)
 
+    def test_overgrown_alpha_is_rejected(self) -> None:
+        """alpha_new above 1e10 x max(diag H_data) keeps alpha."""
+        p = 4
+        alpha = 1e3
+        theta = np.full(p, 1e-8)  # ||theta||^2 = 4e-16 -> alpha_new ~ 1e15
+        precision = np.asarray((alpha + 1.0) * np.eye(p), dtype=np.float64)
+        update = mackay_update_glm(
+            theta,
+            precision,
+            alpha,
+            prior_scalar=alpha,
+            effective_n=100.0,
+            log_lik=0.0,
+            factor=_make_dense_factor(precision),
+        )
+        assert update.rejected
+        assert update.alpha == alpha
+        np.testing.assert_allclose(update.alpha_min, 1e-10)
+        np.testing.assert_allclose(update.alpha_max, 1e10)
+
+    def test_tiny_gamma_is_not_floored_away(self) -> None:
+        """When the prior dominates, gamma ~ tr(H)/alpha is tiny but real,
+        and the step that shrinks alpha must go through."""
+        p = 4
+        alpha = 1e9
+        h = 1.0  # H = I
+        precision = np.asarray((alpha + h) * np.eye(p), dtype=np.float64)
+        # theta = Lambda^-1 eta with ||eta||^2 = 16 > tr(H) = 4: the data
+        # argue for a smaller alpha, by the factor tr(H)/||eta||^2 = 1/4.
+        eta = np.full(p, 2.0)
+        theta = np.asarray(eta / (alpha + h), dtype=np.float64)
+        update = mackay_update_glm(
+            theta,
+            precision,
+            alpha,
+            prior_scalar=alpha,
+            effective_n=100.0,
+            log_lik=0.0,
+            factor=_make_dense_factor(precision),
+        )
+        assert not update.rejected
+        np.testing.assert_allclose(update.alpha, alpha / 4, rtol=1e-6)
+
     def test_zero_theta_keeps_alpha(self) -> None:
         p = 3
         precision = np.asarray(2.0 * np.eye(p), dtype=np.float64)

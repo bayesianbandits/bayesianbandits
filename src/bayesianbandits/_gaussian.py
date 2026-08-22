@@ -187,6 +187,7 @@ def _stabilized_prior_sparse(
     shift = _prior_diag_shift(prior_decay, prior_floor, prior_shift)
     if shift == 0.0:
         return prior_precision_scaled
+    assert prior_precision_scaled.shape is not None
     n = prior_precision_scaled.shape[0]
     return csc_array(prior_precision_scaled + shift * eye(n, format="csc"))
 

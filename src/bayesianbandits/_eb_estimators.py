@@ -20,6 +20,7 @@ from typing_extensions import Self
 
 from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
+    MacKayGLMUpdate,
     accumulate_sufficient_stats,
     glm_log_likelihood,
     mackay_update_glm,
@@ -879,8 +880,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     :math:`\\alpha_{\\text{new}} = \\gamma / \\|\\theta_{\\text{MAP}}\\|^2`.
 
     During ``fit``, IRLS and MacKay steps alternate until the Laplace
-    log evidence converges. During ``partial_fit``, one MacKay step is
-    taken on the current Laplace approximation; the resulting change to
+    log evidence converges. During ``partial_fit``, MacKay steps are
+    taken on the current Laplace approximation until ``alpha`` settles
+    to within ``eb_alpha_tol``, usually one; the final change to
     ``alpha`` is folded into the next update's factorization rather
     than costing one of its own, so between updates the posterior is
     the coherent one under the previous ``alpha``.
@@ -947,6 +949,13 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     trace_method : {'auto', 'diagonal'}, default='auto'
         Method for :math:`\\operatorname{tr}(\\Lambda^{-1})` in the
         MacKay update; see :class:`EmpiricalBayesNormalRegressor`.
+    eb_alpha_tol : float, default=0.05
+        Relative change in ``alpha`` below which ``partial_fit`` stops
+        iterating. One MacKay step per update is usually already within
+        it; when it is not (a cold start, a regime change) further
+        steps are taken on the Laplace approximation already in hand,
+        up to ``n_eb_iter``, so that a sequence of ``partial_fit`` calls
+        lands where ``fit`` on the same data would.
 
     Attributes
     ----------
@@ -992,6 +1001,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
         trace_method: str = "auto",
+        eb_alpha_tol: float = 0.05,
     ) -> None:
         super().__init__(
             alpha=alpha,
@@ -1004,6 +1014,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
         self.trace_method = trace_method
+        self.eb_alpha_tol = eb_alpha_tol
 
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
         super()._initialize_prior(X)
@@ -1079,7 +1090,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         )
         return glm_log_likelihood(X, y, self.coef_, self.link, weights)
 
-    def _eb_mackay_step(self) -> None:
+    def _eb_mackay_step(self) -> MacKayGLMUpdate:
         update = mackay_update_glm(
             self.coef_,
             self.cov_inv_,
@@ -1094,6 +1105,21 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self.log_evidence_ = update.log_evidence
         if update.rejected:
             self.eb_updates_rejected_ += 1
+        return update
+
+    def _secant_alpha(
+        self, alpha_in: float, update: MacKayGLMUpdate, secant: Optional[tuple]
+    ) -> tuple[float, float]:
+        """The residual ``h`` of this MacKay step in log-alpha and, when
+        there is a previous residual to take a secant through, the
+        accelerated alpha (clipped to the guardrail's band) in place of
+        ``update.alpha``; otherwise ``update.alpha`` itself."""
+        u = math.log(alpha_in)
+        h = math.log(update.alpha) - u
+        if secant is None or h == 0.0:
+            return h, update.alpha
+        u_next, _ = secant_log_alpha(u, h, *secant)
+        return h, min(max(math.exp(u_next), update.alpha_min), update.alpha_max)
 
     def fit(
         self,
@@ -1161,7 +1187,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
 
                 alpha_in = self.alpha
-                self._eb_mackay_step()
+                update = self._eb_mackay_step()
                 log_ev = self.log_evidence_
                 iterations = i + 1
 
@@ -1169,14 +1195,10 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                     converged = True
                     break
 
-                u = math.log(alpha_in)
-                h = math.log(self.alpha) - u
-                if log_ev < prev_evidence:
+                if log_ev < prev_evidence or update.rejected:
                     secant = None
-                if secant is not None and h != 0.0:
-                    u_next, _ = secant_log_alpha(u, h, *secant)
-                    self.alpha = math.exp(u_next)
-                secant = (u, h)
+                h, self.alpha = self._secant_alpha(alpha_in, update, secant)
+                secant = None if update.rejected else (math.log(alpha_in), h)
                 prev_evidence = log_ev
 
             self._restart_from_prior(X_fit)
@@ -1195,6 +1217,50 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._prior_scalar = prior_decay * self.alpha
         self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
         return self
+
+    @_invalidate_cached_properties
+    def _apply_alpha_now(self, alpha_old: float) -> None:
+        """Move the Laplace posterior to the current alpha immediately:
+        the inner EB iterations of ``partial_fit`` need the trace and
+        the mode under the new prior to take the next step. Same
+        quadratic model as :meth:`_correct_precision`; this pays the
+        factorization now instead of deferring it."""
+        ratio = self.alpha / alpha_old
+        shift = (ratio - 1.0) * self._prior_scalar
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)
+            self._shift_diagonal(cov_inv, shift)
+            self.cov_inv_ = cov_inv
+        else:
+            data_eta = dsymv(1.0, self.cov_inv_, self.coef_)
+            self.cov_inv_[np.diag_indices_from(self.cov_inv_)] += shift
+        self._prior_scalar *= ratio
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+        self.coef_ = self._precision_factor.solve(data_eta)
+
+    def _eb_online_loop(self) -> float:
+        """MacKay steps on the Laplace approximation in hand until alpha
+        settles, the secant-accelerated way ``fit`` does it, but on the
+        quadratic model rather than on data: with ``Λ_old·θ_old`` fixed
+        each step is a diagonal shift, a refactorization and a trace.
+        Returns the alpha of the stored posterior, which the caller
+        defers the final correction from."""
+        alpha_stored = self.alpha
+        secant: Optional[tuple[float, float]] = None
+        n_iter = max(1, self.n_eb_iter)
+        for k in range(n_iter):
+            update = self._eb_mackay_step()
+            if update.rejected:
+                break
+            h, self.alpha = self._secant_alpha(alpha_stored, update, secant)
+            if abs(h) <= self.eb_alpha_tol or k == n_iter - 1:
+                break
+            secant = (math.log(alpha_stored), h)
+            self._apply_alpha_now(alpha_stored)
+            alpha_stored = self.alpha
+        return alpha_stored
 
     def _correct_precision(self, alpha_old: float) -> None:
         """Book the prior's rescale to the new alpha, to be applied by the
@@ -1305,8 +1371,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             X_fit, y, sample_weight
         )
 
-        self._eb_mackay_step()
-        self._correct_precision(alpha_old)
+        alpha_stored = self._eb_online_loop()
+        self._correct_precision(alpha_stored)
 
         return result
 

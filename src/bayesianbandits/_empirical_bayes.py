@@ -242,21 +242,32 @@ class MacKayGLMUpdate(NamedTuple):
     """One MacKay update for a Laplace-approximated GLM.
 
     Same contract as :class:`MacKayUpdate` minus ``beta``: a rejected
-    update returns ``alpha`` unchanged and says so.
+    update returns ``alpha`` unchanged and says so.  ``alpha_min`` and
+    ``alpha_max`` are the band the guardrail accepts, so a caller that
+    extrapolates beyond the MacKay step (the secant acceleration) can
+    keep its target inside it.
     """
 
     alpha: float
     log_evidence: float
     rejected: bool
+    alpha_min: float
+    alpha_max: float
 
 
-# The GLM has no beta, but the same degeneracy exists: with p >> n or
-# separable logistic data, ||theta|| grows without bound and MacKay
-# drives alpha -> 0, leaving Lambda = alpha I + H_data with condition
-# number ~ max(H_data) / alpha.  The diagonal of H_data is a cheap
-# lower bound on its largest eigenvalue, so the same 1e10 ceiling on
-# max(diag H_data) / alpha_new plays the role _MAX_BETA_ALPHA_RATIO
-# plays for the Normal.
+# The GLM has no beta, but the same degeneracies exist, in both
+# directions.  With separable logistic data ||theta|| grows without
+# bound and MacKay drives alpha -> 0, leaving Lambda = alpha I + H_data
+# with condition number ~ max(H_data) / alpha.  With data that carry no
+# information about the coefficients the evidence increases in alpha
+# without bound, MacKay multiplies alpha by a near-constant factor per
+# step, and theta = Lambda^-1 g shrinks until it underflows to zero,
+# which pins alpha forever (the ||theta|| = 0 branch below).  The
+# diagonal of H_data is a cheap lower bound on its largest eigenvalue,
+# so alpha_new is accepted only within 1e10 of max(diag H_data) on
+# either side: the band where the posterior is neither numerically
+# singular nor numerically the prior.  Outside it alpha stays where it
+# was, and comes back once the data argue for it.
 _MAX_GLM_CONDITION_PROXY = 1e10
 
 
@@ -331,8 +342,13 @@ def mackay_update_glm(
 
     ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
-    _EPS = 1e-8
-    gamma = float(np.clip(p - prior_scalar * tr_inv, _EPS, min(effective_n, p)))
+    # gamma = tr(Lambda^-1 H) = p - s . tr(Lambda^-1) cancels when the
+    # prior dominates (s >> H): the true value is ~ tr(H) / s, and the
+    # subtraction's noise is ~ p . 1e-15.  The floor sits just above
+    # that noise; a larger one (the Normal's 1e-8) would replace a
+    # legitimately tiny gamma and inflate alpha_new past the ceiling,
+    # rejecting the very steps that bring an overgrown alpha back down.
+    gamma = float(np.clip(p - prior_scalar * tr_inv, p * 1e-13, min(effective_n, p)))
     alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
 
     if isinstance(precision, csc_array):
@@ -340,7 +356,12 @@ def mackay_update_glm(
     else:
         diag = np.diag(precision)
     data_diag_max = float(np.max(diag)) - prior_scalar
-    rejected = data_diag_max / alpha_new > _MAX_GLM_CONDITION_PROXY
+    if data_diag_max > 0.0:
+        alpha_min = data_diag_max / _MAX_GLM_CONDITION_PROXY
+        alpha_max = data_diag_max * _MAX_GLM_CONDITION_PROXY
+    else:
+        alpha_min, alpha_max = 0.0, math.inf
+    rejected = not (alpha_min <= alpha_new <= alpha_max)
     if rejected:
         alpha_new = alpha
 
@@ -348,7 +369,7 @@ def mackay_update_glm(
         log_lik + 0.5 * p * math.log(alpha) - 0.5 * alpha * theta_norm_sq - 0.5 * ld
     )
 
-    return MacKayGLMUpdate(alpha_new, log_ev, rejected)
+    return MacKayGLMUpdate(alpha_new, log_ev, rejected, alpha_min, alpha_max)
 
 
 # The secant step is capped at this many natural-log units of alpha

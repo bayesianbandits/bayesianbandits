@@ -1,6 +1,7 @@
 """Tests for EmpiricalBayesGLM."""
 
 import pickle
+from typing import cast
 from unittest import mock
 
 import numpy as np
@@ -187,9 +188,10 @@ class TestEBGLM:
 
     def test_partial_fit_updates_alpha_and_precision(self, link, sparse):
         X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(
-            _X(X[:100], sparse), y[:100]
-        )
+        # eb_alpha_tol=inf: exactly one MacKay step, so the bookkeeping
+        # below can be checked against that step alone.
+        model = EmpiricalBayesGLM(link=link, sparse=sparse, eb_alpha_tol=np.inf)
+        model.fit(_X(X[:100], sparse), y[:100])
         alpha_before = model.alpha
         ev_before = model.log_evidence_
         diag_before = _diag(model)
@@ -299,6 +301,60 @@ class TestEBGLM:
         assert 0.5 < online.alpha / batch.alpha < 2.0
         np.testing.assert_allclose(online.coef_, batch.coef_, atol=0.3)
 
+    def test_partial_fit_iterates_to_the_fixed_point(self, link, sparse):
+        """After a cold start far from the fixed point, partial_fit keeps
+        stepping on the Laplace approximation it holds until alpha
+        settles, so it lands near where fit on the same data does."""
+        X, y = _simulate(link, n=400, p=40, seed=7, alpha_true=2.0)
+        online = EmpiricalBayesGLM(link=link, sparse=sparse)
+        one_step = EmpiricalBayesGLM(link=link, sparse=sparse, eb_alpha_tol=np.inf)
+        for start in range(0, 400, 20):
+            online.partial_fit(_X(X[start : start + 20], sparse), y[start : start + 20])
+            one_step.partial_fit(
+                _X(X[start : start + 20], sparse), y[start : start + 20]
+            )
+        batch = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=50)
+        batch.fit(_X(X, sparse), y)
+        assert 0.8 < online.alpha / batch.alpha < 1.25
+        np.testing.assert_allclose(online.coef_, batch.coef_, atol=0.1)
+        # and a single step per batch is not enough on the logit data
+        if link == "logit":
+            assert abs(np.log(online.alpha / batch.alpha)) < abs(
+                np.log(one_step.alpha / batch.alpha)
+            )
+
+    def test_partial_fit_in_steady_state_takes_one_step(self, link, sparse):
+        X, y = _simulate(link, n=2000, p=10, seed=5)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(
+            _X(X[:1500], sparse), y[:1500]
+        )
+        import bayesianbandits._eb_estimators as ebm
+
+        with mock.patch.object(
+            ebm.EmpiricalBayesGLM,
+            "_apply_alpha_now",
+            autospec=True,
+            side_effect=ebm.EmpiricalBayesGLM._apply_alpha_now,
+        ) as eager:
+            model.partial_fit(_X(X[1500:1510], sparse), y[1500:1510])
+        eager.assert_not_called()
+
+    def test_alpha_recovers_from_a_no_signal_start(self, link, sparse):
+        """Rows that carry no information push alpha up; the ceiling keeps
+        it finite and theta representable, and once informative rows
+        arrive alpha comes back to what fit finds."""
+        X, y = _simulate(link, n=2000, p=10, seed=7, alpha_true=2.0)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse)
+        model.partial_fit(_X(X[:40], sparse), y[:40])
+        H_max = _diag(model).max() - (model._prior_scalar - model._pending_shift)
+        assert model.alpha <= 1e10 * H_max * (1 + 1e-9)
+        assert np.all(np.isfinite(model.coef_))
+        for start in range(40, 2000, 20):
+            model.partial_fit(_X(X[start : start + 20], sparse), y[start : start + 20])
+        batch = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=50)
+        batch.fit(_X(X, sparse), y)
+        assert 0.8 < model.alpha / batch.alpha < 1.25
+
     def test_sample_before_partial_fit(self, link, sparse):
         X, y = _simulate(link)
         model = EmpiricalBayesGLM(link=link, sparse=sparse)
@@ -368,7 +424,9 @@ class TestEBGLM:
         """With learning_rate < 1 the prior component after partial_fit is
         γⁿ·s_old + (1 - γⁿ)·alpha_old, then rescaled by the MacKay step."""
         X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.95, sparse=sparse)
+        model = EmpiricalBayesGLM(
+            link=link, learning_rate=0.95, sparse=sparse, eb_alpha_tol=np.inf
+        )
         model.fit(_X(X[:100], sparse), y[:100])
         s_old, alpha_old = model._prior_scalar, model.alpha
         g = 0.95**20
@@ -447,7 +505,8 @@ class TestEBGLM:
         assert params["n_eb_iter"] == 3 and params["eb_tol"] == 1e-2
         assert params["link"] == link
         model.set_params(n_eb_iter=7)
-        assert clone(model).n_eb_iter == 7
+        cloned = cast(EmpiricalBayesGLM, clone(model))
+        assert cloned.n_eb_iter == 7
 
     def test_pickle_roundtrip(self, link, sparse):
         X, y = _simulate(link)
