@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import numpy as np
 import pytest
+from bayesianbandits._takahashi import takahashi_diagonal as _cy_takahashi
 from numpy.typing import NDArray
 from scipy.linalg import cho_factor, solve
+from scipy.sparse import block_diag as sp_block_diag
 from scipy.sparse import csc_array
 from scipy.special import expit, gammaln
 
@@ -228,12 +232,100 @@ class TestScaledFactorLogdet:
         np.testing.assert_allclose(scaled_factor.logdet(), dense_expected, atol=1e-10)
 
 
+def _takahashi_raw(L_csc: csc_array, **kwargs: int) -> NDArray[np.float64]:
+    """Call the Cython kernel directly, so tests can reach its blocking
+    parameters. The public wrapper deliberately does not expose them."""
+    if not L_csc.has_sorted_indices:
+        L_csc = L_csc.copy()
+        L_csc.sort_indices()
+    return _cy_takahashi(
+        L_csc.data,
+        L_csc.indices.astype(np.int32),
+        L_csc.indptr.astype(np.int32),
+        cast("tuple[int, int]", L_csc.shape)[0],
+        **kwargs,
+    )
+
+
+# The dense BLAS kernel and the scalar recursion have to agree, and neither
+# may depend on how the block is carved up: ``min_dense_cols`` chooses
+# between the two paths, ``max_dense_cols`` splits a supernode into block
+# columns, and ``panel_bytes`` sets how many columns of Z_RR are formed at a
+# time. Widths of 1 force the most fragmented layout the kernel can take.
+_BLOCKINGS = [
+    pytest.param({"min_dense_cols": 10**8}, id="scalar-only"),
+    pytest.param({"min_dense_cols": 2}, id="dense-from-2-cols"),
+    pytest.param({"min_dense_cols": 2, "max_dense_cols": 1}, id="one-col-blocks"),
+    pytest.param({"min_dense_cols": 2, "max_dense_cols": 3}, id="three-col-blocks"),
+    pytest.param({"min_dense_cols": 2, "panel_bytes": 8}, id="one-col-z-panel"),
+    pytest.param(
+        {"min_dense_cols": 2, "max_dense_cols": 2, "panel_bytes": 24},
+        id="split-block-and-panel",
+    ),
+]
+
+
 # ---------------------------------------------------------------------------
 # 3. Takahashi diagonal recursion
 # ---------------------------------------------------------------------------
 
 
 class TestTakahashiDiagonal:
+    @pytest.mark.cython
+    @pytest.mark.parametrize("blocking", _BLOCKINGS)
+    @pytest.mark.parametrize(
+        "kind", ["dense", "tridiagonal", "banded", "sparse_gram", "block_diagonal"]
+    )
+    def test_every_blocking_agrees_with_dense_inverse(
+        self, kind: str, blocking: dict[str, int]
+    ) -> None:
+        """Both paths, at every block and panel width, match np.linalg.inv."""
+        rng = np.random.default_rng(4)
+        if kind == "dense":
+            A = rng.standard_normal((17, 17))
+            M = A @ A.T + 17.0 * np.eye(17)
+        elif kind == "tridiagonal":
+            off = np.full(29, -1.0)
+            M = np.diag(np.full(30, 4.0)) + np.diag(off, 1) + np.diag(off, -1)
+        elif kind == "banded":
+            M = np.zeros((40, 40))
+            for d in range(-5, 6):
+                M += np.diag(rng.standard_normal(40 - abs(d)) * 0.3, d)
+            M = M @ M.T + 40.0 * np.eye(40)
+        elif kind == "sparse_gram":
+            X = rng.standard_normal((60, 30)) * (rng.random((60, 30)) < 0.1)
+            M = X.T @ X + np.eye(30)
+        else:
+            blocks = []
+            for k in (1, 2, 3, 5, 9, 14):
+                B = rng.standard_normal((k, k))
+                blocks.append(B @ B.T + k * np.eye(k))
+            M = sp_block_diag(blocks).toarray()
+
+        expected = np.diag(np.linalg.inv(M))
+        L_csc = csc_array(np.linalg.cholesky(M))
+
+        result = _takahashi_raw(L_csc, **blocking)
+
+        np.testing.assert_allclose(result, expected, atol=1e-10)
+
+    @pytest.mark.cython
+    def test_empty_matrix(self) -> None:
+        """A 0 x 0 factor returns an empty diagonal rather than reading past
+        the end of its own index arrays."""
+        result = _cy_takahashi(
+            np.zeros(0), np.zeros(0, np.int32), np.zeros(1, np.int32), 0
+        )
+        assert result.shape == (0,)
+
+    @pytest.mark.cython
+    def test_all_columns_trivial(self) -> None:
+        """A diagonal factor has no sub-diagonal structure at all, so every
+        supernode is empty. Reachable whenever a precision is still a
+        multiple of the identity."""
+        result = _takahashi_raw(csc_array(np.eye(5) * 2.0))
+        np.testing.assert_allclose(result, np.full(5, 0.25), atol=1e-14)
+
     @pytest.mark.cython
     def test_dense_spd_matches_inv(self) -> None:
         """Takahashi diagonal matches np.linalg.inv diagonal for small dense SPD."""
