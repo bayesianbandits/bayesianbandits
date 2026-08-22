@@ -1610,11 +1610,15 @@ scipy.sparse.csc_array
         else:
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            # before the in-place update of cov_inv_ below
             eta = compute_eta_dense(
                 prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
-            prior_scaled = np.asfortranarray(self.cov_inv_)
+            # A copy, not a view: dsyrk overwrites this buffer, so aliasing
+            # cov_inv_ would destroy the posterior before cho_factor has had
+            # the chance to reject the update, leaving the new precision
+            # beside the old coef_. cov_inv_ moves at the assignment below or
+            # not at all.
+            prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay
             # Fused X^T W X + prior via dsyrk (upper triangle only)

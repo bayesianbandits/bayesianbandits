@@ -609,7 +609,14 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             prior = cast(csc_array, self.cov_inv_)
             if prior_decay != 1.0:
-                prior.data *= prior_decay  # in place; prior_eta below uses it too
+                # A new data array over the same pattern rather than an
+                # in-place scale, so a solve that fails below leaves cov_inv_
+                # where it was instead of decayed by one step with no data to
+                # show for it. Costs nnz against the addition that follows.
+                prior = csc_array(
+                    (prior.data * prior_decay, prior.indices, prior.indptr),
+                    shape=prior.shape,
+                )
             prior_eta = (
                 prior @ self.coef_ if pending_eta is None else prior_decay * pending_eta
             )
@@ -622,7 +629,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         else:
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            # before the in-place update of cov_inv_ below
             if pending_eta is None:
                 eta = compute_eta_dense(
                     prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
@@ -639,7 +645,11 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     y=prior_decay * pending_eta,
                     overwrite_y=True,
                 )
-            prior_scaled = np.asfortranarray(self.cov_inv_)
+            # A copy, not a view: the scale, the diagonal re-injection and
+            # dsyrk all write this buffer, so aliasing cov_inv_ would destroy
+            # the posterior before cho_factor has had the chance to reject
+            # the update. cov_inv_ moves at the assignment below or not at all.
+            prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay
             if reinjection != 0.0:
