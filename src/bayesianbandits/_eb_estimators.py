@@ -20,6 +20,7 @@ from typing_extensions import Self
 from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
+    batch_sufficient_stats,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
@@ -29,6 +30,7 @@ from ._estimators import (
     GammaRegressor,
     NormalRegressor,
     _invalidate_cached_properties,
+    compute_effective_weights,
 )
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
@@ -274,11 +276,30 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         if update.rejected:
             self.eb_updates_rejected_ += 1
 
+    def _row_weights(
+        self, n_samples: int, sample_weight: Optional[NDArray[Any]]
+    ) -> NDArray[np.float64]:
+        """The effective row weights ``_fit_helper`` builds the precision
+        with: sample weight times within-batch decay."""
+        return compute_effective_weights(n_samples, sample_weight, self.learning_rate)
+
+    def _seed_stats(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> tuple[float, float, NDArray[np.float64]]:
+        """Sufficient statistics for a first batch, under those weights."""
+        return batch_sufficient_stats(
+            X, y, self._row_weights(y.shape[0], sample_weight)
+        )
+
     def _accumulate_stats(
         self,
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         prior_decay: float,
+        sample_weight: Optional[NDArray[Any]],
     ) -> None:
         """Update decayed sufficient statistics for the beta update."""
         self._effective_n, self._eff_yTy, self._eff_XTy = accumulate_sufficient_stats(
@@ -288,6 +309,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X,
             y,
             prior_decay,
+            self._row_weights(y.shape[0], sample_weight),
         )
 
     def fit(
@@ -338,12 +360,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
 
         if self.n_eb_iter > 0:
             # Sufficient stats are constant during batch fitting (no decay)
-            effective_n = float(y.shape[0])
-            eff_yTy = float(y @ y)
-            if isinstance(X_fit, csc_array):
-                eff_XTy = np.asarray(X_fit.T @ y, dtype=np.float64).ravel()
-            else:
-                eff_XTy = np.asarray(X_fit.T @ y, dtype=np.float64)
+            effective_n, eff_yTy, eff_XTy = self._seed_stats(X_fit, y, sample_weight)
 
             prev_evidence = -math.inf
             converged = False
@@ -399,14 +416,9 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         self._prior_scalar = prior_decay * self.alpha
 
         # Initialize sufficient statistics from the fit data.
-        self._effective_n = float(y.shape[0])
-        self._eff_yTy = float(y @ y)
-        if isinstance(X_fit, csc_array):
-            self._eff_XTy: NDArray[np.float64] = np.asarray(
-                X_fit.T @ y, dtype=np.float64
-            ).ravel()
-        else:
-            self._eff_XTy = np.asarray(X_fit.T @ y, dtype=np.float64)
+        self._effective_n, self._eff_yTy, self._eff_XTy = self._seed_stats(
+            X_fit, y, sample_weight
+        )
 
         return self
 
@@ -586,8 +598,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X = csc_array(X)
 
         assert X.shape is not None
-
-        from ._estimators import compute_effective_weights
 
         if sample_weight is None:
             sample_weight = np.ones(X.shape[0], dtype=np.float64)
@@ -771,15 +781,12 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
 
         if not had_prior_scalar:
             # First observation — initialize sufficient statistics.
-            self._effective_n = float(y.shape[0])
-            self._eff_yTy = float(y @ y)
-            if isinstance(X_fit, csc_array):
-                self._eff_XTy = np.asarray(X_fit.T @ y).ravel()
-            else:
-                self._eff_XTy = X_fit.T @ y
+            self._effective_n, self._eff_yTy, self._eff_XTy = self._seed_stats(
+                X_fit, y, sample_weight
+            )
         else:
             # Accumulate sufficient statistics for the beta update.
-            self._accumulate_stats(X_fit, y, prior_decay)
+            self._accumulate_stats(X_fit, y, prior_decay, sample_weight)
 
         self._eb_mackay_step_online()
         self._correct_precision(alpha_old, beta_old)

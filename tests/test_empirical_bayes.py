@@ -538,6 +538,7 @@ class TestSufficientStats:
                 X_dense[[i]],
                 y[[i]],
                 prior_decay=0.99,
+                weights=np.array([2.0]),
             )
             eff_n_s, eff_yTy_s, eff_XTy_s = accumulate_sufficient_stats(
                 eff_n_s,
@@ -546,6 +547,7 @@ class TestSufficientStats:
                 csc_array(X_sparse[[i]]),
                 y[[i]],
                 prior_decay=0.99,
+                weights=np.array([2.0]),
             )
 
         np.testing.assert_allclose(eff_n_s, eff_n_d, atol=1e-10)
