@@ -388,6 +388,96 @@ class TestEBNormalRegressor:
         assert hasattr(model, "_eff_XTy")
         assert model._eff_XTy.shape == (X.shape[1],)
 
+    @staticmethod
+    def _dense_precision(model):
+        """Full symmetric precision (dense cov_inv_ is upper-triangle-only)."""
+        if model.sparse:
+            return model.cov_inv_.toarray()
+        upper = np.triu(model.cov_inv_)
+        return upper + upper.T - np.diag(np.diag(upper))
+
+    def test_partial_fit_keeps_coef_consistent_with_information(
+        self, regression_data, sparse
+    ):
+        """After a MacKay step, Λ·coef_ must equal β·(Xᵀy): the posterior
+        mean has to be re-solved against the rescaled precision."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:50], y[:50])
+        model.partial_fit(X[50:], y[50:])
+
+        ratio_alpha = model.alpha / 1.0
+        ratio_beta = model.beta / 1.0
+        assert not np.isclose(ratio_alpha, ratio_beta)  # a real diagonal shift
+
+        precision = self._dense_precision(model)
+        np.testing.assert_allclose(
+            precision @ model.coef_,
+            model.beta * model._eff_XTy,
+            rtol=1e-8,
+            atol=1e-8,
+        )
+
+    def test_correct_precision_resolves_coef(self, regression_data, sparse):
+        """Direct check of _correct_precision with a forced α/β change."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=0, sparse=sparse
+        )
+        model.fit(X, y)
+
+        alpha_old, beta_old = model.alpha, model.beta
+        prec_old = self._dense_precision(model)
+        coef_old = model.coef_.copy()
+        prior_old = model._prior_scalar
+        data_old = prec_old - prior_old * np.eye(prec_old.shape[0])
+
+        model.alpha = alpha_old * 3.0
+        model.beta = beta_old * 0.5
+        model._correct_precision(alpha_old, beta_old)
+
+        prec_new = self._dense_precision(model)
+        data_new = prec_new - model._prior_scalar * np.eye(prec_new.shape[0])
+        np.testing.assert_allclose(data_new, 0.5 * data_old, rtol=1e-10, atol=1e-12)
+        np.testing.assert_allclose(model._prior_scalar, 3.0 * prior_old)
+
+        eta_new = 0.5 * (prec_old @ coef_old)
+        expected = np.linalg.solve(prec_new, eta_new)
+        np.testing.assert_allclose(model.coef_, expected, rtol=1e-8, atol=1e-10)
+        # The cached factor (rebuilt on demand) agrees with the raw matrix.
+        np.testing.assert_allclose(
+            model._precision_factor.solve(eta_new), expected, rtol=1e-8, atol=1e-10
+        )
+
+    def test_partial_fit_tracks_full_fit(self, sparse):
+        """Chunked partial_fit from far-off α, β must land on the full fit.
+
+        With ``learning_rate=1`` the online learner sees the same
+        sufficient statistics as ``fit``, so its MacKay fixed point is
+        the same one. Before ``_correct_precision`` re-solved ``coef_``
+        it drifted (α off by 1.8x, β off by 0.5x, coef off by 0.3).
+        """
+        rng = np.random.default_rng(7)
+        n, p = 2000, 10
+        X = rng.standard_normal((n, p))
+        w_true = rng.standard_normal(p)
+        y = X @ w_true + 0.5 * rng.standard_normal(n)
+
+        full = EmpiricalBayesNormalRegressor(alpha=1e4, beta=1e-3, sparse=sparse)
+        full.fit(X, y)
+
+        # n_eb_iter=1 keeps the first chunk (which routes to fit) from
+        # converging on its own, so every chunk takes one MacKay step.
+        online = EmpiricalBayesNormalRegressor(
+            alpha=1e4, beta=1e-3, n_eb_iter=1, sparse=sparse
+        )
+        for start in range(0, n, 50):
+            online.partial_fit(X[start : start + 50], y[start : start + 50])
+
+        np.testing.assert_allclose(online.alpha, full.alpha, rtol=1e-2)
+        np.testing.assert_allclose(online.beta, full.beta, rtol=1e-2)
+        np.testing.assert_allclose(online.coef_, full.coef_, atol=1e-3)
+
 
 @pytest.mark.parametrize("sparse", [True, False])
 @pytest.mark.parametrize("trace_method", ["auto", "diagonal"])

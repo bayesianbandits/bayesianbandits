@@ -17,7 +17,7 @@ from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
-from ._blas_helpers import compute_eta_dense, update_precision_dense
+from ._blas_helpers import compute_eta_dense, dsymv, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
     mackay_update_normal_online,
@@ -390,13 +390,25 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             Λ = _prior_scalar·I + data_component
 
         After MacKay changes α and β, rescale both components so the
-        matrix is consistent with the new hyperparameters.
+        matrix is consistent with the new hyperparameters, then re-solve
+        the posterior mean against the rescaled matrix.
+
+        The mean is ``Λ⁻¹·η`` with ``η = β·Xᵀy`` (decayed): the prior has
+        zero mean, so it contributes nothing to the information vector.
+        Leaving ``coef_`` as it was would make the next ``partial_fit``
+        read ``Λ_new·θ_old`` as the prior information, silently
+        re-applying the old shrinkage and the old β. Since
+        ``Λ_old·θ_old = η_old`` exactly, the information under the new
+        noise precision is ``η_new = (β_new/β_old)·Λ_old·θ_old`` and the
+        corrected mean is ``Λ_new⁻¹·η_new``.
 
         A pure rescale (``diag_correction == 0``, i.e. α and β moved by
         the same ratio) is absorbed by the cached factorization, the way
-        ``decay`` absorbs its own. A diagonal shift is a rank-p change
-        that no cheap factor update covers, so there the factor is
-        dropped and the next ``sample()`` pays for a fresh one.
+        ``decay`` absorbs its own, and leaves the mean unchanged
+        (``Λ_new`` and ``η_new`` share the ratio). A diagonal shift is a
+        rank-p change that no cheap factor update covers, so there the
+        factor is dropped and rebuilt for the solve (``sample()`` would
+        need it anyway).
         """
         alpha_new = self.alpha
         beta_new = self.beta
@@ -409,25 +421,48 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         new_prior_scalar = prior_scalar * (alpha_new / alpha_old)
         diag_correction = new_prior_scalar - beta_ratio * prior_scalar
 
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            cov_inv *= beta_ratio
-            self._shift_diagonal(cov_inv, diag_correction)
-            self.cov_inv_ = cov_inv
-        else:
-            self.cov_inv_ *= beta_ratio
-            if diag_correction != 0.0:
-                diag_idx = np.diag_indices_from(self.cov_inv_)
-                self.cov_inv_[diag_idx] += diag_correction
-
-        self._prior_scalar = new_prior_scalar
-        if "_precision_factor" in self.__dict__:
-            if diag_correction == 0.0:
+        if diag_correction == 0.0:
+            # Pure rescale: Λ and η share the ratio, so the mean is unchanged.
+            self._scale_precision(beta_ratio)
+            self._prior_scalar = new_prior_scalar
+            if "_precision_factor" in self.__dict__:
                 self._precision_factor = scale_factor(
                     self._precision_factor, beta_ratio
                 )
-            else:
-                self._drop_factor()
+            return
+
+        # Λ_old·θ_old, read before Λ is touched. The dense matrix is
+        # upper-triangle-only (dsyrk), which dsymv handles.
+        if self.sparse:
+            eta_old = np.asarray(
+                cast(csc_array, self.cov_inv_) @ self.coef_, dtype=np.float64
+            )
+        else:
+            eta_old = dsymv(1.0, self.cov_inv_, self.coef_)
+        eta_new = beta_ratio * eta_old
+
+        self._scale_precision(beta_ratio)
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            self._shift_diagonal(cov_inv, diag_correction)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += diag_correction
+
+        self._prior_scalar = new_prior_scalar
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+        self.coef_ = self._precision_factor.solve(eta_new)
+
+    def _scale_precision(self, ratio: float) -> None:
+        """Multiply ``cov_inv_`` in place by ``ratio``."""
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            cov_inv *= ratio
+            self.cov_inv_ = cov_inv
+        else:
+            self.cov_inv_ *= ratio
 
     def _drop_factor(self) -> None:
         """Drop the cached factor, keeping it as the hint ``_sparse_factor``
