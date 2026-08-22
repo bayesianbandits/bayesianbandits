@@ -98,6 +98,7 @@ for decay as a defensive default).
 
    bayesianbandits.EmpiricalBayesDirichletClassifier
    bayesianbandits.EmpiricalBayesGammaRegressor
+   bayesianbandits.EmpiricalBayesGLM
    bayesianbandits.EmpiricalBayesNormalRegressor
 
 Posterior Approximators

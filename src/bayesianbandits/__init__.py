@@ -96,6 +96,7 @@ for decay as a defensive default).
 
     EmpiricalBayesDirichletClassifier
     EmpiricalBayesGammaRegressor
+    EmpiricalBayesGLM
     EmpiricalBayesNormalRegressor
 
 Posterior Approximators
@@ -130,6 +131,7 @@ from ._draw_kind import DrawKind
 from ._eb_estimators import (
     EmpiricalBayesDirichletClassifier,
     EmpiricalBayesGammaRegressor,
+    EmpiricalBayesGLM,
     EmpiricalBayesNormalRegressor,
 )
 from ._estimators import (
@@ -163,6 +165,7 @@ __all__ = [
     "DirichletClassifier",
     "EmpiricalBayesDirichletClassifier",
     "EmpiricalBayesGammaRegressor",
+    "EmpiricalBayesGLM",
     "EmpiricalBayesNormalRegressor",
     "GammaRegressor",
     "NormalInverseGammaRegressor",

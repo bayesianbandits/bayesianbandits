@@ -1,8 +1,9 @@
 """Empirical Bayes estimators via evidence maximization.
 
-Provides MacKay's update rules for Normal regression, Minka's
-fixed-point iteration for Dirichlet-Multinomial classification,
-and Minka's EM for Gamma-Poisson rate estimation.
+Provides MacKay's update rules for Normal regression and for
+Laplace-approximated GLMs, Minka's fixed-point iteration for
+Dirichlet-Multinomial classification, and Minka's EM for Gamma-Poisson
+rate estimation.
 """
 
 from __future__ import annotations
@@ -20,16 +21,21 @@ from typing_extensions import Self
 from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
+    glm_log_likelihood,
+    mackay_update_glm,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
 )
 from ._estimators import (
+    BayesianGLM,
     DirichletClassifier,
     GammaRegressor,
     NormalRegressor,
     _invalidate_cached_properties,
+    compute_effective_weights,
 )
+from ._gaussian import LaplaceApproximator, LinkFunction, PosteriorApproximator
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -38,7 +44,71 @@ from ._sparse_bayesian_linear_regression import (
 )
 
 
-class EmpiricalBayesNormalRegressor(NormalRegressor):
+class _StabilizedPriorMixin:
+    """Precision-diagonal bookkeeping shared by the EB estimators whose
+    posterior precision is ``_prior_scalar · I + data``.
+
+    Hosts the in-place diagonal shift and the factor-drop that a shift
+    forces; the estimators own ``_prior_scalar`` itself and decide when
+    to re-inject.
+    """
+
+    sparse: bool
+    cov_inv_: Any
+    _factor_hint: Any
+
+    def _drop_factor(self) -> None:
+        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
+        refactorizes from: a diagonal shift leaves the pattern alone."""
+        factor = self.__dict__.pop("_precision_factor")
+        if self.sparse:
+            self._factor_hint = factor
+
+    def _reinject_prior(self, prior_reinjection: float) -> None:
+        """Add stabilized prior re-injection to the precision diagonal.
+
+        After exponential decay the prior contribution shrinks toward zero.
+        This adds back ``prior_reinjection`` to every diagonal entry so that
+        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
+        """
+        if prior_reinjection == 0.0:
+            return
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            self._shift_diagonal(cov_inv, prior_reinjection)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += prior_reinjection
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+
+    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
+        """``cov_inv += shift * I`` in place.
+
+        The diagonal is always stored (the prior is ``alpha * I``), so
+        its positions, found once per pattern by running ``diagonal()``
+        over entry numbers and cached against the index array's
+        identity, make this a gather-add; ``setdiag`` relocates it on
+        every call.
+        """
+        if shift == 0.0:
+            return
+        cached = self.__dict__.get("_diag_pos")
+        if cached is None or cached[0] is not cov_inv.indices:
+            values = cov_inv.data
+            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
+            pos = cov_inv.diagonal().astype(np.intp) - 1
+            cov_inv.data = values
+            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
+                cov_inv.setdiag(cov_inv.diagonal() + shift)
+                return
+            cached = (cov_inv.indices, pos)
+            self._diag_pos = cached
+        cov_inv.data[cached[1]] += shift
+
+
+class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     """Bayesian linear regression with empirical Bayes hyperparameter tuning.
 
     Extends :class:`NormalRegressor` with automatic optimization of the
@@ -498,56 +568,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         else:
             self.cov_inv_ *= ratio
 
-    def _drop_factor(self) -> None:
-        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
-        refactorizes from: a diagonal shift leaves the pattern alone."""
-        factor = self.__dict__.pop("_precision_factor")
-        if self.sparse:
-            self._factor_hint = factor
-
-    def _reinject_prior(self, prior_reinjection: float) -> None:
-        """Add stabilized prior re-injection to the precision diagonal.
-
-        After exponential decay the prior contribution shrinks toward zero.
-        This adds back ``prior_reinjection`` to every diagonal entry so that
-        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
-        """
-        if prior_reinjection == 0.0:
-            return
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            self._shift_diagonal(cov_inv, prior_reinjection)
-            self.cov_inv_ = cov_inv
-        else:
-            diag_idx = np.diag_indices_from(self.cov_inv_)
-            self.cov_inv_[diag_idx] += prior_reinjection
-        if "_precision_factor" in self.__dict__:
-            self._drop_factor()
-
-    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
-        """``cov_inv += shift * I`` in place.
-
-        The diagonal is always stored (the prior is ``alpha * I``), so
-        its positions, found once per pattern by running ``diagonal()``
-        over entry numbers and cached against the index array's
-        identity, make this a gather-add; ``setdiag`` relocates it on
-        every call.
-        """
-        if shift == 0.0:
-            return
-        cached = self.__dict__.get("_diag_pos")
-        if cached is None or cached[0] is not cov_inv.indices:
-            values = cov_inv.data
-            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
-            pos = cov_inv.diagonal().astype(np.intp) - 1
-            cov_inv.data = values
-            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
-                cov_inv.setdiag(cov_inv.diagonal() + shift)
-                return
-            cached = (cov_inv.indices, pos)
-            self._diag_pos = cached
-        cov_inv.data[cached[1]] += shift
-
     @_invalidate_cached_properties
     def _fit_helper(
         self,
@@ -840,6 +860,447 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             self._eff_XTy *= prior_decay
 
         # Base class applies uniform decay: cov_inv_ *= prior_decay
+        super().decay(X, decay_rate=decay_rate)
+
+        self._reinject_prior(prior_reinjection)
+
+
+class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
+    """Bayesian GLM with empirical Bayes tuning of the prior precision.
+
+    Extends :class:`BayesianGLM` with automatic optimization of the
+    prior precision ``alpha`` via MacKay's evidence framework [1]_
+    applied to the Laplace approximation. The GLM posterior is already
+    a Gaussian centred on the MAP with the Hessian as precision, so
+    MacKay's update slots in directly: with
+    :math:`\\gamma = p - s\\,\\operatorname{tr}(\\Lambda^{-1})` (``s`` the
+    prior's contribution to the diagonal of :math:`\\Lambda`),
+    :math:`\\alpha_{\\text{new}} = \\gamma / \\|\\theta_{\\text{MAP}}\\|^2`.
+
+    During ``fit``, IRLS and MacKay steps alternate until the Laplace
+    log evidence converges. During ``partial_fit``, one MacKay step is
+    taken on the current Laplace approximation and the precision's
+    prior component is rescaled to the new ``alpha``; the MAP itself
+    is re-centred by the next update.
+
+    MacKay's update treats the data Hessian as fixed in ``alpha``,
+    while the Laplace evidence also depends on ``alpha`` through the
+    curvature at the mode, so the fixed point lies very near but not
+    exactly at the evidence maximum (relative discrepancies of order
+    1e-6 in practice), and the evidence can tick down by that much in
+    the final EB iterations.
+
+    When ``learning_rate < 1``, *stabilized forgetting* [2]_ re-injects
+    ``(1 - γⁿ)·alpha`` onto the precision diagonal after each decay so
+    the prior's contribution converges to ``alpha`` instead of
+    vanishing, which keeps ``alpha`` tuning load-bearing indefinitely.
+
+    Parameters
+    ----------
+    alpha : float, default=1.0
+        Initial prior precision. Updated automatically during fitting.
+    link : {'logit', 'log'}, default='logit'
+        Link function; see :class:`BayesianGLM`.
+    n_eb_iter : int, default=10
+        Maximum number of EB iterations during ``fit``. Each iteration
+        re-runs the posterior approximation from the prior and takes
+        one MacKay step. Set to 0 to disable EB tuning during ``fit``.
+    eb_tol : float, default=1e-4
+        Convergence tolerance on the change in log evidence between
+        successive EB iterations.
+    learning_rate : float, default=1.0
+        Decay rate for sequential updates; see :class:`BayesianGLM`.
+    approximator : PosteriorApproximator, optional
+        Posterior approximation strategy. Defaults to
+        ``LaplaceApproximator(n_iter=25, tol=1e-6)`` rather than the
+        base class's 5 fixed iterations: the evidence is only a Laplace
+        evidence when the Hessian is taken at the mode, so ``fit``
+        needs IRLS to actually converge. With an ``RVGAApproximator``
+        the precision is an expected rather than observed curvature and
+        ``log_evidence_`` is a heuristic; the ``alpha`` update is still
+        well-defined.
+    sparse : bool, default=False
+        Use sparse precision matrices; see :class:`BayesianGLM`.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``.
+    trace_method : {'auto', 'diagonal'}, default='auto'
+        Method for :math:`\\operatorname{tr}(\\Lambda^{-1})` in the
+        MacKay update; see :class:`EmpiricalBayesNormalRegressor`.
+
+    Attributes
+    ----------
+    log_evidence_ : float
+        Laplace log evidence at the most recent MacKay step, or
+        ``-inf`` if ``n_eb_iter=0``. After ``fit`` it is exact for the
+        fitted data. Under ``partial_fit`` the log-likelihood term is a
+        decayed running sum of each batch's log-likelihood at the MAP
+        right after that batch, since earlier batches are not
+        re-evaluated at later coefficients.
+    n_eb_iterations_ : int
+        Number of EB iterations performed during the last ``fit``.
+    eb_converged_ : bool
+        Whether the EB loop converged within ``eb_tol`` during the
+        last ``fit``.
+    eb_updates_rejected_ : int
+        Number of MacKay updates declined by the ill-conditioning
+        guardrail since the last ``fit``; see
+        :class:`EmpiricalBayesNormalRegressor`.
+
+    See Also
+    --------
+    BayesianGLM : Base estimator without empirical Bayes tuning.
+    EmpiricalBayesNormalRegressor : The Gaussian-likelihood analogue.
+
+    References
+    ----------
+    .. [1] MacKay, D. J. C. (1992). "Bayesian Interpolation",
+       Neural Computation 4(3), 415-447.
+    .. [2] Kulhavý, R. and Zarrop, M. B. (1993). "On a general concept
+       of forgetting", International Journal of Control 58(4), 905-924.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        *,
+        link: LinkFunction = "logit",
+        n_eb_iter: int = 10,
+        eb_tol: float = 1e-4,
+        learning_rate: float = 1.0,
+        approximator: Optional[PosteriorApproximator] = None,
+        sparse: bool = False,
+        random_state: Union[int, np.random.Generator, None] = None,
+        trace_method: str = "auto",
+    ) -> None:
+        super().__init__(
+            alpha=alpha,
+            link=link,
+            learning_rate=learning_rate,
+            approximator=approximator,
+            sparse=sparse,
+            random_state=random_state,
+        )
+        self.n_eb_iter = n_eb_iter
+        self.eb_tol = eb_tol
+        self.trace_method = trace_method
+
+    def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        super()._initialize_prior(X)
+        if self.approximator is None:
+            self.approximator_ = LaplaceApproximator(n_iter=25, tol=1e-6)
+
+    @_invalidate_cached_properties
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> None:
+        """Base-class update with the stabilized-forgetting floor passed
+        through, so re-injection is folded into the approximator's own
+        factorization rather than costing a second one."""
+        prior_factor: Optional[Any] = (
+            self.__dict__.get("_precision_factor") if self.sparse else None
+        )
+        posterior = self.approximator_.update_posterior(
+            X,
+            y,
+            self.coef_,
+            self.cov_inv_,  # type: ignore
+            link=self.link,
+            sample_weight=sample_weight,
+            learning_rate=self.learning_rate,
+            sparse=self.sparse,
+            prior_factor=prior_factor,
+            prior_floor=getattr(self, "_pending_floor", 0.0),
+        )
+        self.coef_ = posterior.mean
+        self.cov_inv_ = posterior.precision
+        if posterior.factor is not None:
+            if self.sparse:
+                self._precision_factor = posterior.factor
+            else:
+                cho = posterior.factor
+                self._precision_factor = DenseFactor(
+                    _U=cho[0], _n_features=cho[0].shape[0]
+                )
+
+    def _log_likelihood(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> float:
+        """Log-likelihood at ``coef_`` under the same effective row
+        weights (sample weight times within-batch decay) the posterior
+        update used."""
+        weights = compute_effective_weights(
+            y.shape[0], sample_weight, self.learning_rate
+        )
+        return glm_log_likelihood(X, y, self.coef_, self.link, weights)
+
+    def _eb_mackay_step(self) -> None:
+        update = mackay_update_glm(
+            self.coef_,
+            self.cov_inv_,
+            self.alpha,
+            self._prior_scalar,
+            self._effective_n,
+            self._eff_loglik,
+            factor=self._precision_factor,
+            trace_method=self.trace_method,
+        )
+        self.alpha = update.alpha
+        self.log_evidence_ = update.log_evidence
+        if update.rejected:
+            self.eb_updates_rejected_ += 1
+
+    def fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Fit the model with empirical Bayes tuning of ``alpha``.
+
+        Alternates the posterior approximation (IRLS from the prior
+        ``alpha·I``) with MacKay updates of ``alpha`` until the Laplace
+        log evidence changes by less than ``eb_tol``, then refits with
+        the converged ``alpha``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values; 0/1 for ``link='logit'``, counts for
+            ``link='log'``.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : EmpiricalBayesGLM
+
+        See Also
+        --------
+        partial_fit : Incremental update with one online MacKay step.
+        """
+        X_fit, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        prior_decay = self.learning_rate ** y.shape[0]
+        self.eb_updates_rejected_ = 0
+        self._pending_floor = 0.0
+        self._effective_n = float(y.shape[0])
+
+        if self.n_eb_iter > 0:
+            prev_evidence = -math.inf
+            converged = False
+            iterations = 0
+            log_ev = -math.inf
+
+            for i in range(self.n_eb_iter):
+                self._initialize_prior(X_fit)
+                self._fit_helper(X_fit, y, sample_weight)
+                # After a fresh fit: Λ = prior_decay·α·I + H_data
+                self._prior_scalar = prior_decay * self.alpha
+                self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
+
+                self._eb_mackay_step()
+                log_ev = self.log_evidence_
+                iterations = i + 1
+
+                if abs(log_ev - prev_evidence) < self.eb_tol:
+                    converged = True
+                    break
+                prev_evidence = log_ev
+
+            self._initialize_prior(X_fit)
+            self._fit_helper(X_fit, y, sample_weight)
+
+            self.log_evidence_ = log_ev
+            self.n_eb_iterations_ = iterations
+            self.eb_converged_ = converged
+        else:
+            self._initialize_prior(X_fit)
+            self._fit_helper(X_fit, y, sample_weight)
+            self.log_evidence_ = -math.inf
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+
+        self._prior_scalar = prior_decay * self.alpha
+        self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
+        return self
+
+    @_invalidate_cached_properties
+    def _correct_precision(self, alpha_old: float) -> None:
+        """Move the Laplace posterior to the new alpha.
+
+        ``Λ = _prior_scalar·I + H_data``; only the prior part moves, by
+        the ratio ``alpha / alpha_old``. With no noise precision to
+        co-scale this is always a diagonal shift, which no cheap factor
+        update covers, so the factor is rebuilt.
+
+        The mode moves too. Around ``θ_old`` the log-likelihood's
+        quadratic model has information ``H·θ_old + g = Λ_old·θ_old``
+        (the gradient at the mode is ``alpha_old·θ_old``), so the mode
+        under the new prior is ``Λ_new⁻¹·Λ_old·θ_old``. Leaving ``θ``
+        where it was would make the next update read the data's
+        information as ``Λ_new·θ_old``, re-applying the old shrinkage
+        every step; the mean solve costs one triangular pair against
+        the factor ``sample()`` needs anyway.
+        """
+        if self.alpha == alpha_old:
+            return
+        ratio = self.alpha / alpha_old
+        shift = (ratio - 1.0) * self._prior_scalar
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)
+            self._shift_diagonal(cov_inv, shift)
+            self.cov_inv_ = cov_inv
+        else:
+            # dsyrk leaves only the upper triangle populated.
+            data_eta = dsymv(1.0, self.cov_inv_, self.coef_)
+            self.cov_inv_[np.diag_indices_from(self.cov_inv_)] += shift
+        self._prior_scalar *= ratio
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+        self.coef_ = self._precision_factor.solve(data_eta)
+
+    def partial_fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Incrementally update the posterior and retune ``alpha``.
+
+        Runs the base-class update from the current posterior (with
+        stabilized re-injection of ``(1 - γⁿ)·alpha`` when
+        ``learning_rate < 1``), then takes one MacKay step on the
+        resulting Laplace approximation and rescales the precision's
+        prior component to the new ``alpha``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : EmpiricalBayesGLM
+
+        See Also
+        --------
+        fit : Fit from scratch with the full EB loop.
+        decay : Increase uncertainty without observing new data.
+        """
+        had_prior_scalar = hasattr(self, "_prior_scalar")
+
+        n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
+        prior_decay = self.learning_rate**n_samples
+
+        if had_prior_scalar:
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+        self._pending_floor = self.alpha if had_prior_scalar else 0.0
+
+        alpha_old = self.alpha
+
+        result = super().partial_fit(X, y, sample_weight)
+
+        self._pending_floor = 0.0
+
+        if not had_prior_scalar:
+            if hasattr(self, "_prior_scalar"):
+                # fit() ran inside super().partial_fit() and did the EB loop.
+                return result
+
+            # sample()/predict() previously called _initialize_prior, so the
+            # base class took the incremental path instead of fit(). The
+            # precision is prior_decay·alpha_old·I + H_data; start the EB
+            # state here.
+            self._prior_scalar = prior_decay * alpha_old
+            self.eb_updates_rejected_ = 0
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+            self._effective_n = 0.0
+            self._eff_loglik = 0.0
+
+        X_fit, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=False,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._effective_n = prior_decay * self._effective_n + float(y.shape[0])
+        self._eff_loglik = prior_decay * self._eff_loglik + self._log_likelihood(
+            X_fit, y, sample_weight
+        )
+
+        self._eb_mackay_step()
+        self._correct_precision(alpha_old)
+
+        return result
+
+    def decay(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """
+        Decay the precision matrix with stabilized prior re-injection.
+
+        Applies ``Λ_new = γⁿ·Λ_old`` and re-injects ``(1 - γⁿ)·alpha``
+        onto the diagonal (Kulhavý & Zarrop 1993), so the prior's
+        contribution converges to ``alpha`` rather than zero. The
+        running statistics behind ``log_evidence_`` decay alongside.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only for its number of rows ``n``.
+        decay_rate : float, default=None
+            Decay factor in (0, 1]. If None, uses ``learning_rate``.
+        """
+        if not hasattr(self, "coef_"):
+            return
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        assert X.shape is not None
+        prior_decay = decay_rate ** X.shape[0]
+
+        prior_reinjection = 0.0
+        if hasattr(self, "_prior_scalar"):
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+            prior_reinjection = (1 - prior_decay) * self.alpha
+        if hasattr(self, "_effective_n"):
+            self._effective_n *= prior_decay
+            self._eff_loglik *= prior_decay
+
         super().decay(X, decay_rate=decay_rate)
 
         self._reinject_prior(prior_reinjection)
