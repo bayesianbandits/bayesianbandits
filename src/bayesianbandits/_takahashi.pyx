@@ -139,18 +139,11 @@ cdef inline void _scalar_column(
     z_diag[j] = inv_l_jj * inv_l_jj * (1.0 + dot)
 
 
-# Workspace for one supernode's dense block, in doubles. The block is laid
-# out flat, Fortran-ordered, each piece with the exact leading dimension of
-# its own shape:
-#
-#     L_SS (S x S) | M (S x S) | L_RS (m x S) | W (m x S) | Z_B (m x cols)
-#
-# The first four are the supernode's own data, or the output written back
-# over it, so they are bounded by what it already occupies in ``data``.
-# ``Z_B`` is a column panel of the symmetric ``Z_RR``, and its width is
-# chosen so the panel costs a fixed number of bytes however tall the
-# supernode is. No term grows with ``m * m``, which is what keeps the peak
-# independent of how badly the factor fills in.
+# Workspace for one supernode's dense block, in doubles, laid out flat and
+# Fortran-ordered: L_SS (S x S) | M (S x S) | L_RS (m x S) | W (m x S) |
+# Z_B (m x cols). Z_B is a column panel of the symmetric Z_RR, sized so no
+# term grows with m * m — that's what keeps the peak workspace bounded
+# regardless of fill-in.
 cdef inline Py_ssize_t _dense_work(
     int S, int m, Py_ssize_t panel_bytes, int *panel_cols
 ) noexcept nogil:
@@ -183,20 +176,15 @@ def takahashi_diagonal(
     indices : int32 array — CSC row indices
     indptr : int32 array — CSC column pointers
     p : int — matrix dimension
-    min_dense_cols : int — a supernode of this many columns or more goes
-        through the dense BLAS kernel; narrower ones run the scalar
-        recursion per column, having too few columns to amortize the copy
-        into the dense block. Internal: exposed so tests can force the
-        scalar path and compare, not as a tuning knob.
-    max_dense_cols : int — widest block column handed to the dense kernel.
-        Wider supernodes are split into block columns of this width, which
-        bounds the ``S x S`` buffers at ``2 * max_dense_cols ** 2``, about
-        17 MB at the default. Every value in 512..2048 measured the same on
-        factors whose supernodes fit anyway; the cap is what keeps a
-        fill-heavy factor from asking for gigabytes. Internal, in the same
-        sense.
+    min_dense_cols : int — supernodes with at least this many columns take
+        the dense BLAS path; narrower ones run the scalar recursion.
+        Internal: exposed for tests, not a tuning knob.
+    max_dense_cols : int — widest block column handed to the dense kernel;
+        wider supernodes are split. Bounds the ``S x S`` buffers at
+        ``2 * max_dense_cols ** 2`` (~17 MB at the default) regardless of
+        fill-in. Internal.
     panel_bytes : int — cache-blocking size for the ``Z_RR`` column panel,
-        in bytes. Internal, in the same sense.
+        in bytes. Internal.
 
     Returns
     -------
@@ -231,13 +219,9 @@ def takahashi_diagonal(
     cdef int[::1] starts = np.empty(p + 1, dtype=np.int32)
     cdef int n_super = _supernode_starts(indices, indptr, p, starts)
 
-    # Cap the width handed to the dense kernel. A block column of a
-    # supernode is itself a supernode of the columns to its right: its
-    # sub-diagonal pattern is exactly theirs plus those columns. So this is
-    # a refinement of the partition rather than a change of algorithm, and
-    # it is what bounds the S x S buffers however wide the real supernode
-    # is. Widths are balanced so a split never leaves a sliver too narrow
-    # for the dense path.
+    # Split wide supernodes into balanced block columns, each itself a valid
+    # supernode of the columns to its right, so this bounds the S x S
+    # buffers without changing the algorithm.
     cdef int s, f, l, S, m, cols = 0
     cdef int[::1] blocks = np.empty(p + 1, dtype=np.int32)
     cdef int n_blocks = 0, pieces, width
@@ -258,11 +242,8 @@ def takahashi_diagonal(
             j += width
     blocks[n_blocks] = p
 
-    # One flat workspace, in the LAPACK ``lwork`` sense: the largest single
-    # dense block, not a cross product of maxima taken over unrelated
-    # supernodes. ``_dense_work`` sizes it here and lays it out below, so the
-    # two cannot drift apart, and supernodes that take the scalar path are
-    # not counted at all.
+    # One flat workspace sized to the largest single dense block (LAPACK
+    # ``lwork`` style), not a cross product of maxima over unrelated blocks.
     cdef Py_ssize_t need, lwork = 0
     for s in range(n_blocks):
         f = blocks[s]
@@ -321,11 +302,8 @@ def takahashi_diagonal(
                 LRS[i + k * m] = data[col_start + S - k + i]
 
         if m > 0:
-            # W = Z_RR L_RS, without ever forming Z_RR. Split the symmetric
-            # Z_RR into D + Z + Z', Z strictly lower, and walk Z one column
-            # panel at a time: scattering Z's column r_b fills that panel
-            # column for every row below it, and the panel then feeds both
-            # gemms while it is still in cache.
+            # W = Z_RR L_RS without forming Z_RR: split it into D + Z + Z'
+            # (Z strictly lower) and walk Z one column panel at a time.
             for a in range(m):
                 zd = z_diag[indices[c0 + S + a]]
                 for k in range(S):

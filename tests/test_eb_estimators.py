@@ -1629,15 +1629,7 @@ class TestEBGammaRegressor:
 
 
 class TestFailedUpdateLeavesEstimatorIntact:
-    """A ``partial_fit`` that raises must not have moved the posterior.
-
-    The dense update writes the new precision over ``cov_inv_``'s own buffer
-    (``dsyrk`` overwrites its ``C``), and the sparse EB update scales
-    ``cov_inv_.data``. Both happen before the factorization that can reject
-    the update, so without a copy a raise leaves the new precision sitting
-    beside the old ``coef_``: a posterior that was never anybody's, and one
-    a long-running agent would keep drawing from.
-    """
+    """A ``partial_fit`` that raises must not have moved the posterior."""
 
     @pytest.mark.parametrize("cls", [NormalRegressor, EmpiricalBayesNormalRegressor])
     @pytest.mark.parametrize("sparse", [False, True])

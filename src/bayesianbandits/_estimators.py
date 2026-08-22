@@ -1613,11 +1613,8 @@ scipy.sparse.csc_array
             eta = compute_eta_dense(
                 prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
             )
-            # A copy, not a view: dsyrk overwrites this buffer, so aliasing
-            # cov_inv_ would destroy the posterior before cho_factor has had
-            # the chance to reject the update, leaving the new precision
-            # beside the old coef_. cov_inv_ moves at the assignment below or
-            # not at all.
+            # Copy, not a view: dsyrk below writes this buffer, so aliasing cov_inv_
+            # would corrupt it before cho_factor gets a chance to reject the update.
             prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay

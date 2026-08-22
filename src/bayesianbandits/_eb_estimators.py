@@ -609,10 +609,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             prior = cast(csc_array, self.cov_inv_)
             if prior_decay != 1.0:
-                # A new data array over the same pattern rather than an
-                # in-place scale, so a solve that fails below leaves cov_inv_
-                # where it was instead of decayed by one step with no data to
-                # show for it. Costs nnz against the addition that follows.
+                # New data array, not in-place: leaves cov_inv_ untouched if the solve below fails.
                 prior = csc_array(
                     (prior.data * prior_decay, prior.indices, prior.indptr),
                     shape=prior.shape,
@@ -634,8 +631,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
                 )
             else:
-                # As compute_eta_dense, with its dsymv already done: dgemv
-                # accumulates the data term into the same buffer.
+                # As compute_eta_dense, but dgemv accumulates onto the already-done dsymv term.
                 eta = dgemv(
                     self.beta,
                     X,
@@ -645,10 +641,8 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
                     y=prior_decay * pending_eta,
                     overwrite_y=True,
                 )
-            # A copy, not a view: the scale, the diagonal re-injection and
-            # dsyrk all write this buffer, so aliasing cov_inv_ would destroy
-            # the posterior before cho_factor has had the chance to reject
-            # the update. cov_inv_ moves at the assignment below or not at all.
+            # Copy, not a view: dsyrk below writes this buffer, so aliasing cov_inv_
+            # would corrupt it before cho_factor gets a chance to reject the update.
             prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay

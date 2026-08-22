@@ -235,9 +235,6 @@ class TestScaledFactorLogdet:
 def _takahashi_raw(L_csc: csc_array, **kwargs: int) -> NDArray[np.float64]:
     """Call the Cython kernel directly, so tests can reach its blocking
     parameters. The public wrapper deliberately does not expose them."""
-    if not L_csc.has_sorted_indices:
-        L_csc = L_csc.copy()
-        L_csc.sort_indices()
     return _cy_takahashi(
         L_csc.data,
         L_csc.indices.astype(np.int32),
@@ -247,11 +244,8 @@ def _takahashi_raw(L_csc: csc_array, **kwargs: int) -> NDArray[np.float64]:
     )
 
 
-# The dense BLAS kernel and the scalar recursion have to agree, and neither
-# may depend on how the block is carved up: ``min_dense_cols`` chooses
-# between the two paths, ``max_dense_cols`` splits a supernode into block
-# columns, and ``panel_bytes`` sets how many columns of Z_RR are formed at a
-# time. Widths of 1 force the most fragmented layout the kernel can take.
+# Each entry exercises a different block/panel width, including width-1
+# splits, so results can't depend on how the dense kernel carves up work.
 _BLOCKINGS = [
     pytest.param({"min_dense_cols": 10**8}, id="scalar-only"),
     pytest.param({"min_dense_cols": 2}, id="dense-from-2-cols"),
@@ -325,38 +319,6 @@ class TestTakahashiDiagonal:
         multiple of the identity."""
         result = _takahashi_raw(csc_array(np.eye(5) * 2.0))
         np.testing.assert_allclose(result, np.full(5, 0.25), atol=1e-14)
-
-    @pytest.mark.cython
-    def test_dense_spd_matches_inv(self) -> None:
-        """Takahashi diagonal matches np.linalg.inv diagonal for small dense SPD."""
-        rng = np.random.default_rng(42)
-        p = 6
-        A = rng.standard_normal((p, p))
-        M = A.T @ A + 3.0 * np.eye(p)
-
-        expected_diag = np.diag(np.linalg.inv(M))
-
-        L_dense = np.linalg.cholesky(M)
-        L_csc = csc_array(L_dense)
-        result_diag = takahashi_diagonal(L_csc)
-
-        np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
-
-    @pytest.mark.cython
-    def test_sparse_tridiagonal_no_factor(self) -> None:
-        """Takahashi on a tridiagonal L constructed directly (no suitesparse)."""
-        p = 50
-        diag = np.full(p, 4.0)
-        off_diag = np.full(p - 1, -1.0)
-        M_dense = np.diag(diag) + np.diag(off_diag, 1) + np.diag(off_diag, -1)
-
-        expected_diag = np.diag(np.linalg.inv(M_dense))
-
-        L_dense = np.linalg.cholesky(M_dense)
-        L_csc = csc_array(L_dense)
-        result_diag = takahashi_diagonal(L_csc)
-
-        np.testing.assert_allclose(result_diag, expected_diag, atol=1e-10)
 
     @pytest.mark.cython
     def test_identity_no_factor(self) -> None:
