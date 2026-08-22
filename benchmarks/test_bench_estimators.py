@@ -5,7 +5,10 @@ import pytest
 from scipy.sparse import csc_array
 from scipy.sparse import random as sparse_random
 
-from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
+from bayesianbandits._eb_estimators import (
+    EmpiricalBayesGLM,
+    EmpiricalBayesNormalRegressor,
+)
 from bayesianbandits._estimators import (
     BayesianGLM,
     NormalInverseGammaRegressor,
@@ -691,6 +694,220 @@ def test_partial_fit_eb_normal_sparse_100k(benchmark, eb_normal_sparse_100k_fres
 def test_decay_eb_normal_sparse_100k(benchmark, eb_normal_sparse_100k_fresh):
     def run():
         est, X, _ = eb_normal_sparse_100k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- eb_glm dense_100 -----------------------------------------------------
+
+
+def test_fit_eb_glm_dense_100(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 100))
+    true_coef = np.zeros(100)
+    true_coef[:50] = rng.standard_normal(50) * 2.0
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-(X @ true_coef)))).astype(np.float64)
+
+    def run():
+        est = EmpiricalBayesGLM(
+            alpha=1.0, link="logit", learning_rate=0.99999, sparse=False
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_eb_glm_dense_100(benchmark, eb_glm_dense_100):
+    est, X, _ = eb_glm_dense_100
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_eb_glm_dense_100(benchmark, eb_glm_dense_100):
+    est, X, _ = eb_glm_dense_100
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_eb_glm_dense_100(benchmark, eb_glm_dense_100):
+    est, X, _ = eb_glm_dense_100
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_eb_glm_dense_100(benchmark, eb_glm_dense_100_fresh):
+    rng = np.random.default_rng(99)
+
+    def run():
+        est, X, _ = eb_glm_dense_100_fresh()
+        y = rng.integers(0, 2, size=X.shape[0]).astype(np.float64)
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_eb_glm_dense_100(benchmark, eb_glm_dense_100_fresh):
+    def run():
+        est, X, _ = eb_glm_dense_100_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- eb_glm dense_1k ------------------------------------------------------
+
+
+def test_fit_eb_glm_dense_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = rng.standard_normal((200, 1000))
+    true_coef = np.zeros(1000)
+    true_coef[:50] = rng.standard_normal(50) * 2.0
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-(X @ true_coef)))).astype(np.float64)
+
+    def run():
+        est = EmpiricalBayesGLM(
+            alpha=1.0, link="logit", learning_rate=0.99999, sparse=False
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_eb_glm_dense_1k(benchmark, eb_glm_dense_1k):
+    est, X, _ = eb_glm_dense_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_eb_glm_dense_1k(benchmark, eb_glm_dense_1k):
+    est, X, _ = eb_glm_dense_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_eb_glm_dense_1k(benchmark, eb_glm_dense_1k):
+    est, X, _ = eb_glm_dense_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_eb_glm_dense_1k(benchmark, eb_glm_dense_1k_fresh):
+    rng = np.random.default_rng(99)
+
+    def run():
+        est, X, _ = eb_glm_dense_1k_fresh()
+        y = rng.integers(0, 2, size=X.shape[0]).astype(np.float64)
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_eb_glm_dense_1k(benchmark, eb_glm_dense_1k_fresh):
+    def run():
+        est, X, _ = eb_glm_dense_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- eb_glm sparse_1k -----------------------------------------------------
+
+
+def test_fit_eb_glm_sparse_1k(benchmark):
+    rng = np.random.default_rng(42)
+    X = csc_array(sparse_random(200, 1000, density=0.01, random_state=42))
+    true_coef = np.zeros(1000)
+    true_coef[:50] = rng.standard_normal(50) * 2.0
+    eta = np.asarray(X @ true_coef).ravel()
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-eta))).astype(np.float64)
+
+    def run():
+        est = EmpiricalBayesGLM(
+            alpha=1.0, link="logit", learning_rate=0.99999, sparse=True
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_eb_glm_sparse_1k(benchmark, eb_glm_sparse_1k):
+    est, X, _ = eb_glm_sparse_1k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_eb_glm_sparse_1k(benchmark, eb_glm_sparse_1k):
+    est, X, _ = eb_glm_sparse_1k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_eb_glm_sparse_1k(benchmark, eb_glm_sparse_1k):
+    est, X, _ = eb_glm_sparse_1k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_eb_glm_sparse_1k(benchmark, eb_glm_sparse_1k_fresh):
+    rng = np.random.default_rng(99)
+
+    def run():
+        est, X, _ = eb_glm_sparse_1k_fresh()
+        y = rng.integers(0, 2, size=X.shape[0]).astype(np.float64)
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_eb_glm_sparse_1k(benchmark, eb_glm_sparse_1k_fresh):
+    def run():
+        est, X, _ = eb_glm_sparse_1k_fresh()
+        est.decay(X, decay_rate=0.99)
+
+    benchmark(run)
+
+
+# -- eb_glm sparse_100k ---------------------------------------------------
+
+
+def test_fit_eb_glm_sparse_100k(benchmark):
+    rng = np.random.default_rng(42)
+    X = csc_array(sparse_random(200, 100000, density=0.001, random_state=42))
+    true_coef = np.zeros(100000)
+    true_coef[:50] = rng.standard_normal(50) * 2.0
+    eta = np.asarray(X @ true_coef).ravel()
+    y = rng.binomial(1, 1.0 / (1.0 + np.exp(-eta))).astype(np.float64)
+
+    def run():
+        est = EmpiricalBayesGLM(
+            alpha=1.0, link="logit", learning_rate=0.99999, sparse=True
+        )
+        est.fit(X, y)
+
+    benchmark(run)
+
+
+def test_sample_1_eb_glm_sparse_100k(benchmark, eb_glm_sparse_100k):
+    est, X, _ = eb_glm_sparse_100k
+    benchmark(est.sample, X, size=1)
+
+
+def test_sample_10_eb_glm_sparse_100k(benchmark, eb_glm_sparse_100k):
+    est, X, _ = eb_glm_sparse_100k
+    benchmark(est.sample, X, size=10)
+
+
+def test_predict_eb_glm_sparse_100k(benchmark, eb_glm_sparse_100k):
+    est, X, _ = eb_glm_sparse_100k
+    benchmark(est.predict, X)
+
+
+def test_partial_fit_eb_glm_sparse_100k(benchmark, eb_glm_sparse_100k_fresh):
+    rng = np.random.default_rng(99)
+
+    def run():
+        est, X, _ = eb_glm_sparse_100k_fresh()
+        y = rng.integers(0, 2, size=X.shape[0]).astype(np.float64)
+        est.partial_fit(X, y)
+
+    benchmark(run)
+
+
+def test_decay_eb_glm_sparse_100k(benchmark, eb_glm_sparse_100k_fresh):
+    def run():
+        est, X, _ = eb_glm_sparse_100k_fresh()
         est.decay(X, decay_rate=0.99)
 
     benchmark(run)

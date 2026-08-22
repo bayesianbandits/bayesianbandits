@@ -879,9 +879,10 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
     During ``fit``, IRLS and MacKay steps alternate until the Laplace
     log evidence converges. During ``partial_fit``, one MacKay step is
-    taken on the current Laplace approximation and the precision's
-    prior component is rescaled to the new ``alpha``; the MAP itself
-    is re-centred by the next update.
+    taken on the current Laplace approximation; the resulting change to
+    ``alpha`` is folded into the next update's factorization rather
+    than costing one of its own, so between updates the posterior is
+    the coherent one under the previous ``alpha``.
 
     MacKay's update treats the data Hessian as fixed in ``alpha``,
     while the Laplace evidence also depends on ``alpha`` through the
@@ -918,7 +919,12 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         needs IRLS to actually converge. With an ``RVGAApproximator``
         the precision is an expected rather than observed curvature and
         ``log_evidence_`` is a heuristic; the ``alpha`` update is still
-        well-defined.
+        well-defined. A custom approximator must accept the
+        ``prior_floor``, ``prior_shift`` and ``coef_init`` keywords of
+        :class:`PosteriorApproximator`: the first two are how this
+        estimator applies stabilized forgetting and MacKay's change to
+        ``alpha`` without a factorization of its own, the last is the
+        warm start between EB iterations of ``fit``.
     sparse : bool, default=False
         Use sparse precision matrices; see :class:`BayesianGLM`.
     random_state : int, np.random.Generator, or None, default=None
@@ -989,6 +995,21 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         if self.approximator is None:
             self.approximator_ = LaplaceApproximator(n_iter=25, tol=1e-6)
 
+    def _restart_from_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        """Reset to the prior ``alpha·I`` for the next EB iteration, but
+        keep what the previous iteration learned about the problem: its
+        sparse factor (the pattern of ``alpha·I + H`` never changes, so
+        the next IRLS refactorizes numerically instead of re-analysing)
+        and its mode (a warm start one or two Newton steps from the new
+        one, instead of starting from zero)."""
+        warm_start = self.__dict__.get("coef_")
+        hint = self.__dict__.pop("_precision_factor", None)
+        self._initialize_prior(X)
+        if warm_start is not None and warm_start.shape == self.coef_.shape:
+            self._warm_start = warm_start
+        if hint is not None and self.sparse:
+            self._factor_hint = hint
+
     @_invalidate_cached_properties
     def _fit_helper(
         self,
@@ -996,12 +1017,11 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:
-        """Base-class update with the stabilized-forgetting floor passed
-        through, so re-injection is folded into the approximator's own
-        factorization rather than costing a second one."""
-        prior_factor: Optional[Any] = (
-            self.__dict__.get("_precision_factor") if self.sparse else None
-        )
+        """Base-class update with the stabilized-forgetting floor and any
+        deferred alpha correction passed through, so both are folded
+        into the approximator's own factorization rather than costing
+        a second one."""
+        prior_factor: Optional[Any] = self._take_factor_hint() if self.sparse else None
         posterior = self.approximator_.update_posterior(
             X,
             y,
@@ -1013,7 +1033,10 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             sparse=self.sparse,
             prior_factor=prior_factor,
             prior_floor=getattr(self, "_pending_floor", 0.0),
+            prior_shift=getattr(self, "_pending_shift", 0.0),
+            coef_init=self.__dict__.pop("_warm_start", None),
         )
+        self._pending_shift = 0.0
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
         if posterior.factor is not None:
@@ -1024,6 +1047,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 self._precision_factor = DenseFactor(
                     _U=cho[0], _n_features=cho[0].shape[0]
                 )
+        elif prior_factor is not None:
+            self._factor_hint = prior_factor
 
     def _log_likelihood(
         self,
@@ -1044,7 +1069,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             self.coef_,
             self.cov_inv_,
             self.alpha,
-            self._prior_scalar,
+            self._prior_scalar - self._pending_shift,
             self._effective_n,
             self._eff_loglik,
             factor=self._precision_factor,
@@ -1099,6 +1124,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         prior_decay = self.learning_rate ** y.shape[0]
         self.eb_updates_rejected_ = 0
         self._pending_floor = 0.0
+        self._pending_shift = 0.0
         self._effective_n = float(y.shape[0])
 
         if self.n_eb_iter > 0:
@@ -1108,7 +1134,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             log_ev = -math.inf
 
             for i in range(self.n_eb_iter):
-                self._initialize_prior(X_fit)
+                self._restart_from_prior(X_fit)
                 self._fit_helper(X_fit, y, sample_weight)
                 # After a fresh fit: Λ = prior_decay·α·I + H_data
                 self._prior_scalar = prior_decay * self.alpha
@@ -1123,7 +1149,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                     break
                 prev_evidence = log_ev
 
-            self._initialize_prior(X_fit)
+            self._restart_from_prior(X_fit)
             self._fit_helper(X_fit, y, sample_weight)
 
             self.log_evidence_ = log_ev
@@ -1140,41 +1166,31 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
         return self
 
-    @_invalidate_cached_properties
     def _correct_precision(self, alpha_old: float) -> None:
-        """Move the Laplace posterior to the new alpha.
+        """Book the prior's rescale to the new alpha, to be applied by the
+        next update.
 
         ``Λ = _prior_scalar·I + H_data``; only the prior part moves, by
-        the ratio ``alpha / alpha_old``. With no noise precision to
-        co-scale this is always a diagonal shift, which no cheap factor
-        update covers, so the factor is rebuilt.
+        the ratio ``alpha / alpha_old``. That is a diagonal shift, which
+        no cheap factor update covers, so rather than refactorizing here
+        the shift is deferred to the next ``partial_fit`` or ``decay``,
+        where a factorization happens anyway. Until then ``coef_`` and
+        ``cov_inv_`` stay the coherent posterior under ``alpha_old``.
 
-        The mode moves too. Around ``θ_old`` the log-likelihood's
+        The deferral is exact. Around the mode the log-likelihood's
         quadratic model has information ``H·θ_old + g = Λ_old·θ_old``
-        (the gradient at the mode is ``alpha_old·θ_old``), so the mode
-        under the new prior is ``Λ_new⁻¹·Λ_old·θ_old``. Leaving ``θ``
-        where it was would make the next update read the data's
-        information as ``Λ_new·θ_old``, re-applying the old shrinkage
-        every step; the mean solve costs one triangular pair against
-        the factor ``sample()`` needs anyway.
+        (the gradient at the mode is ``alpha_old·θ_old``), and the next
+        update reads exactly that from ``(cov_inv_, coef_)`` as the
+        prior's eta while the shift lands on the precision alone: the
+        same update as re-solving ``Λ_new⁻¹·Λ_old·θ_old`` now.
+        ``_prior_scalar`` tracks the logical prior contribution, so it
+        runs ahead of the stored diagonal by ``_pending_shift``.
         """
         if self.alpha == alpha_old:
             return
         ratio = self.alpha / alpha_old
-        shift = (ratio - 1.0) * self._prior_scalar
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)
-            self._shift_diagonal(cov_inv, shift)
-            self.cov_inv_ = cov_inv
-        else:
-            # dsyrk leaves only the upper triangle populated.
-            data_eta = dsymv(1.0, self.cov_inv_, self.coef_)
-            self.cov_inv_[np.diag_indices_from(self.cov_inv_)] += shift
+        self._pending_shift += (ratio - 1.0) * self._prior_scalar
         self._prior_scalar *= ratio
-        if "_precision_factor" in self.__dict__:
-            self._drop_factor()
-        self.coef_ = self._precision_factor.solve(data_eta)
 
     def partial_fit(
         self,
@@ -1187,9 +1203,11 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
         Runs the base-class update from the current posterior (with
         stabilized re-injection of ``(1 - γⁿ)·alpha`` when
-        ``learning_rate < 1``), then takes one MacKay step on the
-        resulting Laplace approximation and rescales the precision's
-        prior component to the new ``alpha``.
+        ``learning_rate < 1``, and any prior rescale the previous
+        MacKay step left pending), then takes one MacKay step on the
+        resulting Laplace approximation. The step's change to ``alpha``
+        reaches the precision at the next update, so between updates
+        the posterior is the one under the previous ``alpha``.
 
         Parameters
         ----------
@@ -1236,6 +1254,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             # precision is prior_decay·alpha_old·I + H_data; start the EB
             # state here.
             self._prior_scalar = prior_decay * alpha_old
+            self._pending_shift = 0.0
             self.eb_updates_rejected_ = 0
             self.n_eb_iterations_ = 0
             self.eb_converged_ = False
@@ -1296,7 +1315,12 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             self._prior_scalar = (
                 prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
             )
-            prior_reinjection = (1 - prior_decay) * self.alpha
+            # The pending alpha correction is part of the prior, so it
+            # decays with it; the diagonal is being shifted anyway.
+            prior_reinjection = (
+                1 - prior_decay
+            ) * self.alpha + prior_decay * self._pending_shift
+            self._pending_shift = 0.0
         if hasattr(self, "_effective_n"):
             self._effective_n *= prior_decay
             self._eff_loglik *= prior_decay

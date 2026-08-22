@@ -2634,14 +2634,34 @@ scipy.sparse.csc_array
         # Exclude cached C extension objects that cannot be pickled
         state = super().__getstate__()  # type: ignore
         state.pop("_precision_factor", None)
+        state.pop("_factor_hint", None)
         return state
+
+    def _take_factor_hint(self) -> Optional[SparseFactor]:
+        """Hand over the previous sparse factor for refactorization: the
+        cached ``_precision_factor``, or ``_factor_hint`` where an
+        estimator had to drop that. Both are removed, since
+        ``refactorize`` works in place and a factor of the old precision
+        must not stay cached against the new one."""
+        hint: Optional[SparseFactor] = self.__dict__.pop("_precision_factor", None)
+        if hint is None:
+            hint = self.__dict__.pop("_factor_hint", None)
+        return hint
 
     @cached_property
     def _precision_factor(self) -> PrecisionFactor:
-        """Factorization of the precision matrix (cached)."""
+        """Factorization of the precision matrix (cached).
+
+        Sparse factors are refactorized from the previous one when the
+        sparsity pattern is unchanged (``refactorize`` checks): numeric
+        work only, no new symbolic analysis.
+        """
         if self.sparse:
             assert isinstance(self.cov_inv_, csc_array)
-            return create_sparse_factor(self.cov_inv_)
+            hint = self._take_factor_hint()
+            if hint is None:
+                return create_sparse_factor(self.cov_inv_)
+            return hint.refactorize(self.cov_inv_)
         else:
             cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
             return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
@@ -2678,11 +2698,10 @@ scipy.sparse.csc_array
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:
         """Update posterior using the configured approximation method."""
-        # For sparse partial_fit, hand the cached prior factor to the
-        # approximator so it can skip redundant factorization work.
-        prior_factor: Optional[Any] = (
-            self.__dict__.get("_precision_factor") if self.sparse else None
-        )
+        # For sparse partial_fit, hand the prior's factor to the
+        # approximator: it may refactorize it in place for the posterior
+        # (same pattern, numeric work only), so it leaves the cache here.
+        prior_factor: Optional[Any] = self._take_factor_hint() if self.sparse else None
 
         posterior = self.approximator_.update_posterior(
             X,
@@ -2705,6 +2724,8 @@ scipy.sparse.csc_array
                 self._precision_factor = DenseFactor(
                     _U=cho[0], _n_features=cho[0].shape[0]
                 )
+        elif prior_factor is not None:
+            self._factor_hint = prior_factor
 
     def fit(
         self,

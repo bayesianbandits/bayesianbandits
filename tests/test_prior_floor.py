@@ -105,6 +105,65 @@ class TestPriorFloor:
         np.testing.assert_array_equal(P_F, P_copy)
 
 
+@pytest.mark.parametrize("method", ["laplace", "rvga"])
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize("lr", [1.0, 0.95])
+def test_prior_shift_is_a_zero_centered_precision_shift(
+    method: str, sparse: bool, lr: float
+) -> None:
+    """prior_shift adds γⁿ·shift to the decayed prior precision only:
+    equals an update from the product prior N(m, (γⁿP)⁻¹)·N(0, (γⁿs I)⁻¹).
+    With lr=1 the dense scaled prior aliases the caller's array, which
+    must come back untouched."""
+    X, y, m, P = _data()
+    n = X.shape[0]
+    g = lr**n
+    shift = 0.7
+    P_F = np.asfortranarray(P)
+    P_copy = P_F.copy()
+    got = _call(method, sparse, X, y, m, P_F, learning_rate=lr, prior_shift=shift)
+    np.testing.assert_array_equal(P_F, P_copy)
+
+    from bayesianbandits._estimators import compute_effective_weights
+
+    P_eq = g * P + g * shift * np.eye(P.shape[0])
+    m_eq = np.linalg.solve(P_eq, g * P @ m)
+    w = compute_effective_weights(n, None, lr)
+    want = _call(method, sparse, X, y, m_eq, P_eq, sample_weight=w)
+    np.testing.assert_allclose(got[0], want[0], atol=1e-8)
+    np.testing.assert_allclose(got[1], want[1], atol=1e-8)
+
+
+def test_rvga_sparse_chunked_shift_applies_once() -> None:
+    """Chunked R-VGA applies prior_shift on the first chunk only; later
+    chunks decay it with the rest of the prior."""
+    _, y, m, P = _data(n=40)
+    n = y.shape[0]
+    X = np.zeros((n, P.shape[0]))
+    lr, shift = 0.97, 0.7
+    one, chunked = (
+        update_gaussian_posterior_rvga(
+            csc_array(X),
+            y,
+            m,
+            csc_array(P),
+            link="logit",
+            sparse=True,
+            learning_rate=lr,
+            prior_shift=shift,
+            n_iter=3,
+            batch_size=bs,
+        )
+        for bs in (None, 7)
+    )
+    g = lr**n
+    want_prec = g * P + g * shift * np.eye(P.shape[0])
+    want_mean = np.linalg.solve(want_prec, g * P @ m)
+    for post in (one, chunked):
+        np.testing.assert_allclose(_dense(post.precision), want_prec, atol=1e-10)
+        np.testing.assert_allclose(_dense(post.mean), want_mean, atol=1e-10)
+
+
 def test_rvga_sparse_chunked_floor_composes() -> None:
     """Minibatched R-VGA re-injects per chunk.  With no data signal
     (all-zero X) the data Hessian vanishes and chunked must equal

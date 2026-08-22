@@ -111,8 +111,10 @@ class TestEBGLM:
             sparse=sparse,
             approximator=LaplaceApproximator(n_iter=25, tol=1e-6),
         ).fit(_X(X, sparse), y)
-        np.testing.assert_allclose(eb.coef_, plain.coef_, rtol=1e-8)
-        np.testing.assert_allclose(_dense_prec(eb), _dense_prec(plain), rtol=1e-8)
+        # Both IRLS runs stop within tol=1e-6 of the mode; the EB one is
+        # warm-started from the previous iteration, the plain one from 0.
+        np.testing.assert_allclose(eb.coef_, plain.coef_, atol=1e-5)
+        np.testing.assert_allclose(_dense_prec(eb), _dense_prec(plain), atol=1e-5)
 
     def test_log_evidence_matches_hand_formula(self, link, sparse):
         """fit's log_evidence_ is the Laplace evidence at the alpha used for
@@ -172,39 +174,87 @@ class TestEBGLM:
         assert model.log_evidence_ != ev_before
         assert np.all(np.isfinite(_diag(model)))
         assert not np.allclose(diag_before, _diag(model))
-        # prior scalar was rescaled to the new alpha (no decay here)
+        # prior scalar was rescaled to the new alpha (no decay here), and
+        # the matching diagonal shift is booked for the next update
         np.testing.assert_allclose(
             model._prior_scalar, prior_before * model.alpha / alpha_before
         )
+        np.testing.assert_allclose(
+            model._pending_shift, prior_before * (model.alpha / alpha_before - 1)
+        )
 
-    def test_correct_precision_leaves_data_component_alone(self, link, sparse):
+    def test_correct_precision_defers_the_shift(self, link, sparse):
+        """The MacKay rescale is booked, not applied: the stored posterior
+        and its factor are untouched until the next update."""
         X, y = _simulate(link)
         model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(
             _X(X[:100], sparse), y[:100]
         )
-        # Replay the step partial_fit performs, watching the pieces.
-        model._pending_floor = 0.0
-        BayesianGLM.partial_fit(model, _X(X[100:], sparse), y[100:])
+        assert model._pending_shift == 0.0
         P_before = _dense_prec(model)
         theta_before = model.coef_.copy()
         s_before = model._prior_scalar
-        data_before = P_before - s_before * np.eye(X.shape[1])
+        factor_before = model._precision_factor
         alpha_old = model.alpha
         model.alpha = 2.5 * alpha_old
         model._correct_precision(alpha_old)
-        P_after = _dense_prec(model)
-        data_after = P_after - model._prior_scalar * np.eye(X.shape[1])
-        np.testing.assert_allclose(data_after, data_before, atol=1e-10)
+        np.testing.assert_array_equal(_dense_prec(model), P_before)
+        np.testing.assert_array_equal(model.coef_, theta_before)
+        assert model._precision_factor is factor_before
         np.testing.assert_allclose(model._prior_scalar, 2.5 * s_before)
-        # The mode moves to the new prior's MAP under the quadratic model.
-        np.testing.assert_allclose(
-            model.coef_, np.linalg.solve(P_after, P_before @ theta_before), atol=1e-10
+        np.testing.assert_allclose(model._pending_shift, 1.5 * s_before)
+
+    def test_deferred_shift_matches_eager_resolve(self, link, sparse):
+        """Applying the booked shift at the next update gives the same
+        posterior as rescaling Λ and re-solving θ = Λ_new⁻¹·Λ_old·θ_old
+        right away, then updating from that."""
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(
+            _X(X[:100], sparse), y[:100]
         )
-        # The cached factor is the fresh one: its logdet matches P_after.
-        np.testing.assert_allclose(
-            model._precision_factor.logdet(), np.linalg.slogdet(P_after)[1]
+        P_old = _dense_prec(model)
+        theta_old = model.coef_.copy()
+        alpha_old = model.alpha
+        model.alpha = 2.5 * alpha_old
+        model._correct_precision(alpha_old)
+        shift = model._pending_shift
+        model._pending_floor = 0.0
+        model._fit_helper(_X(X[100:120], sparse), y[100:120])
+        assert model._pending_shift == 0.0
+
+        P_new = P_old + shift * np.eye(X.shape[1])
+        eager = BayesianGLM(link=link, sparse=sparse, approximator=model.approximator_)
+        eager._initialize_prior(_X(X, sparse))
+        eager.coef_ = np.linalg.solve(P_new, P_old @ theta_old)
+        eager.cov_inv_ = sp.csc_array(P_new) if sparse else P_new
+        eager._fit_helper(_X(X[100:120], sparse), y[100:120])
+        np.testing.assert_allclose(model.coef_, eager.coef_, atol=1e-8)
+        np.testing.assert_allclose(_dense_prec(model), _dense_prec(eager), atol=1e-8)
+        # The data component is untouched by the shift.
+        data_new = _dense_prec(model) - model._prior_scalar * np.eye(X.shape[1])
+        assert np.all(np.linalg.eigvalsh(data_new) > -1e-8)
+
+    def test_decay_applies_pending_shift(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, learning_rate=0.9, sparse=sparse).fit(
+            _X(X, sparse), y
         )
-        assert model.sample(_X(X[:2], sparse)).shape == (1, 2)
+        alpha_old = model.alpha
+        model.alpha = 0.5 * alpha_old
+        model._correct_precision(alpha_old)
+        shift = model._pending_shift
+        assert shift < 0
+        diag_before = _diag(model)
+        s_logical = model._prior_scalar
+        model.decay(_X(X[:2], sparse))
+        g = 0.9**2
+        assert model._pending_shift == 0.0
+        np.testing.assert_allclose(
+            _diag(model), g * (diag_before + shift) + (1 - g) * model.alpha
+        )
+        np.testing.assert_allclose(
+            model._prior_scalar, g * s_logical + (1 - g) * model.alpha
+        )
 
     def test_correct_precision_noop(self, link, sparse):
         X, y = _simulate(link)
@@ -237,9 +287,10 @@ class TestEBGLM:
         assert model.eb_updates_rejected_ == 0
         assert np.isfinite(model.alpha)
         assert np.isfinite(model.log_evidence_)
-        # precision diagonal is consistent with the tracked prior scalar
+        # precision diagonal is consistent with the stored prior scalar
         P = _dense_prec(model)
-        data = P - model._prior_scalar * np.eye(X.shape[1])
+        stored = model._prior_scalar - model._pending_shift
+        data = P - stored * np.eye(X.shape[1])
         assert np.all(np.linalg.eigvalsh(data) > -1e-8)
 
     def test_partial_fit_cold_start_runs_fit(self, link, sparse):
@@ -299,8 +350,11 @@ class TestEBGLM:
         model.partial_fit(_X(X[100:120], sparse), y[100:120])
         expected = (g * s_old + (1 - g) * alpha_old) * model.alpha / alpha_old
         np.testing.assert_allclose(model._prior_scalar, expected)
-        # Precision minus the prior part is a PSD data Hessian.
-        data = _dense_prec(model) - model._prior_scalar * np.eye(X.shape[1])
+        # The stored precision still carries the pre-step prior part;
+        # minus that, it is a PSD data Hessian.
+        stored = model._prior_scalar - model._pending_shift
+        np.testing.assert_allclose(stored, g * s_old + (1 - g) * alpha_old)
+        data = _dense_prec(model) - stored * np.eye(X.shape[1])
         assert np.all(np.linalg.eigvalsh(data) > -1e-8)
 
     def test_reinjection_is_zero_centered(self, link, sparse):

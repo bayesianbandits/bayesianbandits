@@ -134,24 +134,41 @@ def _eval_link(link: LinkFunction, eta: NDArray[np.float64]) -> LinkOutput:
         raise ValueError(f"Unknown link function: {link}")
 
 
+def _prior_diag_shift(
+    prior_decay: float, prior_floor: float, prior_shift: float
+) -> float:
+    """Total shift to the decayed prior precision's diagonal.
+
+    ``(1 - γⁿ)·prior_floor`` is the stabilized-forgetting re-injection
+    (Kulhavy & Zarrop 1993); ``γⁿ·prior_shift`` is a shift the caller
+    owed the prior *before* decay (an empirical-Bayes change to the
+    prior precision, deferred to this update), so it decays with the
+    rest of the prior.
+    """
+    return (1.0 - prior_decay) * prior_floor + prior_decay * prior_shift
+
+
 def _stabilized_prior_dense(
     prior_prec_F: NDArray[Any],
+    prior_precision: NDArray[Any],
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
 ) -> NDArray[Any]:
-    """Add the stabilized-forgetting re-injection ``(1 - γⁿ)·prior_floor``
-    to the diagonal of the decayed prior precision, in place.
+    """Add :func:`_prior_diag_shift` to the diagonal of the decayed prior
+    precision.
 
     Only the precision is shifted, never the prior's eta term, so the
-    re-injected prior is centered at zero (Kulhavy & Zarrop 1993): it
-    shrinks dormant coefficients rather than pinning them where they
-    are.  In-place is safe: a nonzero shift needs ``prior_decay < 1``,
-    and then ``prior_prec_F`` is the fresh product ``γⁿ·prior``, never
-    the caller's array.
+    re-injected prior is centered at zero: it shrinks dormant
+    coefficients rather than pinning them where they are.  Without
+    decay ``prior_prec_F`` may be the caller's own array; it is copied
+    before being touched.
     """
-    shift = (1.0 - prior_decay) * prior_floor
+    shift = _prior_diag_shift(prior_decay, prior_floor, prior_shift)
     if shift == 0.0:
         return prior_prec_F
+    if np.shares_memory(prior_prec_F, prior_precision):
+        prior_prec_F = prior_prec_F.copy(order="F")
     prior_prec_F[np.diag_indices_from(prior_prec_F)] += shift
     return prior_prec_F
 
@@ -160,13 +177,14 @@ def _stabilized_prior_sparse(
     prior_precision_scaled: csc_array,
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
 ) -> csc_array:
     """Sparse counterpart of :func:`_stabilized_prior_dense`.
 
     Returns the input object itself when there is nothing to add, so
     callers can detect by identity whether a cached factor is stale.
     """
-    shift = (1.0 - prior_decay) * prior_floor
+    shift = _prior_diag_shift(prior_decay, prior_floor, prior_shift)
     if shift == 0.0:
         return prior_precision_scaled
     n = prior_precision_scaled.shape[0]
@@ -183,8 +201,10 @@ def _irls_dense(
     effective_weights: NDArray[np.float64],
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Dense IRLS loop with pre-allocated buffers and fused BLAS calls."""
     n_samples, n_features = X.shape
@@ -197,7 +217,11 @@ def _irls_dense(
 
     # F-order copy of prior precision for dsyrk accumulation buffer
     prior_prec_F = _stabilized_prior_dense(
-        np.asfortranarray(prior_precision_scaled), prior_decay, prior_floor
+        np.asfortranarray(prior_precision_scaled),
+        prior_precision,
+        prior_decay,
+        prior_floor,
+        prior_shift,
     )
 
     X_weighted = np.empty_like(X)
@@ -207,7 +231,7 @@ def _irls_dense(
     precision_buf = np.empty_like(prior_prec_F)
     eta_buf = np.empty_like(prior_eta_scaled)
 
-    coef = prior_mean.copy()
+    coef = prior_mean.copy() if coef_init is None else coef_init.copy()
     coef_old = coef
     posterior_precision = prior_prec_F
 
@@ -258,10 +282,20 @@ def _irls_sparse(
     effective_weights: NDArray[np.float64],
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
+    prior_factor: Optional[Any] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
-    """Sparse IRLS loop using CHOLMOD/SuperLU factorization."""
+    """Sparse IRLS loop using CHOLMOD/SuperLU factorization.
+
+    ``prior_factor``, when given, seeds the posterior's factorization:
+    ``refactorize`` reuses its symbolic analysis whenever the posterior
+    keeps the prior's sparsity pattern (every update after the first
+    touching a given feature set), and falls back to a fresh one when
+    the pattern grew.
+    """
     from ._sparse_bayesian_linear_regression import create_sparse_factor
 
     no_decay = prior_decay == 1.0
@@ -274,12 +308,12 @@ def _irls_sparse(
         else prior_decay * (prior_precision @ prior_mean)
     )
     prior_precision_scaled = _stabilized_prior_sparse(
-        prior_precision_scaled, prior_decay, prior_floor
+        prior_precision_scaled, prior_decay, prior_floor, prior_shift
     )
 
-    coef = prior_mean.copy()
+    coef = prior_mean.copy() if coef_init is None else coef_init.copy()
     coef_old = coef
-    sparse_factor = None
+    sparse_factor = prior_factor
     posterior_precision = prior_precision
 
     for iteration in range(n_iter):
@@ -325,8 +359,11 @@ def update_gaussian_posterior_laplace(
     learning_rate: float = 1.0,
     sparse: bool = False,
     prior_floor: float = 0.0,
+    prior_shift: float = 0.0,
     n_iter: int = 3,
     tol: float = 1e-4,
+    prior_factor: Optional[Any] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """
     Update Gaussian posterior using Laplace approximation (IRLS).
@@ -404,8 +441,11 @@ def update_gaussian_posterior_laplace(
             effective_weights=effective_weights,
             prior_decay=prior_decay,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
+            coef_init=coef_init,
             tol=tol,
+            prior_factor=prior_factor,
         )
     else:
         return _irls_dense(
@@ -417,7 +457,9 @@ def update_gaussian_posterior_laplace(
             effective_weights=effective_weights,
             prior_decay=prior_decay,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
+            coef_init=coef_init,
             tol=tol,
         )
 
@@ -437,15 +479,26 @@ class PosteriorApproximator(Protocol):
     Notes
     -----
     ``prior_factor``, when provided, is a factorization of
-    ``prior_precision`` cached by the caller from the previous update.
-    Implementations may use it to skip refactorizing the prior; they
-    must not mutate it and may ignore it entirely.
+    ``prior_precision`` handed over by the caller from the previous
+    update. Implementations may solve against it, refactorize it in
+    place for the posterior (the caller no longer holds it as the
+    prior's factor), or ignore it entirely.
 
     ``prior_floor``, when nonzero, requests stabilized forgetting
     (Kulhavy & Zarrop 1993): after decaying the prior precision by
     ``γⁿ``, ``(1 - γⁿ)·prior_floor`` is added back to its diagonal so
     the prior's contribution converges to ``prior_floor·I`` instead of
-    vanishing.  The re-injected prior is centered at zero.
+    vanishing.  ``prior_shift`` is a further diagonal shift the caller
+    owed the prior before decay (it is scaled by ``γⁿ`` with the rest of
+    the prior): how an empirical-Bayes estimator applies a change to its
+    prior precision without a factorization of its own.  Both shift the
+    precision only, never the prior's eta term, so the shifted prior is
+    centered at zero.
+
+    ``coef_init``, when given, is the iteration's starting point in
+    place of ``prior_mean``: a warm start for callers that refit the
+    same data under a slightly changed prior.  It does not change the
+    fixed point, only how many iterations reach it.
     """
 
     def update_posterior(
@@ -460,6 +513,8 @@ class PosteriorApproximator(Protocol):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior: ...
 
 
@@ -530,8 +585,9 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior:
-        # prior_factor unused: IRLS builds its own factor each call.
         return update_gaussian_posterior_laplace(
             X,
             y,
@@ -542,8 +598,11 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
             learning_rate=learning_rate,
             sparse=sparse,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=self.n_iter,
+            coef_init=coef_init,
             tol=self.tol,
+            prior_factor=prior_factor,
         )
 
 
@@ -694,10 +753,12 @@ def _rvga_dense(
     effective_weights: NDArray[np.float64],
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
     n_gh_nodes: int,
     use_probit: bool,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Dense R-VGA loop with expected curvature."""
     n_samples, n_features = X.shape
@@ -708,7 +769,11 @@ def _rvga_dense(
     )
     prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
     prior_prec_F = _stabilized_prior_dense(
-        np.asfortranarray(prior_precision_scaled), prior_decay, prior_floor
+        np.asfortranarray(prior_precision_scaled),
+        prior_precision,
+        prior_decay,
+        prior_floor,
+        prior_shift,
     )
 
     X_weighted = np.empty_like(X)
@@ -722,7 +787,7 @@ def _rvga_dense(
     Z_buf = np.empty((n_features, n_samples), dtype=np.float64, order="F")
     v_buf = np.empty(n_samples, dtype=np.float64)
 
-    coef = prior_mean.copy()
+    coef = prior_mean.copy() if coef_init is None else coef_init.copy()
     posterior_precision = prior_prec_F
     cho = cho_factor(prior_prec_F, lower=False, check_finite=False)
 
@@ -783,11 +848,13 @@ def _rvga_sparse(
     effective_weights: NDArray[np.float64],
     prior_decay: float,
     prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
     n_gh_nodes: int,
     use_probit: bool,
     prior_factor: Optional[Any] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Sparse R-VGA loop with Woodbury predictive variances.
 
@@ -813,7 +880,9 @@ def _rvga_sparse(
         from ._sparse_bayesian_linear_regression import scale_factor
 
         prior_factor = scale_factor(prior_factor, prior_decay)
-    shifted = _stabilized_prior_sparse(prior_precision_scaled, prior_decay, prior_floor)
+    shifted = _stabilized_prior_sparse(
+        prior_precision_scaled, prior_decay, prior_floor, prior_shift
+    )
     if shifted is not prior_precision_scaled:
         # A diagonal shift is a rank-p change no cheap factor update
         # covers; the Gram matrix refactorizes from scratch.
@@ -826,8 +895,10 @@ def _rvga_sparse(
     G = _precompute_gram_matrix(prior_precision_scaled, X, prior_factor=prior_factor)
     diag_G = np.diag(G).copy()
 
-    coef = prior_mean.copy()
-    sparse_factor = None
+    coef = prior_mean.copy() if coef_init is None else coef_init.copy()
+    # The Gram matrix was the last use of the prior's factor as such;
+    # from here it seeds the posterior's (refactorize checks the pattern).
+    sparse_factor = prior_factor
     use_probit_path = use_probit and link == "logit"
     W_prev: Optional[NDArray[np.float64]] = None
 
@@ -896,12 +967,14 @@ def update_gaussian_posterior_rvga(
     learning_rate: float = 1.0,
     sparse: bool = False,
     prior_floor: float = 0.0,
+    prior_shift: float = 0.0,
     n_iter: int = 5,
     tol: float = 1e-4,
     n_gh_nodes: int = 20,
     use_probit: bool = True,
     prior_factor: Optional[Any] = None,
     batch_size: Optional[int] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Update Gaussian posterior using R-VGA (expected curvature).
 
@@ -944,7 +1017,9 @@ def update_gaussian_posterior_rvga(
                 learning_rate=learning_rate,
                 sparse=True,
                 prior_floor=prior_floor,
+                prior_shift=prior_shift if start == 0 else 0.0,
                 n_iter=n_iter,
+                coef_init=coef_init if start == 0 else None,
                 tol=tol,
                 n_gh_nodes=n_gh_nodes,
                 use_probit=use_probit,
@@ -967,7 +1042,9 @@ def update_gaussian_posterior_rvga(
             effective_weights=effective_weights,
             prior_decay=prior_decay,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
+            coef_init=coef_init,
             tol=tol,
             n_gh_nodes=n_gh_nodes,
             use_probit=use_probit,
@@ -983,7 +1060,9 @@ def update_gaussian_posterior_rvga(
             effective_weights=effective_weights,
             prior_decay=prior_decay,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
+            coef_init=coef_init,
             tol=tol,
             n_gh_nodes=n_gh_nodes,
             use_probit=use_probit,
@@ -1054,6 +1133,8 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior:
         return update_gaussian_posterior_rvga(
             X,
@@ -1065,7 +1146,9 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
             learning_rate=learning_rate,
             sparse=sparse,
             prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=self.n_iter,
+            coef_init=coef_init,
             tol=self.tol,
             n_gh_nodes=self.n_gh_nodes,
             use_probit=self.use_probit,
