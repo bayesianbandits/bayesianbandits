@@ -14,6 +14,7 @@ from bayesianbandits import (
     EmpiricalBayesGammaRegressor,
     EmpiricalBayesNormalRegressor,
 )
+from bayesianbandits._estimators import NormalRegressor
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 suitespare_envvar_params = [
@@ -404,10 +405,13 @@ class TestEBNormalRegressor:
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
         model.fit(X[:50], y[:50])
+        # fit() has already moved both, so the ratios that decide the
+        # branch are relative to here, not to the constructor arguments.
+        alpha_old, beta_old = model.alpha, model.beta
         model.partial_fit(X[50:], y[50:])
 
-        ratio_alpha = model.alpha / 1.0
-        ratio_beta = model.beta / 1.0
+        ratio_alpha = model.alpha / alpha_old
+        ratio_beta = model.beta / beta_old
         assert not np.isclose(ratio_alpha, ratio_beta)  # a real diagonal shift
 
         precision = self._dense_precision(model)
@@ -477,6 +481,150 @@ class TestEBNormalRegressor:
         np.testing.assert_allclose(online.alpha, full.alpha, rtol=1e-2)
         np.testing.assert_allclose(online.beta, full.beta, rtol=1e-2)
         np.testing.assert_allclose(online.coef_, full.coef_, atol=1e-3)
+
+    def test_correct_precision_pure_rescale(self, regression_data, sparse):
+        """α and β moving by the same ratio is a pure rescale.
+
+        ``diag_correction`` is then exactly zero: the whole precision
+        shares one factor, so the cached factorization absorbs it and
+        the mean is unchanged (``Λ`` and ``η`` scale together).
+        """
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(
+            alpha=1.0, beta=1.0, n_eb_iter=0, sparse=sparse
+        )
+        model.fit(X, y)
+        factor_before = model._precision_factor  # populate the cache
+
+        alpha_old, beta_old = model.alpha, model.beta
+        prec_old = self._dense_precision(model)
+        coef_old = model.coef_.copy()
+        prior_old = model._prior_scalar
+
+        # A power of two keeps both ratios exactly 4.0, so
+        # diag_correction lands on 0.0 rather than near it.
+        model.alpha = alpha_old * 4.0
+        model.beta = beta_old * 4.0
+        model._correct_precision(alpha_old, beta_old)
+
+        np.testing.assert_allclose(
+            self._dense_precision(model), 4.0 * prec_old, rtol=1e-12, atol=1e-12
+        )
+        np.testing.assert_allclose(model._prior_scalar, 4.0 * prior_old)
+        # The mean is untouched -- no solve, and no drift either.
+        np.testing.assert_array_equal(model.coef_, coef_old)
+        # The factor was scaled in place, not dropped and rebuilt.
+        assert "_precision_factor" in model.__dict__
+        assert model._precision_factor is not factor_before
+        np.testing.assert_allclose(
+            model._precision_factor.solve(4.0 * (prec_old @ coef_old)),
+            coef_old,
+            rtol=1e-8,
+            atol=1e-10,
+        )
+
+    def test_partial_fit_never_forces_a_factorization(self, regression_data, sparse):
+        """``partial_fit`` must not build a factorization it will not use.
+
+        The MacKay correction re-solves ``coef_`` against a diagonally
+        shifted precision, but the next ``partial_fit`` factors its own
+        updated precision and needs only the information vector -- so
+        the solve is deferred rather than paid here.  Every
+        factorization a ``partial_fit`` does need, ``_fit_helper``
+        builds as a byproduct of its own solve and caches eagerly; a
+        lazy rebuild means one was thrown away.
+        """
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:20], y[:20])
+
+        cached = NormalRegressor.__dict__["_precision_factor"]
+        original = cached.func
+        rebuilds = []
+
+        def counting(self):
+            rebuilds.append(1)
+            return original(self)
+
+        cached.func = counting
+        try:
+            for start in range(20, 100, 20):
+                model.partial_fit(X[start : start + 20], y[start : start + 20])
+            assert rebuilds == []
+            # Reading the mean is what pays for the deferred solve.
+            model.coef_
+            assert len(rebuilds) == 1
+        finally:
+            cached.func = original
+
+    def test_reading_coef_between_updates_changes_nothing(
+        self, regression_data, sparse
+    ):
+        """The deferred solve is invisible: predicting, sampling or
+        decaying between updates must not move the trajectory."""
+        X, y = regression_data
+
+        def run(peek):
+            model = EmpiricalBayesNormalRegressor(
+                alpha=1.0, beta=1.0, sparse=sparse, random_state=0
+            )
+            model.fit(X[:20], y[:20])
+            for start in range(20, 100, 20):
+                model.partial_fit(X[start : start + 20], y[start : start + 20])
+                if peek:
+                    model.predict(X[:1])
+            return model
+
+        quiet, peeked = run(peek=False), run(peek=True)
+        np.testing.assert_allclose(peeked.coef_, quiet.coef_, rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(peeked.alpha, quiet.alpha, rtol=1e-12)
+        np.testing.assert_allclose(peeked.beta, quiet.beta, rtol=1e-12)
+        np.testing.assert_allclose(
+            self._dense_precision(peeked),
+            self._dense_precision(quiet),
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_pending_coef_solve_survives_pickling(self, regression_data, sparse):
+        """A pickle taken with the solve still pending restores a model
+        that resolves to the same mean -- the factor is not pickled, so
+        the information vector has to travel with it."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:50], y[:50])
+        model.partial_fit(X[50:], y[50:])
+        assert "_pending_eta" in model.__dict__  # nothing has read coef_ yet
+
+        restored = pickle.loads(pickle.dumps(model))
+        np.testing.assert_allclose(restored.coef_, model.coef_, rtol=1e-8, atol=1e-10)
+
+    def test_failed_partial_fit_keeps_the_pending_solve(self, regression_data, sparse):
+        """A rejected update must not swallow the pending correction:
+        ``coef_`` is still solvable, and still the corrected mean."""
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        model.fit(X[:50], y[:50])
+        model.partial_fit(X[50:], y[50:])
+        assert "_pending_eta" in model.__dict__
+        expected = model.__dict__["_pending_eta"].copy()
+
+        with pytest.raises(ValueError):
+            model.partial_fit(X[:10], y[:5])  # mismatched lengths
+
+        assert "_pending_eta" in model.__dict__
+        np.testing.assert_array_equal(model.__dict__["_pending_eta"], expected)
+        precision = self._dense_precision(model)
+        np.testing.assert_allclose(
+            precision @ model.coef_, expected, rtol=1e-8, atol=1e-8
+        )
+
+    def test_coef_raises_before_fitting(self, sparse):
+        """An unfitted model has no mean to report, deferred or not."""
+        model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+        assert not hasattr(model, "coef_")
+        with pytest.raises(AttributeError, match="coef_"):
+            model.coef_
 
 
 @pytest.mark.parametrize("sparse", [True, False])

@@ -11,6 +11,7 @@ from scipy.linalg.lapack import dgeqrf, dgeqrf_lwork  # type: ignore[attr-define
 from scipy.sparse import csc_array
 
 __all__ = [
+    "dgemv",
     "dsymv",
     "dsyrk",
     "update_precision_dense",
