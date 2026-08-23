@@ -75,7 +75,7 @@ class _StabilizedPriorMixin:
 
     def _hyperparams(self) -> tuple[float, ...]:
         """The hyperparameters the online step moves, ``alpha`` first."""
-        return (self.alpha,)
+        raise NotImplementedError
 
     def _start_stats(self) -> None:
         """Zero the running statistics, for a first observation."""
