@@ -265,19 +265,8 @@ class MacKayGLMUpdate(NamedTuple):
     rejected: bool
 
 
-# The GLM has no beta, but the same degeneracies exist, in both
-# directions.  With separable logistic data ||theta|| grows without
-# bound and MacKay drives alpha -> 0, leaving Lambda = alpha I + H_data
-# with condition number ~ max(H_data) / alpha.  With data that carry no
-# information about the coefficients the evidence increases in alpha
-# without bound, MacKay multiplies alpha by a near-constant factor per
-# step, and theta = Lambda^-1 g shrinks until it underflows to zero,
-# which pins alpha forever (the ||theta|| = 0 branch below).  The
-# diagonal of H_data is a cheap lower bound on its largest eigenvalue,
-# so alpha_new is accepted only within 1e10 of max(diag H_data) on
-# either side: the band where the posterior is neither numerically
-# singular nor numerically the prior.  Outside it alpha stays where it
-# was, and comes back once the data argue for it.
+# Accept alpha only within 1e10 of max(diag H_data); outside that band the
+# posterior is numerically singular (separable data) or numerically the prior.
 _MAX_GLM_CONDITION_PROXY = 1e10
 
 
@@ -298,13 +287,8 @@ def glm_log_likelihood(
     if link == "logit":
         terms = y * eta - np.logaddexp(0.0, eta)
     elif link == "log":
-        # Score the mean the model actually uses. ``log_link_and_derivative``
-        # defines it as ``exp(clip(eta, -700, 700))``, so evaluating
-        # ``exp(eta)`` here would score a different model, and would overflow
-        # to ``-inf`` on exactly the runs where the fit went badly enough to
-        # need the number: ``_eff_loglik`` decays a ``-inf`` to ``-inf``
-        # forever, and ``fit``'s ``abs(log_ev - prev_evidence) < eb_tol``
-        # becomes ``nan < tol``, which silently stops stopping early.
+        # Match log_link_and_derivative's clip; an unclipped exp(eta) overflows
+        # the evidence to -inf and poisons the convergence check.
         eta = np.clip(eta, -700.0, 700.0)
         terms = y * eta - np.exp(eta) - gammaln(y + 1.0)
     else:
@@ -360,12 +344,8 @@ def mackay_update_glm(
 
     ld, tr_inv = _factorization_stats(precision, factor, trace_method)
 
-    # gamma = tr(Lambda^-1 H) = p - s . tr(Lambda^-1) cancels when the
-    # prior dominates (s >> H): the true value is ~ tr(H) / s, and the
-    # subtraction's noise is ~ p . 1e-15.  The floor sits just above
-    # that noise; a larger one (the Normal's 1e-8) would replace a
-    # legitimately tiny gamma and inflate alpha_new past the ceiling,
-    # rejecting the very steps that bring an overgrown alpha back down.
+    # Floor just above the cancellation noise of p - s.tr(Lambda^-1); a larger
+    # one would inflate alpha_new past the ceiling when the prior dominates.
     gamma = float(np.clip(p - prior_scalar * tr_inv, p * 1e-13, min(effective_n, p)))
     alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
 

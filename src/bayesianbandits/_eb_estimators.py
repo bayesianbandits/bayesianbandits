@@ -887,11 +887,8 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self.coef_ = coef
 
     def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
-        # _fit_helper adds the re-injection to the precision diagonal as it
-        # builds it, avoiding a separate _reinject_prior + refactorization,
-        # and takes any solve the last MacKay correction left pending as
-        # the prior information vector: it is Λ·coef_ exactly.  Popped here,
-        # before super()'s check_is_fitted would read coef_ and force it.
+        # Folded into _fit_helper's precision build; the pending eta is popped
+        # here, before super()'s check_is_fitted would read coef_ and force it.
         self._pending_reinjection = (
             (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
         )
@@ -967,8 +964,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         a Laplace evidence at the mode, so IRLS has to converge. With an
         ``RVGAApproximator`` the precision is an expected rather than
         observed curvature and ``log_evidence_`` is a heuristic. A
-        custom approximator must accept the ``prior_floor`` keyword of
-        :class:`PosteriorApproximator`.
+        custom approximator must accept the ``prior_floor`` and
+        ``coef_init`` keywords of :class:`PosteriorApproximator`.
     sparse : bool, default=False
         Use sparse precision matrices; see :class:`BayesianGLM`.
     random_state : int, np.random.Generator, or None, default=None
@@ -1036,40 +1033,6 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         super()._initialize_prior(X)
         if self.approximator is None:
             self.approximator_ = LaplaceApproximator(n_iter=25, tol=1e-6)
-
-    @_invalidate_cached_properties
-    def _fit_helper(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> None:
-        """Base-class update, with the re-injection floor passed through."""
-        prior_factor: Optional[Any] = (
-            self.__dict__.pop("_precision_factor", None) if self.sparse else None
-        )
-        posterior = self.approximator_.update_posterior(
-            X,
-            y,
-            self.coef_,
-            self.cov_inv_,  # type: ignore
-            link=self.link,
-            sample_weight=sample_weight,
-            learning_rate=self.learning_rate,
-            sparse=self.sparse,
-            prior_factor=prior_factor,
-            prior_floor=getattr(self, "_pending_floor", 0.0),
-        )
-        self.coef_ = posterior.mean
-        self.cov_inv_ = posterior.precision
-        if posterior.factor is not None:
-            if self.sparse:
-                self._precision_factor = posterior.factor
-            else:
-                cho = posterior.factor
-                self._precision_factor = DenseFactor(
-                    _U=cho[0], _n_features=cho[0].shape[0]
-                )
 
     def _log_likelihood(
         self,
@@ -1143,42 +1106,53 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._pending_floor = 0.0
         effective_n = float(np.sum(self._row_weights(y.shape[0], sample_weight)))
 
-        if self.n_eb_iter > 0:
-            prev_evidence = -math.inf
-            converged = False
-            iterations = 0
-            log_ev = -math.inf
-            for i in range(self.n_eb_iter):
-                self._initialize_prior(X_fit)
-                self._fit_helper(X_fit, y, sample_weight)
-                # After a fresh fit: Λ = prior_decay·α·I + H_data
-                self._prior_scalar = prior_decay * self.alpha
-                self._effective_n = effective_n
-                self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
-                self._eb_mackay_step()
-                log_ev = self.log_evidence_
-                iterations = i + 1
-                if abs(log_ev - prev_evidence) < self.eb_tol:
-                    converged = True
-                    break
-                prev_evidence = log_ev
+        self._initialize_prior(X_fit)
+        self._fit_helper(X_fit, y, sample_weight)
+        fitted_alpha = self.alpha
+        prev_evidence = -math.inf
+        converged = False
+        iterations = 0
+        log_ev = -math.inf
+        for i in range(self.n_eb_iter):
+            if self.alpha != fitted_alpha:
+                self._refit_warm(X_fit, y, sample_weight)
+                fitted_alpha = self.alpha
+            # After a fresh fit: Λ = prior_decay·α·I + H_data
+            self._prior_scalar = prior_decay * self.alpha
+            self._effective_n = effective_n
+            self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
+            self._eb_mackay_step()
+            log_ev = self.log_evidence_
+            iterations = i + 1
+            if abs(log_ev - prev_evidence) < self.eb_tol:
+                converged = True
+                break
+            prev_evidence = log_ev
+        if self.alpha != fitted_alpha:
+            self._refit_warm(X_fit, y, sample_weight)
 
-            self._initialize_prior(X_fit)
-            self._fit_helper(X_fit, y, sample_weight)
-            self.log_evidence_ = log_ev
-            self.n_eb_iterations_ = iterations
-            self.eb_converged_ = converged
-        else:
-            self._initialize_prior(X_fit)
-            self._fit_helper(X_fit, y, sample_weight)
-            self.log_evidence_ = -math.inf
-            self.n_eb_iterations_ = 0
-            self.eb_converged_ = False
-
+        self.log_evidence_ = log_ev
+        self.n_eb_iterations_ = iterations
+        self.eb_converged_ = converged
         self._prior_scalar = prior_decay * self.alpha
         self._effective_n = effective_n
         self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
         return self
+
+    def _refit_warm(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> None:
+        """Fit from scratch at the current alpha, starting IRLS at the
+        previous mode and refactorizing from the previous factor."""
+        coef_init = self.coef_
+        factor = self.__dict__.get("_precision_factor") if self.sparse else None
+        self._initialize_prior(X)
+        if factor is not None:
+            self._factor_hint = factor
+        self._fit_helper(X, y, sample_weight, coef_init=coef_init)
 
     @_invalidate_cached_properties
     def _correct_precision(self, alpha_old: float) -> None:

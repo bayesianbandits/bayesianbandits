@@ -115,11 +115,13 @@ Aggressive decay can cause problems:
   along with the data. After enough decay steps, the model is
   effectively unregularized.
 
-:class:`~bayesianbandits.EmpiricalBayesNormalRegressor` mitigates the
-second problem with stabilized forgetting: after each decay step, it
-re-injects ``(1 - gamma^n) * alpha`` onto the precision diagonal so
-the prior contribution converges to ``alpha`` instead of zero. If you
-need decay and want a safety net against prior collapse, use EB:
+:class:`~bayesianbandits.EmpiricalBayesNormalRegressor` (and
+:class:`~bayesianbandits.EmpiricalBayesGLM` for binary or count
+outcomes) mitigates the second problem with stabilized forgetting:
+after each decay step, it re-injects ``(1 - gamma^n) * alpha`` onto
+the precision diagonal so the prior contribution converges to
+``alpha`` instead of zero. If you need decay and want a safety net
+against prior collapse, use EB:
 
 .. code-block:: python
 

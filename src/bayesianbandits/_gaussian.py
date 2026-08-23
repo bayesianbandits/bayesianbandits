@@ -186,6 +186,7 @@ def _irls_dense(
     prior_floor: float,
     n_iter: int,
     tol: float,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Dense IRLS loop with pre-allocated buffers and fused BLAS calls."""
     n_samples, n_features = X.shape
@@ -211,7 +212,7 @@ def _irls_dense(
     precision_buf = np.empty_like(prior_prec_F)
     eta_buf = np.empty_like(prior_eta_scaled)
 
-    coef = prior_mean.copy()
+    coef = (prior_mean if coef_init is None else coef_init).copy()
     coef_old = coef
     posterior_precision = prior_prec_F
 
@@ -265,6 +266,7 @@ def _irls_sparse(
     n_iter: int,
     tol: float,
     prior_factor: Optional[Any] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """Sparse IRLS loop using CHOLMOD/SuperLU factorization.
 
@@ -289,7 +291,7 @@ def _irls_sparse(
         prior_precision_scaled, prior_decay, prior_floor
     )
 
-    coef = prior_mean.copy()
+    coef = (prior_mean if coef_init is None else coef_init).copy()
     coef_old = coef
     sparse_factor = prior_factor
     posterior_precision = prior_precision
@@ -340,6 +342,7 @@ def update_gaussian_posterior_laplace(
     n_iter: int = 3,
     tol: float = 1e-4,
     prior_factor: Optional[Any] = None,
+    coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
     """
     Update Gaussian posterior using Laplace approximation (IRLS).
@@ -388,6 +391,8 @@ def update_gaussian_posterior_laplace(
     tol : float, default=1e-4
         Convergence tolerance for coefficient change. Only used if n_iter > 1.
         Convergence when: ||coef_new - coef_old||_∞ < tol
+    coef_init : array-like of shape (n_features,), optional
+        Starting point for IRLS; defaults to ``prior_mean``.
 
     Returns
     -------
@@ -420,6 +425,7 @@ def update_gaussian_posterior_laplace(
             n_iter=n_iter,
             tol=tol,
             prior_factor=prior_factor,
+            coef_init=coef_init,
         )
     else:
         return _irls_dense(
@@ -433,6 +439,7 @@ def update_gaussian_posterior_laplace(
             prior_floor=prior_floor,
             n_iter=n_iter,
             tol=tol,
+            coef_init=coef_init,
         )
 
 
@@ -462,6 +469,10 @@ class PosteriorApproximator(Protocol):
     the prior's contribution converges to ``prior_floor·I`` instead of
     vanishing.  Only the precision is shifted, never the prior's eta
     term, so the re-injected prior is centered at zero.
+
+    ``coef_init``, when given, is the starting point for iterative
+    mode-finding (an empirical-Bayes refit warm-starts from the previous
+    mode); implementations that do not iterate may ignore it.
     """
 
     def update_posterior(
@@ -476,6 +487,7 @@ class PosteriorApproximator(Protocol):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior: ...
 
 
@@ -546,6 +558,7 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior:
         return update_gaussian_posterior_laplace(
             X,
@@ -560,6 +573,7 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
             n_iter=self.n_iter,
             tol=self.tol,
             prior_factor=prior_factor,
+            coef_init=coef_init,
         )
 
 
@@ -1075,6 +1089,7 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> GaussianPosterior:
         return update_gaussian_posterior_rvga(
             X,
