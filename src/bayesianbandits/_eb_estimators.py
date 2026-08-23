@@ -1137,8 +1137,6 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 self._precision_factor = DenseFactor(
                     _U=cho[0], _n_features=cho[0].shape[0]
                 )
-        elif prior_factor is not None:
-            self._factor_hint = prior_factor
 
     def _log_likelihood(
         self,
@@ -1300,10 +1298,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         ``coef_`` alone would keep the precision right and the mean
         wrong. Costs the factorization the shift invalidates, which is
         why :meth:`_correct_precision` defers to callers that are
-        factorizing anyway.
+        factorizing anyway. Callers skip a zero shift.
         """
-        if shift == 0.0:
-            return
         if self.sparse:
             cov_inv = cast(csc_array, self.cov_inv_)
             data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)

@@ -583,6 +583,24 @@ class TestEBGLMGuardrail:
         assert model.alpha == alpha
         assert model.log_evidence_ == -1.0
 
+    def test_a_rejected_step_during_fit_is_counted(self):
+        X, y = _simulate("logit", n=50, p=5)
+        model = EmpiricalBayesGLM(link="logit", n_eb_iter=3)
+        with mock.patch(
+            "bayesianbandits._eb_estimators.mackay_update_glm",
+            return_value=mock.Mock(
+                alpha=1.0,
+                alpha_min=1e-6,
+                alpha_max=1e6,
+                log_evidence=-1.0,
+                rejected=True,
+            ),
+        ):
+            model.fit(X, y)
+        # Constant evidence converges on the second step.
+        assert model.eb_updates_rejected_ == 2
+        assert model.alpha == 1.0
+
     def test_fit_resets_rejection_count(self):
         X, y = _simulate("logit", n=50, p=5)
         model = EmpiricalBayesGLM(link="logit").fit(X, y)
