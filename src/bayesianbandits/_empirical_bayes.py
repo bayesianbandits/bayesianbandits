@@ -11,7 +11,7 @@ Provides:
 from __future__ import annotations
 
 import math
-from typing import Any, NamedTuple, Union, cast
+from typing import Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -251,6 +251,277 @@ def mackay_update_normal_online(
     )
 
     return MacKayUpdate(alpha_new, beta_new, log_ev, rejected)
+
+
+class MacKayGLMUpdate(NamedTuple):
+    """One MacKay update for a Laplace-approximated GLM.
+
+    Same contract as :class:`MacKayUpdate` minus ``beta``: a rejected
+    update returns ``alpha`` unchanged and says so.  ``alpha_min`` and
+    ``alpha_max`` are the band the guardrail accepts, so a caller that
+    extrapolates beyond the MacKay step (the secant acceleration) can
+    keep its target inside it.
+    """
+
+    alpha: float
+    log_evidence: float
+    rejected: bool
+    alpha_min: float
+    alpha_max: float
+
+
+# The GLM has no beta, but the same degeneracies exist, in both
+# directions.  With separable logistic data ||theta|| grows without
+# bound and MacKay drives alpha -> 0, leaving Lambda = alpha I + H_data
+# with condition number ~ max(H_data) / alpha.  With data that carry no
+# information about the coefficients the evidence increases in alpha
+# without bound, MacKay multiplies alpha by a near-constant factor per
+# step, and theta = Lambda^-1 g shrinks until it underflows to zero,
+# which pins alpha forever (the ||theta|| = 0 branch below).  The
+# diagonal of H_data is a cheap lower bound on its largest eigenvalue,
+# so alpha_new is accepted only within 1e10 of max(diag H_data) on
+# either side: the band where the posterior is neither numerically
+# singular nor numerically the prior.  Outside it alpha stays where it
+# was, and comes back once the data argue for it.
+_MAX_GLM_CONDITION_PROXY = 1e10
+
+
+def glm_log_likelihood(
+    X: Union[NDArray[np.float64], csc_array],
+    y: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    link: str,
+    sample_weight: Union[NDArray[np.float64], None] = None,
+) -> float:
+    """Log-likelihood of a GLM at the coefficients ``theta``.
+
+    Bernoulli for ``link="logit"`` and Poisson (including the
+    ``gammaln(y + 1)`` normalizer) for ``link="log"``.  Rows are
+    weighted by ``sample_weight`` when given.
+    """
+    eta = np.asarray(X @ theta, dtype=np.float64).ravel()
+    if link == "logit":
+        terms = y * eta - np.logaddexp(0.0, eta)
+    elif link == "log":
+        # Score the mean the model actually uses. ``log_link_and_derivative``
+        # defines it as ``exp(clip(eta, -700, 700))``, so evaluating
+        # ``exp(eta)`` here would score a different model, and would overflow
+        # to ``-inf`` on exactly the runs where the fit went badly enough to
+        # need the number: ``_eff_loglik`` decays a ``-inf`` to ``-inf``
+        # forever, and ``fit``'s ``abs(log_ev - prev_evidence) < eb_tol``
+        # becomes ``nan < tol``, which silently stops stopping early.
+        eta = np.clip(eta, -700.0, 700.0)
+        terms = y * eta - np.exp(eta) - gammaln(y + 1.0)
+    else:
+        raise ValueError(f"Unknown link function: {link}")
+    if sample_weight is not None:
+        return _dot(np.asarray(sample_weight, dtype=np.float64), terms)
+    return float(np.sum(terms))
+
+
+def mackay_update_glm(
+    theta: NDArray[np.float64],
+    precision: Union[NDArray[np.float64], csc_array],
+    alpha: float,
+    prior_scalar: float,
+    effective_n: float,
+    log_lik: float,
+    factor: PrecisionFactor,
+    trace_method: str = "auto",
+) -> MacKayGLMUpdate:
+    """MacKay update of the prior precision for a Laplace GLM posterior.
+
+    The posterior is the Gaussian ``N(theta, Lambda^-1)`` with
+    ``Lambda = prior_scalar . I + H_data``, ``H_data`` the (decayed)
+    Hessian of the negative log-likelihood at ``theta``.  Then
+
+        gamma     = p - prior_scalar . tr(Lambda^-1)
+        alpha_new = gamma / ||theta||^2
+
+    and the Laplace log evidence at the *current* alpha is
+
+        log p(y | alpha) ~= l(theta) + p/2 . log(alpha)
+                            - alpha/2 . ||theta||^2 - 1/2 . log|Lambda|
+
+    (the two ``2 pi`` terms from the prior and the Laplace integral
+    cancel).  Unlike the Normal, nothing here needs X or y beyond
+    ``log_lik``, which the caller evaluates -- exactly during ``fit``,
+    as a decayed running sum during ``partial_fit``.
+
+    Parameters
+    ----------
+    theta : posterior mode
+    precision : posterior precision Lambda
+    alpha : current prior precision
+    prior_scalar : the prior's actual (decayed) contribution to the
+        diagonal of Lambda; see :func:`mackay_update_normal_online`
+    effective_n : decayed effective sample size, which caps gamma
+    log_lik : log-likelihood at ``theta``
+    factor : pre-computed factorization of ``precision``
+    trace_method : method for computing tr(Lambda^-1)
+    """
+    p = cast(tuple[int, int], precision.shape)[0]
+    theta_norm_sq = _dot(theta, theta)
+
+    ld, tr_inv = _factorization_stats(precision, factor, trace_method)
+
+    # gamma = tr(Lambda^-1 H) = p - s . tr(Lambda^-1) cancels when the
+    # prior dominates (s >> H): the true value is ~ tr(H) / s, and the
+    # subtraction's noise is ~ p . 1e-15.  The floor sits just above
+    # that noise; a larger one (the Normal's 1e-8) would replace a
+    # legitimately tiny gamma and inflate alpha_new past the ceiling,
+    # rejecting the very steps that bring an overgrown alpha back down.
+    gamma = float(np.clip(p - prior_scalar * tr_inv, p * 1e-13, min(effective_n, p)))
+    alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
+
+    if isinstance(precision, csc_array):
+        diag = np.asarray(precision.diagonal(), dtype=np.float64)
+    else:
+        diag = np.diag(precision)
+    data_diag_max = float(np.max(diag)) - prior_scalar
+    if data_diag_max > 0.0:
+        alpha_min = data_diag_max / _MAX_GLM_CONDITION_PROXY
+        alpha_max = data_diag_max * _MAX_GLM_CONDITION_PROXY
+    else:
+        alpha_min, alpha_max = 0.0, math.inf
+    rejected = not (alpha_min <= alpha_new <= alpha_max)
+    if rejected:
+        alpha_new = alpha
+
+    log_ev = float(
+        log_lik + 0.5 * p * math.log(alpha) - 0.5 * alpha * theta_norm_sq - 0.5 * ld
+    )
+
+    return MacKayGLMUpdate(alpha_new, log_ev, rejected, alpha_min, alpha_max)
+
+
+# The secant step is capped at this many natural-log units of alpha
+# (a factor of e^6 ~ 400): far beyond any single MacKay step, but a
+# wild extrapolation from two nearly equal residuals stays bounded.
+_MAX_SECANT_LOG_STEP = 6.0
+
+
+def secant_log_alpha(
+    u: float, h: float, u_prev: float, h_prev: float
+) -> tuple[float, bool]:
+    """One secant step on the MacKay residual in log-alpha.
+
+    MacKay's update is the fixed-point iteration ``u <- F(u)`` with
+    ``u = log(alpha)`` and ``F(u) = log(alpha_new)``.  Its residual
+    ``h(u) = F(u) - u`` vanishes at the fixed point, and near a fixed
+    point where ``F'`` is close to 1 (underdetermined problems, where
+    the evidence maximum lies at large alpha) the plain iteration
+    crawls by ``h`` per step while the root is ``h / (1 - F')`` away.
+    The secant through the last two residuals estimates that slope and
+    jumps to the root; since every evaluation of ``h`` already costs a
+    refit, the slope is free.
+
+    Returns the next ``u`` and whether the secant was used.  The plain
+    MacKay step ``u + h`` is taken when the secant slope is not
+    negative (``F' >= 1``, no contraction to accelerate) or the step
+    is not finite, and the step is capped at ``_MAX_SECANT_LOG_STEP``.
+    """
+    du = u - u_prev
+    dh = h - h_prev
+    if du == 0.0 or not math.isfinite(dh):
+        return u + h, False
+    slope = dh / du
+    if not slope < 0.0:
+        return u + h, False
+    step = -h / slope
+    if not math.isfinite(step):
+        return u + h, False
+    # Never step against the MacKay direction, and stay bounded.
+    if step * h < 0.0:
+        return u + h, False
+    step = max(-_MAX_SECANT_LOG_STEP, min(_MAX_SECANT_LOG_STEP, step))
+    return u + step, True
+
+
+class SecantRootFinder:
+    """Root finder for the MacKay residual ``h(u)`` in ``u = log(alpha)``.
+
+    Until the residual has been seen with both signs the iteration is
+    the capped secant of :func:`secant_log_alpha` (plain MacKay step
+    when the secant is not trustworthy).  The first time two iterates
+    straddle the root they become a bracket, and from then on every
+    step is the Illinois variant of regula falsi (Dowell & Jarratt,
+    1971): the secant through the bracket's endpoints, which by
+    construction lands inside it, with the function value of an
+    endpoint halved whenever that endpoint is retained twice in a row
+    so a bent residual cannot pin the same endpoint forever.  The
+    bracket can only shrink, so the root never escapes, no step cap is
+    needed in that phase, and convergence is superlinear (order about
+    1.44).
+
+    ``next(u, h)`` takes the residual measured at ``u`` and returns the
+    next ``u``; ``reset()`` forgets everything (for callers that restart
+    from a plain MacKay step, e.g. after the evidence fell);
+    ``bracket_width`` is the width of the current bracket in log-alpha,
+    or infinity before one exists.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._prev: Optional[tuple[float, float]] = None
+        # Endpoints where h > 0 (alpha too small) and h < 0 (too large),
+        # each with its Illinois-scaled residual.
+        self._pos: Optional[tuple[float, float]] = None
+        self._neg: Optional[tuple[float, float]] = None
+        self._retained: Optional[str] = None
+        self._retained_count = 0
+
+    @property
+    def bracketed(self) -> bool:
+        return self._pos is not None and self._neg is not None
+
+    @property
+    def bracket_width(self) -> float:
+        if self._pos is None or self._neg is None:
+            return math.inf
+        return abs(self._pos[0] - self._neg[0])
+
+    def _record(self, u: float, h: float) -> None:
+        side = "pos" if h > 0.0 else "neg"
+        other = "neg" if side == "pos" else "pos"
+        if side == "pos":
+            self._pos = (u, h)
+        else:
+            self._neg = (u, h)
+        if not self.bracketed:
+            return
+        # The other endpoint was retained this round.
+        if self._retained == other:
+            self._retained_count += 1
+        else:
+            self._retained, self._retained_count = other, 1
+        if self._retained_count >= 2:
+            # Illinois: halve the retained endpoint's residual.
+            if other == "pos":
+                assert self._pos is not None
+                self._pos = (self._pos[0], 0.5 * self._pos[1])
+            else:
+                assert self._neg is not None
+                self._neg = (self._neg[0], 0.5 * self._neg[1])
+
+    def next(self, u: float, h: float) -> float:
+        if h == 0.0 or not math.isfinite(h):
+            return u
+        self._record(u, h)
+        if self._pos is not None and self._neg is not None:
+            u_pos, h_pos = self._pos
+            u_neg, h_neg = self._neg
+            u_next = (u_pos * h_neg - u_neg * h_pos) / (h_neg - h_pos)
+            self._prev = (u, h)
+            return u_next
+        if self._prev is None:
+            u_next = u + h
+        else:
+            u_next, _ = secant_log_alpha(u, h, *self._prev)
+        self._prev = (u, h)
+        return u_next
 
 
 def _dirichlet_multinomial_log_evidence(

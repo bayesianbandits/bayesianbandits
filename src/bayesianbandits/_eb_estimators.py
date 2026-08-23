@@ -1,8 +1,9 @@
 """Empirical Bayes estimators via evidence maximization.
 
-Provides MacKay's update rules for Normal regression, Minka's
-fixed-point iteration for Dirichlet-Multinomial classification,
-and Minka's EM for Gamma-Poisson rate estimation.
+Provides MacKay's update rules for Normal regression and for
+Laplace-approximated GLMs, Minka's fixed-point iteration for
+Dirichlet-Multinomial classification, and Minka's EM for Gamma-Poisson
+rate estimation.
 """
 
 from __future__ import annotations
@@ -19,19 +20,25 @@ from typing_extensions import Self
 
 from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
 from ._empirical_bayes import (
+    MacKayGLMUpdate,
+    SecantRootFinder,
     accumulate_sufficient_stats,
     batch_sufficient_stats,
+    glm_log_likelihood,
+    mackay_update_glm,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
 )
 from ._estimators import (
+    BayesianGLM,
     DirichletClassifier,
     GammaRegressor,
     NormalRegressor,
     _invalidate_cached_properties,
     compute_effective_weights,
 )
+from ._gaussian import LaplaceApproximator, LinkFunction, PosteriorApproximator
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
@@ -918,6 +925,526 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         alpha_old, beta_old = old
         self._eb_mackay_step_online()
         self._correct_precision(alpha_old, beta_old)
+
+
+class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
+    """Bayesian GLM with empirical Bayes tuning of the prior precision.
+
+    Extends :class:`BayesianGLM` with automatic optimization of the
+    prior precision ``alpha`` via MacKay's evidence framework [1]_
+    applied to the Laplace approximation. The GLM posterior is already
+    a Gaussian centred on the MAP with the Hessian as precision, so
+    MacKay's update slots in directly: with
+    :math:`\\gamma = p - s\\,\\operatorname{tr}(\\Lambda^{-1})` (``s`` the
+    prior's contribution to the diagonal of :math:`\\Lambda`),
+    :math:`\\alpha_{\\text{new}} = \\gamma / \\|\\theta_{\\text{MAP}}\\|^2`.
+
+    During ``fit``, IRLS and MacKay steps alternate until the Laplace
+    log evidence converges. During ``partial_fit``, MacKay steps are
+    taken on the current Laplace approximation until ``alpha`` settles
+    to within ``eb_alpha_tol``, usually one; the final change to
+    ``alpha`` is folded into the next update's factorization rather
+    than costing one of its own, so between updates the posterior is
+    the coherent one under the previous ``alpha``.
+
+    MacKay's update treats the data Hessian as fixed in ``alpha``,
+    while the Laplace evidence also depends on ``alpha`` through the
+    curvature at the mode, so the fixed point lies near but not
+    exactly at the evidence maximum (``alpha`` within a few percent
+    of the maximizer in practice), and the evidence drifts down
+    slightly (of order 1e-4 in the log) over the final EB iterations.
+    The fixed point, which ``fit`` and ``partial_fit`` share, is the
+    target; the evidence is the convergence diagnostic.
+
+    The EB loop accelerates MacKay's fixed-point iteration with a
+    secant step on its residual in ``log(alpha)``, switching to
+    bracketed (Illinois) regula falsi once two iterates straddle the
+    fixed point
+    (:class:`~bayesianbandits._empirical_bayes.SecantRootFinder`). The
+    plain iteration contracts slowly when the evidence maximum lies at
+    large ``alpha`` (few, weakly informative observations relative to
+    the number of features, the usual bandit cold start): it then
+    moves ``alpha`` by a roughly constant factor per iteration, and
+    successive evidence gains shrink with it, so ``eb_tol`` can be met
+    while ``alpha`` is still far from the fixed point. The secant
+    typically reaches the fixed point within ten iterations where the
+    plain iteration needs a hundred. A step the guardrail rejects
+    resets the acceleration, so the next step is a plain one.
+
+    When ``learning_rate < 1``, *stabilized forgetting* [2]_ re-injects
+    ``(1 - γⁿ)·alpha`` onto the precision diagonal after each decay so
+    the prior's contribution converges to ``alpha`` instead of
+    vanishing, which keeps ``alpha`` tuning load-bearing indefinitely.
+
+    Parameters
+    ----------
+    alpha : float, default=1.0
+        Initial prior precision. Updated automatically during fitting.
+    link : {'logit', 'log'}, default='logit'
+        Link function; see :class:`BayesianGLM`.
+    n_eb_iter : int, default=10
+        Maximum number of EB iterations during ``fit``. Each iteration
+        re-runs the posterior approximation from the prior (warm-started
+        at the previous mode) and takes one secant-accelerated MacKay
+        step. Set to 0 to disable EB tuning during ``fit``.
+    eb_tol : float, default=1e-4
+        Convergence tolerance on the change in log evidence between
+        successive EB iterations.
+    learning_rate : float, default=1.0
+        Decay rate for sequential updates; see :class:`BayesianGLM`.
+    approximator : PosteriorApproximator, optional
+        Posterior approximation strategy. Defaults to
+        ``LaplaceApproximator(n_iter=25, tol=1e-6)`` rather than the
+        base class's 5 fixed iterations: the evidence is only a Laplace
+        evidence when the Hessian is taken at the mode, so ``fit``
+        needs IRLS to actually converge. With an ``RVGAApproximator``
+        the precision is an expected rather than observed curvature and
+        ``log_evidence_`` is a heuristic; the ``alpha`` update is still
+        well-defined. A custom approximator must accept the
+        ``prior_floor``, ``prior_shift`` and ``coef_init`` keywords of
+        :class:`PosteriorApproximator`: the first two are how this
+        estimator applies stabilized forgetting and MacKay's change to
+        ``alpha`` without a factorization of its own, the last is the
+        warm start between EB iterations of ``fit``.
+    sparse : bool, default=False
+        Use sparse precision matrices; see :class:`BayesianGLM`.
+    random_state : int, np.random.Generator, or None, default=None
+        Controls the random number generator for ``sample``.
+    trace_method : {'auto', 'diagonal'}, default='auto'
+        Method for :math:`\\operatorname{tr}(\\Lambda^{-1})` in the
+        MacKay update; see :class:`EmpiricalBayesNormalRegressor`.
+    eb_alpha_tol : float, default=0.05
+        Relative change in ``alpha`` below which ``partial_fit`` stops
+        iterating. One MacKay step per update is usually already within
+        it; when it is not (a cold start, a regime change) further
+        steps are taken on the Laplace approximation already in hand,
+        up to ``n_eb_iter``, so that a sequence of ``partial_fit`` calls
+        lands where ``fit`` on the same data would.
+
+    Attributes
+    ----------
+    log_evidence_ : float
+        Laplace log evidence at the most recent MacKay step, or
+        ``-inf`` if ``n_eb_iter=0``. After ``fit`` it is exact for the
+        fitted data. Under ``partial_fit`` the log-likelihood term is a
+        decayed running sum of each batch's log-likelihood at the MAP
+        right after that batch, since earlier batches are not
+        re-evaluated at later coefficients.
+    n_eb_iterations_ : int
+        Number of EB iterations performed during the last ``fit``.
+    eb_converged_ : bool
+        Whether the EB loop converged within ``eb_tol`` during the
+        last ``fit``.
+    eb_updates_rejected_ : int
+        Number of MacKay updates declined by the ill-conditioning
+        guardrail since the last ``fit``; see
+        :class:`EmpiricalBayesNormalRegressor`.
+
+    See Also
+    --------
+    BayesianGLM : Base estimator without empirical Bayes tuning.
+    EmpiricalBayesNormalRegressor : The Gaussian-likelihood analogue.
+
+    References
+    ----------
+    .. [1] MacKay, D. J. C. (1992). "Bayesian Interpolation",
+       Neural Computation 4(3), 415-447.
+    .. [2] Kulhavý, R. and Zarrop, M. B. (1993). "On a general concept
+       of forgetting", International Journal of Control 58(4), 905-924.
+    """
+
+    def __init__(
+        self,
+        alpha: float = 1.0,
+        *,
+        link: LinkFunction = "logit",
+        n_eb_iter: int = 10,
+        eb_tol: float = 1e-4,
+        learning_rate: float = 1.0,
+        approximator: Optional[PosteriorApproximator] = None,
+        sparse: bool = False,
+        random_state: Union[int, np.random.Generator, None] = None,
+        trace_method: str = "auto",
+        eb_alpha_tol: float = 0.05,
+    ) -> None:
+        super().__init__(
+            alpha=alpha,
+            link=link,
+            learning_rate=learning_rate,
+            approximator=approximator,
+            sparse=sparse,
+            random_state=random_state,
+        )
+        self.n_eb_iter = n_eb_iter
+        self.eb_tol = eb_tol
+        self.trace_method = trace_method
+        self.eb_alpha_tol = eb_alpha_tol
+
+    def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        super()._initialize_prior(X)
+        if self.approximator is None:
+            self.approximator_ = LaplaceApproximator(n_iter=25, tol=1e-6)
+
+    def _restart_from_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        """Reset to the prior ``alpha·I`` for the next EB iteration, but
+        keep what the previous iteration learned about the problem: its
+        sparse factor (the pattern of ``alpha·I + H`` never changes, so
+        the next IRLS refactorizes numerically instead of re-analysing)
+        and its mode (a warm start one or two Newton steps from the new
+        one, instead of starting from zero)."""
+        warm_start = self.__dict__.get("coef_")
+        hint = self.__dict__.pop("_precision_factor", None)
+        self._initialize_prior(X)
+        if warm_start is not None and warm_start.shape == self.coef_.shape:
+            self._warm_start = warm_start
+        if hint is not None and self.sparse:
+            self._factor_hint = hint
+
+    @_invalidate_cached_properties
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> None:
+        """Base-class update with the stabilized-forgetting floor and any
+        deferred alpha correction passed through, so both are folded
+        into the approximator's own factorization rather than costing
+        a second one."""
+        prior_factor: Optional[Any] = self._take_factor_hint() if self.sparse else None
+        posterior = self.approximator_.update_posterior(
+            X,
+            y,
+            self.coef_,
+            self.cov_inv_,  # type: ignore
+            link=self.link,
+            sample_weight=sample_weight,
+            learning_rate=self.learning_rate,
+            sparse=self.sparse,
+            prior_factor=prior_factor,
+            prior_floor=getattr(self, "_pending_floor", 0.0),
+            prior_shift=getattr(self, "_pending_shift", 0.0),
+            coef_init=self.__dict__.pop("_warm_start", None),
+        )
+        self._pending_shift = 0.0
+        self.coef_ = posterior.mean
+        self.cov_inv_ = posterior.precision
+        if posterior.factor is not None:
+            if self.sparse:
+                self._precision_factor = posterior.factor
+            else:
+                cho = posterior.factor
+                self._precision_factor = DenseFactor(
+                    _U=cho[0], _n_features=cho[0].shape[0]
+                )
+        elif prior_factor is not None:
+            self._factor_hint = prior_factor
+
+    def _log_likelihood(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> float:
+        """Log-likelihood at ``coef_`` under the same effective row
+        weights (sample weight times within-batch decay) the posterior
+        update used."""
+        weights = self._row_weights(y.shape[0], sample_weight)
+        return glm_log_likelihood(X, y, self.coef_, self.link, weights)
+
+    def _effective_count(
+        self, n_samples: int, sample_weight: Optional[NDArray[Any]]
+    ) -> float:
+        """What this batch adds to ``_effective_n``: the sum of the effective
+        row weights, so n rows at once count what n single-row calls would."""
+        return float(np.sum(self._row_weights(n_samples, sample_weight)))
+
+    def _eb_mackay_step(self) -> MacKayGLMUpdate:
+        update = mackay_update_glm(
+            self.coef_,
+            self.cov_inv_,
+            self.alpha,
+            self._prior_scalar - self._pending_shift,
+            self._effective_n,
+            self._eff_loglik,
+            factor=self._precision_factor,
+            trace_method=self.trace_method,
+        )
+        self.alpha = update.alpha
+        self.log_evidence_ = update.log_evidence
+        if update.rejected:
+            self.eb_updates_rejected_ += 1
+        return update
+
+    def _secant_alpha(
+        self, alpha_in: float, update: MacKayGLMUpdate, finder: SecantRootFinder
+    ) -> tuple[float, float]:
+        """The residual ``h`` of this MacKay step in log-alpha and the
+        alpha the root finder proposes from it, clipped to the
+        guardrail's band.  On the finder's first point this is the
+        plain MacKay step, ``update.alpha`` itself."""
+        u = math.log(alpha_in)
+        h = math.log(update.alpha) - u
+        if h == 0.0:
+            return h, update.alpha
+        u_next = finder.next(u, h)
+        return h, min(max(math.exp(u_next), update.alpha_min), update.alpha_max)
+
+    def fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Fit the model with empirical Bayes tuning of ``alpha``.
+
+        Alternates the posterior approximation (IRLS from the prior
+        ``alpha·I``) with MacKay updates of ``alpha`` until the Laplace
+        log evidence changes by less than ``eb_tol``, then refits with
+        the converged ``alpha``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values; 0/1 for ``link='logit'``, counts for
+            ``link='log'``.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample.
+
+        Returns
+        -------
+        self : EmpiricalBayesGLM
+
+        See Also
+        --------
+        partial_fit : Incremental update with one online MacKay step.
+        """
+        X_fit, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        prior_decay = self.learning_rate ** y.shape[0]
+        self.eb_updates_rejected_ = 0
+        self._pending_floor = 0.0
+        self._pending_shift = 0.0
+        self._effective_n = self._effective_count(y.shape[0], sample_weight)
+
+        if self.n_eb_iter > 0:
+            prev_evidence = -math.inf
+            converged = False
+            iterations = 0
+            log_ev = -math.inf
+            # Root finder on the MacKay residual in log-alpha; see
+            # SecantRootFinder. The target is MacKay's fixed point (the
+            # root of the residual), which the online loop shares, not
+            # the evidence maximum: the two differ slightly because the
+            # fixed point holds the Hessian fixed in alpha, and the
+            # evidence drifts down by that much over the final steps.
+            # The finder is therefore reset only by the guardrail, not
+            # by an evidence decrease.
+            finder = SecantRootFinder()
+
+            for i in range(self.n_eb_iter):
+                self._restart_from_prior(X_fit)
+                self._fit_helper(X_fit, y, sample_weight)
+                # After a fresh fit: Λ = prior_decay·α·I + H_data
+                self._prior_scalar = prior_decay * self.alpha
+                self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
+
+                alpha_in = self.alpha
+                update = self._eb_mackay_step()
+                log_ev = self.log_evidence_
+                iterations = i + 1
+
+                if abs(log_ev - prev_evidence) < self.eb_tol:
+                    converged = True
+                    break
+
+                h, self.alpha = self._secant_alpha(alpha_in, update, finder)
+                if update.rejected:
+                    finder.reset()
+                prev_evidence = log_ev
+
+            self._restart_from_prior(X_fit)
+            self._fit_helper(X_fit, y, sample_weight)
+
+            self.log_evidence_ = log_ev
+            self.n_eb_iterations_ = iterations
+            self.eb_converged_ = converged
+        else:
+            self._initialize_prior(X_fit)
+            self._fit_helper(X_fit, y, sample_weight)
+            self.log_evidence_ = -math.inf
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+
+        self._prior_scalar = prior_decay * self.alpha
+        self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
+        return self
+
+    @_invalidate_cached_properties
+    def _shift_and_resolve(self, shift: float) -> None:
+        """``Λ += shift·I``, carrying the mean with it.
+
+        Around the mode the quadratic model holds information
+        ``Λ_old·θ_old``, so the mode under the shifted precision is
+        ``Λ_new⁻¹·Λ_old·θ_old``. Shifting the diagonal and leaving
+        ``coef_`` alone would keep the precision right and the mean
+        wrong. Costs the factorization the shift invalidates, which is
+        why :meth:`_correct_precision` defers to callers that are
+        factorizing anyway.
+        """
+        if shift == 0.0:
+            return
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            data_eta = np.asarray(cov_inv @ self.coef_, dtype=np.float64)
+            self._shift_diagonal(cov_inv, shift)
+            self.cov_inv_ = cov_inv
+        else:
+            data_eta = dsymv(1.0, self.cov_inv_, self.coef_)
+            self.cov_inv_[np.diag_indices_from(self.cov_inv_)] += shift
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+        self.coef_ = self._precision_factor.solve(data_eta)
+
+    def _flush_pending_shift(self) -> None:
+        """Land a shift booked by :meth:`_correct_precision`, mean and all.
+
+        ``_prior_scalar`` already counts the shift, so only the stored
+        precision and the mode move here.
+        """
+        shift = getattr(self, "_pending_shift", 0.0)
+        if shift == 0.0:
+            return
+        self._pending_shift = 0.0
+        self._shift_and_resolve(shift)
+
+    def _apply_alpha_now(self, alpha_old: float) -> None:
+        """Move the Laplace posterior to the current alpha immediately:
+        the inner EB iterations of ``partial_fit`` need the trace and
+        the mode under the new prior to take the next step. Same
+        quadratic model as :meth:`_correct_precision`; this pays the
+        factorization now instead of deferring it."""
+        ratio = self.alpha / alpha_old
+        self._shift_and_resolve((ratio - 1.0) * self._prior_scalar)
+        self._prior_scalar *= ratio
+
+    def _eb_online_loop(self) -> float:
+        """MacKay steps on the Laplace approximation in hand until alpha
+        settles, the secant-accelerated way ``fit`` does it, but on the
+        quadratic model rather than on data: with ``Λ_old·θ_old`` fixed
+        each step is a diagonal shift, a refactorization and a trace.
+        Returns the alpha of the stored posterior, which the caller
+        defers the final correction from."""
+        alpha_stored = self.alpha
+        finder = SecantRootFinder()
+        n_iter = max(1, self.n_eb_iter)
+        for k in range(n_iter):
+            update = self._eb_mackay_step()
+            if update.rejected:
+                break
+            h, self.alpha = self._secant_alpha(alpha_stored, update, finder)
+            if (
+                abs(h) <= self.eb_alpha_tol
+                or finder.bracket_width <= self.eb_alpha_tol
+                or k == n_iter - 1
+            ):
+                break
+            self._apply_alpha_now(alpha_stored)
+            alpha_stored = self.alpha
+        return alpha_stored
+
+    def _correct_precision(self, alpha_old: float) -> None:
+        """Book the prior's rescale to the new alpha, to be applied by the
+        next update.
+
+        ``Λ = _prior_scalar·I + H_data``; only the prior part moves, by
+        the ratio ``alpha / alpha_old``. That is a diagonal shift, which
+        no cheap factor update covers, so rather than refactorizing here
+        the shift is deferred to the next ``partial_fit`` or ``decay``,
+        where a factorization happens anyway. Until then ``coef_`` and
+        ``cov_inv_`` stay the coherent posterior under ``alpha_old``.
+
+        The deferral is exact. Around the mode the log-likelihood's
+        quadratic model has information ``H·θ_old + g = Λ_old·θ_old``
+        (the gradient at the mode is ``alpha_old·θ_old``), and the next
+        update reads exactly that from ``(cov_inv_, coef_)`` as the
+        prior's eta while the shift lands on the precision alone: the
+        same update as re-solving ``Λ_new⁻¹·Λ_old·θ_old`` now.
+        ``_prior_scalar`` tracks the logical prior contribution, so it
+        runs ahead of the stored diagonal by ``_pending_shift``.
+        """
+        if self.alpha == alpha_old:
+            return
+        ratio = self.alpha / alpha_old
+        self._pending_shift += (ratio - 1.0) * self._prior_scalar
+        self._prior_scalar *= ratio
+
+    def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
+        # The approximator folds the re-injection floor (and any alpha
+        # shift the last MacKay step left pending) into its own
+        # factorization.
+        self._pending_floor = self.alpha if had_prior_scalar else 0.0
+
+    def _unbook_update(self) -> None:
+        # A floor left standing would be re-applied to every later update.
+        self._pending_floor = 0.0
+
+    def _start_stats(self) -> None:
+        self._pending_shift = 0.0
+        self._effective_n = 0.0
+        self._eff_loglik = 0.0
+
+    def _update_stats(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        prior_decay: float,
+        sample_weight: Optional[NDArray[Any]],
+    ) -> None:
+        self._effective_n = prior_decay * self._effective_n + self._effective_count(
+            y.shape[0], sample_weight
+        )
+        self._eff_loglik = prior_decay * self._eff_loglik + self._log_likelihood(
+            X, y, sample_weight
+        )
+
+    def _decay_stats(self, prior_decay: float) -> None:
+        self._effective_n *= prior_decay
+        self._eff_loglik *= prior_decay
+
+    def _online_eb_step(self, old: tuple[float, ...]) -> None:
+        """One online EB pass: MacKay steps on the Laplace approximation
+        in hand until alpha settles, then the final correction is booked
+        for the next update, so between updates the posterior is the one
+        under the previous ``alpha``."""
+        alpha_stored = self._eb_online_loop()
+        self._correct_precision(alpha_stored)
+
+    def decay(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        # Land any deferred alpha correction first, mean included.
+        # ``partial_fit`` folds that shift into its own solve for free;
+        # decay has no solve of its own, and adding the shift to the
+        # diagonal without one would decay a mean that still belongs to
+        # the old alpha. The shift has to land before the decay scales
+        # it, not alongside it.
+        if hasattr(self, "coef_") and hasattr(self, "_prior_scalar"):
+            self._flush_pending_shift()
+        super().decay(X, decay_rate=decay_rate)
 
 
 class EmpiricalBayesDirichletClassifier(DirichletClassifier):

@@ -7,7 +7,10 @@ import pytest
 from scipy.sparse import csc_array
 from scipy.sparse import random as sparse_random
 
-from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
+from bayesianbandits._eb_estimators import (
+    EmpiricalBayesGLM,
+    EmpiricalBayesNormalRegressor,
+)
 from bayesianbandits._estimators import (
     BayesianGLM,
     NormalInverseGammaRegressor,
@@ -36,6 +39,10 @@ def _make_estimator(estimator_type, sparse):
     elif estimator_type == "eb_normal":
         return EmpiricalBayesNormalRegressor(
             alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+        )
+    elif estimator_type == "eb_glm":
+        return EmpiricalBayesGLM(
+            alpha=1.0, link="logit", learning_rate=0.99999, sparse=sparse
         )
     else:
         raise ValueError(f"Unknown estimator type: {estimator_type}")
@@ -76,6 +83,12 @@ def _fit_estimator(estimator_type, kind, n_features, n_obs=200, density=None):
         y = rng.integers(0, 2, size=X_train.shape[0]).astype(np.float64)
     elif estimator_type == "glm_log":
         y = rng.poisson(3, size=X_train.shape[0]).astype(np.float64)
+    elif estimator_type == "eb_glm":
+        n_signal = min(50, n_features)
+        true_coef = np.zeros(n_features)
+        true_coef[:n_signal] = rng.standard_normal(n_signal) * 2.0
+        eta = np.asarray(X_train @ true_coef).ravel()
+        y = rng.binomial(1, 1.0 / (1.0 + np.exp(-eta))).astype(np.float64)
     elif estimator_type == "eb_normal":
         # Generate y with actual signal so MacKay has something to tune.
         n_signal = min(50, n_features)
@@ -248,6 +261,53 @@ def eb_normal_sparse_100k():
 @pytest.fixture
 def eb_normal_sparse_100k_fresh(eb_normal_sparse_100k):
     est, X_test, name = eb_normal_sparse_100k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+# -- EB GLM fixtures ----------------------------------------------------------
+
+
+@pytest.fixture
+def eb_glm_dense_100():
+    return _fit_estimator("eb_glm", "dense", 100)
+
+
+@pytest.fixture
+def eb_glm_dense_100_fresh(eb_glm_dense_100):
+    est, X_test, name = eb_glm_dense_100
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def eb_glm_dense_1k():
+    return _fit_estimator("eb_glm", "dense", 1_000)
+
+
+@pytest.fixture
+def eb_glm_dense_1k_fresh(eb_glm_dense_1k):
+    est, X_test, name = eb_glm_dense_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def eb_glm_sparse_1k():
+    return _fit_estimator("eb_glm", "sparse", 1_000)
+
+
+@pytest.fixture
+def eb_glm_sparse_1k_fresh(eb_glm_sparse_1k):
+    est, X_test, name = eb_glm_sparse_1k
+    return lambda: (copy.deepcopy(est), X_test, name)
+
+
+@pytest.fixture
+def eb_glm_sparse_100k():
+    return _fit_estimator("eb_glm", "sparse", 100_000, density=0.001)
+
+
+@pytest.fixture
+def eb_glm_sparse_100k_fresh(eb_glm_sparse_100k):
+    est, X_test, name = eb_glm_sparse_100k
     return lambda: (copy.deepcopy(est), X_test, name)
 
 
