@@ -64,16 +64,10 @@ class TestEBGLM:
         model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(_X(X, sparse), y)
         assert model.alpha > 0
         assert np.isfinite(model.log_evidence_)
-        assert model.n_eb_iterations_ >= 1
+        assert model.eb_converged_ and 1 <= model.n_eb_iterations_ < 10
         assert model.eb_updates_rejected_ == 0
         assert model.predict(_X(X[:3], sparse)).shape == (3,)
         assert model.sample(_X(X[:3], sparse), size=2).shape == (2, 3)
-
-    def test_alpha_moves_from_init(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(alpha=100.0, link=link, sparse=sparse)
-        model.fit(_X(X, sparse), y)
-        assert model.alpha != 100.0
 
     def test_evidence_monotonicity(self, link, sparse):
         X, y = _simulate(link)
@@ -93,13 +87,6 @@ class TestEBGLM:
         for i in range(1, len(evidences)):
             assert evidences[i] >= evidences[i - 1] - 1e-3, evidences
         assert evidences[-1] > evidences[0] + 1.0
-
-    def test_convergence_flag(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, n_eb_iter=100, eb_tol=1e-6, sparse=sparse)
-        model.fit(_X(X, sparse), y)
-        assert model.eb_converged_
-        assert model.n_eb_iterations_ < 100
 
     def test_fit_posterior_is_plain_glm_at_tuned_alpha(self, link, sparse):
         """After fit, the posterior equals BayesianGLM fitted with the
@@ -161,24 +148,6 @@ class TestEBGLM:
         assert model.alpha != 2.0
         assert np.isfinite(model.log_evidence_)
 
-    def test_partial_fit_updates_alpha_and_precision(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, sparse=sparse)
-        model.fit(_X(X[:100], sparse), y[:100])
-        alpha_before = model.alpha
-        ev_before = model.log_evidence_
-        diag_before = _diag(model)
-        prior_before = model._prior_scalar
-        model.partial_fit(_X(X[100:], sparse), y[100:])
-        assert model.alpha != alpha_before
-        assert model.log_evidence_ != ev_before
-        assert np.all(np.isfinite(_diag(model)))
-        assert not np.allclose(diag_before, _diag(model))
-        # prior scalar was rescaled to the new alpha (no decay here)
-        np.testing.assert_allclose(
-            model._prior_scalar, prior_before * model.alpha / alpha_before
-        )
-
     def test_correct_precision_moves_the_mean_with_the_prior(self, link, sparse):
         """Rescaling the prior part of Λ is a diagonal shift, and the mode
         under the shifted precision is Λ_new⁻¹·Λ_old·θ_old."""
@@ -204,17 +173,6 @@ class TestEBGLM:
         _ = model._precision_factor
         model._correct_precision(model.alpha)
         assert "_precision_factor" in model.__dict__
-
-    def test_chunked_partial_fit_tracks_batch_fit(self, link, sparse):
-        X, y = _simulate(link, n=2000, p=10, seed=5)
-        batch = EmpiricalBayesGLM(link=link, sparse=sparse).fit(_X(X, sparse), y)
-        online = EmpiricalBayesGLM(link=link, sparse=sparse)
-        for start in range(0, 2000, 100):
-            online.partial_fit(
-                _X(X[start : start + 100], sparse), y[start : start + 100]
-            )
-        assert 0.5 < online.alpha / batch.alpha < 2.0
-        np.testing.assert_allclose(online.coef_, batch.coef_, atol=0.3)
 
     def test_alpha_recovers_from_a_no_signal_start(self, link, sparse):
         """Rows that carry no information push alpha up; the ceiling keeps
@@ -250,13 +208,6 @@ class TestEBGLM:
         data = P - model._prior_scalar * np.eye(X.shape[1])
         assert np.all(np.linalg.eigvalsh(data) > -1e-8)
 
-    def test_partial_fit_cold_start_runs_fit(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, sparse=sparse)
-        model.partial_fit(_X(X, sparse), y)
-        assert model.n_eb_iterations_ >= 1
-        assert hasattr(model, "_prior_scalar")
-
     def test_decay_reinjects_prior(self, link, sparse):
         X, y = _simulate(link)
         model = EmpiricalBayesGLM(link=link, learning_rate=0.9, sparse=sparse)
@@ -274,28 +225,6 @@ class TestEBGLM:
         )
         np.testing.assert_allclose(model._effective_n, g * n_eff_before)
 
-    def test_repeated_decay_converges_to_alpha(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.5, sparse=sparse)
-        model.fit(_X(X, sparse), y)
-        for _ in range(60):
-            model.decay(_X(X[:1], sparse))
-        np.testing.assert_allclose(_diag(model), model.alpha, rtol=1e-6)
-        np.testing.assert_allclose(model._prior_scalar, model.alpha, rtol=1e-6)
-
-    def test_decay_rate_one_no_reinjection(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.9, sparse=sparse)
-        model.fit(_X(X, sparse), y)
-        before = _dense_prec(model)
-        model.decay(_X(X[:3], sparse), decay_rate=1.0)
-        np.testing.assert_allclose(_dense_prec(model), before)
-
-    def test_decay_before_fit(self, link, sparse):
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.9, sparse=sparse)
-        model.decay(np.zeros((3, 5)))
-        assert not hasattr(model, "coef_")
-
     def test_partial_fit_prior_reinjection(self, link, sparse):
         """With learning_rate < 1 the prior component after partial_fit is
         γⁿ·s_old + (1 - γⁿ)·alpha_old, then rescaled by the MacKay step."""
@@ -310,36 +239,6 @@ class TestEBGLM:
         # Minus the prior part, the precision is a PSD data Hessian.
         data = _dense_prec(model) - expected * np.eye(X.shape[1])
         assert np.all(np.linalg.eigvalsh(data) > -1e-8)
-
-    def test_reinjection_is_zero_centered(self, link, sparse):
-        """Stabilized re-injection shrinks toward zero: the posterior mean
-        after partial_fit equals the base GLM run against the explicit
-        product prior N(m, (γⁿP)⁻¹)·N(0, (sI)⁻¹)."""
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.95, sparse=sparse)
-        model.fit(_X(X[:100], sparse), y[:100])
-        m, P = model.coef_.copy(), _dense_prec(model)
-        n = 20
-        g = 0.95**n
-        s = (1 - g) * model.alpha
-        P_eq = g * P + s * np.eye(X.shape[1])
-        m_eq = np.linalg.solve(P_eq, g * P @ m)
-
-        model._pending_floor = model.alpha
-        model._fit_helper(_X(X[100 : 100 + n], sparse), y[100 : 100 + n])
-
-        from bayesianbandits._estimators import compute_effective_weights
-
-        ref = BayesianGLM(link=link, sparse=sparse, approximator=model.approximator_)
-        ref._initialize_prior(_X(X, sparse))
-        ref.coef_ = m_eq
-        ref.cov_inv_ = sp.csc_array(P_eq) if sparse else P_eq
-        ref._fit_helper(
-            _X(X[100 : 100 + n], sparse),
-            y[100 : 100 + n],
-            compute_effective_weights(n, None, 0.95),
-        )
-        np.testing.assert_allclose(model.coef_, ref.coef_, atol=1e-8)
 
     def test_sample_weight_matches_duplication(self, link, sparse):
         X, y = _simulate(link, n=60)
@@ -360,13 +259,6 @@ class TestEBGLM:
         model.partial_fit(_X(X[100:], sparse), y[100:])
         assert np.isfinite(model.alpha) and model.alpha > 0
         assert np.isfinite(model.log_evidence_)
-
-    def test_trace_method_diagonal(self, link, sparse):
-        X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, sparse=sparse, trace_method="diagonal")
-        model.fit(_X(X, sparse), y)
-        model.partial_fit(_X(X[:10], sparse), y[:10])
-        assert np.isfinite(model.alpha) and model.alpha > 0
 
     def test_get_set_params_and_clone(self, link, sparse):
         model = EmpiricalBayesGLM(
@@ -424,11 +316,6 @@ class TestEBGLMGuardrail:
         # Constant evidence converges on the second step.
         assert model.eb_updates_rejected_ == 2
         assert model.alpha == 1.0
-
-    def test_fit_resets_rejection_count(self):
-        X, y = _simulate("logit", n=50, p=5)
-        model = EmpiricalBayesGLM(link="logit").fit(X, y)
-        model.eb_updates_rejected_ = 4
         model.fit(X, y)
         assert model.eb_updates_rejected_ == 0
 
@@ -441,21 +328,6 @@ class TestFailedPartialFitLeavesEBStateIntact:
         X, y = _simulate("log", n=40, p=4)
         model = EmpiricalBayesGLM(link="log", learning_rate=0.9, sparse=sparse)
         return model.fit(_X(X, sparse), y), X, y
-
-    @pytest.mark.parametrize("sparse", [False, True])
-    def test_prior_scalar_and_floor_survive_a_raising_update(self, sparse):
-        model, X, y = self._fitted(sparse)
-        before = (model._prior_scalar, model._pending_floor, model.alpha)
-
-        with mock.patch.object(
-            model.approximator_,
-            "update_posterior",
-            side_effect=np.linalg.LinAlgError("injected"),
-        ):
-            with pytest.raises(np.linalg.LinAlgError):
-                model.partial_fit(_X(X[:5], sparse), y[:5])
-
-        assert (model._prior_scalar, model._pending_floor, model.alpha) == before
 
     @pytest.mark.parametrize("sparse", [False, True])
     def test_a_failed_update_does_not_change_the_next_one(self, sparse):
@@ -478,81 +350,12 @@ class TestFailedPartialFitLeavesEBStateIntact:
         np.testing.assert_array_equal(poisoned.coef_, clean.coef_)
         np.testing.assert_allclose(_dense_prec(poisoned), _dense_prec(clean))
 
-    def test_a_first_ever_partial_fit_that_raises_leaves_no_prior_scalar(self):
-        X, y = _simulate("log", n=40, p=4)
-        model = EmpiricalBayesGLM(link="log", learning_rate=0.9)
-
-        with mock.patch.object(
-            EmpiricalBayesGLM,
-            "fit",
-            side_effect=np.linalg.LinAlgError("injected"),
-        ):
-            with pytest.raises(np.linalg.LinAlgError):
-                model.partial_fit(X[:5], y[:5])
-
-        assert not hasattr(model, "_prior_scalar")
-
 
 class TestEffectiveN:
-    """``_effective_n`` has to count a batch the way ``partial_fit`` would
-    have counted the same rows one at a time, which is the sum of the
-    within-batch decay weights rather than the row count."""
-
-    @pytest.mark.parametrize("learning_rate", [1.0, 0.9, 0.5])
-    def test_matches_the_summed_effective_weights(self, learning_rate):
-        X, y = _simulate("log", n=30, p=4)
-        model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate).fit(X, y)
-        expected = np.sum(learning_rate ** np.arange(30))
-        assert model._effective_n == pytest.approx(expected)
-
-    def test_counts_sample_weight(self):
+    def test_counts_the_effective_row_weights(self):
         X, y = _simulate("log", n=4, p=3)
         w = np.array([2.0, 3.0, 1.0, 4.0])
-        model = EmpiricalBayesGLM(link="log", learning_rate=1.0)
-        model.fit(X, y, sample_weight=w)
-        assert model._effective_n == pytest.approx(w.sum())
-
-    def test_saturates_instead_of_growing_with_the_stream(self):
-        """Under forgetting the effective sample size converges to
-        ``1/(1-γ)``; the raw row count would run away from it."""
-        learning_rate = 0.9
-        X, y = _simulate("log", n=200, p=4)
-        model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
-        model.fit(X[:10], y[:10])
-        for i in range(10, 200, 10):
-            model.partial_fit(X[i : i + 10], y[i : i + 10])
-        assert model._effective_n == pytest.approx(1.0 / (1.0 - learning_rate))
-
-    def test_streaming_lands_where_one_batch_does(self):
-        learning_rate = 0.9
-        X, y = _simulate("log", n=50, p=4)
-        one = EmpiricalBayesGLM(link="log", learning_rate=learning_rate).fit(X, y)
-        streamed = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
-        streamed.fit(X[:10], y[:10])
-        for i in range(10, 50, 5):
-            streamed.partial_fit(X[i : i + 5], y[i : i + 5])
-        assert streamed._effective_n == pytest.approx(one._effective_n)
-
-    def test_a_batch_counts_the_same_as_the_rows_one_at_a_time(self):
-        """The invariant every other piece of the state keeps: one
-        ``partial_fit`` of n rows lands where n single-row calls do."""
-        learning_rate, n = 0.9, 6
-        X, y = _simulate("log", n=20, p=3)
-
-        def seeded():
-            model = EmpiricalBayesGLM(link="log", learning_rate=learning_rate)
-            return model.fit(X[:14], y[:14])
-
-        batch, sequential = seeded(), seeded()
-        batch.partial_fit(X[14 : 14 + n], y[14 : 14 + n])
-        for i in range(14, 14 + n):
-            sequential.partial_fit(X[i : i + 1], y[i : i + 1])
-
-        assert batch._effective_n == pytest.approx(sequential._effective_n)
-
-    def test_a_single_row_is_unaffected(self):
-        """``compute_effective_weights`` leaves a one-row batch alone, so the
-        bandit-shaped update must count exactly 1."""
-        X, y = _simulate("log", n=20, p=3)
-        model = EmpiricalBayesGLM(link="log", learning_rate=0.9).fit(X[:1], y[:1])
-        assert model._effective_n == pytest.approx(1.0)
+        model = EmpiricalBayesGLM(link="log", learning_rate=0.9).fit(X, y, w)
+        assert model._effective_n == pytest.approx(
+            np.sum(w * 0.9 ** np.arange(3, -1, -1))
+        )

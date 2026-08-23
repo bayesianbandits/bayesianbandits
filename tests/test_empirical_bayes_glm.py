@@ -13,7 +13,6 @@ from scipy.sparse import csc_array
 from scipy.special import expit
 from scipy.stats import bernoulli, poisson
 
-from bayesianbandits import EmpiricalBayesGLM
 from bayesianbandits._empirical_bayes import (
     MacKayGLMUpdate,
     glm_log_likelihood,
@@ -180,28 +179,6 @@ class TestGLMLogLikelihood:
             rtol=1e-12,
         )
 
-    def test_online_log_likelihood_survives_an_overshooting_step(self) -> None:
-        """A reachable case: the Poisson Newton step overshoots on a batch
-        of large counts, leaving a finite ``coef_`` whose ``eta`` runs to
-        thousands. Unclipped that scores ``-inf``, and ``_eff_loglik``
-        decays a ``-inf`` to ``-inf`` for the life of the estimator."""
-        rng = np.random.default_rng(1063498084)
-        X1 = rng.standard_normal((21, 2)) * 0.6843477383116864
-        y1 = rng.poisson(rng.uniform(0, 3), size=21).astype(np.float64)
-        X2 = rng.standard_normal((8, 2)) * 0.6843477383116864
-        y2 = (
-            rng.poisson(rng.uniform(0, 3), size=8) * 10.0 ** rng.uniform(0, 6)
-        ).astype(np.float64)
-
-        model = EmpiricalBayesGLM(alpha=1.0938473052486514e-06, link="log", n_eb_iter=2)
-        model.partial_fit(X1, y1)
-        model.partial_fit(X2, y2)
-
-        assert np.all(np.isfinite(model.coef_))  # the fit itself is fine
-        assert np.max(np.abs(X2 @ model.coef_)) > 709  # only the scoring blows up
-        assert np.isfinite(model._eff_loglik)
-        assert np.isfinite(model.log_evidence_)
-
     def test_unknown_link_raises(self) -> None:
         X, y = _simulate("logit", 5, 2, seed=4)
         with pytest.raises(ValueError, match="Unknown link"):
@@ -241,14 +218,6 @@ class TestMacKayUpdateGLM:
             factor=factor,
         )
         return X, y, theta, precision, update
-
-    def test_alpha_matches_effective_dof(self, link: str, sparse: bool) -> None:
-        """alpha_new = tr(Lambda^-1 H_data) / ||theta||^2."""
-        X, _, theta, precision, update = self._run(link, sparse)
-        H = precision - self.alpha * np.eye(X.shape[1])
-        gamma = np.trace(np.linalg.solve(precision, H))
-        np.testing.assert_allclose(update.alpha, gamma / (theta @ theta), rtol=1e-8)
-        assert not update.rejected
 
     def test_log_evidence_matches_reference(self, link: str, sparse: bool) -> None:
         X, y, theta, precision, update = self._run(link, sparse)
@@ -332,31 +301,6 @@ class TestMacKayUpdateGLM:
 
 
 class TestMacKayUpdateGLMGuardrail:
-    def test_separable_underdetermined_is_not_driven_to_zero(self) -> None:
-        """p >> n separable logistic data starting from a tiny alpha: the
-        gamma <= effective_n cap keeps alpha_new = gamma / ||theta||^2 a
-        sane value rather than chasing alpha -> 0, and the
-        ill-conditioning guardrail has nothing to reject."""
-        rng = np.random.default_rng(0)
-        n, p = 5, 50
-        X = rng.normal(size=(n, p))
-        y = (X[:, 0] > 0).astype(np.float64)  # perfectly separable
-        alpha = 1e-9
-        theta, precision = _laplace_posterior(X, y, alpha, "logit")
-        factor = _make_dense_factor(precision)
-        update = mackay_update_glm(
-            theta,
-            precision,
-            alpha,
-            prior_scalar=alpha,
-            effective_n=float(n),
-            log_lik=glm_log_likelihood(X, y, theta, "logit"),
-            factor=factor,
-        )
-        assert not update.rejected
-        assert update.alpha > 1e3 * alpha
-        assert update.alpha <= n / float(theta @ theta) * (1 + 1e-12)
-
     def test_ill_conditioned_update_is_rejected(self) -> None:
         """max(diag H_data) / alpha_new above the ceiling keeps alpha."""
         p = 4

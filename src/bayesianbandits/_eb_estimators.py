@@ -928,28 +928,21 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
 class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     """Bayesian GLM with empirical Bayes tuning of the prior precision.
 
-    Extends :class:`BayesianGLM` with automatic optimization of the
-    prior precision ``alpha`` via MacKay's evidence framework [1]_
-    applied to the Laplace approximation. The GLM posterior is already
-    a Gaussian centred on the MAP with the Hessian as precision, so
-    MacKay's update slots in directly: with
+    Extends :class:`BayesianGLM` with MacKay's evidence-framework [1]_
+    update of ``alpha``, applied to the Laplace approximation: with
     :math:`\\gamma = p - s\\,\\operatorname{tr}(\\Lambda^{-1})` (``s`` the
     prior's contribution to the diagonal of :math:`\\Lambda`),
-    :math:`\\alpha_{\\text{new}} = \\gamma / \\|\\theta_{\\text{MAP}}\\|^2`.
+    :math:`\alpha_{\text{new}} = \\gamma / \\|\theta_{\text{MAP}}\\|^2`.
 
-    During ``fit``, IRLS and MacKay steps alternate until the Laplace
-    log evidence converges. During ``partial_fit``, one MacKay step is
-    taken on the current Laplace approximation and the posterior is
-    moved to the new ``alpha``.
+    ``fit`` alternates IRLS and MacKay steps until the Laplace log
+    evidence converges. ``partial_fit`` takes one MacKay step on the
+    Laplace approximation in hand and moves the posterior to the new
+    ``alpha``. MacKay's update holds the data Hessian fixed in
+    ``alpha`` while the Laplace evidence also depends on it through
+    the mode, so the fixed point sits near, not at, the evidence
+    maximum (within a few percent in practice).
 
-    MacKay's update treats the data Hessian as fixed in ``alpha``,
-    while the Laplace evidence also depends on ``alpha`` through the
-    curvature at the mode, so the fixed point lies near but not
-    exactly at the evidence maximum (``alpha`` within a few percent
-    of the maximizer in practice), and the evidence can drift down
-    slightly (of order 1e-4 in the log) over the final EB iterations.
-
-    When ``learning_rate < 1``, *stabilized forgetting* [2]_ re-injects
+    When ``learning_rate < 1``, stabilized forgetting [2]_ re-injects
     ``(1 - γⁿ)·alpha`` onto the precision diagonal after each decay so
     the prior's contribution converges to ``alpha`` instead of
     vanishing, which keeps ``alpha`` tuning load-bearing indefinitely.
@@ -961,26 +954,21 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     link : {'logit', 'log'}, default='logit'
         Link function; see :class:`BayesianGLM`.
     n_eb_iter : int, default=10
-        Maximum number of EB iterations during ``fit``. Each iteration
-        re-runs the posterior approximation from the prior and takes
-        one MacKay step. Set to 0 to disable EB tuning during ``fit``.
+        Maximum number of EB iterations during ``fit``; 0 disables
+        tuning there.
     eb_tol : float, default=1e-4
         Convergence tolerance on the change in log evidence between
         successive EB iterations.
     learning_rate : float, default=1.0
         Decay rate for sequential updates; see :class:`BayesianGLM`.
     approximator : PosteriorApproximator, optional
-        Posterior approximation strategy. Defaults to
-        ``LaplaceApproximator(n_iter=25, tol=1e-6)`` rather than the
-        base class's 5 fixed iterations: the evidence is only a Laplace
-        evidence when the Hessian is taken at the mode, so ``fit``
-        needs IRLS to actually converge. With an ``RVGAApproximator``
-        the precision is an expected rather than observed curvature and
-        ``log_evidence_`` is a heuristic; the ``alpha`` update is still
-        well-defined. A custom approximator must accept the
-        ``prior_floor`` keyword of :class:`PosteriorApproximator`,
-        which is how this estimator applies stabilized forgetting
-        without a factorization of its own.
+        Defaults to ``LaplaceApproximator(n_iter=25, tol=1e-6)`` rather
+        than the base class's 5 fixed iterations: the evidence is only
+        a Laplace evidence at the mode, so IRLS has to converge. With an
+        ``RVGAApproximator`` the precision is an expected rather than
+        observed curvature and ``log_evidence_`` is a heuristic. A
+        custom approximator must accept the ``prior_floor`` keyword of
+        :class:`PosteriorApproximator`.
     sparse : bool, default=False
         Use sparse precision matrices; see :class:`BayesianGLM`.
     random_state : int, np.random.Generator, or None, default=None
@@ -993,11 +981,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     ----------
     log_evidence_ : float
         Laplace log evidence at the most recent MacKay step, or
-        ``-inf`` if ``n_eb_iter=0``. After ``fit`` it is exact for the
-        fitted data. Under ``partial_fit`` the log-likelihood term is a
-        decayed running sum of each batch's log-likelihood at the MAP
-        right after that batch, since earlier batches are not
-        re-evaluated at later coefficients.
+        ``-inf`` if ``n_eb_iter=0``. Exact after ``fit``; under
+        ``partial_fit`` the log-likelihood term is a decayed running
+        sum of each batch's log-likelihood at the mode right after it.
     n_eb_iterations_ : int
         Number of EB iterations performed during the last ``fit``.
     eb_converged_ : bool
@@ -1058,8 +1044,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:
-        """Base-class update with the stabilized-forgetting floor folded
-        into the approximator's own factorization."""
+        """Base-class update, with the re-injection floor passed through."""
         prior_factor: Optional[Any] = (
             self.__dict__.get("_precision_factor") if self.sparse else None
         )
@@ -1092,8 +1077,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]],
     ) -> float:
-        """Log-likelihood at ``coef_`` under the effective row weights
-        the posterior update used."""
+        """Log-likelihood at ``coef_`` under the precision's row weights."""
         weights = self._row_weights(y.shape[0], sample_weight)
         return glm_log_likelihood(X, y, self.coef_, self.link, weights)
 
@@ -1196,15 +1180,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
 
     @_invalidate_cached_properties
     def _correct_precision(self, alpha_old: float) -> None:
-        """Move the posterior to the new alpha.
-
-        ``Λ = _prior_scalar·I + H_data``; only the prior part moves, by
-        the ratio ``alpha / alpha_old``, a diagonal shift. Around the
-        mode the quadratic model holds information ``Λ_old·θ_old``, so
-        the mode under the shifted precision is ``Λ_new⁻¹·Λ_old·θ_old``:
-        shifting the diagonal and leaving ``coef_`` alone would keep the
-        precision right and the mean wrong.
-        """
+        """Rescale the prior part of ``Λ`` to the new alpha (a diagonal
+        shift) and move the mode with it, to ``Λ_new⁻¹·Λ_old·θ_old``."""
         if self.alpha == alpha_old:
             return
         ratio = self.alpha / alpha_old
@@ -1223,11 +1200,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self.coef_ = self._precision_factor.solve(data_eta)
 
     def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
-        # The approximator folds the re-injection into its own factorization.
         self._pending_floor = self.alpha if had_prior_scalar else 0.0
 
     def _unbook_update(self) -> None:
-        # A floor left standing would be re-applied to every later update.
         self._pending_floor = 0.0
 
     def _hyperparams(self) -> tuple[float]:
