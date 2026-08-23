@@ -1399,6 +1399,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         # A floor left standing would be re-applied to every later update.
         self._pending_floor = 0.0
 
+    def _hyperparams(self) -> tuple[float]:
+        return (self.alpha,)
+
     def _start_stats(self) -> None:
         self._pending_shift = 0.0
         self._effective_n = 0.0
