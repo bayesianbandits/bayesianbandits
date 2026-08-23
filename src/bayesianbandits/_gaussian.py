@@ -7,7 +7,7 @@ from numpy.polynomial.hermite_e import hermegauss
 from numpy.typing import NDArray
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
 from scipy.linalg.blas import dgemv, dsymv, dsyrk
-from scipy.sparse import csc_array
+from scipy.sparse import csc_array, eye
 from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
 
@@ -134,6 +134,64 @@ def _eval_link(link: LinkFunction, eta: NDArray[np.float64]) -> LinkOutput:
         raise ValueError(f"Unknown link function: {link}")
 
 
+def _prior_diag_shift(
+    prior_decay: float, prior_floor: float, prior_shift: float
+) -> float:
+    """Total shift to the decayed prior precision's diagonal.
+
+    ``(1 - γⁿ)·prior_floor`` is the stabilized-forgetting re-injection
+    (Kulhavy & Zarrop 1993); ``γⁿ·prior_shift`` is a shift the caller
+    owed the prior *before* decay (an empirical-Bayes change to the
+    prior precision, deferred to this update), so it decays with the
+    rest of the prior.
+    """
+    return (1.0 - prior_decay) * prior_floor + prior_decay * prior_shift
+
+
+def _stabilized_prior_dense(
+    prior_prec_F: NDArray[Any],
+    prior_precision: NDArray[Any],
+    prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
+) -> NDArray[Any]:
+    """Add :func:`_prior_diag_shift` to the diagonal of the decayed prior
+    precision.
+
+    Only the precision is shifted, never the prior's eta term, so the
+    re-injected prior is centered at zero: it shrinks dormant
+    coefficients rather than pinning them where they are.  Without
+    decay ``prior_prec_F`` may be the caller's own array; it is copied
+    before being touched.
+    """
+    shift = _prior_diag_shift(prior_decay, prior_floor, prior_shift)
+    if shift == 0.0:
+        return prior_prec_F
+    if np.shares_memory(prior_prec_F, prior_precision):
+        prior_prec_F = prior_prec_F.copy(order="F")
+    prior_prec_F[np.diag_indices_from(prior_prec_F)] += shift
+    return prior_prec_F
+
+
+def _stabilized_prior_sparse(
+    prior_precision_scaled: csc_array,
+    prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
+) -> csc_array:
+    """Sparse counterpart of :func:`_stabilized_prior_dense`.
+
+    Returns the input object itself when there is nothing to add, so
+    callers can detect by identity whether a cached factor is stale.
+    """
+    shift = _prior_diag_shift(prior_decay, prior_floor, prior_shift)
+    if shift == 0.0:
+        return prior_precision_scaled
+    assert prior_precision_scaled.shape is not None
+    n = prior_precision_scaled.shape[0]
+    return csc_array(prior_precision_scaled + shift * eye(n, format="csc"))
+
+
 def _irls_dense(
     X: NDArray[np.float64],
     y: NDArray[np.float64],
@@ -143,6 +201,8 @@ def _irls_dense(
     link: LinkFunction,
     effective_weights: NDArray[np.float64],
     prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
 ) -> GaussianPosterior:
@@ -156,7 +216,13 @@ def _irls_dense(
     prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
 
     # F-order copy of prior precision for dsyrk accumulation buffer
-    prior_prec_F = np.asfortranarray(prior_precision_scaled)
+    prior_prec_F = _stabilized_prior_dense(
+        np.asfortranarray(prior_precision_scaled),
+        prior_precision,
+        prior_decay,
+        prior_floor,
+        prior_shift,
+    )
 
     X_weighted = np.empty_like(X)
     W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
@@ -215,10 +281,20 @@ def _irls_sparse(
     link: LinkFunction,
     effective_weights: NDArray[np.float64],
     prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
+    prior_factor: Optional[Any] = None,
 ) -> GaussianPosterior:
-    """Sparse IRLS loop using CHOLMOD/SuperLU factorization."""
+    """Sparse IRLS loop using CHOLMOD/SuperLU factorization.
+
+    ``prior_factor``, when given, seeds the posterior's factorization:
+    ``refactorize`` reuses its symbolic analysis whenever the posterior
+    keeps the prior's sparsity pattern (every update after the first
+    touching a given feature set), and falls back to a fresh one when
+    the pattern grew.
+    """
     from ._sparse_bayesian_linear_regression import create_sparse_factor
 
     no_decay = prior_decay == 1.0
@@ -230,10 +306,13 @@ def _irls_sparse(
         if no_decay
         else prior_decay * (prior_precision @ prior_mean)
     )
+    prior_precision_scaled = _stabilized_prior_sparse(
+        prior_precision_scaled, prior_decay, prior_floor, prior_shift
+    )
 
     coef = prior_mean.copy()
     coef_old = coef
-    sparse_factor = None
+    sparse_factor = prior_factor
     posterior_precision = prior_precision
 
     for iteration in range(n_iter):
@@ -278,8 +357,11 @@ def update_gaussian_posterior_laplace(
     sample_weight: Optional[NDArray[np.float64]] = None,
     learning_rate: float = 1.0,
     sparse: bool = False,
+    prior_floor: float = 0.0,
+    prior_shift: float = 0.0,
     n_iter: int = 3,
     tol: float = 1e-4,
+    prior_factor: Optional[Any] = None,
 ) -> GaussianPosterior:
     """
     Update Gaussian posterior using Laplace approximation (IRLS).
@@ -356,8 +438,11 @@ def update_gaussian_posterior_laplace(
             link=link,
             effective_weights=effective_weights,
             prior_decay=prior_decay,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
             tol=tol,
+            prior_factor=prior_factor,
         )
     else:
         return _irls_dense(
@@ -368,6 +453,8 @@ def update_gaussian_posterior_laplace(
             link=link,
             effective_weights=effective_weights,
             prior_decay=prior_decay,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
             tol=tol,
         )
@@ -388,9 +475,21 @@ class PosteriorApproximator(Protocol):
     Notes
     -----
     ``prior_factor``, when provided, is a factorization of
-    ``prior_precision`` cached by the caller from the previous update.
-    Implementations may use it to skip refactorizing the prior; they
-    must not mutate it and may ignore it entirely.
+    ``prior_precision`` handed over by the caller from the previous
+    update. Implementations may solve against it, refactorize it in
+    place for the posterior (the caller no longer holds it as the
+    prior's factor), or ignore it entirely.
+
+    ``prior_floor``, when nonzero, requests stabilized forgetting
+    (Kulhavy & Zarrop 1993): after decaying the prior precision by
+    ``γⁿ``, ``(1 - γⁿ)·prior_floor`` is added back to its diagonal so
+    the prior's contribution converges to ``prior_floor·I`` instead of
+    vanishing.  ``prior_shift`` is a further diagonal shift the caller
+    owed the prior before decay (it is scaled by ``γⁿ`` with the rest of
+    the prior): how an empirical-Bayes estimator applies a change to its
+    prior precision without a factorization of its own.  Both shift the
+    precision only, never the prior's eta term, so the shifted prior is
+    centered at zero.
     """
 
     def update_posterior(
@@ -404,6 +503,8 @@ class PosteriorApproximator(Protocol):
         learning_rate: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
+        prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
     ) -> GaussianPosterior: ...
 
 
@@ -473,8 +574,9 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         learning_rate: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
+        prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
     ) -> GaussianPosterior:
-        # prior_factor unused: IRLS builds its own factor each call.
         return update_gaussian_posterior_laplace(
             X,
             y,
@@ -484,8 +586,11 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
             sample_weight=sample_weight,
             learning_rate=learning_rate,
             sparse=sparse,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=self.n_iter,
             tol=self.tol,
+            prior_factor=prior_factor,
         )
 
 
@@ -635,6 +740,8 @@ def _rvga_dense(
     link: LinkFunction,
     effective_weights: NDArray[np.float64],
     prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
     n_gh_nodes: int,
@@ -648,7 +755,13 @@ def _rvga_dense(
         prior_precision if no_decay else prior_decay * prior_precision
     )
     prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
-    prior_prec_F = np.asfortranarray(prior_precision_scaled)
+    prior_prec_F = _stabilized_prior_dense(
+        np.asfortranarray(prior_precision_scaled),
+        prior_precision,
+        prior_decay,
+        prior_floor,
+        prior_shift,
+    )
 
     X_weighted = np.empty_like(X)
     m_buf = np.empty(n_samples, dtype=np.float64)
@@ -721,6 +834,8 @@ def _rvga_sparse(
     link: LinkFunction,
     effective_weights: NDArray[np.float64],
     prior_decay: float,
+    prior_floor: float,
+    prior_shift: float,
     n_iter: int,
     tol: float,
     n_gh_nodes: int,
@@ -751,6 +866,14 @@ def _rvga_sparse(
         from ._sparse_bayesian_linear_regression import scale_factor
 
         prior_factor = scale_factor(prior_factor, prior_decay)
+    shifted = _stabilized_prior_sparse(
+        prior_precision_scaled, prior_decay, prior_floor, prior_shift
+    )
+    if shifted is not prior_precision_scaled:
+        # A diagonal shift is a rank-p change no cheap factor update
+        # covers; the Gram matrix refactorizes from scratch.
+        prior_precision_scaled = shifted
+        prior_factor = None
 
     # Precompute G = X A^{-1} X^T (n×n, computed once).
     # Woodbury: Λ = A + X^T diag(W) X
@@ -759,7 +882,9 @@ def _rvga_sparse(
     diag_G = np.diag(G).copy()
 
     coef = prior_mean.copy()
-    sparse_factor = None
+    # The Gram matrix was the last use of the prior's factor as such;
+    # from here it seeds the posterior's (refactorize checks the pattern).
+    sparse_factor = prior_factor
     use_probit_path = use_probit and link == "logit"
     W_prev: Optional[NDArray[np.float64]] = None
 
@@ -827,6 +952,8 @@ def update_gaussian_posterior_rvga(
     sample_weight: Optional[NDArray[np.float64]] = None,
     learning_rate: float = 1.0,
     sparse: bool = False,
+    prior_floor: float = 0.0,
+    prior_shift: float = 0.0,
     n_iter: int = 5,
     tol: float = 1e-4,
     n_gh_nodes: int = 20,
@@ -874,6 +1001,8 @@ def update_gaussian_posterior_rvga(
                 ),
                 learning_rate=learning_rate,
                 sparse=True,
+                prior_floor=prior_floor,
+                prior_shift=prior_shift if start == 0 else 0.0,
                 n_iter=n_iter,
                 tol=tol,
                 n_gh_nodes=n_gh_nodes,
@@ -896,6 +1025,8 @@ def update_gaussian_posterior_rvga(
             link=link,
             effective_weights=effective_weights,
             prior_decay=prior_decay,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
             tol=tol,
             n_gh_nodes=n_gh_nodes,
@@ -911,6 +1042,8 @@ def update_gaussian_posterior_rvga(
             link=link,
             effective_weights=effective_weights,
             prior_decay=prior_decay,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=n_iter,
             tol=tol,
             n_gh_nodes=n_gh_nodes,
@@ -981,6 +1114,8 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
         learning_rate: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
+        prior_floor: float = 0.0,
+        prior_shift: float = 0.0,
     ) -> GaussianPosterior:
         return update_gaussian_posterior_rvga(
             X,
@@ -991,6 +1126,8 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
             sample_weight=sample_weight,
             learning_rate=learning_rate,
             sparse=sparse,
+            prior_floor=prior_floor,
+            prior_shift=prior_shift,
             n_iter=self.n_iter,
             tol=self.tol,
             n_gh_nodes=self.n_gh_nodes,
