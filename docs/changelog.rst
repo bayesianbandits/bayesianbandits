@@ -67,6 +67,20 @@ Unreleased
 
 **New features**
 
+- ``EmpiricalBayesGLM``: ``BayesianGLM`` with MacKay evidence-framework
+  tuning of the prior precision ``alpha``, applied to the Laplace
+  approximation. ``fit`` alternates IRLS with MacKay steps until the
+  Laplace evidence settles; ``partial_fit`` takes one MacKay step on
+  the posterior in hand and moves it to the new ``alpha``. Stabilized
+  forgetting keeps the tuned prior load-bearing under
+  ``learning_rate < 1``, as for ``EmpiricalBayesNormalRegressor``.
+
+  ``PosteriorApproximator.update_posterior`` gains two optional keywords
+  for it: ``prior_floor`` (the stabilized-forgetting re-injection) and
+  ``coef_init`` (a warm start for the EB refits). ``BayesianGLM`` only
+  passes them when set, so an existing custom approximator keeps working
+  there; one used with ``EmpiricalBayesGLM`` must accept both (#283)
+
 - ``InformationDirectedSampling``: a variance-based information-directed
   sampling (IDS) policy after Russo & Van Roy (2018). Each round it
   estimates every arm's expected regret and variance-based information

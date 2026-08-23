@@ -275,7 +275,8 @@ Hyperparameter semantics
    * - ``alpha``
      - Prior precision. Sets
        :math:`\boldsymbol{\Lambda}_0 = \alpha\mathbf{I}`.
-     - 1.0 (default). Higher values regularize more.
+     - 1.0 (default). Higher values regularize more. To learn it
+       from data, see :doc:`glm-eb`.
    * - ``link``
      - Likelihood family. ``'logit'`` for binary outcomes,
        ``'log'`` for counts.

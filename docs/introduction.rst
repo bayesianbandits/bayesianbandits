@@ -103,6 +103,13 @@ limits their usefulness in production.
     squares. Supports logit link (binary outcomes) and log link (count data).
     Use this when you need covariates for binary or count outcomes.
 
+:class:`~bayesianbandits.EmpiricalBayesGLM`
+    Extends :class:`~bayesianbandits.BayesianGLM` with MacKay tuning of the
+    prior precision on the Laplace approximation, so the regularization
+    strength is learned rather than guessed. Uses the same stabilized
+    forgetting as :class:`~bayesianbandits.EmpiricalBayesNormalRegressor`
+    under decay.
+
 Agent: do you have context? How many arms?
 ------------------------------------------
 

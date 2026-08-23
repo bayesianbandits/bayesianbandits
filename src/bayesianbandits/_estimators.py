@@ -1309,8 +1309,42 @@ class _RewardSpacePredictiveMixin:
         return X_pred
 
 
+class _SparseFactorMixin:
+    """Cached CHOLMOD/SuperLU factor handling shared by the sparse estimators."""
+
+    @_invalidate_cached_properties
+    def __getstate__(self) -> Any:
+        # Exclude cached C extension objects that cannot be pickled
+        state = super().__getstate__()  # type: ignore
+        state.pop("_precision_factor", None)
+        state.pop("_factor_hint", None)
+        return state
+
+    def _sparse_factor(self, precision: csc_array) -> SparseFactor:
+        """A factor of ``precision``, refactorized from the previous one
+        when the sparsity pattern is unchanged (``refactorize`` checks).
+        The previous factor is the cached ``_precision_factor``, or
+        ``_factor_hint`` where an estimator had to drop that."""
+        hint = self._pop_factor_hint()
+        if hint is None:
+            return create_sparse_factor(precision)
+        return hint.refactorize(precision)
+
+    def _pop_factor_hint(self) -> Optional[SparseFactor]:
+        """The cached factor if any, else the hint an estimator left when
+        dropping it; the hint is consumed."""
+        hint: Optional[SparseFactor] = self.__dict__.get("_precision_factor")
+        if hint is None:
+            hint = self.__dict__.pop("_factor_hint", None)
+        return hint
+
+
 class NormalRegressor(
-    _RewardSpacePredictiveMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
+    _SparseFactorMixin,
+    _RewardSpacePredictiveMixin,
+    MemoryUsageMixin,
+    BaseEstimator,
+    RegressorMixin,
 ):
     """
     Bayesian linear regression with known noise variance.
@@ -1433,26 +1467,6 @@ scipy.sparse.csc_array
         self.learning_rate = learning_rate
         self.sparse = sparse
         self.random_state = random_state
-
-    @_invalidate_cached_properties
-    def __getstate__(self) -> Any:
-        # Exclude cached C extension objects that cannot be pickled
-        state = super().__getstate__()  # type: ignore
-        state.pop("_precision_factor", None)
-        state.pop("_factor_hint", None)
-        return state
-
-    def _sparse_factor(self, precision: csc_array) -> SparseFactor:
-        """A factor of ``precision``, refactorized from the previous one
-        when the sparsity pattern is unchanged (``refactorize`` checks).
-        The previous factor is the cached ``_precision_factor``, or
-        ``_factor_hint`` where an estimator had to drop that."""
-        hint: Optional[SparseFactor] = self.__dict__.get("_precision_factor")
-        if hint is None:
-            hint = self.__dict__.pop("_factor_hint", None)
-        if hint is None:
-            return create_sparse_factor(precision)
-        return hint.refactorize(precision)
 
     def fit(
         self,
@@ -2422,7 +2436,11 @@ scipy.sparse.csc_array
 
 
 class BayesianGLM(
-    _RewardSpacePredictiveMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
+    _SparseFactorMixin,
+    _RewardSpacePredictiveMixin,
+    MemoryUsageMixin,
+    BaseEstimator,
+    RegressorMixin,
 ):
     """
     Bayesian Generalized Linear Model with Laplace approximation.
@@ -2629,19 +2647,12 @@ scipy.sparse.csc_array
         else:
             self.approximator_ = self.approximator
 
-    @_invalidate_cached_properties
-    def __getstate__(self) -> Any:
-        # Exclude cached C extension objects that cannot be pickled
-        state = super().__getstate__()  # type: ignore
-        state.pop("_precision_factor", None)
-        return state
-
     @cached_property
     def _precision_factor(self) -> PrecisionFactor:
         """Factorization of the precision matrix (cached)."""
         if self.sparse:
             assert isinstance(self.cov_inv_, csc_array)
-            return create_sparse_factor(self.cov_inv_)
+            return self._sparse_factor(self.cov_inv_)
         else:
             cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
             return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
@@ -2653,7 +2664,9 @@ scipy.sparse.csc_array
         Returns a ``scipy.stats.Covariance`` object (dense) or a
         ``SparseFactor`` (sparse) that wraps the Cholesky factorization
         of the covariance. Automatically invalidated when the model is
-        updated via ``fit``, ``partial_fit``, or ``decay``.
+        updated via ``fit``, ``partial_fit``, or ``decay``. The sparse
+        factor is refactorized in place by later updates, so hold a
+        reference only until the next one.
 
         .. warning::
 
@@ -2676,14 +2689,25 @@ scipy.sparse.csc_array
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
+        coef_init: Optional[NDArray[np.float64]] = None,
     ) -> None:
         """Update posterior using the configured approximation method."""
-        # For sparse partial_fit, hand the cached prior factor to the
-        # approximator so it can skip redundant factorization work.
-        prior_factor: Optional[Any] = (
-            self.__dict__.get("_precision_factor") if self.sparse else None
-        )
+        # Hand the cached factor (or the hint left by a diagonal shift) to the
+        # approximator for reuse; popped so a failed update cannot leave an
+        # in-place-refactorized factor cached.
+        prior_factor: Optional[Any] = None
+        if self.sparse:
+            prior_factor = self._pop_factor_hint()
+            self.__dict__.pop("_precision_factor", None)
 
+        # Only the EB subclass sets these; left out otherwise so a custom
+        # approximator written without them keeps working on BayesianGLM.
+        extra: dict[str, Any] = {}
+        prior_floor = getattr(self, "_pending_floor", 0.0)
+        if prior_floor != 0.0:
+            extra["prior_floor"] = prior_floor
+        if coef_init is not None:
+            extra["coef_init"] = coef_init
         posterior = self.approximator_.update_posterior(
             X,
             y,
@@ -2694,6 +2718,7 @@ scipy.sparse.csc_array
             learning_rate=self.learning_rate,
             sparse=self.sparse,
             prior_factor=prior_factor,
+            **extra,
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
