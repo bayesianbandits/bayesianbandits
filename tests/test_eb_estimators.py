@@ -1649,6 +1649,7 @@ class TestFailedUpdateLeavesEstimatorIntact:
 
         prec_before = _dense(est.cov_inv_)
         coef_before = est.coef_.copy()
+        prior_scalar_before = est.__dict__.get("_prior_scalar")
 
         if sparse:
             # Inherited, so patching it on the base covers both estimators.
@@ -1673,6 +1674,24 @@ class TestFailedUpdateLeavesEstimatorIntact:
         # Only the upper triangle of the dense precision is meaningful.
         assert np.array_equal(np.triu(_dense(est.cov_inv_)), np.triu(prec_before))
         assert np.array_equal(est.coef_, coef_before)
+        # Advanced before the update, so it has to be put back after a failure.
+        assert est.__dict__.get("_prior_scalar") == prior_scalar_before
+
+    def test_a_first_ever_partial_fit_that_raises_leaves_no_prior_scalar(self):
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((10, 4))
+        y = rng.standard_normal(10)
+        est = EmpiricalBayesNormalRegressor(learning_rate=0.9)
+
+        with mock.patch.object(
+            EmpiricalBayesNormalRegressor,
+            "fit",
+            side_effect=np.linalg.LinAlgError("boom"),
+        ):
+            with pytest.raises(np.linalg.LinAlgError):
+                est.partial_fit(X, y)
+
+        assert not hasattr(est, "_prior_scalar")
 
 
 @pytest.mark.parametrize("sparse", [True, False])

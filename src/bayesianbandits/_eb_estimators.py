@@ -40,7 +40,276 @@ from ._sparse_bayesian_linear_regression import (
 )
 
 
-class EmpiricalBayesNormalRegressor(NormalRegressor):
+class _StabilizedPriorMixin:
+    """Stabilized forgetting for the EB estimators whose posterior precision
+    is ``_prior_scalar · I + data``.
+
+    Owns the ``partial_fit``/``decay`` bookkeeping that every such
+    estimator shares: advancing ``_prior_scalar`` by ``γⁿ`` with
+    ``(1 - γⁿ)·alpha`` re-injected (Kulhavy & Zarrop 1993), rolling the
+    advance back when the base-class update raises, starting the EB
+    state when ``sample()`` initialized the prior before any fit, and
+    the in-place diagonal shifts.  The estimator supplies the hooks:
+    what to book for ``_fit_helper``, its running statistics, and the
+    online EB step itself.
+    """
+
+    sparse: bool
+    cov_inv_: Any
+    alpha: float
+    learning_rate: float
+    _factor_hint: Any
+    _prior_scalar: float
+    _effective_n: float
+    eb_updates_rejected_: int
+    n_eb_iterations_: int
+    eb_converged_: bool
+
+    # ---- hooks -----------------------------------------------------------
+
+    def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
+        """Stash what ``_fit_helper`` folds into the coming update."""
+
+    def _unbook_update(self) -> None:
+        """Clear the stash, whether or not the update succeeded."""
+
+    def _hyperparams(self) -> tuple[float, ...]:
+        """The hyperparameters the online step moves, ``alpha`` first."""
+        raise NotImplementedError
+
+    def _start_stats(self) -> None:
+        """Zero the running statistics, for a first observation."""
+        raise NotImplementedError
+
+    def _update_stats(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        prior_decay: float,
+        sample_weight: Optional[NDArray[Any]],
+    ) -> None:
+        """Decay the running statistics by ``prior_decay`` and add the batch."""
+        raise NotImplementedError
+
+    def _decay_stats(self, prior_decay: float) -> None:
+        raise NotImplementedError
+
+    def _online_eb_step(self, old: tuple[float, ...]) -> None:
+        """Retune from the running statistics and correct the precision,
+        given the hyperparameters the stored posterior was built under."""
+        raise NotImplementedError
+
+    # ---- template --------------------------------------------------------
+
+    def partial_fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Incrementally update the posterior and retune the hyperparameters.
+
+        Performs the base-class recursive Bayesian update, then one
+        online EB step from the running statistics, and corrects the
+        precision to the retuned hyperparameters.
+
+        When ``learning_rate < 1``, stabilized forgetting (Kulhavy &
+        Zarrop 1993) re-injects ``(1 - γⁿ)·alpha`` into the precision
+        diagonal so that the prior contribution converges to ``alpha``
+        instead of decaying to zero.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), optional
+            Individual weights for each sample. If None, all samples
+            are given weight 1.0.
+
+        Returns
+        -------
+        self
+            Updated estimator with retuned hyperparameters.
+
+        See Also
+        --------
+        fit : Fit from scratch with the full EB iteration loop.
+        decay : Increase uncertainty without observing new data.
+        """
+        had_prior_scalar = hasattr(self, "_prior_scalar")
+        prior_scalar_old = self.__dict__.get("_prior_scalar")
+
+        n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
+        prior_decay = self.learning_rate**n_samples
+
+        if had_prior_scalar:
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+        self._book_update(prior_decay, had_prior_scalar)
+        old = self._hyperparams()
+
+        try:
+            result = cast(Any, super()).partial_fit(X, y, sample_weight)
+        except Exception:
+            # cov_inv_ never moved, so an advanced _prior_scalar would name a
+            # prior contribution the precision does not have.
+            self._restore_prior_scalar(prior_scalar_old)
+            raise
+        finally:
+            self._unbook_update()
+
+        if not had_prior_scalar:
+            if hasattr(self, "_prior_scalar"):
+                # fit() ran inside super().partial_fit() and did the EB loop.
+                return result
+
+            # sample()/predict() previously called _initialize_prior, so the
+            # base class took the incremental path instead of fit(). The
+            # precision is prior_decay·alpha_old·I + data; start the EB
+            # state here, including what the EB loop would have reported.
+            self._prior_scalar = prior_decay * old[0]
+            self.eb_updates_rejected_ = 0
+            self.n_eb_iterations_ = 0
+            self.eb_converged_ = False
+            self._start_stats()
+
+        X_fit, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=False,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._update_stats(X_fit, y, prior_decay, sample_weight)
+        self._online_eb_step(old)
+
+        return result
+
+    def decay(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """
+        Decay the precision matrix with stabilized prior re-injection.
+
+        Applies ``Λ_new = γⁿ·Λ_old`` and re-injects ``(1 - γⁿ)·alpha``
+        onto the diagonal (Kulhavy & Zarrop 1993), so the prior's
+        contribution converges to ``alpha`` rather than zero. The
+        running statistics behind the online EB step decay alongside.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only for its number of rows ``n``.
+        decay_rate : float, default=None
+            Decay factor in (0, 1]. If None, uses ``learning_rate``.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
+        """
+        if not hasattr(self, "coef_"):
+            return
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        assert X.shape is not None
+        prior_decay = decay_rate ** X.shape[0]
+
+        prior_reinjection = 0.0
+        if hasattr(self, "_prior_scalar"):
+            self._prior_scalar = (
+                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+            )
+            prior_reinjection = (1 - prior_decay) * self.alpha
+        if hasattr(self, "_effective_n"):
+            self._decay_stats(prior_decay)
+
+        # Base class applies uniform decay: cov_inv_ *= prior_decay
+        cast(Any, super()).decay(X, decay_rate=decay_rate)
+
+        self._reinject_prior(prior_reinjection)
+
+    # ---- shared mechanics -------------------------------------------------
+
+    def _row_weights(
+        self, n_samples: int, sample_weight: Optional[NDArray[Any]]
+    ) -> NDArray[np.float64]:
+        """The effective row weights the precision is built with: sample
+        weight times within-batch decay. Every EB statistic that is set
+        against the precision has to carry the same weights."""
+        return compute_effective_weights(n_samples, sample_weight, self.learning_rate)
+
+    def _restore_prior_scalar(self, prior_scalar_old: Optional[float]) -> None:
+        """Put ``_prior_scalar`` back where a failed update found it, and
+        remove it entirely if the update was the one that would have
+        created it."""
+        if prior_scalar_old is None:
+            self.__dict__.pop("_prior_scalar", None)
+        else:
+            self.__dict__["_prior_scalar"] = prior_scalar_old
+
+    def _drop_factor(self) -> None:
+        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
+        refactorizes from: a diagonal shift leaves the pattern alone."""
+        factor = self.__dict__.pop("_precision_factor")
+        if self.sparse:
+            self._factor_hint = factor
+
+    def _reinject_prior(self, prior_reinjection: float) -> None:
+        """Add stabilized prior re-injection to the precision diagonal.
+
+        After exponential decay the prior contribution shrinks toward zero.
+        This adds back ``prior_reinjection`` to every diagonal entry so that
+        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
+        """
+        if prior_reinjection == 0.0:
+            return
+        if self.sparse:
+            cov_inv = cast(csc_array, self.cov_inv_)
+            self._shift_diagonal(cov_inv, prior_reinjection)
+            self.cov_inv_ = cov_inv
+        else:
+            diag_idx = np.diag_indices_from(self.cov_inv_)
+            self.cov_inv_[diag_idx] += prior_reinjection
+        if "_precision_factor" in self.__dict__:
+            self._drop_factor()
+
+    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
+        """``cov_inv += shift * I`` in place.
+
+        The diagonal is always stored (the prior is ``alpha * I``), so
+        its positions, found once per pattern by running ``diagonal()``
+        over entry numbers and cached against the index array's
+        identity, make this a gather-add; ``setdiag`` relocates it on
+        every call.
+        """
+        if shift == 0.0:
+            return
+        cached = self.__dict__.get("_diag_pos")
+        if cached is None or cached[0] is not cov_inv.indices:
+            values = cov_inv.data
+            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
+            pos = cov_inv.diagonal().astype(np.intp) - 1
+            cov_inv.data = values
+            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
+                cov_inv.setdiag(cov_inv.diagonal() + shift)
+                return
+            cached = (cov_inv.indices, pos)
+            self._diag_pos = cached
+        cov_inv.data[cached[1]] += shift
+
+
+class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     """Bayesian linear regression with empirical Bayes hyperparameter tuning.
 
     Extends :class:`NormalRegressor` with automatic optimization of the
@@ -276,13 +545,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         if update.rejected:
             self.eb_updates_rejected_ += 1
 
-    def _row_weights(
-        self, n_samples: int, sample_weight: Optional[NDArray[Any]]
-    ) -> NDArray[np.float64]:
-        """The effective row weights ``_fit_helper`` builds the precision
-        with: sample weight times within-batch decay."""
-        return compute_effective_weights(n_samples, sample_weight, self.learning_rate)
-
     def _seed_stats(
         self,
         X: Union[NDArray[Any], csc_array],
@@ -294,7 +556,7 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
             X, y, self._row_weights(y.shape[0], sample_weight)
         )
 
-    def _accumulate_stats(
+    def _update_stats(
         self,
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
@@ -510,56 +772,6 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         else:
             self.cov_inv_ *= ratio
 
-    def _drop_factor(self) -> None:
-        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
-        refactorizes from: a diagonal shift leaves the pattern alone."""
-        factor = self.__dict__.pop("_precision_factor")
-        if self.sparse:
-            self._factor_hint = factor
-
-    def _reinject_prior(self, prior_reinjection: float) -> None:
-        """Add stabilized prior re-injection to the precision diagonal.
-
-        After exponential decay the prior contribution shrinks toward zero.
-        This adds back ``prior_reinjection`` to every diagonal entry so that
-        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
-        """
-        if prior_reinjection == 0.0:
-            return
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            self._shift_diagonal(cov_inv, prior_reinjection)
-            self.cov_inv_ = cov_inv
-        else:
-            diag_idx = np.diag_indices_from(self.cov_inv_)
-            self.cov_inv_[diag_idx] += prior_reinjection
-        if "_precision_factor" in self.__dict__:
-            self._drop_factor()
-
-    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
-        """``cov_inv += shift * I`` in place.
-
-        The diagonal is always stored (the prior is ``alpha * I``), so
-        its positions, found once per pattern by running ``diagonal()``
-        over entry numbers and cached against the index array's
-        identity, make this a gather-add; ``setdiag`` relocates it on
-        every call.
-        """
-        if shift == 0.0:
-            return
-        cached = self.__dict__.get("_diag_pos")
-        if cached is None or cached[0] is not cov_inv.indices:
-            values = cov_inv.data
-            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
-            pos = cov_inv.diagonal().astype(np.intp) - 1
-            cov_inv.data = values
-            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
-                cov_inv.setdiag(cov_inv.diagonal() + shift)
-                return
-            cached = (cov_inv.indices, pos)
-            self._diag_pos = cached
-        cov_inv.data[cached[1]] += shift
-
     @_invalidate_cached_properties
     def _fit_helper(
         self,
@@ -669,187 +881,43 @@ class EmpiricalBayesNormalRegressor(NormalRegressor):
         self.cov_inv_ = cov_inv
         self.coef_ = coef
 
-    def partial_fit(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> Self:
-        """
-        Incrementally update the posterior and retune hyperparameters.
-
-        Performs a recursive Bayesian update (delegating to
-        ``NormalRegressor.partial_fit``), then runs one online MacKay
-        step to adjust ``alpha`` and ``beta`` using accumulated
-        sufficient statistics. The precision matrix is corrected to
-        reflect the updated hyperparameters.
-
-        When ``learning_rate < 1``, stabilized forgetting (Kulhavy &
-        Zarrop 1993) re-injects ``(1 - γ^n)·α`` into the precision
-        diagonal so that the prior contribution converges to ``alpha``
-        instead of decaying to zero.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data.
-        y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), optional
-            Individual weights for each sample. If None, all samples
-            are given weight 1.0.
-
-        Returns
-        -------
-        self : EmpiricalBayesNormalRegressor
-            Updated estimator with retuned hyperparameters.
-
-        See Also
-        --------
-        fit : Fit from scratch with full EB iteration loop.
-        decay : Increase uncertainty without observing new data.
-        """
-        had_prior_scalar = hasattr(self, "_prior_scalar")
-
-        n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
-        prior_decay = self.learning_rate**n_samples
-
-        if had_prior_scalar:
-            # Stabilized forgetting: decay the tracked prior contribution but
-            # re-inject (1 - prior_decay) * alpha so it converges to alpha
-            # instead of decaying to zero.  This ensures the EB-tuned prior
-            # always regularizes new or dormant coefficients.
-            self._prior_scalar = (
-                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
-            )
-
-        # Store reinjection amount for _fit_helper to fold in.
-        # When > 0, _fit_helper adds this to the precision diagonal during
-        # construction, avoiding a separate _reinject_prior + refactorization.
+    def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
+        # _fit_helper adds the re-injection to the precision diagonal as it
+        # builds it, avoiding a separate _reinject_prior + refactorization,
+        # and takes any solve the last MacKay correction left pending as
+        # the prior information vector: it is Λ·coef_ exactly.  Popped here,
+        # before super()'s check_is_fitted would read coef_ and force it.
         self._pending_reinjection = (
             (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
         )
-
-        # Hand any solve the last MacKay correction left pending to
-        # _fit_helper as the prior information vector -- it is Λ·coef_
-        # exactly.  Taken out of __dict__ here, before super()'s
-        # check_is_fitted would read coef_ and force the solve.
         self._pending_prior_eta = self.__dict__.pop("_pending_eta", None)
 
-        alpha_old = self.alpha
-        beta_old = self.beta
+    def _unbook_update(self) -> None:
+        self._pending_reinjection = 0.0
+        if self._pending_prior_eta is not None:
+            # The update raised before _fit_helper consumed it; hand it
+            # back so coef_ stays solvable and the correction is not
+            # silently dropped.
+            self.__dict__["_pending_eta"] = self._pending_prior_eta
+            self._pending_prior_eta = None
 
-        try:
-            result = super().partial_fit(X, y, sample_weight)
-        finally:
-            self._pending_reinjection = 0.0
-            if self._pending_prior_eta is not None:
-                # The update raised before _fit_helper consumed it; hand
-                # it back so coef_ stays solvable and the correction is
-                # not silently dropped.
-                self.__dict__["_pending_eta"] = self._pending_prior_eta
-                self._pending_prior_eta = None
+    def _hyperparams(self) -> tuple[float, float]:
+        return (self.alpha, self.beta)
 
-        if not had_prior_scalar:
-            if hasattr(self, "_prior_scalar"):
-                # fit() was called by super().partial_fit() and already
-                # set _prior_scalar, sufficient stats, and ran the EB loop.
-                return result
+    def _start_stats(self) -> None:
+        self._effective_n = 0.0
+        self._eff_yTy = 0.0
+        self._eff_XTy = np.zeros(self.cov_inv_.shape[0], dtype=np.float64)
 
-            # sample() previously called _initialize_prior (setting coef_),
-            # so super().partial_fit() did an incremental update instead of
-            # calling fit(). Initialize EB state for the first time.
-            #
-            # After the incremental update the precision matrix is:
-            #   cov_inv_ = prior_decay * alpha_old * I + beta_old * X^T X
-            # so the prior contribution to the diagonal is prior_decay * alpha_old.
-            self._prior_scalar = prior_decay * alpha_old
-            # fit() never ran on this path, so the EB reporting state that
-            # _eb_mackay_step_online maintains has to start here.
-            self.eb_updates_rejected_ = 0
-            self.n_eb_iterations_ = 0
-            self.eb_converged_ = False
+    def _decay_stats(self, prior_decay: float) -> None:
+        self._effective_n *= prior_decay
+        self._eff_yTy *= prior_decay
+        self._eff_XTy *= prior_decay
 
-        X_fit, y = check_X_y(
-            X,  # type: ignore
-            y,
-            copy=False,
-            ensure_2d=True,
-            dtype=np.float64,
-            accept_sparse="csc" if self.sparse else False,
-        )
-
-        if not had_prior_scalar:
-            # First observation — initialize sufficient statistics.
-            self._effective_n, self._eff_yTy, self._eff_XTy = self._seed_stats(
-                X_fit, y, sample_weight
-            )
-        else:
-            # Accumulate sufficient statistics for the beta update.
-            self._accumulate_stats(X_fit, y, prior_decay, sample_weight)
-
+    def _online_eb_step(self, old: tuple[float, ...]) -> None:
+        alpha_old, beta_old = old
         self._eb_mackay_step_online()
         self._correct_precision(alpha_old, beta_old)
-
-        return result
-
-    def decay(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """
-        Decay the precision matrix with stabilized prior re-injection.
-
-        Applies exponential forgetting ``Λ_new = γ^n · Λ_old`` and
-        then re-injects ``(1 - γ^n)·α`` onto the diagonal, following
-        stabilized forgetting (Kulhavy & Zarrop 1993). This ensures
-        the prior contribution to the precision converges to ``alpha``
-        rather than decaying to zero under repeated decay steps.
-
-        Sufficient statistics (``_effective_n``, ``_eff_yTy``,
-        ``_eff_XTy``) used for the online MacKay beta update are
-        also decayed.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only to determine the number of time steps ``n`` for
-            the decay exponent ``γ^n``. The actual feature values are
-            not used.
-        decay_rate : float, default=None
-            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
-            ``self.learning_rate``.
-
-        See Also
-        --------
-        partial_fit : Update the model with new observations.
-        """
-        if not hasattr(self, "coef_"):
-            return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None
-        prior_decay = decay_rate ** X.shape[0]
-
-        prior_reinjection = 0.0
-        if hasattr(self, "_prior_scalar"):
-            self._prior_scalar = (
-                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
-            )
-            prior_reinjection = (1 - prior_decay) * self.alpha
-        if hasattr(self, "_effective_n"):
-            self._effective_n *= prior_decay
-            self._eff_yTy *= prior_decay
-            self._eff_XTy *= prior_decay
-
-        # Base class applies uniform decay: cov_inv_ *= prior_decay
-        super().decay(X, decay_rate=decay_rate)
-
-        self._reinject_prior(prior_reinjection)
 
 
 class EmpiricalBayesDirichletClassifier(DirichletClassifier):
