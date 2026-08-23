@@ -1046,7 +1046,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     ) -> None:
         """Base-class update, with the re-injection floor passed through."""
         prior_factor: Optional[Any] = (
-            self.__dict__.get("_precision_factor") if self.sparse else None
+            self.__dict__.pop("_precision_factor", None) if self.sparse else None
         )
         posterior = self.approximator_.update_posterior(
             X,
@@ -1141,7 +1141,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         prior_decay = self.learning_rate ** y.shape[0]
         self.eb_updates_rejected_ = 0
         self._pending_floor = 0.0
-        self._effective_n = float(np.sum(self._row_weights(y.shape[0], sample_weight)))
+        effective_n = float(np.sum(self._row_weights(y.shape[0], sample_weight)))
 
         if self.n_eb_iter > 0:
             prev_evidence = -math.inf
@@ -1153,6 +1153,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
                 self._fit_helper(X_fit, y, sample_weight)
                 # After a fresh fit: Λ = prior_decay·α·I + H_data
                 self._prior_scalar = prior_decay * self.alpha
+                self._effective_n = effective_n
                 self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
                 self._eb_mackay_step()
                 log_ev = self.log_evidence_
@@ -1175,6 +1176,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             self.eb_converged_ = False
 
         self._prior_scalar = prior_decay * self.alpha
+        self._effective_n = effective_n
         self._eff_loglik = self._log_likelihood(X_fit, y, sample_weight)
         return self
 

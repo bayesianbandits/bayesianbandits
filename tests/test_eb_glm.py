@@ -129,6 +129,40 @@ class TestEBGLM:
         )
         np.testing.assert_allclose(model.log_evidence_, expected, rtol=1e-8)
 
+    def test_converged_alpha_is_the_mackay_fixed_point(self, link, sparse):
+        """At convergence alpha = gamma / ||theta||^2 with gamma and theta
+        taken from an independent plain GLM fit at that alpha."""
+        X, y = _simulate(link)
+        eb = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=100, eb_tol=1e-10)
+        eb.fit(_X(X, sparse), y)
+        plain = BayesianGLM(
+            alpha=eb.alpha,
+            link=link,
+            sparse=sparse,
+            approximator=LaplaceApproximator(n_iter=50, tol=1e-10),
+        ).fit(_X(X, sparse), y)
+        theta = plain.coef_
+        gamma = X.shape[1] - eb.alpha * np.trace(np.linalg.inv(_dense_prec(plain)))
+        np.testing.assert_allclose(eb.alpha, gamma / (theta @ theta), rtol=1e-5)
+
+    def test_partial_fit_tracks_full_fit(self, link, sparse):
+        """Chunked partial_fit from a far-off alpha lands near the full
+        fit's fixed point. The slack is sequential Laplace: even at fixed
+        alpha the chunked posterior is 2-4% off the batch one."""
+        X, y = _simulate(link, n=4000, p=10, seed=7)
+        full = EmpiricalBayesGLM(alpha=1e3, link=link, sparse=sparse, n_eb_iter=50)
+        full.fit(_X(X, sparse), y)
+        for alpha0 in (1e3, 1e-2):
+            online = EmpiricalBayesGLM(
+                alpha=alpha0, link=link, sparse=sparse, n_eb_iter=1
+            )
+            for start in range(0, 4000, 50):
+                online.partial_fit(
+                    _X(X[start : start + 50], sparse), y[start : start + 50]
+                )
+            np.testing.assert_allclose(online.alpha, full.alpha, rtol=6e-2)
+            np.testing.assert_allclose(online.coef_, full.coef_, atol=5e-2)
+
     def test_recovers_true_alpha(self, link, sparse):
         X, y = _simulate(link, n=4000, p=40, seed=3, alpha_true=4.0)
         model = EmpiricalBayesGLM(alpha=0.1, link=link, sparse=sparse, n_eb_iter=50)
@@ -283,6 +317,41 @@ class TestEBGLM:
             restored.predict(_X(X[:5], sparse)), model.predict(_X(X[:5], sparse))
         )
         restored.partial_fit(_X(X[:10], sparse), y[:10])
+
+    def test_pickle_after_online_update(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse, learning_rate=0.99)
+        model.fit(_X(X, sparse), y)
+        model.partial_fit(_X(X[:50], sparse), y[:50])
+        model.decay(_X(X[:5], sparse))
+        restored = pickle.loads(pickle.dumps(model))
+        assert "_factor_hint" not in restored.__dict__
+        np.testing.assert_allclose(
+            restored.predict(_X(X[:5], sparse)), model.predict(_X(X[:5], sparse))
+        )
+
+    def test_failed_update_leaves_no_stale_factor(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse).fit(_X(X, sparse), y)
+        before = model.predict(_X(X[:5], sparse))
+        with mock.patch.object(
+            model.approximator_, "update_posterior", side_effect=RuntimeError
+        ):
+            with pytest.raises(RuntimeError):
+                model.partial_fit(_X(X[:10], sparse), y[:10])
+        if sparse:
+            assert "_precision_factor" not in model.__dict__
+        np.testing.assert_allclose(model.predict(_X(X[:5], sparse)), before)
+        model.sample(_X(X[:5], sparse))
+
+    def test_failed_fit_does_not_leave_partial_stats(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse)
+        with mock.patch.object(model, "_fit_helper", side_effect=RuntimeError):
+            with pytest.raises(RuntimeError):
+                model.fit(_X(X, sparse), y)
+        assert not hasattr(model, "_effective_n")
+        model.decay(_X(X[:5], sparse))
 
 
 class TestEBGLMGuardrail:

@@ -2634,6 +2634,7 @@ scipy.sparse.csc_array
         # Exclude cached C extension objects that cannot be pickled
         state = super().__getstate__()  # type: ignore
         state.pop("_precision_factor", None)
+        state.pop("_factor_hint", None)
         return state
 
     @cached_property
@@ -2653,7 +2654,9 @@ scipy.sparse.csc_array
         Returns a ``scipy.stats.Covariance`` object (dense) or a
         ``SparseFactor`` (sparse) that wraps the Cholesky factorization
         of the covariance. Automatically invalidated when the model is
-        updated via ``fit``, ``partial_fit``, or ``decay``.
+        updated via ``fit``, ``partial_fit``, or ``decay``. The sparse
+        factor is refactorized in place by later updates, so hold a
+        reference only until the next one.
 
         .. warning::
 
@@ -2678,10 +2681,10 @@ scipy.sparse.csc_array
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> None:
         """Update posterior using the configured approximation method."""
-        # For sparse partial_fit, hand the cached prior factor to the
-        # approximator so it can skip redundant factorization work.
+        # Hand the cached prior factor to the approximator for reuse; pop it
+        # so a failed update cannot leave an in-place-refactorized factor cached.
         prior_factor: Optional[Any] = (
-            self.__dict__.get("_precision_factor") if self.sparse else None
+            self.__dict__.pop("_precision_factor", None) if self.sparse else None
         )
 
         posterior = self.approximator_.update_posterior(
