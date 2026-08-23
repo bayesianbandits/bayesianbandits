@@ -253,6 +253,143 @@ def mackay_update_normal_online(
     return MacKayUpdate(alpha_new, beta_new, log_ev, rejected)
 
 
+class MacKayGLMUpdate(NamedTuple):
+    """One MacKay update for a Laplace-approximated GLM.
+
+    Same contract as :class:`MacKayUpdate` minus ``beta``: a rejected
+    update returns ``alpha`` unchanged and says so.
+    """
+
+    alpha: float
+    log_evidence: float
+    rejected: bool
+
+
+# The GLM has no beta, but the same degeneracies exist, in both
+# directions.  With separable logistic data ||theta|| grows without
+# bound and MacKay drives alpha -> 0, leaving Lambda = alpha I + H_data
+# with condition number ~ max(H_data) / alpha.  With data that carry no
+# information about the coefficients the evidence increases in alpha
+# without bound, MacKay multiplies alpha by a near-constant factor per
+# step, and theta = Lambda^-1 g shrinks until it underflows to zero,
+# which pins alpha forever (the ||theta|| = 0 branch below).  The
+# diagonal of H_data is a cheap lower bound on its largest eigenvalue,
+# so alpha_new is accepted only within 1e10 of max(diag H_data) on
+# either side: the band where the posterior is neither numerically
+# singular nor numerically the prior.  Outside it alpha stays where it
+# was, and comes back once the data argue for it.
+_MAX_GLM_CONDITION_PROXY = 1e10
+
+
+def glm_log_likelihood(
+    X: Union[NDArray[np.float64], csc_array],
+    y: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    link: str,
+    sample_weight: Union[NDArray[np.float64], None] = None,
+) -> float:
+    """Log-likelihood of a GLM at the coefficients ``theta``.
+
+    Bernoulli for ``link="logit"`` and Poisson (including the
+    ``gammaln(y + 1)`` normalizer) for ``link="log"``.  Rows are
+    weighted by ``sample_weight`` when given.
+    """
+    eta = np.asarray(X @ theta, dtype=np.float64).ravel()
+    if link == "logit":
+        terms = y * eta - np.logaddexp(0.0, eta)
+    elif link == "log":
+        # Score the mean the model actually uses. ``log_link_and_derivative``
+        # defines it as ``exp(clip(eta, -700, 700))``, so evaluating
+        # ``exp(eta)`` here would score a different model, and would overflow
+        # to ``-inf`` on exactly the runs where the fit went badly enough to
+        # need the number: ``_eff_loglik`` decays a ``-inf`` to ``-inf``
+        # forever, and ``fit``'s ``abs(log_ev - prev_evidence) < eb_tol``
+        # becomes ``nan < tol``, which silently stops stopping early.
+        eta = np.clip(eta, -700.0, 700.0)
+        terms = y * eta - np.exp(eta) - gammaln(y + 1.0)
+    else:
+        raise ValueError(f"Unknown link function: {link}")
+    if sample_weight is not None:
+        return _dot(np.asarray(sample_weight, dtype=np.float64), terms)
+    return float(np.sum(terms))
+
+
+def mackay_update_glm(
+    theta: NDArray[np.float64],
+    precision: Union[NDArray[np.float64], csc_array],
+    alpha: float,
+    prior_scalar: float,
+    effective_n: float,
+    log_lik: float,
+    factor: PrecisionFactor,
+    trace_method: str = "auto",
+) -> MacKayGLMUpdate:
+    """MacKay update of the prior precision for a Laplace GLM posterior.
+
+    The posterior is the Gaussian ``N(theta, Lambda^-1)`` with
+    ``Lambda = prior_scalar . I + H_data``, ``H_data`` the (decayed)
+    Hessian of the negative log-likelihood at ``theta``.  Then
+
+        gamma     = p - prior_scalar . tr(Lambda^-1)
+        alpha_new = gamma / ||theta||^2
+
+    and the Laplace log evidence at the *current* alpha is
+
+        log p(y | alpha) ~= l(theta) + p/2 . log(alpha)
+                            - alpha/2 . ||theta||^2 - 1/2 . log|Lambda|
+
+    (the two ``2 pi`` terms from the prior and the Laplace integral
+    cancel).  Unlike the Normal, nothing here needs X or y beyond
+    ``log_lik``, which the caller evaluates -- exactly during ``fit``,
+    as a decayed running sum during ``partial_fit``.
+
+    Parameters
+    ----------
+    theta : posterior mode
+    precision : posterior precision Lambda
+    alpha : current prior precision
+    prior_scalar : the prior's actual (decayed) contribution to the
+        diagonal of Lambda; see :func:`mackay_update_normal_online`
+    effective_n : decayed effective sample size, which caps gamma
+    log_lik : log-likelihood at ``theta``
+    factor : pre-computed factorization of ``precision``
+    trace_method : method for computing tr(Lambda^-1)
+    """
+    p = cast(tuple[int, int], precision.shape)[0]
+    theta_norm_sq = _dot(theta, theta)
+
+    ld, tr_inv = _factorization_stats(precision, factor, trace_method)
+
+    # gamma = tr(Lambda^-1 H) = p - s . tr(Lambda^-1) cancels when the
+    # prior dominates (s >> H): the true value is ~ tr(H) / s, and the
+    # subtraction's noise is ~ p . 1e-15.  The floor sits just above
+    # that noise; a larger one (the Normal's 1e-8) would replace a
+    # legitimately tiny gamma and inflate alpha_new past the ceiling,
+    # rejecting the very steps that bring an overgrown alpha back down.
+    gamma = float(np.clip(p - prior_scalar * tr_inv, p * 1e-13, min(effective_n, p)))
+    alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
+
+    if isinstance(precision, csc_array):
+        diag = np.asarray(precision.diagonal(), dtype=np.float64)
+    else:
+        diag = np.diag(precision)
+    data_diag_max = float(np.max(diag)) - prior_scalar
+    if data_diag_max > 0.0:
+        alpha_min = data_diag_max / _MAX_GLM_CONDITION_PROXY
+        alpha_max = data_diag_max * _MAX_GLM_CONDITION_PROXY
+    else:
+        alpha_min, alpha_max = 0.0, math.inf
+    rejected = not (alpha_min <= alpha_new <= alpha_max)
+    if rejected:
+        alpha_new = alpha
+
+    log_ev = float(
+        log_lik + 0.5 * p * math.log(alpha) - 0.5 * alpha * theta_norm_sq - 0.5 * ld
+    )
+
+    return MacKayGLMUpdate(alpha_new, log_ev, rejected)
+
+
 def _dirichlet_multinomial_log_evidence(
     counts: NDArray[np.floating],
     count_totals: NDArray[np.floating],
