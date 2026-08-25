@@ -440,3 +440,75 @@ def test_irls_overshoot_stays_finite():
     )
     assert np.isfinite(np.asarray(posterior.mean)).all()
     assert posterior.converged
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_irls_unknown_link_raises(sparse):
+    from scipy.sparse import csc_array
+
+    X, y, sample_weight = _poisson_overshoot_data(n=20, p=3)
+    P = np.asarray(np.eye(3), dtype=np.float64)
+    with pytest.raises(ValueError, match="Unknown link"):
+        update_gaussian_posterior_laplace(
+            csc_array(X) if sparse else X,
+            y,
+            np.zeros(3),
+            csc_array(P) if sparse else P,
+            link="probit",  # type: ignore[arg-type]
+            sparse=sparse,
+        )
+
+
+def test_dot_dispatches_on_length():
+    from bayesianbandits._gaussian import _DOT_EINSUM_MIN, _dot
+
+    short = np.ones(8)
+    long = np.ones(_DOT_EINSUM_MIN)
+    assert _dot(short, short) == 8.0
+    assert _dot(long, long) == float(_DOT_EINSUM_MIN)
+
+
+def test_irls_accepts_noncontiguous_X():
+    X_full, y_full, sample_weight_full = _poisson_overshoot_data(n=200, p=4)
+    X, y, sample_weight = X_full[::2], y_full[::2], sample_weight_full[::2]
+    assert not X.flags.c_contiguous and not X.flags.f_contiguous
+    P = np.asarray(2.0 * np.eye(4), dtype=np.float64)
+    strided = update_gaussian_posterior_laplace(
+        X, y, np.zeros(4), P, link="log", sample_weight=sample_weight, n_iter=50
+    )
+    contiguous = update_gaussian_posterior_laplace(
+        np.ascontiguousarray(X),
+        y,
+        np.zeros(4),
+        P,
+        link="log",
+        sample_weight=sample_weight,
+        n_iter=50,
+    )
+    assert_allclose(np.asarray(strided.mean), np.asarray(contiguous.mean))
+    assert_allclose(np.asarray(strided.precision), np.asarray(contiguous.precision))
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_irls_exhausted_line_search_keeps_start(sparse, monkeypatch):
+    """With no halvings allowed, a rejected full step leaves the start
+    point untouched and reports non-convergence."""
+    from scipy.sparse import csc_array
+
+    from bayesianbandits import _gaussian
+
+    monkeypatch.setattr(_gaussian, "_LINE_SEARCH_MAX_HALVINGS", 0)
+    X, y, sample_weight = _poisson_overshoot_data()
+    P = np.asarray(2.0 * np.eye(8), dtype=np.float64)
+    posterior = update_gaussian_posterior_laplace(
+        csc_array(X) if sparse else X,
+        y,
+        np.zeros(8),
+        csc_array(P) if sparse else P,
+        link="log",
+        sample_weight=sample_weight,
+        sparse=sparse,
+        n_iter=5,
+    )
+    assert not posterior.converged
+    assert_allclose(np.asarray(posterior.mean), np.zeros(8))
