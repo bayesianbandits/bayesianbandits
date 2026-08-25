@@ -1117,6 +1117,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             if self.alpha != fitted_alpha:
                 self._refit_warm(X_fit, y, sample_weight)
                 fitted_alpha = self.alpha
+            if not self._laplace_converged:
+                break  # the evidence at a non-mode would mis-tune alpha
             # After a fresh fit: Λ = prior_decay·α·I + H_data
             self._prior_scalar = prior_decay * self.alpha
             self._effective_n = effective_n
@@ -1206,6 +1208,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._eff_loglik *= prior_decay
 
     def _online_eb_step(self, old: tuple[float, ...]) -> None:
+        if not self._laplace_converged:
+            return
         self._eb_mackay_step()
         self._correct_precision(old[0])
 

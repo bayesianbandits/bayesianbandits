@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 from functools import cached_property, partial, wraps
 from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar, Union, cast
@@ -16,6 +17,7 @@ from scipy.stats import (
     gamma,
 )
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin  # type: ignore
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.utils.validation import (
     NotFittedError,
     check_array,  # type: ignore
@@ -2722,6 +2724,13 @@ scipy.sparse.csc_array
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
+        self._laplace_converged = posterior.converged
+        if not posterior.converged:
+            warnings.warn(
+                "Posterior approximation did not converge within n_iter "
+                "iterations; increase n_iter or loosen tol.",
+                ConvergenceWarning,
+            )
         if posterior.factor is not None:
             if self.sparse:
                 self._precision_factor = posterior.factor

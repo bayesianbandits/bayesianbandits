@@ -425,7 +425,11 @@ class TestBayesianGLMMath:
         X^T W X = 1 + 4 = 5
         Lambda = 1 + 5 = 6
         X^T (W*z) = 1*2 + 2*6 = 14
-        coef_ = 14/6 = 7/3
+        Newton step = 14/6 = 7/3
+
+        The full step drops the penalized log-likelihood from -2 to
+        about -79, so the line search halves it once: coef_ = 7/6
+        (objective about +5.6).  Lambda is built at w=0 either way.
         """
         X = np.array([[1.0], [2.0]])
         y = np.array([3.0, 7.0])
@@ -441,7 +445,7 @@ class TestBayesianGLMMath:
         )
         glm.fit(X, y)
 
-        assert_allclose(glm.coef_[0], 7.0 / 3, atol=1e-10)
+        assert_allclose(glm.coef_[0], 7.0 / 6, atol=1e-10)
         assert_allclose(cov_inv_dense(glm)[0, 0], 6.0, atol=1e-10)
 
     def test_posterior_predictive_logit_bounded(self, sparse):

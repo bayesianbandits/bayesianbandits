@@ -6,7 +6,13 @@ import numpy as np
 from numpy.polynomial.hermite_e import hermegauss
 from numpy.typing import NDArray
 from scipy.linalg import cho_factor, cho_solve, solve_triangular
-from scipy.linalg.blas import dgemv, dsymv, dsyrk
+from scipy.linalg.blas import (
+    daxpy,  # type: ignore[attr-defined]
+    ddot,  # type: ignore[attr-defined]
+    dgemv,
+    dsymv,
+    dsyrk,
+)
 from scipy.sparse import csc_array, eye
 from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
@@ -39,6 +45,7 @@ class GaussianPosterior(NamedTuple):
     mean: ArrayType  # Posterior mean
     precision: ArrayType  # Posterior precision matrix
     factor: Optional[Any] = None  # Sparse factor (CHOLMOD/SuperLU), if available
+    converged: bool = True  # False when an iterative solver ran out of n_iter
 
 
 def compute_effective_weights(
@@ -174,6 +181,38 @@ def _stabilized_prior_sparse(
     return csc_array(prior_precision_scaled + shift * eye(n, format="csc"))
 
 
+# Step halving: glm2's accept test, sklearn's roundoff tolerance and cap.
+_LINE_SEARCH_MAX_HALVINGS = 21
+_LINE_SEARCH_EPS = 16.0 * np.finfo(np.float64).eps
+# OpenBLAS ddot is single-threaded below this; einsum above avoids the pool.
+_DOT_EINSUM_MIN = 8192
+
+
+def _einsum_dot(a: NDArray[Any], b: NDArray[Any]) -> float:
+    return float(np.einsum("i,i", a, b))
+
+
+def _dot(a: NDArray[Any], b: NDArray[Any]) -> float:
+    if a.shape[0] < _DOT_EINSUM_MIN:
+        return ddot(a, b)
+    return _einsum_dot(a, b)
+
+
+def _fortran_view(A: NDArray[Any]) -> Tuple[NDArray[Any], int]:
+    """``(F, trans)`` with ``F`` Fortran-contiguous and ``A = op(F)``, so
+    f2py BLAS wrappers take ``A`` without copying it on every call."""
+    if A.flags.f_contiguous:
+        return A, 0
+    if A.flags.c_contiguous:
+        return A.T, 1
+    return np.asfortranarray(A), 0
+
+
+def _symmetric_fortran(M: NDArray[Any]) -> NDArray[Any]:
+    """Fortran-contiguous alias of the symmetric ``M`` (``M.T`` if C-order)."""
+    return _fortran_view(M)[0]
+
+
 def _irls_dense(
     X: NDArray[np.float64],
     y: NDArray[np.float64],
@@ -188,69 +227,182 @@ def _irls_dense(
     tol: float,
     coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
-    """Dense IRLS loop with pre-allocated buffers and fused BLAS calls."""
+    """Dense damped-Newton IRLS with pre-allocated buffers and fused BLAS.
+
+    Each Newton step is halved until ``ℓ_w(θ) − ½θᵀPθ + θᵀb`` stops
+    decreasing.  Convergence is tested on the undamped step before the
+    line search and, on the last iteration, on the gradient at the new
+    point through the lagged factor; ``n_iter=1`` does not assess it.
+    """
     n_samples, n_features = X.shape
+    logit = link == "logit"
+    if not logit and link != "log":
+        raise ValueError(f"Unknown link function: {link}")
 
     no_decay = prior_decay == 1.0
     prior_precision_scaled = (
         prior_precision if no_decay else prior_decay * prior_precision
     )
-    prior_eta_scaled = dsymv(prior_decay, prior_precision, prior_mean)
+    prior_eta_scaled = dsymv(
+        prior_decay, _symmetric_fortran(prior_precision), prior_mean
+    )
 
-    # F-order copy of prior precision for dsyrk accumulation buffer
     prior_prec_F = _stabilized_prior_dense(
-        np.asfortranarray(prior_precision_scaled),
+        _symmetric_fortran(prior_precision_scaled),
         prior_precision,
         prior_decay,
         prior_floor,
     )
 
-    X_weighted = np.empty_like(X)
+    n2 = 2 * n_samples
+    dot_n = ddot if n2 < _DOT_EINSUM_MIN else _einsum_dot
+    dot_p = ddot if n_features < _DOT_EINSUM_MIN else _einsum_dot
+
+    XF, xt = _fortran_view(X)
+    X_weighted = np.empty_like(X, order="F" if xt == 0 else "C")
+    XwF, xwt = _fortran_view(X_weighted)  # dsyrk trans=1-xwt gives X_wᵀX_w
     W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
     Wz_buf = np.empty(n_samples, dtype=np.float64)
     diff_buf = np.empty(n_features, dtype=np.float64)
     precision_buf = np.empty_like(prior_prec_F)
     eta_buf = np.empty_like(prior_eta_scaled)
+    # Packed [eta; mu] (log) or [eta; softplus] (logit) against [w∘y; −w].
+    em = np.empty(n2, dtype=np.float64)
+    em_try = np.empty(n2, dtype=np.float64)
+    eta, eta_try = em[:n_samples], em_try[:n_samples]
+    if logit:
+        mu = np.empty(n_samples, dtype=np.float64)
+        mu_try = np.empty(n_samples, dtype=np.float64)
+        dmu_buf = np.empty(n_samples, dtype=np.float64)
+    else:
+        mu, mu_try = em[n_samples:], em_try[n_samples:]
+        dmu_buf = mu  # unused
+    w = effective_weights
+    wy2 = np.empty(n2, dtype=np.float64)
+    np.multiply(w, y, out=wy2[:n_samples])
+    np.negative(w, out=wy2[n_samples:])
 
     coef = (prior_mean if coef_init is None else coef_init).copy()
-    coef_old = coef
+    dgemv(1.0, XF, coef, trans=xt, y=eta, overwrite_y=True)
+    if logit:
+        expit(eta, out=mu)
+        np.logaddexp(0.0, eta, out=em[n_samples:])
+    else:
+        np.minimum(eta, 700.0, out=mu)
+        np.exp(mu, out=mu)
+    f_old = dot_n(wy2, em)
+
+    # r = b − P·θ (None while zero), prior value ½θᵀ(r + b); P·m = b + shift·m.
+    shift = (1.0 - prior_decay) * prior_floor
+    r: Optional[NDArray[np.float64]] = None
+    if coef_init is not None:
+        r = prior_eta_scaled - dsymv(1.0, prior_prec_F, coef)
+    elif shift != 0.0:
+        r = np.multiply(coef, -shift, dtype=np.float64)
+    prior_val = 0.5 * dot_p(coef, prior_eta_scaled)
+    if r is not None:
+        prior_val += 0.5 * dot_p(coef, r)
+    f_old += prior_val
+
     posterior_precision = prior_prec_F
+    converged = n_iter == 1
+    last = n_iter - 1
 
     for iteration in range(n_iter):
-        if iteration > 0 and n_iter > 1:
-            coef_old = coef.copy()
-
-        eta = cast(NDArray[np.float64], X @ coef)
-        link_out = _eval_link(link, eta)
-        glm_weights = compute_glm_weights_and_working_response(
-            y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
-        )
+        # W = w·μ' and W·z = w·(μ'·η + y − μ)
+        if logit:
+            np.multiply(mu, mu, out=dmu_buf)
+            d_mu_d_eta = np.subtract(mu, dmu_buf, out=dmu_buf)
+        else:
+            d_mu_d_eta = mu  # floored in place; mu is not read again
+        np.maximum(d_mu_d_eta, 1e-10, out=d_mu_d_eta)
+        np.multiply(d_mu_d_eta, eta, out=Wz_buf)
+        Wz_buf += y
+        Wz_buf -= mu
+        Wz_buf *= w
+        np.multiply(d_mu_d_eta, w, out=W_sqrt_buf)
 
         # Fused X^T W X + prior via dsyrk(beta=1, c=prior_copy)
-        np.sqrt(glm_weights.W, out=W_sqrt_buf)
+        np.sqrt(W_sqrt_buf, out=W_sqrt_buf)
         np.multiply(X, W_sqrt_buf[:, np.newaxis], out=X_weighted)
         np.copyto(precision_buf, prior_prec_F)
         posterior_precision = dsyrk(
-            1.0, X_weighted, trans=1, beta=1.0, c=precision_buf, overwrite_c=True
+            1.0, XwF, trans=1 - xwt, beta=1.0, c=precision_buf, overwrite_c=True
         )
 
         # Fused X^T @ (W*z) + prior_eta via dgemv(beta=1, y=prior_copy)
-        np.multiply(glm_weights.W, glm_weights.z, out=Wz_buf)
         np.copyto(eta_buf, prior_eta_scaled)
         posterior_eta = dgemv(
-            1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
+            1.0, XF, Wz_buf, trans=1 - xt, beta=1.0, y=eta_buf, overwrite_y=True
         )
 
         cho = cho_factor(posterior_precision, lower=False, check_finite=False)
-        coef = cho_solve(cho, posterior_eta, check_finite=False)
+        coef_new = cho_solve(cho, posterior_eta, check_finite=False)
 
-        if iteration > 0 and n_iter > 1:
-            np.subtract(coef, coef_old, out=diff_buf)
-            np.abs(diff_buf, out=diff_buf)
-            if diff_buf.max() < tol:
+        np.subtract(coef_new, coef, out=diff_buf)
+        if n_iter > 1 and max(diff_buf.max(), -diff_buf.min()) < tol:
+            coef = coef_new
+            converged = True
+            break
+
+        # eta_buf is dead until the next iteration; Wz_buf until a halving.
+        P_delta = dsymv(1.0, prior_prec_F, diff_buf, y=eta_buf, overwrite_y=True)
+        quad = dot_p(diff_buf, P_delta)
+        lin = 0.0 if r is None else dot_p(diff_buf, r)
+        threshold = f_old - _LINE_SEARCH_EPS * abs(f_old)
+
+        t = 1.0
+        X_delta = None
+        dgemv(1.0, XF, coef_new, trans=xt, y=eta_try, overwrite_y=True)
+        for _ in range(_LINE_SEARCH_MAX_HALVINGS):
+            if logit:
+                expit(eta_try, out=mu_try)
+                np.logaddexp(0.0, eta_try, out=em_try[n_samples:])
+            else:
+                np.minimum(eta_try, 700.0, out=mu_try)
+                np.exp(mu_try, out=mu_try)
+            f_new = dot_n(wy2, em_try) + prior_val + t * (lin - 0.5 * t * quad)
+            if f_new >= threshold:
                 break
+            if X_delta is None:
+                X_delta = np.subtract(eta_try, eta, out=Wz_buf)
+            t *= 0.5
+            daxpy(X_delta, eta_try, a=-t)
+        else:
+            converged = False
+            break
 
-    return GaussianPosterior(coef, cast(NDArray[np.float64], posterior_precision), cho)
+        if t == 1.0:
+            coef = coef_new
+        else:
+            daxpy(diff_buf, coef, a=t)
+
+        if iteration == last:
+            if n_iter > 1:
+                # Next Newton step from the new gradient r − t·Pδ + Xᵀw(y − μ).
+                np.subtract(y, mu_try, out=Wz_buf)
+                Wz_buf *= w
+                P_delta *= -t
+                if r is not None:
+                    P_delta += r
+                grad = dgemv(
+                    1.0, XF, Wz_buf, trans=1 - xt, beta=1.0, y=eta_buf, overwrite_y=True
+                )
+                step = cho_solve(cho, grad, check_finite=False)
+                converged = bool(max(step.max(), -step.min()) < tol)
+            break
+
+        if r is None:
+            r = np.multiply(P_delta, -t, dtype=np.float64)
+        else:
+            daxpy(P_delta, r, a=-t)
+        prior_val += t * (lin - 0.5 * t * quad)
+        f_old = f_new
+        em, eta, mu, em_try, eta_try, mu_try = em_try, eta_try, mu_try, em, eta, mu
+
+    return GaussianPosterior(
+        coef, cast(NDArray[np.float64], posterior_precision), cho, converged
+    )
 
 
 def _irls_sparse(
@@ -268,7 +420,9 @@ def _irls_sparse(
     prior_factor: Optional[Any] = None,
     coef_init: Optional[NDArray[np.float64]] = None,
 ) -> GaussianPosterior:
-    """Sparse IRLS loop using CHOLMOD/SuperLU factorization.
+    """Sparse damped-Newton IRLS using CHOLMOD/SuperLU factorization.
+
+    Same step halving and convergence tests as :func:`_irls_dense`.
 
     ``prior_factor``, when given, seeds the posterior's factorization:
     ``refactorize`` reuses its symbolic analysis whenever the posterior
@@ -277,6 +431,12 @@ def _irls_sparse(
     the pattern grew.
     """
     from ._sparse_bayesian_linear_regression import create_sparse_factor
+
+    assert X.shape is not None
+    n_samples = X.shape[0]
+    logit = link == "logit"
+    if not logit and link != "log":
+        raise ValueError(f"Unknown link function: {link}")
 
     no_decay = prior_decay == 1.0
     prior_precision_scaled = (
@@ -291,19 +451,45 @@ def _irls_sparse(
         prior_precision_scaled, prior_decay, prior_floor
     )
 
+    w = effective_weights
+    wy = np.multiply(w, y, dtype=np.float64)
+    mu_try = np.empty(n_samples, dtype=np.float64)
+
+    def loglik(eta: NDArray[np.float64], mu: NDArray[np.float64]) -> float:
+        if logit:
+            expit(eta, out=mu)
+            return _dot(wy, eta) - _dot(w, np.logaddexp(0.0, eta))
+        np.minimum(eta, 700.0, out=mu)
+        np.exp(mu, out=mu)
+        return _dot(wy, eta) - _dot(w, mu)
+
     coef = (prior_mean if coef_init is None else coef_init).copy()
-    coef_old = coef
+    eta = np.asarray(X @ coef, dtype=np.float64)
+    mu = np.empty(n_samples, dtype=np.float64)
+    f_old = loglik(eta, mu)
+
+    shift = (1.0 - prior_decay) * prior_floor
+    r: Optional[NDArray[np.float64]] = None
+    if coef_init is not None:
+        r = np.asarray(
+            prior_eta_scaled - prior_precision_scaled @ coef, dtype=np.float64
+        )
+    elif shift != 0.0:
+        r = np.multiply(coef, -shift, dtype=np.float64)
+    prior_val = 0.5 * _dot(coef, prior_eta_scaled)
+    if r is not None:
+        prior_val += 0.5 * _dot(coef, r)
+    f_old += prior_val
+
     sparse_factor = prior_factor
     posterior_precision = prior_precision
+    converged = n_iter == 1
+    last = n_iter - 1
 
     for iteration in range(n_iter):
-        if iteration > 0 and n_iter > 1:
-            coef_old = coef.copy()
-
-        eta = cast(NDArray[np.float64], X @ coef)
-        link_out = _eval_link(link, eta)
+        d_mu_d_eta = cast(NDArray[np.float64], mu * (1.0 - mu) if logit else mu)
         glm_weights = compute_glm_weights_and_working_response(
-            y, link_out.mu, link_out.d_mu_d_eta, eta, effective_weights
+            y, mu, d_mu_d_eta, eta, w
         )
 
         # X^T W X via element-wise row scaling (avoids diags construction)
@@ -318,14 +504,53 @@ def _irls_sparse(
             sparse_factor = create_sparse_factor(posterior_precision)
         else:
             sparse_factor = sparse_factor.refactorize(posterior_precision)
-        coef = sparse_factor.solve(posterior_eta)
+        coef_new = sparse_factor.solve(posterior_eta)
 
-        if iteration > 0 and n_iter > 1:
-            coef_change = np.max(np.abs(coef - coef_old))
-            if coef_change < tol:
+        delta = coef_new - coef
+        if n_iter > 1 and max(delta.max(), -delta.min()) < tol:
+            coef = coef_new
+            converged = True
+            break
+
+        P_delta = np.asarray(prior_precision_scaled @ delta, dtype=np.float64)
+        quad = _dot(delta, P_delta)
+        lin = 0.0 if r is None else _dot(delta, r)
+        threshold = f_old - _LINE_SEARCH_EPS * abs(f_old)
+
+        t = 1.0
+        X_delta = None
+        eta_try = np.asarray(X @ coef_new, dtype=np.float64)
+        for _ in range(_LINE_SEARCH_MAX_HALVINGS):
+            f_new = loglik(eta_try, mu_try) + prior_val + t * (lin - 0.5 * t * quad)
+            if f_new >= threshold:
                 break
+            if X_delta is None:
+                X_delta = eta_try - eta
+            t *= 0.5
+            daxpy(X_delta, eta_try, a=-t)
+        else:
+            converged = False
+            break
 
-    return GaussianPosterior(coef, posterior_precision, sparse_factor)
+        if t == 1.0:
+            coef = coef_new
+        else:
+            daxpy(delta, coef, a=t)
+        if r is None:
+            r = np.multiply(P_delta, -t, dtype=np.float64)
+        else:
+            daxpy(P_delta, r, a=-t)
+        prior_val += t * (lin - 0.5 * t * quad)
+        f_old = f_new
+        eta, mu, mu_try = eta_try, mu_try, mu
+
+        if iteration == last and n_iter > 1:
+            # Next Newton step from the new gradient through the lagged factor.
+            grad = r + X.T @ (w * (y - mu))
+            step = sparse_factor.solve(grad)
+            converged = bool(max(step.max(), -step.min()) < tol)
+
+    return GaussianPosterior(coef, posterior_precision, sparse_factor, converged)
 
 
 def update_gaussian_posterior_laplace(
@@ -506,12 +731,17 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         (\\alpha I + X^T W X)^{-1}\\bigr)
 
     where :math:`W` is the diagonal matrix of IRLS weights (Fisher
-    information).
+    information).  Each Newton step is halved until the penalized
+    log-likelihood stops decreasing, so the iteration cannot diverge
+    (cf. R's ``glm2``).
 
     Parameters
     ----------
     n_iter : int, default=5
-        Maximum number of Newton (IRLS) iterations per update.
+        Maximum number of Newton (IRLS) iterations per update.  When
+        the budget runs out before the step falls below ``tol``, the
+        returned posterior has ``converged=False`` and
+        :class:`BayesianGLM` raises a ``ConvergenceWarning``.
 
         - ``1``: Single-step update from the current posterior. Fast
           and usually sufficient for online/streaming use where the
@@ -520,10 +750,11 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         - ``>10``: Use for batch fitting when full convergence is
           needed (pair with a tight ``tol``).
     tol : float, default=1e-4
-        Convergence tolerance on the coefficient change. Iteration
+        Convergence tolerance on the undamped Newton step. Iteration
         stops when
         :math:`\\|w_{\\text{new}} - w_{\\text{old}}\\|_\\infty < \\text{tol}`.
-        Only effective when ``n_iter > 1``.
+        Only effective when ``n_iter > 1``; a single-step update does
+        not assess convergence.
 
     See Also
     --------
