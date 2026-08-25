@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -58,6 +59,7 @@ def test_binary_outcome_profit_reward():
     np.testing.assert_allclose(actual, expected)
 
 
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_binary_outcome_contextual_agent():
     """ContextualAgent with BayesianGLM arms: pull selects, update gets raw 0/1."""
     arms = [

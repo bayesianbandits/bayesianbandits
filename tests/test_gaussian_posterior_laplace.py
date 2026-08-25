@@ -367,3 +367,148 @@ def test_first_newton_step_exact():
     expected_mean = np.linalg.solve(H, g)
 
     assert_allclose(posterior.mean, expected_mean, rtol=1e-10)
+
+
+def _poisson_overshoot_data(n=300, p=8, seed=0):
+    """Issue #284: undamped IRLS from zero overshoots on this data and
+    stops with a log-likelihood of about -2e8 against -475 at the mode."""
+    rng = np.random.default_rng(seed)
+    X = rng.standard_normal((n, p))
+    w = rng.normal(scale=0.7, size=p)
+    y = rng.poisson(np.exp(X @ w)).astype(np.float64)
+    sample_weight = rng.uniform(0.5, 1.5, size=n)
+    return X, y, sample_weight
+
+
+def _poisson_loglik(X, y, coef):
+    eta = X @ np.asarray(coef)
+    return float(np.sum(y * eta - np.exp(eta)))
+
+
+def _fit_overshoot(X, y, sample_weight, n_iter, sparse=False):
+    from scipy.sparse import csc_array
+
+    p = X.shape[1]
+    P = np.asarray(2.0 * np.eye(p), dtype=np.float64)
+    posterior = update_gaussian_posterior_laplace(
+        csc_array(X) if sparse else X,
+        y,
+        np.zeros(p),
+        csc_array(P) if sparse else P,
+        link="log",
+        sample_weight=sample_weight,
+        learning_rate=0.98,
+        sparse=sparse,
+        n_iter=n_iter,
+        tol=1e-6,
+    )
+    return np.asarray(posterior.mean), posterior.converged
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_irls_step_halving_reaches_mode_from_cold_start(sparse):
+    X, y, sample_weight = _poisson_overshoot_data()
+    short, short_conv = _fit_overshoot(X, y, sample_weight, 25, sparse)
+    long, long_conv = _fit_overshoot(X, y, sample_weight, 200, sparse)
+
+    assert short_conv and long_conv
+    assert_allclose(short, long, atol=1e-5)
+    assert_allclose(_poisson_loglik(X, y, short), _poisson_loglik(X, y, long))
+
+
+def test_irls_reports_non_convergence():
+    X, y, sample_weight = _poisson_overshoot_data()
+
+    two, converged = _fit_overshoot(X, y, sample_weight, 2)
+    assert not converged
+    assert np.isfinite(two).all()
+
+    # A single-step update does not assess convergence.
+    _, converged = _fit_overshoot(X, y, sample_weight, 1)
+    assert converged
+
+
+def test_irls_overshoot_stays_finite():
+    """Wide Poisson features with a weak prior: the undamped first step
+    used to leave non-finite coefficients."""
+    rng = np.random.default_rng(1)
+    X = np.asarray(rng.standard_normal((50, 3)) * 6.0, dtype=np.float64)
+    y = rng.poisson(np.exp(np.clip(X @ np.array([0.5, -0.3, 0.2]), -10, 10)))
+    P = np.asarray(1e-3 * np.eye(3), dtype=np.float64)
+    posterior = update_gaussian_posterior_laplace(
+        X, y.astype(np.float64), np.zeros(3), P, link="log", n_iter=25
+    )
+    assert np.isfinite(np.asarray(posterior.mean)).all()
+    assert posterior.converged
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_irls_unknown_link_raises(sparse):
+    from scipy.sparse import csc_array
+
+    X, y, sample_weight = _poisson_overshoot_data(n=20, p=3)
+    P = np.asarray(np.eye(3), dtype=np.float64)
+    with pytest.raises(ValueError, match="Unknown link"):
+        update_gaussian_posterior_laplace(
+            csc_array(X) if sparse else X,
+            y,
+            np.zeros(3),
+            csc_array(P) if sparse else P,
+            link="probit",  # type: ignore[arg-type]
+            sparse=sparse,
+        )
+
+
+def test_dot_dispatches_on_length():
+    from bayesianbandits._gaussian import _DOT_EINSUM_MIN, _dot
+
+    short = np.ones(8)
+    long = np.ones(_DOT_EINSUM_MIN)
+    assert _dot(short, short) == 8.0
+    assert _dot(long, long) == float(_DOT_EINSUM_MIN)
+
+
+def test_irls_accepts_noncontiguous_X():
+    X_full, y_full, sample_weight_full = _poisson_overshoot_data(n=200, p=4)
+    X, y, sample_weight = X_full[::2], y_full[::2], sample_weight_full[::2]
+    assert not X.flags.c_contiguous and not X.flags.f_contiguous
+    P = np.asarray(2.0 * np.eye(4), dtype=np.float64)
+    strided = update_gaussian_posterior_laplace(
+        X, y, np.zeros(4), P, link="log", sample_weight=sample_weight, n_iter=50
+    )
+    contiguous = update_gaussian_posterior_laplace(
+        np.ascontiguousarray(X),
+        y,
+        np.zeros(4),
+        P,
+        link="log",
+        sample_weight=sample_weight,
+        n_iter=50,
+    )
+    assert_allclose(np.asarray(strided.mean), np.asarray(contiguous.mean))
+    assert_allclose(np.asarray(strided.precision), np.asarray(contiguous.precision))
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_irls_exhausted_line_search_keeps_start(sparse, monkeypatch):
+    """With no halvings allowed, a rejected full step leaves the start
+    point untouched and reports non-convergence."""
+    from scipy.sparse import csc_array
+
+    from bayesianbandits import _gaussian
+
+    monkeypatch.setattr(_gaussian, "_LINE_SEARCH_MAX_HALVINGS", 0)
+    X, y, sample_weight = _poisson_overshoot_data()
+    P = np.asarray(2.0 * np.eye(8), dtype=np.float64)
+    posterior = update_gaussian_posterior_laplace(
+        csc_array(X) if sparse else X,
+        y,
+        np.zeros(8),
+        csc_array(P) if sparse else P,
+        link="log",
+        sample_weight=sample_weight,
+        sparse=sparse,
+        n_iter=5,
+    )
+    assert not posterior.converged
+    assert_allclose(np.asarray(posterior.mean), np.zeros(8))

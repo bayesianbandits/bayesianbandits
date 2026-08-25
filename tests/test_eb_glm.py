@@ -101,8 +101,10 @@ class TestEBGLM:
         ).fit(_X(X, sparse), y)
         # Both IRLS runs stop within tol=1e-6 of the mode; the EB one is
         # warm-started from the previous iteration, the plain one from 0.
+        # Each precision is built at its run's last pre-convergence
+        # iterate, so they agree only to O(tol · scale).
         np.testing.assert_allclose(eb.coef_, plain.coef_, atol=1e-5)
-        np.testing.assert_allclose(_dense_prec(eb), _dense_prec(plain), atol=1e-5)
+        np.testing.assert_allclose(_dense_prec(eb), _dense_prec(plain), atol=1e-4)
 
     def test_log_evidence_matches_hand_formula(self, link, sparse):
         """fit's log_evidence_ is the Laplace evidence at the alpha used for
@@ -428,3 +430,26 @@ class TestEffectiveN:
         assert model._effective_n == pytest.approx(
             np.sum(w * 0.9 ** np.arange(3, -1, -1))
         )
+
+
+@pytest.mark.parametrize("sparse", [True, False])
+def test_alpha_untouched_when_laplace_does_not_converge(sparse):
+    from sklearn.exceptions import ConvergenceWarning
+
+    X, y = _simulate("log")
+    # tol=0 can never be met, so every Laplace update reports non-convergence.
+    model = EmpiricalBayesGLM(
+        link="log",
+        alpha=1.0,
+        sparse=sparse,
+        approximator=LaplaceApproximator(n_iter=2, tol=0.0),
+    )
+    with pytest.warns(ConvergenceWarning):
+        model.fit(_X(X, sparse), y)
+    assert model.alpha == 1.0
+    assert not model.eb_converged_
+    assert model.n_eb_iterations_ == 0
+
+    with pytest.warns(ConvergenceWarning):
+        model.partial_fit(_X(X[:20], sparse), y[:20])
+    assert model.alpha == 1.0

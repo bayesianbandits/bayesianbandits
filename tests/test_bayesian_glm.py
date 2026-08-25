@@ -170,6 +170,7 @@ def test_bayesian_glm_fit_log(count_data, sparse: bool) -> None:
 
 
 @pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_bayesian_glm_partial_fit_basic(binary_data, sparse: bool) -> None:
     """Test basic partial_fit functionality."""
     X, y = binary_data
@@ -201,6 +202,7 @@ def test_bayesian_glm_partial_fit_basic(binary_data, sparse: bool) -> None:
 
 
 @pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_bayesian_glm_streaming_convergence(binary_data, sparse: bool) -> None:
     """Test that streaming updates eventually produce a good model."""
     X, y = binary_data
@@ -542,6 +544,7 @@ def test_bayesian_glm_sample_invalid_link() -> None:
 
 
 @pytest.mark.parametrize("n_samples,n_features", [(50, 2), (100, 5), (200, 10)])
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_bayesian_glm_scaling(n_samples, n_features) -> None:
     """Test model works with different data sizes."""
     rng = np.random.RandomState(42)  # Fixed seed
@@ -600,6 +603,7 @@ class RecordingApproximator(LaplaceApproximator):
 
 
 @pytest.mark.parametrize("sparse", [True, False])
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_bayesian_glm_threads_prior_factor(binary_data, sparse: bool) -> None:
     """Sparse partial_fit passes the cached precision factor through."""
     X, y = binary_data
@@ -622,6 +626,7 @@ def test_bayesian_glm_threads_prior_factor(binary_data, sparse: bool) -> None:
         assert approximator.received_factors[1] is None
 
 
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
 def test_bayesian_glm_refit_does_not_pass_stale_factor(binary_data) -> None:
     """Refitting resets the prior, so the old posterior's factor must not
     be handed to the approximator as if it factored the fresh prior."""
@@ -636,3 +641,28 @@ def test_bayesian_glm_refit_does_not_pass_stale_factor(binary_data) -> None:
 
     clf.fit(X, y)
     assert approximator.received_factors == [None, None]
+
+
+def test_laplace_non_convergence_warns():
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
+
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((300, 8))
+    y = rng.poisson(np.exp(X @ rng.normal(scale=0.7, size=8))).astype(np.float64)
+
+    with pytest.warns(ConvergenceWarning):
+        BayesianGLM(
+            link="log", alpha=2.0, approximator=LaplaceApproximator(n_iter=2)
+        ).fit(X, y)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", ConvergenceWarning)
+        BayesianGLM(
+            link="log", alpha=2.0, approximator=LaplaceApproximator(n_iter=100)
+        ).fit(X, y)
+        # Single-step mode never claims convergence, so it never warns.
+        BayesianGLM(
+            link="log", alpha=2.0, approximator=LaplaceApproximator(n_iter=1)
+        ).fit(X, y)
