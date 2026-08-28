@@ -491,6 +491,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
         self.trace_method = trace_method
+        self._alpha0 = alpha  # EB overwrites alpha; keep the prior
 
     @property
     def coef_(self) -> NDArray[np.float64]:
@@ -1028,6 +1029,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
         self.trace_method = trace_method
+        self._alpha0 = alpha  # EB overwrites alpha; keep the prior
 
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
         super()._initialize_prior(X)

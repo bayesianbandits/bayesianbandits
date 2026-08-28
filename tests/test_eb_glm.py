@@ -226,6 +226,14 @@ class TestEBGLM:
         batch.fit(_X(X, sparse), y)
         assert 0.8 < model.alpha / batch.alpha < 1.25
 
+    def test_alpha0_keeps_the_constructor_alpha(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(alpha=3.0, link=link, sparse=sparse)
+        model.fit(_X(X, sparse), y)
+        assert model.alpha != 3.0 and model._alpha0 == 3.0
+        model.fit(_X(X, sparse), y)
+        assert model._alpha0 == 3.0
+
     def test_sample_before_partial_fit(self, link, sparse):
         X, y = _simulate(link)
         model = EmpiricalBayesGLM(link=link, sparse=sparse)

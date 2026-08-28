@@ -233,6 +233,13 @@ class TestEBNormalRegressor:
         assert np.isfinite(model.alpha)
         assert np.isfinite(model.beta)
 
+    def test_alpha0_keeps_the_constructor_alpha(self, regression_data, sparse):
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(alpha=3.0, sparse=sparse).fit(X, y)
+        assert model.alpha != 3.0 and model._alpha0 == 3.0
+        model.fit(X, y)
+        assert model._alpha0 == 3.0
+
     def test_decay(self, regression_data, sparse):
         """decay() scales _prior_scalar and sufficient stats."""
         X, y = regression_data
