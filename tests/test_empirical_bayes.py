@@ -14,10 +14,13 @@ from scipy.sparse import csc_array
 from scipy.special import expit, gammaln
 
 from bayesianbandits._empirical_bayes import (
+    MacKayGLMUpdate,
+    MacKayUpdate,
     _diagonal_trace_approx,
     _dirichlet_multinomial_log_evidence,
     _factorization_stats,
     accumulate_sufficient_stats,
+    mackay_update_glm,
     mackay_update_normal_online,
     minka_update_dirichlet_multinomial,
     negbin_update_gamma_poisson,
@@ -505,6 +508,134 @@ class TestLogEvidenceFromUpdates:
         )
         expected = _log_evidence_normal_hand(X, y, mu_n, precision, alpha, beta)
         np.testing.assert_allclose(result.log_evidence, expected, atol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# 10b. Gamma hyperprior on alpha
+# ---------------------------------------------------------------------------
+
+
+def _normal_objective(alpha, beta, X, y, k, alpha0):
+    """The Normal update at alpha, for checking its fixed point against its evidence."""
+    mu_n, precision = _compute_posterior_normal(X, y, alpha, beta)
+    return mackay_update_normal_online(
+        mu_n,
+        precision,
+        alpha,
+        beta,
+        prior_scalar=alpha,
+        effective_n=float(X.shape[0]),
+        eff_yTy=float(y @ y),
+        eff_XTy=np.asarray(X.T @ y, dtype=np.float64),
+        factor=_make_dense_factor(precision),
+        alpha_prior_strength=k,
+        alpha_prior_mode=alpha0,
+    )
+
+
+def _glm_objective(alpha, H, t, k, alpha0):
+    """The GLM update on a quadratic log-likelihood, where the Laplace evidence is exact."""
+    precision = alpha * np.eye(H.shape[0]) + H
+    theta = np.linalg.solve(precision, H @ t)
+    log_lik = -0.5 * float((theta - t) @ H @ (theta - t))
+    return mackay_update_glm(
+        theta,
+        precision,
+        alpha,
+        prior_scalar=alpha,
+        effective_n=1e9,
+        log_lik=log_lik,
+        factor=_make_dense_factor(precision),
+        alpha_prior_strength=k,
+        alpha_prior_mode=alpha0,
+    )
+
+
+class TestAlphaHyperprior:
+    def _normal_data(self):
+        rng = np.random.default_rng(11)
+        X = rng.standard_normal((30, 4))
+        y = X @ rng.standard_normal(4) + rng.standard_normal(30) * 0.5
+        return X.astype(np.float64), y.astype(np.float64)
+
+    def _glm_data(self):
+        rng = np.random.default_rng(12)
+        A = rng.standard_normal((6, 4))
+        return (A.T @ A).astype(np.float64), rng.standard_normal(4).astype(np.float64)
+
+    def test_zero_mean_is_bounded_not_infinite(self) -> None:
+        """At theta = 0 plain MacKay falls back; k > 0 gives (gamma + k) alpha0 / k."""
+        p, alpha, beta, k, alpha0 = 3, 2.0, 1.0, 0.5, 4.0
+        precision = np.asarray((alpha + beta) * np.eye(p), dtype=np.float64)
+        gamma = p - alpha * p / (alpha + beta)
+        zeros = np.zeros(p)
+        factor = _make_dense_factor(precision)
+
+        def normal(k: float) -> MacKayUpdate:
+            return mackay_update_normal_online(
+                zeros,
+                precision,
+                alpha,
+                beta,
+                prior_scalar=alpha,
+                effective_n=10.0,
+                eff_yTy=1.0,
+                eff_XTy=zeros,
+                factor=factor,
+                alpha_prior_strength=k,
+                alpha_prior_mode=alpha0,
+            )
+
+        def glm(k: float) -> MacKayGLMUpdate:
+            return mackay_update_glm(
+                zeros,
+                precision,
+                alpha,
+                prior_scalar=alpha,
+                effective_n=10.0,
+                log_lik=0.0,
+                factor=factor,
+                alpha_prior_strength=k,
+                alpha_prior_mode=alpha0,
+            )
+
+        assert normal(0.0).alpha == alpha
+        assert glm(0.0).alpha == alpha
+        for reg in (normal(k), glm(k)):
+            np.testing.assert_allclose(reg.alpha, (gamma + k) * alpha0 / k)
+            assert not reg.rejected
+
+    @pytest.mark.parametrize("k", [0.0, 0.5, 3.0])
+    def test_normal_fixed_point_is_stationary(self, k) -> None:
+        """The iteration's fixed point is a local maximum of the reported evidence."""
+        X, y = self._normal_data()
+        alpha, beta, alpha0 = 1.0, 1.0, 0.3
+        for _ in range(500):
+            upd = _normal_objective(alpha, beta, X, y, k, alpha0)
+            alpha, beta = upd.alpha, upd.beta
+
+        def obj(a):
+            return _normal_objective(a, beta, X, y, k, alpha0).log_evidence
+
+        assert obj(alpha) >= obj(alpha * (1 + 1e-3))
+        assert obj(alpha) >= obj(alpha * (1 - 1e-3))
+        h = 1e-5 * alpha
+        assert abs(obj(alpha + h) - obj(alpha - h)) / (2 * h) < 1e-4
+
+    @pytest.mark.parametrize("k", [0.0, 0.5, 3.0])
+    def test_glm_fixed_point_is_stationary(self, k) -> None:
+        H, t = self._glm_data()
+        alpha, alpha0 = 1.0, 0.3
+        for _ in range(500):
+            alpha = _glm_objective(alpha, H, t, k, alpha0).alpha
+
+        def obj(a):
+            return _glm_objective(a, H, t, k, alpha0).log_evidence
+
+        assert obj(alpha) >= obj(alpha * (1 + 1e-3))
+        assert obj(alpha) >= obj(alpha * (1 - 1e-3))
+        h = 1e-5 * alpha
+        assert abs(obj(alpha + h) - obj(alpha - h)) / (2 * h) < 1e-4
 
 
 # ---------------------------------------------------------------------------

@@ -339,6 +339,12 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         Initial noise precision. The likelihood is
         :math:`y \\mid x, w \\sim \\mathcal{N}(x^T w, \\beta^{-1})`.
         Updated automatically during fitting.
+    alpha_prior_strength : float, default=0.2
+        Pseudo-observations :math:`k` of a Gamma hyperprior on ``alpha``
+        at the constructor's :math:`\\alpha_0`: the MacKay update becomes
+        :math:`(\\gamma + k) / (\\|m\\|^2 + k / \\alpha_0)`, finite at
+        zero mean but bounded by :math:`(\\gamma + k)\\,\\alpha_0 / k`.
+        ``0.0`` is plain MacKay.
     n_eb_iter : int, default=10
         Maximum number of empirical Bayes iterations during ``fit``.
         Each iteration re-fits the posterior and runs one MacKay update.
@@ -375,7 +381,8 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         Log marginal likelihood at the most recent MacKay step --
         the last iteration of ``fit``, then refreshed by every
         ``partial_fit`` -- or ``-inf`` if ``n_eb_iter=0``. Under
-        forgetting this is the evidence of the *decayed* data.
+        forgetting this is the evidence of the *decayed* data, and with
+        ``alpha_prior_strength > 0`` it includes the log hyperprior.
     n_eb_iterations_ : int
         Number of EB iterations performed during the last ``fit``.
     eb_converged_ : bool
@@ -474,6 +481,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         alpha: float = 1.0,
         beta: float = 1.0,
         *,
+        alpha_prior_strength: float = 0.2,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
         learning_rate: float = 1.0,
@@ -488,6 +496,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
             sparse=sparse,
             random_state=random_state,
         )
+        self.alpha_prior_strength = alpha_prior_strength
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
         self.trace_method = trace_method
@@ -544,6 +553,8 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
             self._eff_XTy,
             factor=self._precision_factor,
             trace_method=self.trace_method,
+            alpha_prior_strength=self.alpha_prior_strength,
+            alpha_prior_mode=self._alpha0,
         )
         self.alpha = update.alpha
         self.beta = update.beta
@@ -652,6 +663,8 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
                     eff_XTy,
                     factor=self._precision_factor,
                     trace_method=self.trace_method,
+                    alpha_prior_strength=self.alpha_prior_strength,
+                    alpha_prior_mode=self._alpha0,
                 )
                 self.alpha = update.alpha
                 self.beta = update.beta
@@ -930,7 +943,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     update of ``alpha``, applied to the Laplace approximation: with
     :math:`\\gamma = p - s\\,\\operatorname{tr}(\\Lambda^{-1})` (``s`` the
     prior's contribution to the diagonal of :math:`\\Lambda`),
-    :math:`\alpha_{\text{new}} = \\gamma / \\|\theta_{\text{MAP}}\\|^2`.
+    :math:`\\alpha_{\\text{new}} = (\\gamma + k) /
+    (\\|\\theta_{\\text{MAP}}\\|^2 + k / \\alpha_0)`, :math:`k` the
+    ``alpha_prior_strength`` at the constructor's :math:`\\alpha_0`.
 
     ``fit`` alternates IRLS and MacKay steps until the Laplace log
     evidence converges. ``partial_fit`` takes one MacKay step on the
@@ -951,6 +966,9 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         Initial prior precision. Updated automatically during fitting.
     link : {'logit', 'log'}, default='logit'
         Link function; see :class:`BayesianGLM`.
+    alpha_prior_strength : float, default=0.2
+        Pseudo-observations of the Gamma hyperprior on ``alpha``; see
+        :class:`EmpiricalBayesNormalRegressor`.
     n_eb_iter : int, default=10
         Maximum number of EB iterations during ``fit``; 0 disables
         tuning there.
@@ -982,6 +1000,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         ``-inf`` if ``n_eb_iter=0``. Exact after ``fit``; under
         ``partial_fit`` the log-likelihood term is a decayed running
         sum of each batch's log-likelihood at the mode right after it.
+        Includes the log hyperprior when ``alpha_prior_strength > 0``.
     n_eb_iterations_ : int
         Number of EB iterations performed during the last ``fit``.
     eb_converged_ : bool
@@ -1010,6 +1029,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         alpha: float = 1.0,
         *,
         link: LinkFunction = "logit",
+        alpha_prior_strength: float = 0.2,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
         learning_rate: float = 1.0,
@@ -1026,6 +1046,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             sparse=sparse,
             random_state=random_state,
         )
+        self.alpha_prior_strength = alpha_prior_strength
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
         self.trace_method = trace_method
@@ -1056,6 +1077,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             self._eff_loglik,
             factor=self._precision_factor,
             trace_method=self.trace_method,
+            alpha_prior_strength=self.alpha_prior_strength,
+            alpha_prior_mode=self._alpha0,
         )
         self.alpha = update.alpha
         self.log_evidence_ = update.log_evidence
