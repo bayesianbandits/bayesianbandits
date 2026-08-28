@@ -73,8 +73,14 @@ class TestEBNormalRegressor:
         X, y = regression_data
         evidences = []
 
+        # re-anchored each round, so only plain MacKay is one objective
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, n_eb_iter=1, eb_tol=0.0, sparse=sparse
+            alpha=1.0,
+            beta=1.0,
+            n_eb_iter=1,
+            eb_tol=0.0,
+            sparse=sparse,
+            alpha_prior_strength=0.0,
         )
         for _ in range(10):
             model.fit(X, y)
@@ -86,6 +92,7 @@ class TestEBNormalRegressor:
                 n_eb_iter=1,
                 eb_tol=0.0,
                 sparse=sparse,
+                alpha_prior_strength=0.0,
             )
 
         for i in range(1, len(evidences)):
@@ -145,23 +152,25 @@ class TestEBNormalRegressor:
 
     def test_get_set_params(self, sparse):
         model = EmpiricalBayesNormalRegressor(
-            alpha=2.0, beta=3.0, n_eb_iter=5, sparse=sparse
+            alpha=2.0, beta=3.0, n_eb_iter=5, sparse=sparse, alpha_prior_strength=0.25
         )
         params = model.get_params()
         assert params["alpha"] == 2.0
         assert params["beta"] == 3.0
         assert params["n_eb_iter"] == 5
+        assert params["alpha_prior_strength"] == 0.25
 
         model.set_params(alpha=10.0)
         assert model.alpha == 10.0
 
     def test_clone(self, sparse):
         model = EmpiricalBayesNormalRegressor(
-            alpha=2.0, beta=3.0, n_eb_iter=7, sparse=sparse
+            alpha=2.0, beta=3.0, n_eb_iter=7, sparse=sparse, alpha_prior_strength=0.25
         )
         cloned = clone(model)
         assert cloned.get_params() == model.get_params()
         assert cloned is not model
+        assert cloned.alpha_prior_strength == 0.25
 
     def test_pickle_roundtrip(self, regression_data, sparse):
         X, y = regression_data
@@ -239,6 +248,41 @@ class TestEBNormalRegressor:
         assert model.alpha != 3.0 and model._alpha0 == 3.0
         model.fit(X, y)
         assert model._alpha0 == 3.0
+
+    def test_hyperprior_bounds_alpha_on_pure_noise(self, sparse):
+        """Pure noise: plain alpha runs off (no ceiling here), regularized stays bounded."""
+        rng = np.random.default_rng(3)
+        n, p = 300, 5
+        X = np.eye(p)[rng.integers(0, p, size=n)]
+        y = rng.standard_normal(n) * 10.0
+        y -= X @ (X.T @ y / X.sum(axis=0))  # centered: the noise carries no signal
+        alpha0 = 1.0
+        k = EmpiricalBayesNormalRegressor().alpha_prior_strength
+        bound = (p + k) * alpha0 / k * (1 + 1e-9)
+
+        plain = EmpiricalBayesNormalRegressor(
+            sparse=sparse, n_eb_iter=50, alpha_prior_strength=0.0
+        ).fit(X, y)
+        assert plain.alpha > 1e100
+
+        model = EmpiricalBayesNormalRegressor(sparse=sparse, n_eb_iter=50).fit(X, y)
+        assert model.alpha <= bound
+        assert model.eb_updates_rejected_ == 0
+
+        plain = EmpiricalBayesNormalRegressor(sparse=sparse, alpha_prior_strength=0.0)
+        online = EmpiricalBayesNormalRegressor(sparse=sparse)
+        for start in range(0, n, 10):
+            plain.partial_fit(X[start : start + 10], y[start : start + 10])
+            online.partial_fit(X[start : start + 10], y[start : start + 10])
+            assert online.alpha <= bound
+        assert plain.alpha > 1e10
+        assert online.eb_updates_rejected_ == 0
+
+    def test_negative_prior_strength_raises(self, regression_data, sparse):
+        X, y = regression_data
+        model = EmpiricalBayesNormalRegressor(sparse=sparse, alpha_prior_strength=-1.0)
+        with pytest.raises(ValueError, match="alpha_prior_strength"):
+            model.fit(X, y)
 
     def test_decay(self, regression_data, sparse):
         """decay() scales _prior_scalar and sufficient stats."""

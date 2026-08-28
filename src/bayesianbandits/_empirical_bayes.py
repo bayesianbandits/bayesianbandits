@@ -151,6 +151,21 @@ def accumulate_sufficient_stats(
     )
 
 
+def _alpha_fixed_point(
+    gamma: float, norm_sq: float, alpha: float, k: float, alpha0: float
+) -> float:
+    """MacKay's alpha under ``k`` pseudo-observations at ``alpha0``; ``k = 0`` is plain."""
+    if k < 0:
+        raise ValueError(f"alpha_prior_strength must be >= 0, got {k}")
+    denom = norm_sq + k / alpha0
+    return (gamma + k) / denom if denom > 0 else alpha
+
+
+def _alpha_hyperprior_log(alpha: float, k: float, alpha0: float) -> float:
+    """``log Gamma(alpha | 1 + k/2, k/(2 alpha0))`` up to its normalizer."""
+    return 0.5 * k * math.log(alpha) - 0.5 * k * alpha / alpha0
+
+
 def mackay_update_normal_online(
     mu_n: NDArray[np.float64],
     precision: Union[NDArray[np.float64], csc_array],
@@ -162,6 +177,8 @@ def mackay_update_normal_online(
     eff_XTy: NDArray[np.float64],
     factor: PrecisionFactor,
     trace_method: str = "auto",
+    alpha_prior_strength: float = 0.0,
+    alpha_prior_mode: float = 1.0,
 ) -> MacKayUpdate:
     """MacKay update using accumulated sufficient statistics for beta.
 
@@ -186,6 +203,8 @@ def mackay_update_normal_online(
     eff_XTy : decayed Xᵀy
     factor : pre-computed factorization
     trace_method : method for computing tr(Λ⁻¹)
+    alpha_prior_strength, alpha_prior_mode : Gamma hyperprior on alpha,
+        ``k`` pseudo-observations at the mode; ``0`` is plain MacKay
 
     Returns
     -------
@@ -211,8 +230,8 @@ def mackay_update_normal_online(
     _EPS = 1e-8
     gamma = float(np.clip(p - prior_scalar * tr_inv, _EPS, min(effective_n, p)))
 
-    # Alpha update.
-    alpha_new = gamma / mu_norm_sq if mu_norm_sq > 0 else alpha
+    k, alpha0 = alpha_prior_strength, alpha_prior_mode
+    alpha_new = _alpha_fixed_point(gamma, mu_norm_sq, alpha, k, alpha0)
 
     # Beta update from sufficient statistics.
     # XᵀX_decayed = (Λ − prior_scalar·I) / β
@@ -248,6 +267,7 @@ def mackay_update_normal_online(
         - 0.5 * ld
         - 0.5 * (beta * rss + alpha * mu_norm_sq)
         - 0.5 * effective_n * _LOG_2PI
+        + _alpha_hyperprior_log(alpha, k, alpha0)
     )
 
     return MacKayUpdate(alpha_new, beta_new, log_ev, rejected)
@@ -307,6 +327,8 @@ def mackay_update_glm(
     log_lik: float,
     factor: PrecisionFactor,
     trace_method: str = "auto",
+    alpha_prior_strength: float = 0.0,
+    alpha_prior_mode: float = 1.0,
 ) -> MacKayGLMUpdate:
     """MacKay update of the prior precision for a Laplace GLM posterior.
 
@@ -338,6 +360,8 @@ def mackay_update_glm(
     log_lik : log-likelihood at ``theta``
     factor : pre-computed factorization of ``precision``
     trace_method : method for computing tr(Lambda^-1)
+    alpha_prior_strength, alpha_prior_mode : see
+        :func:`mackay_update_normal_online`
     """
     p = cast(tuple[int, int], precision.shape)[0]
     theta_norm_sq = _dot(theta, theta)
@@ -347,7 +371,8 @@ def mackay_update_glm(
     # Floor just above the cancellation noise of p - s.tr(Lambda^-1); a larger
     # one would inflate alpha_new past the ceiling when the prior dominates.
     gamma = float(np.clip(p - prior_scalar * tr_inv, p * 1e-13, min(effective_n, p)))
-    alpha_new = gamma / theta_norm_sq if theta_norm_sq > 0 else alpha
+    k, alpha0 = alpha_prior_strength, alpha_prior_mode
+    alpha_new = _alpha_fixed_point(gamma, theta_norm_sq, alpha, k, alpha0)
 
     if isinstance(precision, csc_array):
         diag = np.asarray(precision.diagonal(), dtype=np.float64)
@@ -364,7 +389,11 @@ def mackay_update_glm(
         alpha_new = alpha
 
     log_ev = float(
-        log_lik + 0.5 * p * math.log(alpha) - 0.5 * alpha * theta_norm_sq - 0.5 * ld
+        log_lik
+        + 0.5 * p * math.log(alpha)
+        - 0.5 * alpha * theta_norm_sq
+        - 0.5 * ld
+        + _alpha_hyperprior_log(alpha, k, alpha0)
     )
 
     return MacKayGLMUpdate(alpha_new, log_ev, rejected)

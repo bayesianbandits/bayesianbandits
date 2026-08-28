@@ -6,6 +6,16 @@ Unreleased
 
 **Breaking changes**
 
+- ``EmpiricalBayesNormalRegressor`` and ``EmpiricalBayesGLM`` regularize
+  the MacKay update of ``alpha`` with a Gamma hyperprior at the
+  constructor's ``alpha``, weighted by the new ``alpha_prior_strength``
+  (default ``0.2`` pseudo-observations): ``(γ + k) / (‖θ‖² + k/α₀)``. Plain
+  MacKay ran ``alpha`` to the guardrail on arms with near-zero coefficients
+  and locked them there. Learned alphas change under the default and are
+  bounded by ``(γ + k)·α₀/k``; ``0.0`` restores the previous update, and
+  ``log_evidence_`` includes the log hyperprior when the strength is
+  positive (#286)
+
 - ``PolicyProtocol`` gains a ``consumes: DrawKind`` attribute, naming the
   weakest draws a policy can correctly consume over a totally ordered
   lattice::

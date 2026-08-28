@@ -74,8 +74,14 @@ class TestEBGLM:
         evidences = []
         alpha = 50.0
         for _ in range(10):
+            # re-anchored each round, so only plain MacKay is one objective
             model = EmpiricalBayesGLM(
-                alpha=alpha, link=link, n_eb_iter=1, eb_tol=0.0, sparse=sparse
+                alpha=alpha,
+                link=link,
+                n_eb_iter=1,
+                eb_tol=0.0,
+                sparse=sparse,
+                alpha_prior_strength=0.0,
             )
             model.fit(_X(X, sparse), y)
             evidences.append(model.log_evidence_)
@@ -123,19 +129,30 @@ class TestEBGLM:
         theta = plain.coef_
         P = _dense_prec(plain)
         p = X.shape[1]
+        k = model.alpha_prior_strength
         expected = (
             glm_log_likelihood(X, y, theta, link)
             + 0.5 * p * np.log(alpha0)
             - 0.5 * alpha0 * theta @ theta
             - 0.5 * np.linalg.slogdet(P)[1]
+            + 0.5 * k * np.log(alpha0)
+            - 0.5 * k  # alpha / alpha0 at the anchor
         )
         np.testing.assert_allclose(model.log_evidence_, expected, rtol=1e-8)
 
-    def test_converged_alpha_is_the_mackay_fixed_point(self, link, sparse):
-        """At convergence alpha = gamma / ||theta||^2 with gamma and theta
-        taken from an independent plain GLM fit at that alpha."""
+    @pytest.mark.parametrize("k", [0.0, 0.5])
+    def test_converged_alpha_is_the_mackay_fixed_point(self, link, sparse, k):
+        """At convergence alpha = (gamma + k) / (||theta||^2 + k/alpha0) with
+        gamma and theta taken from an independent plain GLM fit at that
+        alpha."""
         X, y = _simulate(link)
-        eb = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=100, eb_tol=1e-10)
+        eb = EmpiricalBayesGLM(
+            link=link,
+            sparse=sparse,
+            n_eb_iter=100,
+            eb_tol=1e-10,
+            alpha_prior_strength=k,
+        )
         eb.fit(_X(X, sparse), y)
         plain = BayesianGLM(
             alpha=eb.alpha,
@@ -145,18 +162,27 @@ class TestEBGLM:
         ).fit(_X(X, sparse), y)
         theta = plain.coef_
         gamma = X.shape[1] - eb.alpha * np.trace(np.linalg.inv(_dense_prec(plain)))
-        np.testing.assert_allclose(eb.alpha, gamma / (theta @ theta), rtol=1e-5)
+        np.testing.assert_allclose(
+            eb.alpha, (gamma + k) / (theta @ theta + k / eb._alpha0), rtol=1e-5
+        )
 
     def test_partial_fit_tracks_full_fit(self, link, sparse):
         """Chunked partial_fit from a far-off alpha lands near the full
         fit's fixed point. The slack is sequential Laplace: even at fixed
         alpha the chunked posterior is 2-4% off the batch one."""
         X, y = _simulate(link, n=4000, p=10, seed=7)
-        full = EmpiricalBayesGLM(alpha=1e3, link=link, sparse=sparse, n_eb_iter=50)
+        # the two starts would anchor differently; compare plain MacKay
+        full = EmpiricalBayesGLM(
+            alpha=1e3, link=link, sparse=sparse, n_eb_iter=50, alpha_prior_strength=0.0
+        )
         full.fit(_X(X, sparse), y)
         for alpha0 in (1e3, 1e-2):
             online = EmpiricalBayesGLM(
-                alpha=alpha0, link=link, sparse=sparse, n_eb_iter=1
+                alpha=alpha0,
+                link=link,
+                sparse=sparse,
+                n_eb_iter=1,
+                alpha_prior_strength=0.0,
             )
             for start in range(0, 4000, 50):
                 online.partial_fit(
@@ -167,9 +193,41 @@ class TestEBGLM:
 
     def test_recovers_true_alpha(self, link, sparse):
         X, y = _simulate(link, n=4000, p=40, seed=3, alpha_true=4.0)
-        model = EmpiricalBayesGLM(alpha=0.1, link=link, sparse=sparse, n_eb_iter=50)
+        # alpha0 is 40x too small, so the hyperprior's bound would bind
+        model = EmpiricalBayesGLM(
+            alpha=0.1, link=link, sparse=sparse, n_eb_iter=50, alpha_prior_strength=0.0
+        )
         model.fit(_X(X, sparse), y)
         assert 0.4 < model.alpha / 4.0 < 2.5
+
+    def test_hyperprior_keeps_alpha_off_the_guardrail(self, link, sparse):
+        """Near-zero coefficients: plain alpha hits the ceiling, regularized stays bounded."""
+        X, y = _simulate(link, n=30, p=5, seed=5, alpha_true=1e4)
+        p, alpha0 = 5, 1.0
+        k = EmpiricalBayesGLM().alpha_prior_strength
+        bound = (p + k) * alpha0 / k * (1 + 1e-9)
+
+        plain = EmpiricalBayesGLM(
+            link=link, sparse=sparse, n_eb_iter=50, alpha_prior_strength=0.0
+        ).fit(_X(X, sparse), y)
+        assert plain.alpha > 100
+
+        model = EmpiricalBayesGLM(link=link, sparse=sparse, n_eb_iter=50)
+        model.fit(_X(X, sparse), y)
+        assert model.alpha <= bound
+        assert model.eb_converged_ and model.eb_updates_rejected_ == 0
+
+        online = EmpiricalBayesGLM(link=link, sparse=sparse)
+        for start in range(0, 30, 5):
+            online.partial_fit(_X(X[start : start + 5], sparse), y[start : start + 5])
+            assert online.alpha <= bound
+        assert online.eb_updates_rejected_ == 0
+
+    def test_negative_prior_strength_raises(self, link, sparse):
+        X, y = _simulate(link)
+        model = EmpiricalBayesGLM(link=link, sparse=sparse, alpha_prior_strength=-1.0)
+        with pytest.raises(ValueError, match="alpha_prior_strength"):
+            model.fit(_X(X, sparse), y)
 
     def test_n_eb_iter_zero(self, link, sparse):
         X, y = _simulate(link)
@@ -306,14 +364,21 @@ class TestEBGLM:
 
     def test_get_set_params_and_clone(self, link, sparse):
         model = EmpiricalBayesGLM(
-            alpha=2.0, link=link, n_eb_iter=3, eb_tol=1e-2, sparse=sparse
+            alpha=2.0,
+            link=link,
+            n_eb_iter=3,
+            eb_tol=1e-2,
+            sparse=sparse,
+            alpha_prior_strength=0.25,
         )
         params = model.get_params()
         assert params["n_eb_iter"] == 3 and params["eb_tol"] == 1e-2
         assert params["link"] == link
+        assert params["alpha_prior_strength"] == 0.25
         model.set_params(n_eb_iter=7)
         cloned = cast(EmpiricalBayesGLM, clone(model))
         assert cloned.n_eb_iter == 7
+        assert cloned.alpha_prior_strength == 0.25
 
     def test_pickle_roundtrip(self, link, sparse):
         X, y = _simulate(link)
