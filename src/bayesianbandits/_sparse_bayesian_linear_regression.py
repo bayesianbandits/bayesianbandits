@@ -168,49 +168,52 @@ def _canonical_csc(
 
 
 class _BlockPattern(NamedTuple):
-    """A factored block's pattern as a gather from the whole matrix:
-    ``block.data == precision.data[g]`` over fixed ``indices``/``indptr``."""
+    """A matrix's pattern as a gather over another's data, over fixed
+    ``indices``/``indptr``: ``out.data == source.data[g]``."""
 
     g: NDArray[np.intp]
     indices: NDArray[Any]
     indptr: NDArray[Any]
 
-    def gather(self, precision: csc_array) -> csc_array:
+    def gather(self, source: csc_array) -> csc_array:
         m = self.indptr.size - 1
-        return _canonical_csc(precision.data[self.g], self.indices, self.indptr, (m, m))
+        return _canonical_csc(source.data[self.g], self.indices, self.indptr, (m, m))
 
 
-def _principal_block(
-    precision: csc_array, observed: NDArray[np.intp]
-) -> tuple[csc_array, _BlockPattern]:
+def _principal_block(precision: csc_array, observed: NDArray[np.intp]) -> csc_array:
     """``Λ[observed, observed]`` for the ``observed`` complement of
-    :func:`trivial_columns`, with its pattern; those columns' entries all
-    sit in observed rows, so this is a column selection and a row relabel.
+    :func:`trivial_columns`; those columns' entries all sit in observed
+    rows, so this is a column selection (one C gather, sized exactly)
+    and a row relabel.
 
-    The relabel keeps the matrix's own index dtype: an ``intp`` table
-    would widen the block's indices to int64, and CHOLMOD then builds an
-    int64 factor whose *sparse* solve segfaults on an int32 right-hand
-    side (the dense solve is indifferent)."""
+    Built afresh whenever a factor needs it, never retained: a gather
+    pattern for the block is the size of the block, and only
+    ``refactorize`` reads one, so a process that samples and never
+    updates would hold it for nothing.
+
+    The block's index dtype is the smallest that fits it, whatever the
+    matrix arrived with: it picks CHOLMOD's integer type, and a numeric
+    refactorization must use the type the symbolic analysis did, while
+    an update whose ``X`` carries int64 indices upcasts the precision
+    in between. (An int64 factor's *sparse* solve also segfaults on an
+    int32 right-hand side; the dense solve is indifferent.)"""
     n = cast("tuple[int, int]", precision.shape)[0]
-    indptr = precision.indptr
-    starts = indptr[observed]
-    lens = indptr[observed + 1] - starts
-    block_indptr = np.zeros(observed.size + 1, dtype=indptr.dtype)
-    np.cumsum(lens, out=block_indptr[1:])
-    total = int(block_indptr[-1])
-    g = np.repeat(starts - block_indptr[:-1], lens) + np.arange(total, dtype=np.intp)
-    lut = np.empty(n, dtype=precision.indices.dtype)
-    lut[observed] = np.arange(observed.size, dtype=lut.dtype)
-    pattern = _BlockPattern(g, lut[precision.indices[g]], block_indptr)
-    return pattern.gather(precision), pattern
+    m = observed.size
+    sub = cast(csc_array, precision[:, observed])
+    idx = np.int32 if max(m, int(sub.indptr[-1])) < np.iinfo(np.int32).max else np.int64
+    lut = np.empty(n, dtype=idx)
+    lut[observed] = np.arange(m, dtype=idx)
+    return _canonical_csc(
+        sub.data, lut[sub.indices], sub.indptr.astype(idx, copy=False), (m, m)
+    )
 
 
 def _block_of(
     precision: csc_array, observed: Union[NDArray[np.intp], slice]
-) -> tuple[csc_array, Optional[_BlockPattern]]:
+) -> csc_array:
     """The block to factor: the whole matrix when nothing is trivial."""
     if isinstance(observed, slice):
-        return precision, None
+        return precision
     return _principal_block(precision, observed)
 
 
@@ -486,7 +489,6 @@ class CholmodSparseFactor(MemoryUsageMixin):
     _trivial: NDArray[np.intp]
     _trivial_diag: NDArray[np.float64]
     _scale: float = 1.0
-    _block: Optional[_BlockPattern] = None  # None: the block is the whole matrix
 
     @cached_property
     def _inv_perm(self) -> NDArray[np.intp]:
@@ -648,8 +650,7 @@ class CholmodSparseFactor(MemoryUsageMixin):
         """
         if not _same_pattern(precision, self._precision):
             return create_sparse_factor(precision, SparseSolver.CHOLMOD)  # type: ignore[return-value]
-        block = precision if self._block is None else self._block.gather(precision)
-        self._factor.factorize(csc_matrix(block))
+        self._factor.factorize(csc_matrix(_block_of(precision, self._observed)))
         self.__dict__.pop("_L_csc", None)
         self._precision = precision
         self._trivial_diag = _trivial_diag(precision, self._trivial)
@@ -682,8 +683,9 @@ class SuperLUSparseFactor(MemoryUsageMixin):
     # refactorize() factors the block pre-permuted into the cached order;
     # _lu's own permutation is then the identity and _perm wraps its solves.
     _prepermuted: bool = False
-    _block: Optional[_BlockPattern] = None  # None: the block is the whole matrix
-    _permuted: Optional[_BlockPattern] = None  # the block in cached order
+    _permuted: Optional[_BlockPattern] = (
+        None  # the block in cached order, over the block
+    )
 
     @cached_property
     def _L(self) -> csc_matrix:
@@ -852,10 +854,11 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         """
         if not _same_pattern(precision, self._precision):
             return _superlu_factor(precision)
+        block = _block_of(precision, self._observed)
         if self._permuted is None:
-            self._permuted = self._permuted_pattern()
+            self._permuted = self._permuted_pattern(block)
         lu = splu(
-            self._permuted.gather(precision),
+            self._permuted.gather(block),
             diag_pivot_thresh=0,
             permc_spec="NATURAL",
             options=dict(SymmetricMode=True, Equil=False),
@@ -868,35 +871,29 @@ class SuperLUSparseFactor(MemoryUsageMixin):
             _trivial=self._trivial,
             _trivial_diag=_trivial_diag(precision, self._trivial),
             _prepermuted=True,
-            _block=self._block,
             _permuted=self._permuted,
         )
 
-    def _permuted_pattern(self) -> _BlockPattern:
-        """The pattern of ``Λ_block[perm][:, perm]`` as a gather from the
-        whole matrix, assembled through COO (a counting sort in C)."""
+    def _permuted_pattern(self, block: csc_array) -> _BlockPattern:
+        """The pattern of ``block[perm][:, perm]`` as a gather over the
+        block, assembled through COO (a counting sort in C)."""
         m = self.n_factored
-        if self._block is None:
-            src_indices, src_indptr = self._precision.indices, self._precision.indptr
-        else:
-            src_indices, src_indptr = self._block.indices, self._block.indptr
         inv_perm = self._inv_perm
-        cols = np.repeat(np.arange(m, dtype=np.intp), np.diff(src_indptr))
+        cols = np.repeat(np.arange(m, dtype=np.intp), np.diff(block.indptr))
         permuted = cast(
             csc_array,
             coo_array(
                 (
-                    np.arange(src_indices.size, dtype=np.float64),
-                    (inv_perm[src_indices], inv_perm[cols]),
+                    np.arange(block.indices.size, dtype=np.float64),
+                    (inv_perm[block.indices], inv_perm[cols]),
                 ),
                 shape=(m, m),
             ).tocsc(),
         )
         permuted.sort_indices()
-        g = permuted.data.astype(np.intp)
-        if self._block is not None:
-            g = self._block.g[g]
-        return _BlockPattern(g, permuted.indices, permuted.indptr)
+        return _BlockPattern(
+            permuted.data.astype(np.intp), permuted.indices, permuted.indptr
+        )
 
     def get_L_csc(self) -> csc_array:
         """Return the lower triangular factor as CSC, in factor-row
@@ -915,10 +912,9 @@ def _superlu_factor(precision: csc_array) -> SuperLUSparseFactor:
     sampling operators want is derived from it on demand.
     """
     observed, trivial, diag = _partition(precision)
-    block, pattern = _block_of(precision, observed)
     # Equil (a rescaling for unsymmetric systems) would only cost a pass
     splu_ = splu(
-        block,
+        _block_of(precision, observed),
         diag_pivot_thresh=0,
         permc_spec="MMD_AT_PLUS_A",
         options=dict(SymmetricMode=True, Equil=False),
@@ -932,7 +928,6 @@ def _superlu_factor(precision: csc_array) -> SuperLUSparseFactor:
         _observed=observed,
         _trivial=trivial,
         _trivial_diag=diag,
-        _block=pattern,
     )
 
 
@@ -1093,14 +1088,12 @@ def create_sparse_factor(
         raise TypeError("precision must be a sparse array")
     if solver == SparseSolver.CHOLMOD:
         observed, trivial, diag = _partition(precision)
-        block, pattern = _block_of(precision, observed)
         return CholmodSparseFactor(
-            _factor=cholmod_cho_factor(csc_matrix(block)),
+            _factor=cholmod_cho_factor(csc_matrix(_block_of(precision, observed))),
             _precision=precision,
             _observed=observed,
             _trivial=trivial,
             _trivial_diag=diag,
-            _block=pattern,
         )
     else:
         return _superlu_factor(precision)
