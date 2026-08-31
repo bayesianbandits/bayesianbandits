@@ -6,6 +6,8 @@ from typing import (
     Generic,
     List,
     Optional,
+    Union,
+    overload,
 )
 
 import numpy as np
@@ -20,6 +22,11 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
     #: serve every policy. Subclasses declare a weaker requirement to
     #: get cheaper draws (see :class:`~bayesianbandits.DrawKind`).
     consumes: DrawKind = DrawKind.JOINT
+
+    @property
+    def samples_needed(self) -> int:
+        """Number of samples per arm per context needed for decision making."""
+        raise NotImplementedError
 
     def _draw_samples(
         self,
@@ -58,6 +65,67 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
                 for arm in arms
             ]
         )
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def select(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Select arms based on pre-generated samples."""
+        raise NotImplementedError
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> List[Arm[ContextType, TokenType]]: ...
+
+    @overload
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> List[List[Arm[ContextType, TokenType]]]: ...
+
+    def __call__(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
+    ]:
+        """Draw the samples the policy asked for, then let it choose."""
+        samples = self._draw_samples(arms, X, self.samples_needed)
+        return self.select(samples, arms, rng, top_k)
 
     def update(
         self,

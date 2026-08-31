@@ -307,56 +307,6 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
                 results.append([arms[idx] for idx in indices])
             return results
 
-    @overload
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: None = None,
-    ) -> List[Arm[ContextType, TokenType]]: ...
-
-    @overload
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: int,
-    ) -> List[List[Arm[ContextType, TokenType]]]: ...
-
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: Optional[int] = None,
-    ) -> Union[
-        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
-    ]:
-        """
-        Select arms according to exponential weights with optional exploration.
-
-        Parameters
-        ----------
-        arms : List[Arm]
-            Available arms to choose from
-        X : ContextType
-            Context (any iterable)
-        rng : np.random.Generator
-            Random number generator for sampling
-        top_k : int, optional
-            Number of arms to select per context. If None, selects single arm.
-
-        Returns
-        -------
-        List[Arm] or List[List[Arm]]
-            Selected arms, one per context if top_k is None,
-            or k arms per context if top_k is specified.
-        """
-        samples = self._draw_samples(arms, X, self.samples_needed)
-        return self.select(samples, arms, rng, top_k)
-
     def update(
         self,
         arm: Arm[ContextType, TokenType],
