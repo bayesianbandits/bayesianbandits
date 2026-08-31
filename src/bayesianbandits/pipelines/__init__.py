@@ -2,7 +2,7 @@
 
 This module provides two types of pipelines:
 
-1. **AgentPipeline**: Wraps Agent/ContextualAgent with preprocessing steps.
+1. **AgentPipeline**: Wraps a ContextualAgent with preprocessing steps.
    Use this when you want to apply sklearn preprocessing to raw input data
    before it reaches the agent.
 
@@ -14,13 +14,11 @@ This module provides two types of pipelines:
 from ._agent import (
     AgentPipeline,
     ContextualAgentPipeline,
-    NonContextualAgentPipeline,
 )
 from ._learner import LearnerPipeline
 
 __all__ = [
     "AgentPipeline",
     "ContextualAgentPipeline",
-    "NonContextualAgentPipeline",
     "LearnerPipeline",
 ]

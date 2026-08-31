@@ -169,34 +169,3 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
                 ]
                 for i in range(ucb_values.shape[1])
             ]
-
-    @overload
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: None = None,
-    ) -> List[Arm[ContextType, TokenType]]: ...
-
-    @overload
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: int,
-    ) -> List[List[Arm[ContextType, TokenType]]]: ...
-
-    def __call__(
-        self,
-        arms: List[Arm[ContextType, TokenType]],
-        X: ContextType,
-        rng: np.random.Generator,
-        top_k: Optional[int] = None,
-    ) -> Union[
-        List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
-    ]:
-        """Choose arm(s) using upper confidence bound."""
-        samples = self._draw_samples(arms, X, self.samples_needed)
-        return self.select(samples, arms, rng, top_k)

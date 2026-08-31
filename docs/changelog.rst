@@ -6,6 +6,20 @@ Unreleased
 
 **Breaking changes**
 
+- ``NonContextualAgentPipeline`` is removed, and ``AgentPipeline`` is now
+  a class rather than a factory dispatching between it and
+  ``ContextualAgentPipeline``. A pipeline's steps transform the context on
+  its way to the agent; a non-contextual ``Agent`` has no context, so the
+  steps never ran. The class validated its ``steps``, stored them, and
+  exposed them through ``named_steps``, ``__len__``, and ``__getitem__``
+  without ever applying them. ``AgentPipeline`` now raises ``TypeError``
+  on an ``Agent``, pointing at ``LearnerPipeline`` for preprocessing the
+  arms' features. Code wrapping a plain ``Agent`` should drop the wrapper
+  and use the agent, which has the same ``pull``/``update``/``decay``
+  interface. ``ContextualAgentPipeline`` remains as an alias for
+  ``AgentPipeline``, so the two are now one class under two names, but
+  ``repr`` reports ``AgentPipeline`` (#291)
+
 - ``EmpiricalBayesNormalRegressor`` and ``EmpiricalBayesGLM`` regularize
   the MacKay update of ``alpha`` with a Gamma hyperprior at the
   constructor's ``alpha``, weighted by the new ``alpha_prior_strength``
@@ -76,6 +90,13 @@ Unreleased
   law, so the remaining path needs no batching (#267)
 
 **New features**
+
+- ``PolicyDefaultUpdate`` implements ``__call__``, so a policy subclassing
+  it now needs only ``samples_needed`` and ``select``: draw the samples
+  the policy asked for, then let it choose. All five shipped policies had
+  carried a byte-identical copy of that two-line body under its own pair
+  of ``@overload`` stubs. The base also declares ``samples_needed`` and
+  ``select``, naming the contract it calls into (#291)
 
 - ``EmpiricalBayesGLM``: ``BayesianGLM`` with MacKay evidence-framework
   tuning of the prior precision ``alpha``, applied to the Laplace
