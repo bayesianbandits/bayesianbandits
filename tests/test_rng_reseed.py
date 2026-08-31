@@ -12,8 +12,7 @@ from bayesianbandits import (
 from bayesianbandits.api import LipschitzContextualAgent
 from bayesianbandits.featurizers._arm_column import ArmColumnFeaturizer
 from bayesianbandits.pipelines._agent import (
-    ContextualAgentPipeline,
-    NonContextualAgentPipeline,
+    AgentPipeline,
 )
 
 
@@ -109,16 +108,9 @@ class TestLipschitzContextualAgentRngSetter:
 class TestPipelineRngSetter:
     def test_contextual_pipeline_rng_setter_delegates(self):
         agent = _make_contextual_agent(seed=0)
-        pipeline = ContextualAgentPipeline(
+        pipeline = AgentPipeline(
             steps=[("noop", _NoopTransformer())], final_agent=agent
         )
-        pipeline.rng = 42
-        assert isinstance(pipeline.rng, np.random.Generator)
-        assert pipeline.rng is agent.rng
-
-    def test_noncontextual_pipeline_rng_setter_delegates(self):
-        agent = _make_agent(seed=0)
-        pipeline = NonContextualAgentPipeline(steps=[], final_agent=agent)
         pipeline.rng = 42
         assert isinstance(pipeline.rng, np.random.Generator)
         assert pipeline.rng is agent.rng

@@ -1,8 +1,8 @@
 """Agent-wrapping pipeline implementation for Bayesian bandits.
 
 This module implements agent-wrapping pipelines that apply preprocessing steps
-before delegating to wrapped Agent/ContextualAgent instances. This enables
-efficient preprocessing at the agent level rather than per-arm.
+before delegating to a wrapped ContextualAgent. This enables efficient
+preprocessing at the agent level rather than per-arm.
 """
 
 from typing import Any, Dict, Generic, List, Optional, Tuple, Union, overload
@@ -55,7 +55,7 @@ def _transform_data(X: Any, steps: List[Tuple[str, Any]]) -> Any:
     return result
 
 
-class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
+class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
     """Pipeline that wraps a ContextualAgent.
 
     Transforms input data through preprocessing steps before delegating
@@ -84,7 +84,7 @@ class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType])
     >>> # Pipeline can accept dict input and transform to sparse
     >>> vectorizer = DictVectorizer(sparse=True)
     >>> _ = vectorizer.fit([{'user': 'A', 'item': 1}, {'user': 'B', 'item': 2}])
-    >>> pipeline = ContextualAgentPipeline(
+    >>> pipeline = AgentPipeline(
     ...     steps=[('vectorize', vectorizer)],
     ...     final_agent=agent
     ... )
@@ -100,6 +100,13 @@ class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType])
         steps: List[Tuple[str, Any]],
         final_agent: ContextualAgent[ContextType, TokenType],
     ) -> None:
+        if isinstance(final_agent, Agent):
+            raise TypeError(
+                "AgentPipeline wraps a contextual agent, whose context the "
+                "steps transform. A non-contextual Agent has no context to "
+                "transform, so the steps would never run. Preprocess the "
+                "arms' features with a LearnerPipeline instead."
+            )
         _validate_steps(steps)
         self.steps = steps
         self._agent = final_agent
@@ -238,7 +245,7 @@ class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType])
             f"('{name}', {transformer.__class__.__name__})"
             for name, transformer in self.steps
         ]
-        return f"ContextualAgentPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
+        return f"AgentPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
 
     def __len__(self) -> int:
         """Number of steps in the pipeline."""
@@ -251,237 +258,6 @@ class ContextualAgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType])
         return self.steps[ind]
 
 
-class NonContextualAgentPipeline(MemoryUsageMixin, Generic[TokenType]):
-    """Pipeline that wraps an Agent.
-
-    For non-contextual agents, preprocessing steps are not applied since
-    there's no context to transform. This class exists primarily for
-    API consistency and to support future extensions.
-
-    Parameters
-    ----------
-    steps : List[Tuple[str, Any]]
-        List of (name, transformer) tuples. For non-contextual agents,
-        these are typically unused but kept for API consistency.
-    final_agent : Agent[TokenType]
-        The Agent to wrap and delegate to.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> from bayesianbandits import Arm, NormalRegressor, Agent, ThompsonSampling
-    >>>
-    >>> # Create arms and agent
-    >>> arms = [Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0)) for i in range(3)]
-    >>> agent = Agent(arms, ThompsonSampling())
-    >>>
-    >>> # Create pipeline (steps are unused for non-contextual)
-    >>> pipeline = NonContextualAgentPipeline(
-    ...     steps=[],  # No preprocessing needed
-    ...     final_agent=agent
-    ... )
-    >>>
-    >>> # Use like a normal Agent
-    >>> recommendations = pipeline.pull()
-    >>> pipeline.update(np.array([1.0]))
-    """
-
-    def __init__(
-        self, steps: List[Tuple[str, Any]], final_agent: Agent[TokenType]
-    ) -> None:
-        (
-            _validate_steps(steps) if steps else None
-        )  # Allow empty steps for non-contextual
-        self.steps = steps
-        self._agent = final_agent
-
-    @property
-    def named_steps(self) -> Dict[str, Any]:
-        """Access pipeline steps by name."""
-        return dict(self.steps)
-
-    @overload
-    def pull(self) -> List[TokenType]: ...
-
-    @overload
-    def pull(self, *, top_k: int) -> List[List[TokenType]]: ...
-
-    def pull(
-        self, *, top_k: Optional[int] = None
-    ) -> Union[List[TokenType], List[List[TokenType]]]:
-        """Choose arm(s) and pull.
-
-        Parameters
-        ----------
-        top_k : int, optional
-            Number of arms to select. If None (default), selects single
-            best arm.
-
-        Returns
-        -------
-        List[TokenType] or List[List[TokenType]]
-            If top_k is None: List containing single action token
-            If top_k is int: List containing list of action tokens
-        """
-        if top_k is None:
-            return self._agent.pull()
-        else:
-            return self._agent.pull(top_k=top_k)
-
-    def update(
-        self,
-        y: NDArray[np.float64],
-        sample_weight: Optional[NDArray[np.float64]] = None,
-    ) -> None:
-        """Update the wrapped agent with observed reward(s).
-
-        Parameters
-        ----------
-        y : NDArray[np.float64]
-            Reward(s) to use for updating the arm.
-        sample_weight : Optional[NDArray[np.float64]], default=None
-            Sample weights to use for updating the arm.
-        """
-        self._agent.update(y, sample_weight=sample_weight)
-
-    def decay(self, decay_rate: Optional[float] = None) -> None:
-        """Decay all arms of the wrapped agent.
-
-        Parameters
-        ----------
-        decay_rate : Optional[float], default=None
-            Decay rate to use for decaying the arms.
-        """
-        self._agent.decay(decay_rate=decay_rate)
-
-    # Delegation methods
-    def add_arm(self, arm: Arm[NDArray[np.float64], TokenType]) -> None:
-        """Add an arm to the wrapped agent."""
-        self._agent.add_arm(arm)
-
-    def remove_arm(self, token: TokenType) -> None:
-        """Remove an arm from the wrapped agent."""
-        self._agent.remove_arm(token)
-
-    def arm(self, token: TokenType) -> Arm[NDArray[np.float64], TokenType]:
-        """Get an arm by its action token."""
-        return self._agent.arm(token)
-
-    def select_for_update(self, token: TokenType) -> Self:
-        """Set the arm to update and return self for chaining."""
-        self._agent.select_for_update(token)
-        return self
-
-    @property
-    def arms(self) -> List[Arm[NDArray[np.float64], TokenType]]:
-        """Get the arms from the wrapped agent."""
-        return self._agent.arms
-
-    @property
-    def arm_to_update(self) -> Arm[NDArray[np.float64], TokenType]:
-        """Get the arm to update from the wrapped agent."""
-        return self._agent.arm_to_update
-
-    @property
-    def policy(self) -> PolicyProtocol[NDArray[np.float64], TokenType]:
-        """Get the policy from the wrapped agent."""
-        return self._agent.policy
-
-    @policy.setter
-    def policy(self, value: PolicyProtocol[NDArray[np.float64], TokenType]) -> None:
-        """Set the policy on the wrapped agent."""
-        self._agent.policy = value
-
-    @property
-    def rng(self) -> np.random.Generator:
-        """Get the random generator from the wrapped agent."""
-        return self._agent.rng
-
-    @rng.setter
-    def rng(self, value: Union[int, None, np.random.Generator]) -> None:
-        """Set the random generator on the wrapped agent."""
-        self._agent.rng = value
-
-    def __repr__(self) -> str:
-        """String representation."""
-        steps_repr = [
-            f"('{name}', {transformer.__class__.__name__})"
-            for name, transformer in self.steps
-        ]
-        return f"NonContextualAgentPipeline(steps=[{', '.join(steps_repr)}], final_agent={self._agent!r})"
-
-    def __len__(self) -> int:
-        """Number of steps in the pipeline."""
-        return len(self.steps)
-
-    def __getitem__(self, ind: Union[int, str]) -> Any:
-        """Get a step by index or name."""
-        if isinstance(ind, str):
-            return self.named_steps[ind]
-        return self.steps[ind]
-
-
-# Factory function with overloads
-@overload
-def AgentPipeline(
-    steps: List[Tuple[str, Any]], final_agent: ContextualAgent[ContextType, TokenType]
-) -> ContextualAgentPipeline[ContextType, TokenType]: ...
-
-
-@overload
-def AgentPipeline(
-    steps: List[Tuple[str, Any]], final_agent: Agent[TokenType]
-) -> NonContextualAgentPipeline[TokenType]: ...
-
-
-def AgentPipeline(
-    steps: List[Tuple[str, Any]],
-    final_agent: Union[ContextualAgent[ContextType, TokenType], Agent[TokenType]],
-) -> Union[
-    ContextualAgentPipeline[ContextType, TokenType],
-    NonContextualAgentPipeline[TokenType],
-]:
-    """Create a Pipeline that wraps an Agent or ContextualAgent.
-
-    This factory function provides a clean API for creating pipelines
-    while maintaining complete static typing based on the agent type.
-    The pipeline can accept any input type and transform it to what the agent expects.
-
-    The resulting Pipeline will have the same interface as the wrapped agent,
-    allowing you to call `pull`, `update`, and other methods directly on it.
-
-    Parameters
-    ----------
-    steps : List[Tuple[str, Any]]
-        List of (name, transformer) tuples for preprocessing steps.
-        All transformers must be either stateless or pre-fitted.
-        The output of the transformation chain must match the agent's expected input type.
-    final_agent : Agent[TokenType] or ContextualAgent[ContextType, TokenType]
-        The agent to wrap. The pipeline type is determined by the agent type.
-
-    Returns
-    -------
-    ContextualAgentPipeline or NonContextualAgentPipeline
-        The appropriate pipeline type based on the final_agent type.
-
-    Examples
-    --------
-    >>> from sklearn.feature_extraction import DictVectorizer
-    >>> from bayesianbandits import Arm, NormalRegressor, ContextualAgent, ThompsonSampling
-    >>>
-    >>> # Pipeline accepting dict input, outputting sparse arrays for agent
-    >>> arms = [Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0, sparse=True)) for i in range(3)]
-    >>> agent = ContextualAgent(arms, ThompsonSampling())
-    >>> vectorizer = DictVectorizer()
-    >>> _ = vectorizer.fit([{'user': 'A'}, {'user': 'B'}])
-    >>>
-    >>> pipeline = AgentPipeline(
-    ...     steps=[('vectorize', vectorizer)],
-    ...     final_agent=agent
-    ... )
-    >>> # Can accept dict input: [{'user': 'A', 'item': 1}]
-    >>> # Transforms to sparse matrix for agent
-    """
-    if isinstance(final_agent, Agent):
-        return NonContextualAgentPipeline(steps, final_agent)
-    return ContextualAgentPipeline(steps, final_agent)
+#: Kept for backward compatibility. One pipeline class serves every
+#: agent that has a context for its steps to transform.
+ContextualAgentPipeline = AgentPipeline
