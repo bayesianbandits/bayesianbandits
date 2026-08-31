@@ -89,6 +89,37 @@ Unreleased
   With per-arm learners, drawing one arm at a time is the correct joint
   law, so the remaining path needs no batching (#267)
 
+**Internal**
+
+- ``NormalRegressor`` and ``BayesianGLM`` now share a single private base,
+  ``_BayesianLinearModel``, replacing the ``_SparseFactorMixin`` and
+  ``_RewardSpacePredictiveMixin`` pair. The two estimators had duplicated
+  every method that stack existed to share: ``_precision_factor``, ``cov_``
+  and ``decay`` were identical, ``fit`` and ``partial_fit`` differed only in
+  a local name, and ``predict``, ``sample``, ``sample_marginal`` and
+  ``sample_reward_space`` only in a ``_inverse_link`` on the return. The base
+  owns all of them and applies the inverse link, which is the identity unless
+  a subclass overrides it. ``NormalInverseGammaRegressor.decay`` was likewise
+  the shared body plus two lines, and is now an ``_apply_decay`` override.
+
+  Neither mixin was really a mixin: with no base to inherit declarations
+  from, they had to restate the attributes they read, which forced
+  ``cast(Any, super())`` at the two empirical-Bayes call sites.
+  ``_StabilizedPriorMixin`` inherits the new base for the same reason and
+  keeps only the EB state it manages.
+
+  No public name, signature or behavior changes; the removed mixins were
+  private and unexported. One narrow exception: ``fit``'s first parameter is
+  now ``X`` on every estimator. It was ``X_fit`` on ``NormalRegressor`` and
+  ``EmpiricalBayesNormalRegressor`` alone, against ``X`` on the other six,
+  so a caller passing it by keyword to those two must rename it (#292)
+
+- Class documentation pages now render inherited members. The autosummary
+  template asked for ``:members:`` only, so anything defined on a base was
+  silently absent: every estimator page would have lost the methods above.
+  ``memory_usage`` is documented for the first time on the classes that
+  have it, and each policy page gains the inherited ``update`` (#292)
+
 **New features**
 
 - ``PolicyDefaultUpdate`` implements ``__call__``, so a policy subclassing

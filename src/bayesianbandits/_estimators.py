@@ -3,7 +3,16 @@ from __future__ import annotations
 import warnings
 from collections import defaultdict
 from functools import cached_property, partial, wraps
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -1208,24 +1217,474 @@ def _blocked_colorize(
     return out.reshape(n_blocks * k, size).T
 
 
-class _RewardSpacePredictiveMixin:
-    """Sampling shared by :class:`NormalRegressor` and :class:`BayesianGLM`,
-    over their common ``coef_`` / ``_precision_factor`` / ``sparse``
-    contract."""
+class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
+    """A Gaussian posterior over weights, its cached precision factor, and
+    the prediction and sampling routes built on them.
+
+    Shared by :class:`NormalRegressor` and :class:`BayesianGLM`, which
+    differ only in how ``_fit_helper`` reaches the posterior and in the
+    inverse link applied to the linear predictor on the way out. A
+    subclass supplies those two; everything a caller touches lives here.
+    """
+
+    # ``Any`` where the concrete classes assign a wider set of array types
+    # than one annotation covers; a narrower declaration here would only
+    # make their own assignments type errors.
+    coef_: Any
+    cov_inv_: Any
+    n_features_: int
 
     if TYPE_CHECKING:
-        # ``Any`` where the concrete classes assign a wider set of array
-        # types than one annotation covers, or define the name as a
-        # ``cached_property``; a narrower stub here would only make the
-        # subclasses' own assignments type errors.
-        coef_: Any
-        cov_inv_: Any
-        n_features_: int
+        # Read here, owned elsewhere: the concrete ``__init__`` sets the
+        # hyperparameters and ``_initialize_prior`` the generator. Declared
+        # for the checker only, since a class-level annotation would also
+        # render them as undocumented attributes on every estimator page.
+        alpha: float
+        learning_rate: float
         sparse: bool
+        random_state: Union[int, np.random.Generator, None]
         random_state_: np.random.Generator
-        _precision_factor: Any
 
-        def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None: ...
+    # ---- subclass hooks --------------------------------------------------
+
+    def _fit_helper(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> None:
+        """Move the posterior onto ``(X, y)``, from the prior for ``fit``
+        and from the current posterior for ``partial_fit``."""
+        raise NotImplementedError
+
+    def _inverse_link(self, eta: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Map the linear predictor to the response scale. The identity
+        here; :class:`BayesianGLM` applies its link."""
+        return eta
+
+    def _apply_decay(self, prior_decay: float) -> None:
+        """Scale the parameters ``decay`` forgets by. Only the variance
+        grows, so the posterior mean is untouched."""
+        self.cov_inv_ = prior_decay * self.cov_inv_
+
+    # ---- prior and factor ------------------------------------------------
+
+    def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
+        if isinstance(self.random_state, int) or self.random_state is None:
+            self.random_state_ = np.random.default_rng(self.random_state)
+        else:
+            self.random_state_ = self.random_state
+
+        assert X.shape is not None  # for the type checker
+        self.n_features_ = X.shape[1]
+        self.coef_ = np.zeros(self.n_features_)
+        if self.sparse:
+            self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
+        else:
+            # Fortran order, as dsyrk/dsymv/cho_factor want; avoids a relayout copy
+            self.cov_inv_ = _scaled_identity_f(self.n_features_, self.alpha)
+
+    @cached_property
+    def _precision_factor(self) -> PrecisionFactor:
+        """Factorization of the precision matrix (cached).
+
+        Returns a ``DenseFactor`` (dense) or ``SparseFactor`` (sparse).
+        Lazily computed on first access; eagerly set by ``_fit_helper``
+        when the factorization is a free byproduct of the solve.
+        Invalidated by ``_invalidate_cached_properties``.
+        """
+        if self.sparse:
+            assert isinstance(self.cov_inv_, csc_array)
+            return self._sparse_factor(self.cov_inv_)
+        else:
+            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+            return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
+
+    @cached_property
+    def cov_(self) -> Union[Covariance, SparseFactor]:
+        """Posterior covariance matrix (cached, lazily computed).
+
+        Returns a ``scipy.stats.Covariance`` object (dense) or a
+        ``SparseFactor`` (sparse) wrapping the Cholesky factorization.
+        Automatically invalidated when the model is updated via
+        ``fit``, ``partial_fit``, or ``decay``.
+
+        .. warning::
+
+           For dense models, this is an :math:`O(p^3)` computation
+           with :math:`O(p^2)` memory.
+        """
+        factor = self._precision_factor
+        if self.sparse:
+            assert isinstance(factor, SparseFactor)
+            return factor
+        else:
+            assert isinstance(factor, DenseFactor)
+            cov = factor.solve(np.eye(self.n_features_))
+        return Covariance.from_cholesky(cholesky(cov, lower=True))
+
+    @_invalidate_cached_properties
+    def __getstate__(self) -> Any:
+        # Exclude cached C extension objects that cannot be pickled
+        state = super().__getstate__()
+        state.pop("_precision_factor", None)
+        state.pop("_factor_hint", None)
+        return state
+
+    def _sparse_factor(self, precision: csc_array) -> SparseFactor:
+        """A factor of ``precision``, refactorized from the previous one
+        when the sparsity pattern is unchanged (``refactorize`` checks).
+        The previous factor is the cached ``_precision_factor``, or
+        ``_factor_hint`` where an estimator had to drop that."""
+        hint = self._pop_factor_hint()
+        if hint is None:
+            return create_sparse_factor(precision)
+        return hint.refactorize(precision)
+
+    def _pop_factor_hint(self) -> Optional[SparseFactor]:
+        """The cached factor if any, else the hint an estimator left when
+        dropping it; the hint is consumed."""
+        hint: Optional[SparseFactor] = self.__dict__.get("_precision_factor")
+        if hint is None:
+            hint = self.__dict__.pop("_factor_hint", None)
+        return hint
+
+    # ---- fitting ---------------------------------------------------------
+
+    def fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Fit the model from scratch, resetting the prior.
+
+        Initializes the prior
+        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)` and moves it onto
+        the data. Any previously learned parameters are discarded.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), default=None
+            Individual weights for each sample. If None, all samples
+            are given equal weight.
+
+        Returns
+        -------
+        self
+            Fitted estimator.
+
+        See Also
+        --------
+        partial_fit : Incremental update without resetting the prior.
+        """
+        X_fit, y = check_X_y(
+            X,  # type: ignore
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._initialize_prior(X_fit)
+        self._fit_helper(X_fit, y, sample_weight)
+        return self
+
+    def partial_fit(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]] = None,
+    ) -> Self:
+        """
+        Incrementally update the posterior with new data.
+
+        Uses the current posterior as the prior for the new update,
+        decayed by ``learning_rate``. If the model has not been
+        fitted, this is equivalent to calling ``fit``.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Training data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
+        y : array-like of shape (n_samples,)
+            Target values.
+        sample_weight : array-like of shape (n_samples,), default=None
+            Individual weights for each sample. If None, all samples
+            are given equal weight.
+
+        Returns
+        -------
+        self
+            Updated estimator.
+
+        See Also
+        --------
+        fit : Fit from scratch, resetting the prior.
+        decay : Increase uncertainty without observing new data.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            return self.fit(X, y, sample_weight)
+
+        X_fit, y = check_X_y(
+            X,  # type: ignore (scipy is migrating to numpy-like types)
+            y,
+            copy=True,
+            ensure_2d=True,
+            dtype=np.float64,
+            accept_sparse="csc" if self.sparse else False,
+        )
+
+        self._fit_helper(X_fit, y, sample_weight)
+        return self
+
+    # ---- prediction and sampling -----------------------------------------
+
+    def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
+        """
+        Predict target values using the posterior mean.
+
+        Computes the linear predictor :math:`X \\hat{w}` at the posterior
+        mean :math:`\\hat{w}` and maps it through the inverse link, which
+        is the identity for :class:`NormalRegressor`.
+
+        If the model has not been fitted, the prior mean (zero) is used.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,)
+            Predicted target values, on the response scale of the link.
+
+        See Also
+        --------
+        sample : Draw from the posterior predictive distribution.
+        """
+        try:
+            check_is_fitted(self, "coef_")
+        except NotFittedError:
+            self._initialize_prior(X)
+
+        X_pred = check_array(
+            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
+        )
+
+        return self._inverse_link(X_pred @ self.coef_)
+
+    def sample(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample from the posterior predictive distribution.
+
+        Draws weight vectors from the posterior
+        :math:`w \\sim \\mathcal{N}(\\hat{w}, \\Lambda^{-1})`, computes
+        the linear predictor :math:`X w` for each draw, and maps it
+        through the inverse link (the identity for
+        :class:`NormalRegressor`). This marginalizes over parameter
+        uncertainty but not observation noise.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. Must be a ``scipy.sparse.csc_array`` when
+            ``sparse=True``.
+        size : int, default=1
+            Number of posterior samples to draw.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw, on the response
+            scale of the link. Draw-contiguous (``samples.T`` is
+            C-contiguous).
+
+        See Also
+        --------
+        predict : Point predictions using the posterior mean.
+        """
+        X_sample = self._validated_for_sampling(X)
+        return self._inverse_link(
+            self._joint_rows(self._precision_factor, X_sample, size)
+        )
+
+    def sample_marginal(
+        self, X: Union[NDArray[Any], csc_array], size: int = 1
+    ) -> NDArray[np.float64]:
+        """
+        Sample iid draws from each row's marginal posterior predictive.
+
+        Each prediction row's linear predictor is drawn from its exact
+        marginal
+        :math:`\\eta_i \\sim \\mathcal{N}(x_i^T \\hat{w},\\;
+        x_i^T \\Lambda^{-1} x_i)` and mapped through the inverse link
+        (the identity for :class:`NormalRegressor`). Unlike ``sample``
+        -- whose rows within one draw share a weight vector and are
+        therefore correlated -- draws are independent across rows, so
+        only per-row statistics (means, quantiles, variances) are
+        meaningful across the returned rows.
+
+        For those statistics the result is exact and much cheaper than
+        ``sample`` when many draws are needed: one triangular solve per
+        row against the cached precision factor plus univariate draws,
+        with per-draw cost independent of the number of features.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of marginal samples to draw per row.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Independent marginal draws for each row, on the response
+            scale of the link. Draw-contiguous (``samples.T`` is
+            C-contiguous).
+
+        See Also
+        --------
+        sample : Joint draws whose rows share a weight draw.
+        predict : Point predictions using the posterior mean.
+        """
+        mean, sd = _validated_marginal_mean_sd(self, X)
+        z = standard_normal_f(self.random_state_, size, mean.shape[0])
+        return self._inverse_link(marginal_draw(mean, sd, z))
+
+    def sample_reward_space(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        size: int = 1,
+        *,
+        block_size: Optional[int] = None,
+    ) -> NDArray[np.float64]:
+        """
+        Sample jointly from the posterior predictive, drawing in reward space.
+
+        Distributionally identical to :meth:`sample` -- the linear
+        predictor is drawn from
+        :math:`X w \\sim \\mathcal{N}(X \\hat{w}, X \\Lambda^{-1} X^T)`
+        and mapped through the inverse link (the identity for
+        :class:`NormalRegressor`) -- but computed by factoring the
+        ``n``-row predictive covariance once (one triangular half-solve
+        per prediction row against the cached precision factor, then a
+        QR) and drawing in reward space, so per-draw cost is independent
+        of the number of features: cheaper than ``sample`` when ``size``
+        is large relative to the number of rows, more expensive
+        otherwise. Linearly dependent rows (e.g. repeated contexts) are
+        represented exactly. A sparse model's dense scratch is the
+        observed features by ``n_samples``, bounded in row blocks when
+        ``block_size`` is given.
+
+        With ``block_size=k``, consecutive groups of ``k`` rows are drawn
+        jointly within the group and independently across groups (unlike
+        ``sample``, where all rows of a draw share a weight vector). Use
+        this when rows group into independent decision units, e.g. one
+        block of arm rows per context.
+
+        If the model has not been fitted, samples are drawn from the
+        prior predictive distribution. Only the distribution matches
+        ``sample``, not the bitstream: the same seed yields different
+        realizations.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Input data. May be dense, or a ``scipy.sparse.csc_array``
+            when ``sparse=True``.
+        size : int, default=1
+            Number of posterior samples to draw.
+        block_size : int, optional
+            If given, must divide ``n_samples``; rows are drawn jointly
+            within consecutive blocks of this many rows and
+            independently across blocks.
+
+        Returns
+        -------
+        samples : ndarray of shape (size, n_samples)
+            Predicted values for each posterior draw, on the response
+            scale of the link. Draw-contiguous (``samples.T`` is
+            C-contiguous).
+
+        See Also
+        --------
+        sample : Joint draws in weight space (cheaper for small ``size``).
+        sample_marginal : iid per-row draws for per-row statistics.
+        """
+        X_sample = self._validated_for_sampling(X)
+        mean, draw = self._predictive_cholesky(X_sample, block_size)
+        return self._inverse_link(draw.joint(size, self.random_state_, mean))
+
+    @_invalidate_cached_properties
+    def decay(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        *,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """
+        Decay the posterior precision to increase uncertainty.
+
+        Scales the precision matrix by :math:`\\gamma^n`, where
+        :math:`\\gamma` is the decay rate and :math:`n` is the number
+        of rows in ``X``. This uniformly increases posterior variance
+        while leaving the posterior mean unchanged, allowing the model
+        to adapt to non-stationary environments.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Used only for its number of rows ``n``.
+        decay_rate : float, default=None
+            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
+            ``self.learning_rate``. Values less than 1 increase
+            uncertainty; a value of 1 has no effect.
+
+        See Also
+        --------
+        partial_fit : Update the model with new observations.
+        """
+        # If the model has not been fit, there is no prior to decay
+        if not hasattr(self, "coef_"):
+            return
+
+        if decay_rate is None:
+            decay_rate = self.learning_rate
+
+        assert X.shape is not None  # for the type checker
+        prior_decay = decay_rate ** X.shape[0]
+
+        # Decay the prior without making an update. Because we're only
+        # increasing the prior variance, we do not need to update the
+        # mean.
+        self._apply_decay(prior_decay)
+        if "_precision_factor" in self.__dict__:
+            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
+
+    # ---- sampling mechanics ----------------------------------------------
 
     def _joint_rows(
         self,
@@ -1311,43 +1770,7 @@ class _RewardSpacePredictiveMixin:
         return X_pred
 
 
-class _SparseFactorMixin:
-    """Cached CHOLMOD/SuperLU factor handling shared by the sparse estimators."""
-
-    @_invalidate_cached_properties
-    def __getstate__(self) -> Any:
-        # Exclude cached C extension objects that cannot be pickled
-        state = super().__getstate__()  # type: ignore
-        state.pop("_precision_factor", None)
-        state.pop("_factor_hint", None)
-        return state
-
-    def _sparse_factor(self, precision: csc_array) -> SparseFactor:
-        """A factor of ``precision``, refactorized from the previous one
-        when the sparsity pattern is unchanged (``refactorize`` checks).
-        The previous factor is the cached ``_precision_factor``, or
-        ``_factor_hint`` where an estimator had to drop that."""
-        hint = self._pop_factor_hint()
-        if hint is None:
-            return create_sparse_factor(precision)
-        return hint.refactorize(precision)
-
-    def _pop_factor_hint(self) -> Optional[SparseFactor]:
-        """The cached factor if any, else the hint an estimator left when
-        dropping it; the hint is consumed."""
-        hint: Optional[SparseFactor] = self.__dict__.get("_precision_factor")
-        if hint is None:
-            hint = self.__dict__.pop("_factor_hint", None)
-        return hint
-
-
-class NormalRegressor(
-    _SparseFactorMixin,
-    _RewardSpacePredictiveMixin,
-    MemoryUsageMixin,
-    BaseEstimator,
-    RegressorMixin,
-):
+class NormalRegressor(_BayesianLinearModel, RegressorMixin):
     """
     Bayesian linear regression with known noise variance.
 
@@ -1470,107 +1893,6 @@ scipy.sparse.csc_array
         self.sparse = sparse
         self.random_state = random_state
 
-    def fit(
-        self,
-        X_fit: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> Self:
-        """
-        Fit the model from scratch, resetting the prior.
-
-        Initializes the prior
-        :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)` and computes
-        the exact posterior. Any previously learned parameters are
-        discarded.
-
-        Parameters
-        ----------
-        X_fit : array-like of shape (n_samples, n_features)
-            Training data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), default=None
-            Individual weights for each sample. If None, all samples
-            are given equal weight.
-
-        Returns
-        -------
-        self : NormalRegressor
-            Fitted estimator.
-
-        See Also
-        --------
-        partial_fit : Incremental update without resetting the prior.
-        """
-        X_fit, y = check_X_y(
-            X_fit,  # type: ignore
-            y,
-            copy=True,
-            ensure_2d=True,
-            dtype=np.float64,
-            accept_sparse="csc" if self.sparse else False,
-        )
-
-        self._initialize_prior(X_fit)
-        self._fit_helper(X_fit, y, sample_weight)
-        return self
-
-    def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
-        if isinstance(self.random_state, int) or self.random_state is None:
-            self.random_state_ = np.random.default_rng(self.random_state)
-        else:
-            self.random_state_ = self.random_state
-
-        assert X.shape is not None  # for the type checker
-        self.n_features_ = X.shape[1]
-        self.coef_ = np.zeros(self.n_features_)
-        if self.sparse:
-            self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
-        else:
-            # Fortran order, as dsyrk/dsymv/cho_factor want; avoids a relayout copy
-            self.cov_inv_ = _scaled_identity_f(self.n_features_, self.alpha)
-
-    @cached_property
-    def _precision_factor(self) -> PrecisionFactor:
-        """Factorization of the precision matrix (cached).
-
-        Returns a ``DenseFactor`` (dense) or ``SparseFactor`` (sparse).
-        Lazily computed on first access; eagerly set by ``_fit_helper``
-        when the factorization is a free byproduct of the solve.
-        Invalidated by ``_invalidate_cached_properties``.
-        """
-        if self.sparse:
-            assert isinstance(self.cov_inv_, csc_array)
-            return self._sparse_factor(self.cov_inv_)
-        else:
-            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-            return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
-
-    @cached_property
-    def cov_(self) -> Union[Covariance, SparseFactor]:
-        """Posterior covariance matrix (cached, lazily computed).
-
-        Returns a ``scipy.stats.Covariance`` object (dense) or a
-        ``SparseFactor`` (sparse) wrapping the Cholesky factorization.
-        Automatically invalidated when the model is updated via
-        ``fit``, ``partial_fit``, or ``decay``.
-
-        .. warning::
-
-           For dense models, this is an :math:`O(p^3)` computation
-           with :math:`O(p^2)` memory.
-        """
-        factor = self._precision_factor
-        if self.sparse:
-            assert isinstance(factor, SparseFactor)
-            return factor
-        else:
-            assert isinstance(factor, DenseFactor)
-            cov = factor.solve(np.eye(self.n_features_))
-        return Covariance.from_cholesky(cholesky(cov, lower=True))
-
     @_invalidate_cached_properties
     def _fit_helper(
         self,
@@ -1643,279 +1965,6 @@ scipy.sparse.csc_array
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
-
-    def partial_fit(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> Self:
-        """
-        Incrementally update the posterior with new data.
-
-        Uses the current posterior as the prior for the new update,
-        decayed by ``learning_rate``. If the model has not been
-        fitted, this is equivalent to calling ``fit``.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        y : array-like of shape (n_samples,)
-            Target values.
-        sample_weight : array-like of shape (n_samples,), default=None
-            Individual weights for each sample. If None, all samples
-            are given equal weight.
-
-        Returns
-        -------
-        self : NormalRegressor
-            Updated estimator.
-
-        See Also
-        --------
-        fit : Fit from scratch, resetting the prior.
-        decay : Increase uncertainty without observing new data.
-        """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            return self.fit(X, y, sample_weight)
-
-        X_fit, y = check_X_y(
-            X,  # type: ignore (scipy is migrating to numpy-like types)
-            y,
-            copy=True,
-            ensure_2d=True,
-            dtype=np.float64,
-            accept_sparse="csc" if self.sparse else False,
-        )
-
-        self._fit_helper(X_fit, y, sample_weight)
-        return self
-
-    def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
-        """
-        Predict target values using the posterior mean.
-
-        Computes :math:`X \\hat{w}` where :math:`\\hat{w}` is the
-        posterior mean of the weight vector.
-
-        If the model has not been fitted, the prior mean (zero) is
-        used, returning all zeros.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-
-        Returns
-        -------
-        y_pred : ndarray of shape (n_samples,)
-            Predicted target values.
-
-        See Also
-        --------
-        sample : Draw from the posterior predictive distribution.
-        """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            self._initialize_prior(X)
-
-        X_pred = check_array(
-            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
-
-        return X_pred @ self.coef_
-
-    def sample(
-        self, X: Union[NDArray[Any], csc_array], size: int = 1
-    ) -> NDArray[np.float64]:
-        """
-        Sample from the posterior predictive distribution.
-
-        Draws weight vectors from the posterior
-        :math:`w \\sim \\mathcal{N}(\\hat{w}, \\Lambda^{-1})` and
-        computes :math:`X w` for each draw. This marginalizes over
-        parameter uncertainty but not observation noise.
-
-        If the model has not been fitted, samples are drawn from the
-        prior predictive distribution.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        size : int, default=1
-            Number of posterior samples to draw.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        predict : Point predictions using the posterior mean.
-        """
-        X_sample = self._validated_for_sampling(X)
-        return self._joint_rows(self._precision_factor, X_sample, size)
-
-    def sample_marginal(
-        self, X: Union[NDArray[Any], csc_array], size: int = 1
-    ) -> NDArray[np.float64]:
-        """
-        Sample iid draws from each row's marginal posterior predictive.
-
-        Each prediction row's draws come from its exact marginal
-        posterior predictive
-        :math:`\\mathcal{N}(x_i^T \\hat{w},\\; x_i^T \\Lambda^{-1} x_i)`.
-        Unlike ``sample`` -- whose rows within one draw share a weight
-        vector and are therefore correlated -- draws are independent
-        across rows, so only per-row statistics (means, quantiles,
-        variances) are meaningful across the returned rows.
-
-        For those statistics the result is exact and much cheaper than
-        ``sample`` when many draws are needed: one triangular solve per
-        row against the cached precision factor plus univariate draws,
-        with per-draw cost independent of the number of features.
-
-        If the model has not been fitted, samples are drawn from the
-        prior predictive distribution.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. May be dense, or a ``scipy.sparse.csc_array``
-            when ``sparse=True``.
-        size : int, default=1
-            Number of marginal samples to draw per row.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row. Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        sample : Joint draws whose rows share a weight draw.
-        predict : Point predictions using the posterior mean.
-        """
-        mean, sd = _validated_marginal_mean_sd(self, X)
-        z = standard_normal_f(self.random_state_, size, mean.shape[0])
-        return marginal_draw(mean, sd, z)
-
-    def sample_reward_space(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        size: int = 1,
-        *,
-        block_size: Optional[int] = None,
-    ) -> NDArray[np.float64]:
-        """
-        Sample jointly from the posterior predictive, drawing in reward space.
-
-        Distributionally identical to :meth:`sample` -- draws from
-        :math:`X w \\sim \\mathcal{N}(X \\hat{w}, X \\Lambda^{-1} X^T)`
-        -- but computed by factoring the ``n``-row predictive covariance
-        once (one triangular half-solve per prediction row against the
-        cached precision factor, then a QR) and drawing in reward space,
-        so per-draw cost is independent of the number of features:
-        cheaper than ``sample`` when ``size`` is large relative to the
-        number of rows, more expensive otherwise. Linearly dependent
-        rows (e.g. repeated contexts) are represented exactly. A sparse
-        model's dense scratch is the observed features by ``n_samples``,
-        bounded in row blocks when ``block_size`` is given.
-
-        With ``block_size=k``, consecutive groups of ``k`` rows are drawn
-        jointly within the group and independently across groups (unlike
-        ``sample``, where all rows of a draw share a weight vector). Use
-        this when rows group into independent decision units, e.g. one
-        block of arm rows per context.
-
-        If the model has not been fitted, samples are drawn from the
-        prior predictive distribution. Only the distribution matches
-        ``sample``, not the bitstream: the same seed yields different
-        realizations.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. May be dense, or a ``scipy.sparse.csc_array``
-            when ``sparse=True``.
-        size : int, default=1
-            Number of posterior samples to draw.
-        block_size : int, optional
-            If given, must divide ``n_samples``; rows are drawn jointly
-            within consecutive blocks of this many rows and
-            independently across blocks.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior draw. Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        sample : Joint draws in weight space (cheaper for small ``size``).
-        sample_marginal : iid per-row draws for per-row statistics.
-        """
-        X_sample = self._validated_for_sampling(X)
-        mean, draw = self._predictive_cholesky(X_sample, block_size)
-        return draw.joint(size, self.random_state_, mean)
-
-    @_invalidate_cached_properties
-    def decay(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """
-        Decay the posterior precision to increase uncertainty.
-
-        Scales the precision matrix by :math:`\\gamma^n`, where
-        :math:`\\gamma` is the decay rate and :math:`n` is the number
-        of rows in ``X``. The posterior mean is unchanged.
-
-        Has no effect if the model has not been fitted.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only for its number of rows ``n_samples``, which
-            determines the exponent of the decay factor.
-        decay_rate : float, default=None
-            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
-            ``self.learning_rate``.
-
-        See Also
-        --------
-        partial_fit : Update the model with new observations.
-        """
-        # If the model has not been fit, there is no prior to decay
-        if not hasattr(self, "coef_"):
-            return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None  # for the type checker
-        prior_decay = decay_rate ** X.shape[0]
-
-        # Decay the prior without making an update. Because we're only
-        # increasing the prior variance, we do not need to update the
-        # mean.
-        self.cov_inv_ = prior_decay * self.cov_inv_
-        if "_precision_factor" in self.__dict__:
-            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -2380,70 +2429,16 @@ scipy.sparse.csc_array
         scale = np.sqrt((self.b_ / self.a_) * df / g)
         return draw.joint(size, self.random_state_, mean, scale)
 
-    @_invalidate_cached_properties
-    def decay(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """
-        Decay precision and variance parameters to increase uncertainty.
-
-        Applies exponential forgetting to the precision matrix and
-        the Inverse-Gamma parameters:
-
-        .. math::
-
-            \\Lambda \\leftarrow \\gamma^n \\Lambda, \\quad
-            a \\leftarrow \\gamma^n a, \\quad
-            b \\leftarrow \\gamma^n b
-
-        The posterior mean is unchanged, but the marginal t
-        distribution widens (fewer degrees of freedom and higher
-        scale), reflecting greater uncertainty.
-
-        Has no effect if the model has not been fitted.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only for its number of rows ``n_samples``, which
-            determines the exponent of the decay factor.
-        decay_rate : float, default=None
-            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
-            ``self.learning_rate``.
-
-        See Also
-        --------
-        partial_fit : Update the model with new observations.
-        """
-        # If the model has not been fit, there is no prior to decay
-        if not hasattr(self, "coef_"):
-            return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None  # for the type checker
-        prior_decay = decay_rate ** X.shape[0]
-
-        # decay only increases the variance, so we only need to update the
-        # inverse covariance matrix, a_, and b_
-        self.cov_inv_ = prior_decay * self.cov_inv_
+    def _apply_decay(self, prior_decay: float) -> None:
+        """Forget the Inverse-Gamma parameters alongside the precision, so
+        the marginal t widens on both counts: fewer degrees of freedom and
+        a higher scale."""
+        super()._apply_decay(prior_decay)
         self.a_ = prior_decay * self.a_
         self.b_ = prior_decay * self.b_
-        if "_precision_factor" in self.__dict__:
-            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
 
 
-class BayesianGLM(
-    _SparseFactorMixin,
-    _RewardSpacePredictiveMixin,
-    MemoryUsageMixin,
-    BaseEstimator,
-    RegressorMixin,
-):
+class BayesianGLM(_BayesianLinearModel, RegressorMixin):
     """
     Bayesian Generalized Linear Model with Laplace approximation.
 
@@ -2625,19 +2620,7 @@ scipy.sparse.csc_array
 
     def _initialize_prior(self, X: Union[NDArray[Any], csc_array]) -> None:
         """Initialize prior distribution."""
-        if isinstance(self.random_state, int) or self.random_state is None:
-            self.random_state_ = np.random.default_rng(self.random_state)
-        else:
-            self.random_state_ = self.random_state
-
-        assert X.shape is not None
-        self.n_features_ = X.shape[1]
-        self.coef_ = np.zeros(self.n_features_)
-
-        if self.sparse:
-            self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
-        else:
-            self.cov_inv_ = _scaled_identity_f(self.n_features_, self.alpha)
+        super()._initialize_prior(X)
 
         # A cached factor from a previous fit would be stale against
         # the freshly-reset cov_inv_; drop it.
@@ -2648,42 +2631,6 @@ scipy.sparse.csc_array
             self.approximator_ = LaplaceApproximator()
         else:
             self.approximator_ = self.approximator
-
-    @cached_property
-    def _precision_factor(self) -> PrecisionFactor:
-        """Factorization of the precision matrix (cached)."""
-        if self.sparse:
-            assert isinstance(self.cov_inv_, csc_array)
-            return self._sparse_factor(self.cov_inv_)
-        else:
-            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
-            return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
-
-    @cached_property
-    def cov_(self) -> Union[Covariance, SparseFactor]:
-        """Posterior covariance matrix (cached, lazily computed).
-
-        Returns a ``scipy.stats.Covariance`` object (dense) or a
-        ``SparseFactor`` (sparse) that wraps the Cholesky factorization
-        of the covariance. Automatically invalidated when the model is
-        updated via ``fit``, ``partial_fit``, or ``decay``. The sparse
-        factor is refactorized in place by later updates, so hold a
-        reference only until the next one.
-
-        .. warning::
-
-           For dense models, this is an :math:`O(p^3)` computation with
-           :math:`O(p^2)` memory. For high-dimensional problems, prefer
-           ``sparse=True`` or avoid accessing this property directly.
-        """
-        factor = self._precision_factor
-        if self.sparse:
-            assert isinstance(factor, SparseFactor)
-            return factor
-        else:
-            assert isinstance(factor, DenseFactor)
-            cov = factor.solve(np.eye(self.n_features_))
-            return Covariance.from_cholesky(cholesky(cov, lower=True))
 
     @_invalidate_cached_properties
     def _fit_helper(
@@ -2740,144 +2687,6 @@ scipy.sparse.csc_array
                     _U=cho[0], _n_features=cho[0].shape[0]
                 )
 
-    def fit(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> Self:
-        """
-        Fit the model from scratch, resetting the prior.
-
-        Initializes the prior :math:`w \\sim \\mathcal{N}(0, \\alpha^{-1} I)`
-        and computes the posterior using the configured approximation method.
-        Any previously learned parameters are discarded.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        y : array-like of shape (n_samples,)
-            Target values. For ``link='logit'``, values should be 0 or 1.
-            For ``link='log'``, values should be non-negative counts.
-        sample_weight : array-like of shape (n_samples,), default=None
-            Individual weights for each sample. If None, all samples are
-            given equal weight.
-
-        Returns
-        -------
-        self : BayesianGLM
-            Fitted estimator.
-
-        See Also
-        --------
-        partial_fit : Incremental update without resetting the prior.
-        """
-        X, y = check_X_y(
-            X,  # type: ignore
-            y,
-            copy=True,
-            ensure_2d=True,
-            dtype=np.float64,
-            accept_sparse="csc" if self.sparse else False,
-        )
-
-        self._initialize_prior(X)
-        self._fit_helper(X, y, sample_weight)
-        return self
-
-    def partial_fit(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]] = None,
-    ) -> Self:
-        """
-        Incrementally update the model with new data.
-
-        Uses the current posterior as the prior for the new update. If the
-        model has not been fitted yet, this is equivalent to calling
-        ``fit``.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        y : array-like of shape (n_samples,)
-            Target values. For ``link='logit'``, values should be 0 or 1.
-            For ``link='log'``, values should be non-negative counts.
-        sample_weight : array-like of shape (n_samples,), default=None
-            Individual weights for each sample. If None, all samples are
-            given equal weight.
-
-        Returns
-        -------
-        self : BayesianGLM
-            Updated estimator.
-
-        See Also
-        --------
-        fit : Fit from scratch, resetting the prior.
-        """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            return self.fit(X, y, sample_weight)
-
-        X, y = check_X_y(
-            X,  # type: ignore
-            y,
-            copy=True,
-            ensure_2d=True,
-            dtype=np.float64,
-            accept_sparse="csc" if self.sparse else False,
-        )
-
-        self._fit_helper(X, y, sample_weight)
-        return self
-
-    def predict(self, X: Union[NDArray[Any], csc_array]) -> NDArray[Any]:
-        """
-        Predict mean of the response distribution for each sample.
-
-        Computes the inverse link applied to the linear predictor
-        :math:`g^{-1}(X \\hat{w})`, where :math:`\\hat{w}` is the
-        posterior mean.
-
-        If the model has not been fitted, the prior mean (zero) is used,
-        returning 0.5 for logit link and 1.0 for log link.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Samples to predict. Must be a ``scipy.sparse.csc_array``
-            when ``sparse=True``.
-
-        Returns
-        -------
-        y_pred : ndarray of shape (n_samples,)
-            Predicted values. For ``link='logit'``, probabilities in
-            [0, 1]. For ``link='log'``, expected counts (positive reals).
-
-        See Also
-        --------
-        sample : Draw from the posterior predictive distribution.
-        """
-        try:
-            check_is_fitted(self, "coef_")
-        except NotFittedError:
-            self._initialize_prior(X)
-
-        X_pred = check_array(
-            X, copy=False, ensure_2d=True, accept_sparse="csc" if self.sparse else False
-        )
-
-        eta = X_pred @ self.coef_
-
-        return self._inverse_link(eta)
-
     def _inverse_link(self, eta: NDArray[np.float64]) -> NDArray[np.float64]:
         """Apply the inverse link elementwise, mapping the linear
         predictor to the response scale."""
@@ -2887,173 +2696,3 @@ scipy.sparse.csc_array
             return cast(NDArray[np.float64], np.exp(np.clip(eta, -700, 700)))
         else:
             raise ValueError(f"Unknown link: {self.link}")
-
-    def sample(
-        self, X: Union[NDArray[Any], csc_array], size: int = 1
-    ) -> NDArray[np.float64]:
-        """
-        Sample from the posterior predictive distribution.
-
-        Draws weight vectors from the posterior
-        :math:`w \\sim \\mathcal{N}(\\hat{w}, \\Lambda^{-1})` and computes
-        :math:`g^{-1}(X w)` for each draw. This marginalizes over
-        parameter uncertainty, producing samples from the posterior
-        predictive distribution.
-
-        If the model has not been fitted, samples are drawn from the
-        prior predictive distribution.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. Must be a ``scipy.sparse.csc_array`` when
-            ``sparse=True``.
-        size : int, default=1
-            Number of posterior samples to draw.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior sample. For
-            ``link='logit'``, probabilities in [0, 1]. For
-            ``link='log'``, expected counts (positive reals). Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        predict : Point predictions using the posterior mean.
-        """
-        X_sample = self._validated_for_sampling(X)
-        # eta is drawn either way; the inverse link is elementwise
-        eta = self._joint_rows(self._precision_factor, X_sample, size)
-        return self._inverse_link(eta)
-
-    def sample_marginal(
-        self, X: Union[NDArray[Any], csc_array], size: int = 1
-    ) -> NDArray[np.float64]:
-        """
-        Sample iid draws from each row's marginal posterior predictive.
-
-        Draws each row's linear predictor from its exact marginal
-        :math:`\\eta_i \\sim \\mathcal{N}(x_i^T \\hat{w},\\;
-        x_i^T \\Lambda^{-1} x_i)` and applies the inverse link
-        elementwise. Draws are independent across rows -- see
-        :meth:`NormalRegressor.sample_marginal` for the contrast with
-        ``sample``.
-
-        If the model has not been fitted, samples are drawn from the
-        prior predictive distribution.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. May be dense, or a ``scipy.sparse.csc_array``
-            when ``sparse=True``.
-        size : int, default=1
-            Number of marginal samples to draw per row.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Independent marginal draws for each row, on the response
-            scale of the link. Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        sample : Joint draws whose rows share a weight draw.
-        predict : Point predictions using the posterior mean.
-        """
-        mean, sd = _validated_marginal_mean_sd(self, X)
-        z = standard_normal_f(self.random_state_, size, mean.shape[0])
-        return self._inverse_link(marginal_draw(mean, sd, z))
-
-    def sample_reward_space(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        size: int = 1,
-        *,
-        block_size: Optional[int] = None,
-    ) -> NDArray[np.float64]:
-        """
-        Sample jointly from the posterior predictive, drawing in eta space.
-
-        Distributionally identical to :meth:`sample` -- draws
-        :math:`\\eta \\sim \\mathcal{N}(X \\hat{w}, X \\Lambda^{-1} X^T)`
-        and applies the inverse link elementwise -- but the :math:`\\eta`
-        draws come from the exact square root of the ``n``-row predictive
-        covariance. See :meth:`NormalRegressor.sample_reward_space` for
-        the cost model and ``block_size``.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input data. May be dense, or a ``scipy.sparse.csc_array``
-            when ``sparse=True``.
-        size : int, default=1
-            Number of posterior samples to draw.
-        block_size : int, optional
-            If given, must divide ``n_samples``; rows are drawn jointly
-            within consecutive blocks of this many rows and
-            independently across blocks.
-
-        Returns
-        -------
-        samples : ndarray of shape (size, n_samples)
-            Predicted values for each posterior sample, on the response
-            scale of the link. Draw-contiguous
-            (``samples.T`` is C-contiguous).
-
-        See Also
-        --------
-        sample : Joint draws in weight space (cheaper for small ``size``).
-        sample_marginal : iid per-row draws for per-row statistics.
-        """
-        X_sample = self._validated_for_sampling(X)
-        mean, draw = self._predictive_cholesky(X_sample, block_size)
-        return self._inverse_link(draw.joint(size, self.random_state_, mean))
-
-    @_invalidate_cached_properties
-    def decay(
-        self,
-        X: Union[NDArray[Any], csc_array],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """
-        Decay the posterior precision to increase uncertainty.
-
-        Scales the precision matrix by :math:`\\gamma^n`, where
-        :math:`\\gamma` is the decay rate and :math:`n` is the number
-        of rows in ``X``. This uniformly increases posterior variance
-        while leaving the posterior mean unchanged, allowing the model
-        to adapt to non-stationary environments.
-
-        Has no effect if the model has not been fitted.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only for its number of rows ``n_samples``, which
-            determines the exponent of the decay factor.
-        decay_rate : float, default=None
-            Decay factor per sample. If None, uses the model's
-            ``learning_rate``. Values less than 1 increase uncertainty;
-            a value of 1 has no effect.
-
-        See Also
-        --------
-        partial_fit : Update the model with new observations.
-        """
-        if not hasattr(self, "coef_"):
-            return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None
-        prior_decay = decay_rate ** X.shape[0]
-
-        self.cov_inv_ = prior_decay * self.cov_inv_
-        if "_precision_factor" in self.__dict__:
-            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
