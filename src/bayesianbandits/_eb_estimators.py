@@ -33,6 +33,7 @@ from ._estimators import (
     DirichletClassifier,
     GammaRegressor,
     NormalRegressor,
+    _BayesianLinearModel,
     _invalidate_cached_properties,
     compute_effective_weights,
 )
@@ -45,7 +46,7 @@ from ._sparse_bayesian_linear_regression import (
 )
 
 
-class _StabilizedPriorMixin:
+class _StabilizedPriorMixin(_BayesianLinearModel):
     """Stabilized forgetting for the EB estimators whose posterior precision
     is ``_prior_scalar · I + data``.
 
@@ -59,10 +60,6 @@ class _StabilizedPriorMixin:
     online EB step itself.
     """
 
-    sparse: bool
-    cov_inv_: Any
-    alpha: float
-    learning_rate: float
     _factor_hint: Any
     _prior_scalar: float
     _effective_n: float
@@ -158,7 +155,7 @@ class _StabilizedPriorMixin:
         old = self._hyperparams()
 
         try:
-            result = cast(Any, super()).partial_fit(X, y, sample_weight)
+            result = super().partial_fit(X, y, sample_weight)
         except Exception:
             # cov_inv_ never moved, so an advanced _prior_scalar would name a
             # prior contribution the precision does not have.
@@ -240,7 +237,7 @@ class _StabilizedPriorMixin:
             self._decay_stats(prior_decay)
 
         # Base class applies uniform decay: cov_inv_ *= prior_decay
-        cast(Any, super()).decay(X, decay_rate=decay_rate)
+        super().decay(X, decay_rate=decay_rate)
 
         self._reinject_prior(prior_reinjection)
 
@@ -593,7 +590,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
 
     def fit(
         self,
-        X_fit: Union[NDArray[Any], csc_array],
+        X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
     ) -> Self:
@@ -607,7 +604,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
 
         Parameters
         ----------
-        X_fit : array-like of shape (n_samples, n_features)
+        X : array-like of shape (n_samples, n_features)
             Training data.
         y : array-like of shape (n_samples,)
             Target values.
@@ -625,7 +622,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         partial_fit : Incremental update with one online MacKay step.
         """
         X_fit, y = check_X_y(
-            X_fit,  # type: ignore
+            X,  # type: ignore
             y,
             copy=True,
             ensure_2d=True,

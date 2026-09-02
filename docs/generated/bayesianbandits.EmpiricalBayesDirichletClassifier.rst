@@ -5,6 +5,7 @@
 
 .. autoclass:: EmpiricalBayesDirichletClassifier
    :members:
+   :inherited-members: BaseEstimator, RegressorMixin, ClassifierMixin, IntEnum, Enum
    :special-members: __init__
    :undoc-members:
    :show-inheritance:

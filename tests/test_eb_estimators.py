@@ -589,7 +589,13 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
         model.fit(X[:20], y[:20])
 
-        cached = NormalRegressor.__dict__["_precision_factor"]
+        # Whichever class in the MRO owns the cached_property, so the test
+        # does not care where the shared posterior machinery lives.
+        cached = next(
+            klass.__dict__["_precision_factor"]
+            for klass in type(model).__mro__
+            if "_precision_factor" in klass.__dict__
+        )
         original = cached.func
         rebuilds = []
 
