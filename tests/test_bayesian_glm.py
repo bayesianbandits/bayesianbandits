@@ -6,7 +6,7 @@ import scipy.sparse as sp
 from numpy.testing import assert_allclose, assert_array_less
 from sklearn.datasets import make_classification, make_regression
 
-from bayesianbandits import BayesianGLM, LaplaceApproximator
+from bayesianbandits import BayesianGLM, LaplaceApproximator, RVGAApproximator
 
 
 # Fixtures and parametrization
@@ -666,3 +666,25 @@ def test_laplace_non_convergence_warns():
         BayesianGLM(
             link="log", alpha=2.0, approximator=LaplaceApproximator(n_iter=1)
         ).fit(X, y)
+
+
+@pytest.mark.parametrize("n_iter", [0, -1])
+@pytest.mark.parametrize("sparse", [False, True])
+@pytest.mark.parametrize(
+    "approximator", [LaplaceApproximator, RVGAApproximator], ids=["laplace", "rvga"]
+)
+def test_n_iter_below_one_is_rejected(approximator, sparse, n_iter):
+    """An empty iteration budget fell through the solver loop and read a
+    variable the loop assigns, so two of these four raised
+    UnboundLocalError and the other two returned the prior unchanged."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((20, 3))
+    y = (X[:, 0] > 0).astype(np.float64)
+
+    with pytest.raises(ValueError, match="n_iter must be at least 1"):
+        BayesianGLM(
+            link="logit",
+            alpha=1.0,
+            sparse=sparse,
+            approximator=approximator(n_iter=n_iter),
+        ).fit(sp.csc_array(X) if sparse else X, y)

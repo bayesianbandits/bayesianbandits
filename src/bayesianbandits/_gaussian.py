@@ -625,6 +625,9 @@ def update_gaussian_posterior_laplace(
         posterior.mean : MAP estimate
         posterior.precision : Hessian at MAP (approximate posterior precision)
     """
+    if n_iter < 1:
+        raise ValueError(f"n_iter must be at least 1, got {n_iter}")
+
     assert X.shape is not None, "X must be a 2D array"
     n_samples = X.shape[0]
 
@@ -738,10 +741,10 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
     Parameters
     ----------
     n_iter : int, default=5
-        Maximum number of Newton (IRLS) iterations per update.  When
-        the budget runs out before the step falls below ``tol``, the
-        returned posterior has ``converged=False`` and
-        :class:`BayesianGLM` raises a ``ConvergenceWarning``.
+        Maximum number of Newton (IRLS) iterations per update; must be
+        at least 1.  When the budget runs out before the step falls
+        below ``tol``, the returned posterior has ``converged=False``
+        and :class:`BayesianGLM` raises a ``ConvergenceWarning``.
 
         - ``1``: Single-step update from the current posterior. Fast
           and usually sufficient for online/streaming use where the
@@ -1187,6 +1190,9 @@ def update_gaussian_posterior_rvga(
     ----------
     Lambert, Bonnabel, Bach (2022). Statistics and Computing, 32, 10.
     """
+    if n_iter < 1:
+        raise ValueError(f"n_iter must be at least 1, got {n_iter}")
+
     assert X.shape is not None, "X must be a 2D array"
     n_samples = X.shape[0]
 
@@ -1267,7 +1273,7 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
     Parameters
     ----------
     n_iter : int, default=5
-        Maximum iterations per update.
+        Maximum iterations per update; must be at least 1.
     tol : float, default=1e-4
         Convergence tolerance on coefficient change.
     n_gh_nodes : int, default=20
