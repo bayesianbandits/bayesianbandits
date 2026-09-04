@@ -15,24 +15,12 @@ from bayesianbandits import (
     EmpiricalBayesNormalRegressor,
 )
 from bayesianbandits._estimators import NormalRegressor
-from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
-
-suitespare_envvar_params = [
-    SparseSolver.SUPERLU,
-    SparseSolver.CHOLMOD,
-]
 
 
-@pytest.fixture(
-    params=suitespare_envvar_params,
-    autouse=True,
-)
-def suitesparse_envvar(request):
-    """Allows running test suite with and without CHOLMOD."""
-    with mock.patch(
-        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
-    ):
-        yield
+@pytest.fixture(autouse=True)
+def suitesparse_envvar(sparse_solver):
+    """Run every test in this module against both sparse backends."""
+    yield
 
 
 @pytest.fixture

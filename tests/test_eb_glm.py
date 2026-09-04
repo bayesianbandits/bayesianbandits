@@ -17,18 +17,12 @@ from bayesianbandits import (
     RVGAApproximator,
 )
 from bayesianbandits._empirical_bayes import glm_log_likelihood
-from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 
-@pytest.fixture(
-    params=[SparseSolver.SUPERLU, SparseSolver.CHOLMOD],
-    autouse=True,
-)
-def suitesparse_envvar(request):
-    with mock.patch(
-        "bayesianbandits._sparse_bayesian_linear_regression.solver", request.param
-    ):
-        yield
+@pytest.fixture(autouse=True)
+def suitesparse_envvar(sparse_solver):
+    """Run every test in this module against both sparse backends."""
+    yield
 
 
 def _simulate(link, n=200, p=5, seed=0, alpha_true=2.0):
