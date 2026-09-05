@@ -9,7 +9,7 @@ rate estimation.
 from __future__ import annotations
 
 import math
-from typing import Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -63,9 +63,14 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
     _factor_hint: Any
     _prior_scalar: float
     _effective_n: float
-    eb_updates_rejected_: int
-    n_eb_iterations_: int
-    eb_converged_: bool
+
+    if TYPE_CHECKING:
+        # Declared for the checker only, as in _BayesianLinearModel: an
+        # annotation outside this block duplicates each estimator's own
+        # ``Attributes`` entry on its docs page.
+        eb_updates_rejected_: int
+        n_eb_iterations_: int
+        eb_converged_: bool
 
     # ---- hooks -----------------------------------------------------------
 
