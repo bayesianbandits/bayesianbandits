@@ -1227,18 +1227,18 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
     subclass supplies those two; everything a caller touches lives here.
     """
 
-    # ``Any`` where the concrete classes assign a wider set of array types
-    # than one annotation covers; a narrower declaration here would only
-    # make their own assignments type errors.
-    coef_: Any
-    cov_inv_: Any
-    n_features_: int
-
     if TYPE_CHECKING:
+        # Assigned here, but declared for the checker only: an annotation
+        # outside this block renders as an undocumented attribute on every
+        # estimator page, duplicating the subclass's own ``Attributes``
+        # entry. ``Any`` where the concrete classes assign a wider set of
+        # array types than one annotation covers.
+        coef_: Any
+        cov_inv_: Any
+        n_features_: int
+
         # Read here, owned elsewhere: the concrete ``__init__`` sets the
-        # hyperparameters and ``_initialize_prior`` the generator. Declared
-        # for the checker only, since a class-level annotation would also
-        # render them as undocumented attributes on every estimator page.
+        # hyperparameters and ``_initialize_prior`` the generator.
         alpha: float
         learning_rate: float
         sparse: bool
