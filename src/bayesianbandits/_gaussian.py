@@ -17,6 +17,7 @@ from scipy.sparse import csc_array, eye
 from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
 
+from ._blas_helpers import fortran_view
 from ._memory import MemoryUsageMixin
 
 # Type aliases
@@ -198,19 +199,9 @@ def _dot(a: NDArray[Any], b: NDArray[Any]) -> float:
     return _einsum_dot(a, b)
 
 
-def _fortran_view(A: NDArray[Any]) -> Tuple[NDArray[Any], int]:
-    """``(F, trans)`` with ``F`` Fortran-contiguous and ``A = op(F)``, so
-    f2py BLAS wrappers take ``A`` without copying it on every call."""
-    if A.flags.f_contiguous:
-        return A, 0
-    if A.flags.c_contiguous:
-        return A.T, 1
-    return np.asfortranarray(A), 0
-
-
 def _symmetric_fortran(M: NDArray[Any]) -> NDArray[Any]:
     """Fortran-contiguous alias of the symmetric ``M`` (``M.T`` if C-order)."""
-    return _fortran_view(M)[0]
+    return fortran_view(M)[0]
 
 
 def _irls_dense(
@@ -258,9 +249,9 @@ def _irls_dense(
     dot_n = ddot if n2 < _DOT_EINSUM_MIN else _einsum_dot
     dot_p = ddot if n_features < _DOT_EINSUM_MIN else _einsum_dot
 
-    XF, xt = _fortran_view(X)
+    XF, xt = fortran_view(X)
     X_weighted = np.empty_like(X, order="F" if xt == 0 else "C")
-    XwF, xwt = _fortran_view(X_weighted)  # dsyrk trans=1-xwt gives X_wᵀX_w
+    XwF, xwt = fortran_view(X_weighted)  # dsyrk trans=1-xwt gives X_wᵀX_w
     W_sqrt_buf = np.empty(n_samples, dtype=np.float64)
     Wz_buf = np.empty(n_samples, dtype=np.float64)
     diff_buf = np.empty(n_features, dtype=np.float64)

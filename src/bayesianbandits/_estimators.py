@@ -41,6 +41,7 @@ from ._blas_helpers import (
     compute_eta_dense,
     dense_matmul_bt,
     dense_matvec,
+    fortran_view,
     lower_predictive_sqrt,
     marginal_draw,
     standard_normal_f,
@@ -1946,6 +1947,7 @@ scipy.sparse.csc_array
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
+            assert isinstance(X, np.ndarray)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
             eta = compute_eta_dense(
@@ -2209,6 +2211,7 @@ scipy.sparse.csc_array
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
             V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
         else:
+            assert isinstance(X, np.ndarray)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
             # Fused X^T W X + prior via dsyrk (upper triangle only)
@@ -2236,11 +2239,13 @@ scipy.sparse.csc_array
             prior_cov_coef = dsymv(prior_decay, self.cov_inv_, self.coef_)
             prior_quad = self.coef_.dot(prior_cov_coef)
             # eta = prior_decay * cov_inv @ coef + X^T @ y_weighted
+            assert isinstance(X, np.ndarray)
+            XF, xt = fortran_view(X)
             eta = dgemv(
                 1.0,
-                X,
+                XF,
                 y_weighted,
-                trans=1,
+                trans=1 - xt,
                 beta=1.0,
                 y=prior_cov_coef,
                 overwrite_y=True,
