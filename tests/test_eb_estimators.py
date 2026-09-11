@@ -1710,7 +1710,7 @@ class TestFailedUpdateLeavesEstimatorIntact:
                 else "bayesianbandits._estimators"
             )
             failure = mock.patch(
-                f"{module}.cho_factor", side_effect=np.linalg.LinAlgError("boom")
+                f"{module}.cho_factor_f", side_effect=np.linalg.LinAlgError("boom")
             )
 
         with failure, pytest.raises(np.linalg.LinAlgError):

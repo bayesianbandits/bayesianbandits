@@ -6,8 +6,13 @@ from typing import Any, Optional, Tuple, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.linalg import LinAlgError
 from scipy.linalg.blas import dgemm, dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
-from scipy.linalg.lapack import dgeqrf, dgeqrf_lwork  # type: ignore[attr-defined]
+from scipy.linalg.lapack import (
+    dgeqrf,  # type: ignore[attr-defined]
+    dgeqrf_lwork,  # type: ignore[attr-defined]
+    dpotrf,  # type: ignore[attr-defined]
+)
 from scipy.sparse import csc_array
 
 __all__ = [
@@ -36,6 +41,27 @@ def fortran_view(A: NDArray[Any]) -> Tuple[NDArray[Any], int]:
     if A.flags.c_contiguous:
         return A.T, 1
     return np.asfortranarray(A), 0
+
+
+def cho_factor_f(A: NDArray[Any]) -> tuple[NDArray[np.float64], bool]:
+    """``cho_factor(A, lower=False, check_finite=False)`` with a
+    Fortran-contiguous factor.
+
+    scipy 1.18 moved ``cho_factor`` to a C implementation that returns
+    C-ordered factors whatever the input layout, so every f2py solve
+    against a cached factor (``dpotrs``, ``dtrsm``, ``dtrtrs``) first
+    transposes the whole triangle: 3 ms instead of 0.2 ms for a
+    ``dtrsv`` at p=1024. ``dpotrf`` still returns Fortran order. As with
+    ``cho_factor``, only the upper triangle is meaningful.
+    """
+    U, info = dpotrf(A, lower=0, clean=0)
+    if info > 0:
+        raise LinAlgError(
+            f"{info}-th leading minor of the array is not positive definite"
+        )
+    if info < 0:
+        raise ValueError(f"dpotrf: illegal value in argument {-info}")
+    return U, False
 
 
 def update_precision_dense(
