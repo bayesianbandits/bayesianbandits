@@ -5,7 +5,7 @@ from typing import Any, Literal, NamedTuple, Optional, Protocol, Tuple, Union, c
 import numpy as np
 from numpy.polynomial.hermite_e import hermegauss
 from numpy.typing import NDArray
-from scipy.linalg import cho_factor, cho_solve, solve_triangular
+from scipy.linalg import cho_solve, solve_triangular
 from scipy.linalg.blas import (
     daxpy,  # type: ignore[attr-defined]
     ddot,  # type: ignore[attr-defined]
@@ -17,7 +17,7 @@ from scipy.sparse import csc_array, eye
 from scipy.sparse import issparse as sp_issparse
 from scipy.special import expit
 
-from ._blas_helpers import fortran_view
+from ._blas_helpers import cho_factor_f, fortran_view
 from ._memory import MemoryUsageMixin
 
 # Type aliases
@@ -327,7 +327,7 @@ def _irls_dense(
             1.0, XF, Wz_buf, trans=1 - xt, beta=1.0, y=eta_buf, overwrite_y=True
         )
 
-        cho = cho_factor(posterior_precision, lower=False, check_finite=False)
+        cho = cho_factor_f(posterior_precision)
         coef_new = cho_solve(cho, posterior_eta, check_finite=False)
 
         np.subtract(coef_new, coef, out=diff_buf)
@@ -982,7 +982,7 @@ def _rvga_dense(
 
     coef = prior_mean.copy()
     posterior_precision = prior_prec_F
-    cho = cho_factor(prior_prec_F, lower=False, check_finite=False)
+    cho = cho_factor_f(prior_prec_F)
 
     use_probit_path = use_probit and link == "logit"
 
@@ -1019,7 +1019,7 @@ def _rvga_dense(
             1.0, X, Wz_buf, trans=1, beta=1.0, y=eta_buf, overwrite_y=True
         )
 
-        cho = cho_factor(posterior_precision, lower=False, check_finite=False)
+        cho = cho_factor_f(posterior_precision)
         coef = cho_solve(cho, posterior_eta, check_finite=False)
 
         if iteration > 0:
@@ -1105,7 +1105,7 @@ def _rvga_sparse(
         else:
             M = G.copy()
             M.ravel()[:: n_samples + 1] += 1.0 / W_prev
-            cho_M = cho_factor(M, lower=False, check_finite=False)
+            cho_M = cho_factor_f(M)
             # diag(G M^{-1} G) = colsum(V^2) where R^T V = G
             V = solve_triangular(cho_M[0], G, lower=False, trans=1, check_finite=False)
             v = diag_G - np.sum(V * V, axis=0)

@@ -16,7 +16,7 @@ from typing import (
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
-from scipy.linalg import cho_factor, cho_solve, cholesky
+from scipy.linalg import cho_solve, cholesky
 from scipy.linalg.blas import dgemv, dsymv  # type: ignore
 from scipy.sparse import block_diag, csc_array, csr_array, diags, eye, issparse
 from scipy.special import expit
@@ -38,6 +38,7 @@ from typing_extensions import Concatenate, ParamSpec, Self
 from . import _support_covariance
 from ._blas_helpers import (
     affine_lower_factor,
+    cho_factor_f,
     compute_eta_dense,
     dense_matmul_bt,
     dense_matvec,
@@ -1298,7 +1299,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
             assert isinstance(self.cov_inv_, csc_array)
             return self._sparse_factor(self.cov_inv_)
         else:
-            cho = cho_factor(self.cov_inv_, lower=False, check_finite=False)
+            cho = cho_factor_f(self.cov_inv_)
             return DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
 
     @cached_property
@@ -1961,7 +1962,7 @@ scipy.sparse.csc_array
             # Fused X^T W X + prior via dsyrk (upper triangle only)
             cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
-            cho = cho_factor(cov_inv, lower=False, check_finite=False)
+            cho = cho_factor_f(cov_inv)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
             coef = cho_solve(cho, eta, check_finite=False)
 
@@ -2251,7 +2252,7 @@ scipy.sparse.csc_array
                 overwrite_y=True,
             )
             # Cache the Cholesky factor for reuse in shape_/sample
-            cho = cho_factor(V_n, lower=False, check_finite=False)
+            cho = cho_factor_f(V_n)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
             m_n = cho_solve(cho, eta, check_finite=False)
 

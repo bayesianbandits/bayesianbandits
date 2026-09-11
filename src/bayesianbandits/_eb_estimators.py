@@ -13,12 +13,13 @@ from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import cho_factor, cho_solve
+from scipy.linalg import cho_solve
 from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
 from ._blas_helpers import (
+    cho_factor_f,
     compute_eta_dense,
     dgemv,
     dsymv,
@@ -903,7 +904,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
             # Fused X^T W X + prior via dsyrk (upper triangle only)
             cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
-            cho = cho_factor(cov_inv, lower=False, check_finite=False)
+            cho = cho_factor_f(cov_inv)
             self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
             coef = cho_solve(cho, eta, check_finite=False)
 
