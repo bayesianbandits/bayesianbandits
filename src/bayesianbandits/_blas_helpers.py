@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union, cast
+from typing import Any, Optional, Tuple, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -14,6 +14,7 @@ __all__ = [
     "dgemv",
     "dsymv",
     "dsyrk",
+    "fortran_view",
     "update_precision_dense",
     "compute_eta_dense",
     "lower_predictive_sqrt",
@@ -27,20 +28,32 @@ __all__ = [
 _Array = Union[NDArray[Any], csc_array]
 
 
+def fortran_view(A: NDArray[Any]) -> Tuple[NDArray[Any], int]:
+    """``(F, trans)`` with ``F`` Fortran-contiguous and ``A = op(F)``, so
+    f2py BLAS wrappers take ``A`` without copying it on every call."""
+    if A.flags.f_contiguous:
+        return A, 0
+    if A.flags.c_contiguous:
+        return A.T, 1
+    return np.asfortranarray(A), 0
+
+
 def update_precision_dense(
     alpha: float,
-    X_weighted: _Array,
-    prior_scaled: _Array,
+    X_weighted: NDArray[Any],
+    prior_scaled: NDArray[Any],
 ) -> NDArray[np.float64]:
     """Compute ``alpha * X_weighted.T @ X_weighted + prior_scaled`` in-place.
 
-    ``prior_scaled`` must be F-contiguous and is overwritten.  Only the
+    ``prior_scaled`` must be F-contiguous and is overwritten; ``X_weighted``
+    is read in either layout without a copy.  Only the
     **upper triangle** of the result is meaningful — ``dsyrk`` does not
     fill the lower triangle.  All downstream consumers (``dsymv``,
     ``cho_factor(lower=False)``, and ``dsyrk`` itself) read only the
     upper triangle, so no symmetrisation is needed.
     """
-    return dsyrk(alpha, X_weighted, trans=1, beta=1.0, c=prior_scaled, overwrite_c=True)
+    XwF, xwt = fortran_view(X_weighted)
+    return dsyrk(alpha, XwF, trans=1 - xwt, beta=1.0, c=prior_scaled, overwrite_c=True)
 
 
 def compute_eta_dense(
@@ -48,8 +61,8 @@ def compute_eta_dense(
     cov_inv: _Array,
     coef: _Array,
     alpha: float,
-    X: _Array,
-    y_weighted: _Array,
+    X: NDArray[Any],
+    y_weighted: NDArray[Any],
 ) -> NDArray[np.float64]:
     """Compute ``prior_decay * cov_inv @ coef + alpha * X.T @ y_weighted``.
 
@@ -57,7 +70,8 @@ def compute_eta_dense(
     with no extra allocation.
     """
     eta = dsymv(prior_decay, cov_inv, coef)
-    return dgemv(alpha, X, y_weighted, trans=1, beta=1.0, y=eta, overwrite_y=True)
+    XF, xt = fortran_view(X)
+    return dgemv(alpha, XF, y_weighted, trans=1 - xt, beta=1.0, y=eta, overwrite_y=True)
 
 
 def lower_predictive_sqrt(B: NDArray[np.float64], n_rows: int) -> NDArray[np.float64]:

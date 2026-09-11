@@ -18,7 +18,13 @@ from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
-from ._blas_helpers import compute_eta_dense, dgemv, dsymv, update_precision_dense
+from ._blas_helpers import (
+    compute_eta_dense,
+    dgemv,
+    dsymv,
+    fortran_view,
+    update_precision_dense,
+)
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
     batch_sufficient_stats,
@@ -867,6 +873,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
+            assert isinstance(X, np.ndarray)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
             if pending_eta is None:
@@ -875,11 +882,12 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
                 )
             else:
                 # As compute_eta_dense, but dgemv accumulates onto the already-done dsymv term.
+                XF, xt = fortran_view(X)
                 eta = dgemv(
                     self.beta,
-                    X,
+                    XF,
                     y_weighted,
-                    trans=1,
+                    trans=1 - xt,
                     beta=1.0,
                     y=prior_decay * pending_eta,
                     overwrite_y=True,
