@@ -103,6 +103,17 @@ Unreleased
   over-tighten combinations with strongly correlated unobserved features
   (#300)
 
+**Documentation**
+
+- New notebook, *Forgetting: Why, and Which Kind*, comparing the four
+  forgetting rules on a shared intercept-plus-arms model with uneven pulls,
+  on the geometry of a correlated two-coefficient posterior, and on
+  fill-in of a sparse hierarchy. It records that feature-wise forgetting
+  loosens a rare arm's prediction through the shared intercept and
+  manufactures precision on the unobservable intercept-versus-arms
+  direction, so it sits between stabilized and SIFt on hierarchies rather
+  than tying SIFt
+
 **Internal**
 
 - ``NormalRegressor`` and ``BayesianGLM`` now share a single private base,

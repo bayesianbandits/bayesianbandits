@@ -13,3 +13,4 @@ Worked examples as Jupyter notebooks.
    notebooks/adversarial
    notebooks/delayed-reward
    notebooks/offline-learning
+   notebooks/forgetting

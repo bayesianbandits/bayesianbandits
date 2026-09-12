@@ -138,3 +138,7 @@ Then call ``decay()`` on a schedule as above.
 See the :doc:`delayed reward example </notebooks/delayed-reward>` for
 a full simulation that tunes the decay rate with optuna and shows how
 too much decay hurts.
+
+For what forgetting does to the posterior, and how the exponential,
+stabilized, feature-wise and SIFt rules differ when arms are pulled at
+very different rates, see :doc:`/notebooks/forgetting`.

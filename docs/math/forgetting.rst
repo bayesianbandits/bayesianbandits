@@ -5,8 +5,9 @@ Four strategies for shrinking the posterior precision matrix before
 a recursive Bayesian update.  Each of the first three addresses a
 limitation of the previous one; the fourth trades exactness for the
 sparsity pattern.  The update and sampling steps are unchanged;
-see :doc:`normal` for those details and :doc:`/howto/decay` for
-practical tuning guidance.
+see :doc:`normal` for those details, :doc:`/howto/decay` for
+practical tuning guidance, and :doc:`/notebooks/forgetting` for a
+pictorial comparison of the four rules.
 
 
 Symbols
