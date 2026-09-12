@@ -1,4 +1,4 @@
-"""Benchmarks for forgetting rules: exponential, stabilized (KZ), and SIFt."""
+"""Benchmarks for forgetting rules: exponential, stabilized (KZ), SIFt, and feature-wise."""
 
 import numpy as np
 import pytest
@@ -7,6 +7,7 @@ from scipy.sparse import random as sparse_random
 
 from bayesianbandits._forgetting import (
     ExponentialForgetting,
+    FeatureWiseForgetting,
     SiftForgetting,
     StabilizedForgetting,
     filter_batch,
@@ -133,6 +134,7 @@ RULES = [
     pytest.param(ExponentialForgetting(), id="exponential"),
     pytest.param(StabilizedForgetting(alpha=1.0), id="stabilized"),
     pytest.param(SiftForgetting(eps=1e-12), id="sift"),
+    pytest.param(FeatureWiseForgetting(), id="feature-wise"),
 ]
 
 

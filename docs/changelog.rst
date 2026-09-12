@@ -89,6 +89,19 @@ Unreleased
   With per-arm learners, drawing one arm at a time is the correct joint
   law, so the remaining path needs no batching (#267)
 
+**New features**
+
+- ``FeatureWiseForgetting`` joins the forgetting rules in
+  ``_forgetting.py``: vector-type forgetting (Saelid & Foss 1983) with the
+  per-feature factors set from the batch support, ``Λ̄ = D Λ D`` with
+  ``D = diag(γ^{m_i/2})``. It forgets only the observed features, leaves
+  every unobserved feature's marginal and every correlation unchanged, and
+  preserves the sparsity pattern at exponential-forgetting cost, where the
+  SIFt correction is dense on the neighbourhood of the active features.
+  Not yet wired into the estimators. The math page documents what it gives
+  up: it is a coordinate stretch rather than a Bayesian update and can
+  over-tighten combinations with strongly correlated unobserved features
+
 **Internal**
 
 - ``NormalRegressor`` and ``BayesianGLM`` now share a single private base,

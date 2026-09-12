@@ -1,4 +1,4 @@
-"""Tests for forgetting rules: exponential, stabilized (KZ), and SIFt."""
+"""Tests for forgetting rules: exponential, stabilized (KZ), SIFt, and feature-wise."""
 
 import numpy as np
 import pytest
@@ -8,6 +8,7 @@ from scipy.linalg import cho_factor, cho_solve, eigvalsh
 
 from bayesianbandits._forgetting import (
     ExponentialForgetting,
+    FeatureWiseForgetting,
     SiftForgetting,
     StabilizedForgetting,
     _filter_batch_sparse,
@@ -40,14 +41,16 @@ def _naive_sift_downdate(R, X_bar, lam):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(params=["exponential", "stabilized", "sift"])
+@pytest.fixture(params=["exponential", "stabilized", "sift", "feature-wise"])
 def rule(request):
     if request.param == "exponential":
         return ExponentialForgetting()
     elif request.param == "stabilized":
         return StabilizedForgetting(alpha=1.0)
-    else:
+    elif request.param == "sift":
         return SiftForgetting(eps=1e-10)
+    else:
+        return FeatureWiseForgetting()
 
 
 # ---------------------------------------------------------------------------
@@ -590,3 +593,147 @@ class TestSiftForgetting:
         # R_bar >= lam * R (Corollary 1)
         diff = R_bar_full - lam * R_dense
         assert eigvalsh(diff)[0] >= -1e-10
+
+
+# ---------------------------------------------------------------------------
+# FeatureWiseForgetting tests
+# ---------------------------------------------------------------------------
+
+
+def _one_hot_rows(n, rows):
+    """A dense (len(rows), n) batch with ones at the given column sets."""
+    X = np.zeros((len(rows), n))
+    for r, cols in enumerate(rows):
+        X[r, cols] = 1.0
+    return X
+
+
+class TestFeatureWiseForgetting:
+    def test_formula(self):
+        """R_bar = D R D with D_ii = lam ** (m_i / 2), m_i the rows feature i is in."""
+        rng = np.random.default_rng(42)
+        R = _random_pd(6, rng)
+        X = _one_hot_rows(6, [[0, 1], [0, 2]])  # feature 0 in two rows, 1 and 2 in one
+        lam = 0.8
+
+        R_bar, X_eff, y_eff = FeatureWiseForgetting()(R, X, np.zeros(2), lam)
+
+        d = np.array([lam, np.sqrt(lam), np.sqrt(lam), 1.0, 1.0, 1.0])
+        assert_allclose(np.asarray(R_bar), np.diag(d) @ R @ np.diag(d), atol=1e-12)
+        assert_allclose(X_eff, X)
+        assert y_eff.shape == (2,)
+
+    def test_pattern_preserved(self):
+        """The sparse result has exactly the input's indices and indptr."""
+        rng = np.random.default_rng(1)
+        X_hist = np.where(
+            rng.random((50, 30)) < 0.05, rng.standard_normal((50, 30)), 0.0
+        )
+        R = sparse.csc_array(np.eye(30) + X_hist.T @ X_hist)
+        X = _one_hot_rows(30, [[3, 7, 11]])
+
+        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.9)
+
+        assert sparse.issparse(R_bar)
+        R_bar = sparse.csc_array(R_bar)
+        np.testing.assert_array_equal(R_bar.indptr, R.indptr)
+        np.testing.assert_array_equal(R_bar.indices, R.indices)
+
+    def test_dense_and_sparse_agree(self):
+        rng = np.random.default_rng(7)
+        R = _random_pd(8, rng)
+        X = _one_hot_rows(8, [[1, 4], [4, 6]])
+
+        dense, _, _ = FeatureWiseForgetting()(R, X, np.zeros(2), 0.85)
+        sp, _, _ = FeatureWiseForgetting()(
+            sparse.csc_array(R), sparse.csc_array(X), np.zeros(2), 0.85
+        )
+
+        assert_allclose(sparse.csc_array(sp).toarray(), np.asarray(dense), atol=1e-12)
+
+    def test_positive_definite(self):
+        rng = np.random.default_rng(3)
+        for _ in range(20):
+            R = _random_pd(8, rng)
+            X = _one_hot_rows(8, [list(rng.choice(8, 3, replace=False))])
+            R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.7)
+            assert eigvalsh(np.asarray(R_bar))[0] > 0
+
+    def test_reduces_to_exponential_when_every_feature_is_active(self):
+        rng = np.random.default_rng(5)
+        R = _random_pd(5, rng)
+        X = rng.standard_normal((3, 5))  # dense: every feature in every row
+        lam = 0.9
+
+        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(3), lam)
+
+        assert_allclose(np.asarray(R_bar), lam**3 * R, atol=1e-12)
+
+    def test_matches_sift_when_forgotten_feature_is_uncorrelated(self):
+        """With R[0, j] = 0 for j != 0 the stretch and the SIFt downdate coincide."""
+        rng = np.random.default_rng(9)
+        R = _random_pd(6, rng)
+        R[0, 1:] = 0.0
+        R[1:, 0] = 0.0
+        X = _one_hot_rows(6, [[0]])
+        lam = 0.6
+
+        fw, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), lam)
+        result = SiftForgetting(eps=1e-12)(R, X, np.zeros(1), lam)
+        assert result is not None
+        sift, _, _ = result
+
+        assert_allclose(np.asarray(fw), symmetrize(np.asarray(sift)), atol=1e-12)
+
+    def test_unobserved_marginals_and_correlations_unchanged(self):
+        """The Schur complement of the untouched block, hence the marginal
+        precision of the unobserved features, is unchanged; and in
+        covariance form every correlation is preserved."""
+        rng = np.random.default_rng(11)
+        R = _random_pd(7, rng)
+        obs = [0, 2]
+        rest = [1, 3, 4, 5, 6]
+        X = _one_hot_rows(7, [obs])
+
+        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.5)
+        R_bar = np.asarray(R_bar)
+
+        def marginal(M):
+            return M[np.ix_(rest, rest)] - M[np.ix_(rest, obs)] @ np.linalg.solve(
+                M[np.ix_(obs, obs)], M[np.ix_(obs, rest)]
+            )
+
+        assert_allclose(marginal(R_bar), marginal(R), atol=1e-12)
+
+        def corr(M):
+            S = np.linalg.inv(M)
+            sd = np.sqrt(np.diag(S))
+            return S / np.outer(sd, sd)
+
+        assert_allclose(corr(R_bar), corr(R), atol=1e-12)
+
+    def test_observed_variance_inflates_by_lam(self):
+        rng = np.random.default_rng(13)
+        R = _random_pd(5, rng)
+        X = _one_hot_rows(5, [[2]])
+        lam = 0.75
+
+        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), lam)
+
+        S, S_bar = np.linalg.inv(R), np.linalg.inv(np.asarray(R_bar))
+        assert_allclose(S_bar[2, 2], S[2, 2] / lam)
+        untouched = [0, 1, 3, 4]
+        assert_allclose(np.diag(S_bar)[untouched], np.diag(S)[untouched])
+
+    def test_sparse_batch_counts_nonzero_values_only(self):
+        """An explicitly stored zero in a sparse batch does not count as active."""
+        rng = np.random.default_rng(17)
+        R = _random_pd(4, rng)
+        X = sparse.csc_array(
+            (np.array([1.0, 0.0]), (np.array([0, 0]), np.array([1, 3]))), shape=(1, 4)
+        )
+
+        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.5)
+
+        d = np.array([1.0, np.sqrt(0.5), 1.0, 1.0])
+        assert_allclose(np.asarray(R_bar), np.diag(d) @ R @ np.diag(d), atol=1e-12)
