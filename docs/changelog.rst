@@ -108,10 +108,12 @@ Unreleased
 - New notebook, *Forgetting: Why, and Which Kind*, built around covariance
   windup: the four rules on a shared intercept-plus-arms model with uneven
   pulls, the stretch-versus-blur geometry of a correlated two-coefficient
-  posterior, and fill-in on a sparse hierarchy. It records that
-  feature-wise forgetting has no windup but leaks precision from the
-  shared intercept's sums into the unobservable intercept-versus-arms
-  direction, widening rare arms' predictions well beyond SIFt
+  posterior, and fill-in on a sparse hierarchy. The windup example is a
+  one-way ANOVA with a grand mean and one effect per arm; it records that
+  feature-wise forgetting has no windup but, by forgetting the grand mean
+  inside every cell's record, cuts the rare arms' effects loose from
+  their baseline, widening their cell means well beyond SIFt and
+  tightening the grand-mean-versus-effects split that no data informs
 
 **Internal**
 
