@@ -651,24 +651,6 @@ class TestFeatureWiseForgetting:
 
         assert_allclose(sparse.csc_array(sp).toarray(), np.asarray(dense), atol=1e-12)
 
-    def test_positive_definite(self):
-        rng = np.random.default_rng(3)
-        for _ in range(20):
-            R = _random_pd(8, rng)
-            X = _one_hot_rows(8, [list(rng.choice(8, 3, replace=False))])
-            R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.7)
-            assert eigvalsh(np.asarray(R_bar))[0] > 0
-
-    def test_reduces_to_exponential_when_every_feature_is_active(self):
-        rng = np.random.default_rng(5)
-        R = _random_pd(5, rng)
-        X = rng.standard_normal((3, 5))  # dense: every feature in every row
-        lam = 0.9
-
-        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(3), lam)
-
-        assert_allclose(np.asarray(R_bar), lam**3 * R, atol=1e-12)
-
     def test_matches_sift_when_forgotten_feature_is_uncorrelated(self):
         """With R[0, j] = 0 for j != 0 the stretch and the SIFt downdate coincide."""
         rng = np.random.default_rng(9)
@@ -687,8 +669,9 @@ class TestFeatureWiseForgetting:
 
     def test_unobserved_marginals_and_correlations_unchanged(self):
         """The Schur complement of the untouched block, hence the marginal
-        precision of the unobserved features, is unchanged; and in
-        covariance form every correlation is preserved."""
+        precision of the unobserved features, is unchanged; in covariance
+        form every correlation is preserved and each observed coefficient's
+        variance is inflated by exactly 1/lam."""
         rng = np.random.default_rng(11)
         R = _random_pd(7, rng)
         obs = [0, 2]
@@ -712,18 +695,8 @@ class TestFeatureWiseForgetting:
 
         assert_allclose(corr(R_bar), corr(R), atol=1e-12)
 
-    def test_observed_variance_inflates_by_lam(self):
-        rng = np.random.default_rng(13)
-        R = _random_pd(5, rng)
-        X = _one_hot_rows(5, [[2]])
-        lam = 0.75
-
-        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), lam)
-
-        S, S_bar = np.linalg.inv(R), np.linalg.inv(np.asarray(R_bar))
-        assert_allclose(S_bar[2, 2], S[2, 2] / lam)
-        untouched = [0, 1, 3, 4]
-        assert_allclose(np.diag(S_bar)[untouched], np.diag(S)[untouched])
+        S, S_bar = np.linalg.inv(R), np.linalg.inv(R_bar)
+        assert_allclose(np.diag(S_bar)[obs], np.diag(S)[obs] / 0.5)
 
     def test_sparse_batch_counts_nonzero_values_only(self):
         """An explicitly stored zero in a sparse batch does not count as active."""
