@@ -1,14 +1,18 @@
 """Forgetting rules for precision-based Bayesian recursive least squares.
 
-Three strategies for computing a "forgotten" precision matrix from the
-current precision, each addressing a limitation of the previous one:
+Four strategies for computing a "forgotten" precision matrix from the
+current precision:
 
 - :class:`ExponentialForgetting` -- scalar decay, simplest but subject to
   covariance windup under non-uniform excitation.
 - :class:`StabilizedForgetting` -- Kulhavy & Zarrop (1993) prior floor
   prevents collapse, but forgetting is isotropic.
 - :class:`SiftForgetting` -- directional forgetting via SIFt-RLS
-  (Lai & Bernstein 2024), forgets only in excited directions.
+  (Lai & Bernstein 2024), forgets only in excited directions; the
+  correction is dense on the neighbourhood of the excited features.
+- :class:`FeatureWiseForgetting` -- vector-type forgetting (Saelid & Foss
+  1983) with the factors chosen from the batch support; forgets only the
+  observed features and preserves the sparsity pattern.
 
 See ``docs/math/forgetting.rst`` for the full mathematical reference.
 
@@ -29,7 +33,7 @@ The caller then does::
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Union
+from typing import Any, NamedTuple, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -402,3 +406,87 @@ class SiftForgetting:
         else:
             R_bar = _sift_downdate_dense(precision, X_bar, lam)
         return R_bar, X_bar, y_bar
+
+
+def _active_counts(X: ArrayType) -> NDArray[np.intp]:
+    """Number of rows of ``X`` in which each feature is nonzero, shape ``(n,)``."""
+    if sparse.issparse(X):
+        X_csc = csc_array(X)
+        assert X_csc.shape is not None
+        n = X_csc.shape[1]
+        col = np.repeat(np.arange(n), np.diff(X_csc.indptr))
+        return np.bincount(col[X_csc.data != 0], minlength=n).astype(np.intp)
+    return np.count_nonzero(np.asarray(X), axis=0).astype(np.intp)
+
+
+@dataclass(frozen=True)
+class FeatureWiseForgetting:
+    """Vector-type forgetting with the factors chosen from the batch support.
+
+    ``R_bar = D R D`` with ``D = diag(lam ** (m_i / 2))``, where ``m_i``
+    is the number of rows of ``X`` in which feature ``i`` is nonzero.  A
+    feature present in every row of an ``n``-row batch decays by
+    ``lam ** n``, exactly as under :class:`ExponentialForgetting`; a
+    feature absent from the batch is untouched.
+
+    In covariance form this inflates the standard deviation of each
+    observed coefficient by ``lam ** (-m_i / 2)`` and leaves every
+    correlation and every unobserved coefficient's marginal unchanged.
+    Because it only scales rows and columns, the sparsity pattern of
+    ``R`` is preserved and the cost is one pass over its nonzeros.
+
+    Per-parameter factors of this form are the vector variable
+    forgetting factor of [1]_ [2]_ and the selective forgetting of [3]_;
+    the ``D R D`` form is equation (12) of [4]_ (and of [5]_, which calls
+    it ad hoc).  Choosing the factors from the batch support is what
+    makes the rule directional for sparse designs.  It is a coordinate
+    stretch rather than a Bayesian update: ``R - R_bar`` need not be
+    positive semidefinite [6]_, so a combination of an observed feature
+    with an unobserved one it is correlated with can come out tighter
+    than before, by an amount that grows with that correlation.  For
+    dense or strongly correlated regressors prefer :class:`SiftForgetting`.
+
+    References
+    ----------
+    .. [1] Saelid, S. & Foss, B. (1983). "Adaptive controllers with a
+       vector variable forgetting factor." *Proc. 22nd IEEE CDC*, 1488--1494.
+    .. [2] Saelid, S., Egeland, O. & Foss, B. (1985). "A solution to the
+       blow-up problem in adaptive controllers." *Modeling, Identification
+       and Control*, 6(1), 39--56.
+    .. [3] Parkum, J. E., Poulsen, N. K. & Holst, J. (1992). "Recursive
+       forgetting algorithms." *Int. J. Control*, 55(1), 109--128.
+    .. [4] Fraccaroli, F., Peruffo, A. & Zorzi, M. (2015). "A new recursive
+       least-squares method with multiple forgetting schemes."
+       *arXiv:1503.07338*.
+    .. [5] Vahidi, A., Stefanopoulou, A. & Peng, H. (2005). "Recursive least
+       squares with forgetting for online estimation of vehicle mass and
+       road grade: theory and experiments." *Vehicle System Dynamics*,
+       43(1), 31--55.
+    .. [6] Lai, B. & Bernstein, D. S. (2024). "Generalized forgetting
+       recursive least squares: stability and robustness guarantees."
+       *IEEE Trans. Automatic Control*. *arXiv:2308.04259*.
+    """
+
+    def __call__(
+        self,
+        precision: ArrayType,
+        X: ArrayType,
+        y: NDArray[Any],
+        lam: float,
+    ) -> ForgettingResult:
+        d = lam ** (_active_counts(X) / 2.0)
+        if sparse.issparse(precision):
+            R = csc_array(precision)
+            assert R.shape is not None
+            # D R D on the stored entries only: rows by d[i], columns by d[j].
+            data = R.data * d[R.indices]
+            data *= np.repeat(d, np.diff(R.indptr))
+            R_bar: ArrayType = csc_array(
+                (data, R.indices.copy(), R.indptr.copy()), shape=R.shape
+            )
+        else:
+            R_bar = (d[:, np.newaxis] * np.asarray(precision)) * d[np.newaxis, :]
+        # The batch is passed through untouched; a sparse X stays sparse, as
+        # in the sparse SIFt path.
+        X_eff = cast(NDArray[Any], X) if sparse.issparse(X) else np.asarray(X)
+        return R_bar, X_eff, y

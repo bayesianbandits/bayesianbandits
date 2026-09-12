@@ -1,9 +1,10 @@
 Forgetting Strategies
 =====================
 
-Three strategies for shrinking the posterior precision matrix before
-a recursive Bayesian update.  Each addresses a limitation of the
-previous one.  The update and sampling steps are unchanged;
+Four strategies for shrinking the posterior precision matrix before
+a recursive Bayesian update.  Each of the first three addresses a
+limitation of the previous one; the fourth trades exactness for the
+sparsity pattern.  The update and sampling steps are unchanged;
 see :doc:`normal` for those details and :doc:`/howto/decay` for
 practical tuning guidance.
 
@@ -37,6 +38,10 @@ Symbols
      - Number of features
    * - :math:`\varepsilon`
      - Eigenvalue threshold for batch filtering
+   * - :math:`m_i`
+     - Number of rows of the batch in which feature :math:`i` is nonzero
+   * - :math:`\mathbf{D}`
+     - Diagonal matrix of per-feature factors :math:`\gamma^{m_i/2}`
 
 
 The update loop
@@ -57,7 +62,7 @@ The subsequent update is standard:
    \boldsymbol{\mu}_n
    &= \boldsymbol{\Lambda}_n^{-1}\,\boldsymbol{\eta}_n
 
-The three strategies below differ only in the forgetting rule.
+The four strategies below differ only in the forgetting rule.
 
 
 Exponential forgetting
@@ -180,6 +185,100 @@ handles rank deficiency and is faster for the small Gram matrices
 that arise in practice.
 
 
+Feature-wise forgetting (vector-type)
+-------------------------------------
+
+.. math::
+
+   \bar{\boldsymbol{\Lambda}} = \mathbf{D}\,\boldsymbol{\Lambda}\,\mathbf{D},
+   \qquad
+   \mathbf{D} = \operatorname{diag}\bigl(\gamma^{m_i/2}\bigr)
+
+Each feature is forgotten by :math:`\gamma` once per row of the batch
+in which it appears, and features absent from the batch are not
+forgotten at all.  Entry :math:`(i, j)` of the precision is scaled by
+:math:`\gamma^{(m_i + m_j)/2}`, so the diagonal of an observed feature
+scales by :math:`\gamma^{m_i}` and its cross terms with unobserved
+features by :math:`\gamma^{m_i/2}`.  When every feature appears in
+every row this is exponential forgetting; when the batch is one-hot it
+touches one row and one column per active feature.
+
+Per-parameter forgetting factors applied as a congruence of the
+covariance,
+:math:`\bar{\mathbf{P}} = \boldsymbol{\Lambda}_f^{-1/2}\,\mathbf{P}\,\boldsymbol{\Lambda}_f^{-1/2}`,
+are the *vector variable forgetting factor* of [4]_ [5]_ and the
+*selective forgetting* of [6]_; the form above is equation (12) of
+[7]_ and of [8]_.  Those works fix the factors per parameter from prior
+knowledge of how fast each one drifts.  Setting them from the batch
+support, :math:`\gamma` on the active features and :math:`1`
+elsewhere, is what makes the rule directional: it is the oracle
+"multiple forgetting" baseline that [3]_ reports as comparable to
+SIFt, with the oracle read off the regressor.
+
+
+What it preserves
+~~~~~~~~~~~~~~~~~
+
+In covariance form the rule is
+:math:`\bar{\boldsymbol{\Sigma}} = \mathbf{D}^{-1}\boldsymbol{\Sigma}\mathbf{D}^{-1}`:
+the standard deviation of each observed coefficient is inflated by
+:math:`\gamma^{-m_i/2}` and nothing else moves.  Consequently
+
+- every correlation between coefficients is unchanged;
+- the marginal posterior of every unobserved feature is unchanged
+  (the Schur complement of the untouched block is invariant, which is
+  what fixes the exponent at one half);
+- the sparsity pattern of :math:`\boldsymbol{\Lambda}` is unchanged,
+  so a sparse factorization refactorizes numerically on the same
+  symbolic analysis;
+- positive definiteness is preserved, by congruence.
+
+The cost is one pass over the nonzeros of :math:`\boldsymbol{\Lambda}`,
+the same as exponential forgetting.
+
+
+What it gives up
+~~~~~~~~~~~~~~~~
+
+The rule is a coordinate stretch of the posterior about its mean, not
+a Bayesian update: it is neither conditioning nor a transition model.
+:math:`\boldsymbol{\Lambda} - \bar{\boldsymbol{\Lambda}}` is not
+positive semidefinite in general, so the rule is not *proper* in the
+sense of [9]_, which notes the same of the multiple-forgetting scheme
+of [8]_.  Concretely, stretching a tilted ellipse along one axis
+rotates its principal axes, so the combination of an observed feature
+with a correlated unobserved one that the posterior claims to know
+best moves to a new combination, and that combination can come out
+tighter than any data supported.  The rotation is in the same
+direction as the exact update; the overclaim is in its width, and it
+grows with the correlation.  Relative to a Kalman step inflating the
+observed coefficient by the same amount, the best-known combination is
+about 2% too tight at correlation :math:`0.8` and
+:math:`\gamma = 0.98`, 8% at :math:`0.95`, and 29% at :math:`0.99`.
+The next observation of that feature re-pins the combination from
+data.
+
+SIFt is the exact counterpart: it adds noise along the excited
+direction rather than stretching, which can never tighten any
+direction, and it pays for that with a correction that is dense on the
+neighbourhood of the active features.  In the special case where the
+observed feature is conditionally independent of every other
+(its row of :math:`\boldsymbol{\Lambda}` is diagonal) the two rules
+coincide.
+
+
+Choosing :math:`\gamma`
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The same :math:`\gamma` means different amounts of memory under
+different rules.  Per row, exponential forgetting removes
+:math:`p \log\gamma` of log-determinant from the precision,
+feature-wise removes :math:`k \log\gamma` where :math:`k` is the number
+of active features, and SIFt removes exactly :math:`\log\gamma`.  A
+SIFt factor of :math:`\gamma^k` is therefore a reasonable starting
+point for the memory of a feature-wise factor of :math:`\gamma`.
+
+
 Choosing a strategy
 -------------------
 
@@ -204,13 +303,26 @@ Choosing a strategy
        against collapse
    * - Directional (SIFt)
      - Preserves precision in unexcited directions; natural
-       eigenvalue floor
-     - Slightly more compute per step
-     - Sparse / high-dimensional features with heterogeneous
-       excitation
+       eigenvalue floor; exact
+     - Correction is dense on the neighbourhood of the excited
+       features, so a sparse precision fills in
+     - Dense or correlated continuous features
+   * - Feature-wise
+     - Forgets only observed features; preserves the sparsity
+       pattern; exponential cost
+     - A coordinate stretch, not a Bayesian update; can
+       over-tighten combinations with strongly correlated
+       unobserved features
+     - One-hot and hierarchical sparse designs
 
 Stabilized and directional forgetting address orthogonal problems
-(prior collapse vs. isotropic decay) and can be combined.
+(prior collapse vs. isotropic decay) and can be combined.  On one-hot
+hierarchies, feature-wise and SIFt reach the same predictive accuracy
+and calibration; feature-wise does so at the cost and pattern of
+exponential forgetting, while SIFt's precision becomes dense over
+every feature ever observed.  On dense low-rank regressors feature-wise
+reduces to exponential forgetting and only SIFt protects the unexcited
+directions.
 
 
 Adaptation from SIFt-RLS
@@ -340,3 +452,28 @@ References
 .. [3] Lai, B. & Bernstein, D. S. (2024). "SIFt-RLS: Subspace of
    Information Forgetting Recursive Least Squares."
    *arXiv:2404.10844*.
+
+.. [4] Saelid, S. & Foss, B. (1983). "Adaptive controllers with a vector
+   variable forgetting factor." *Proceedings of the 22nd IEEE Conference
+   on Decision and Control*, 1488--1494.
+
+.. [5] Saelid, S., Egeland, O. & Foss, B. (1985). "A solution to the
+   blow-up problem in adaptive controllers." *Modeling, Identification
+   and Control*, 6(1), 39--56.
+
+.. [6] Parkum, J. E., Poulsen, N. K. & Holst, J. (1992). "Recursive
+   forgetting algorithms." *International Journal of Control*, 55(1),
+   109--128.
+
+.. [7] Fraccaroli, F., Peruffo, A. & Zorzi, M. (2015). "A new recursive
+   least-squares method with multiple forgetting schemes."
+   *arXiv:1503.07338*.
+
+.. [8] Vahidi, A., Stefanopoulou, A. & Peng, H. (2005). "Recursive least
+   squares with forgetting for online estimation of vehicle mass and
+   road grade: theory and experiments." *Vehicle System Dynamics*,
+   43(1), 31--55.
+
+.. [9] Lai, B. & Bernstein, D. S. (2024). "Generalized forgetting
+   recursive least squares: stability and robustness guarantees."
+   *IEEE Transactions on Automatic Control*. *arXiv:2308.04259*.
