@@ -32,6 +32,19 @@ Unreleased
 
 **Breaking changes**
 
+- ``decay`` has one signature everywhere,
+  ``decay(forgetting=None, *, decay_rate=None, steps=1)``, and the
+  ``Learner`` protocol requires it. ``decay_rate`` is keyword-only on the
+  agents and pipelines, where it used to be positional, and
+  ``Agent.decay(0.9)`` is a ``TypeError`` that says to pass
+  ``decay_rate=``. A learner of your own with the old
+  ``decay(X, *, decay_rate=None)`` signature no longer works inside an
+  ``Arm``: arms call ``decay(forgetting, decay_rate=..., steps=...)``.
+  Internally, the estimators' private ``_apply_decay`` hook is replaced
+  by ``_apply_tick(rule, steps)``, the EB ``_reinject_prior`` helper is
+  gone, and the rule objects in ``_forgetting.py`` are built with a
+  ``rate`` and applied through ``update``/``tick`` rather than called.
+
 - ``NonContextualAgentPipeline`` is removed, and ``AgentPipeline`` is now
   a class rather than a factory dispatching between it and
   ``ContextualAgentPipeline``. A pipeline's steps transform the context on

@@ -426,8 +426,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """
         Forget: the clock ticked ``steps`` times with no new observations.
@@ -797,8 +797,8 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """
         Forget: the clock ticked ``steps`` times with no new observations.
@@ -1698,8 +1698,8 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """
         Forget: the clock ticked ``steps`` times with no new observations.

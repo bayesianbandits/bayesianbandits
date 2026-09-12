@@ -177,8 +177,8 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget on every arm of the wrapped agent: the clock ticked.
 
@@ -195,7 +195,7 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
         """
         if forgetting is not None and not hasattr(forgetting, "tick"):
             forgetting = self.transform(forgetting)
-        self._agent.decay(forgetting, steps=steps, decay_rate=decay_rate)
+        self._agent.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     # Delegation methods
     def add_arm(self, arm: Arm[Any, TokenType]) -> None:

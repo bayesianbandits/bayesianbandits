@@ -284,3 +284,20 @@ class TestPassThrough:
         assert_allclose(
             _dense(cast(Any, learner.learner).cov_inv_), 0.5 * before + 0.5 * np.eye(2)
         )
+
+
+class TestBreakingChanges:
+    def test_decay_rate_is_keyword_only(self):
+        est, X = _fit_normal(False)
+        with pytest.raises(TypeError):
+            est.decay(X, 0.9)  # type: ignore[misc]
+
+    def test_a_bare_rate_is_refused_with_a_pointer(self):
+        agent = Agent(
+            [Arm(0, learner=GammaRegressor(alpha=1.0, beta=1.0))],
+            ThompsonSampling(),
+            random_seed=0,
+        )
+        agent.select_for_update(0).update(np.array([3.0]))
+        with pytest.raises(TypeError, match="decay_rate="):
+            agent.decay(0.5)

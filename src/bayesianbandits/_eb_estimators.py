@@ -212,8 +212,8 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """
         Forget: the clock ticked ``steps`` times with no new observations.

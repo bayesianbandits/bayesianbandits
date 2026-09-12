@@ -130,8 +130,8 @@ class Learner(Protocol[X_contra]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None: ...
     def predict(self, X: X_contra) -> NDArray[np.float64]: ...
     @property
@@ -552,8 +552,8 @@ class Arm(MemoryUsageMixin, Generic[ContextType, TokenType]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget: the clock ticked ``steps`` times with no new observations.
 
@@ -572,7 +572,7 @@ class Arm(MemoryUsageMixin, Generic[ContextType, TokenType]):
             Shorthand for the learner's default rule at this rate.
         """
         assert self.learner is not None
-        self.learner.decay(forgetting, steps=steps, decay_rate=decay_rate)
+        self.learner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     def __repr__(self) -> str:
         return (

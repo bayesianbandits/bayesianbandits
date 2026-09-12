@@ -369,8 +369,8 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget on the wrapped learner: the clock ticked ``steps`` times.
 
@@ -387,7 +387,7 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         """
         if forgetting is not None and not hasattr(forgetting, "tick"):
             forgetting = self._apply_transformers(forgetting)
-        self._learner.decay(forgetting, steps=steps, decay_rate=decay_rate)
+        self._learner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     def predict(self, X: X_contra) -> NDArray[np.float64]:
         """Predict expected values.

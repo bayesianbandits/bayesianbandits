@@ -45,8 +45,8 @@ class MockLearner:
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         self.decay_calls.append((forgetting, steps, decay_rate))
 

@@ -528,8 +528,8 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget on every arm: the clock ticked ``steps`` times.
 
@@ -548,7 +548,7 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
             Shorthand for each learner's default rule at this rate.
         """
         for arm in self.arms:
-            arm.decay(forgetting, steps=steps, decay_rate=decay_rate)
+            arm.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
 
 class Agent(MemoryUsageMixin, Generic[TokenType]):
@@ -810,8 +810,8 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget on every arm: the clock ticked ``steps`` times.
 
@@ -825,7 +825,7 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         decay_rate : float, optional
             Shorthand for each learner's default rule at this rate.
         """
-        self._inner.decay(forgetting, steps=steps, decay_rate=decay_rate)
+        self._inner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
 
 class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
@@ -1466,8 +1466,8 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         self,
         forgetting: Any = None,
         *,
-        steps: float = 1,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """Forget on the shared learner: the clock ticked ``steps`` times.
 
@@ -1489,4 +1489,4 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             forgetting = self.arm_featurizer.transform(
                 forgetting, action_tokens=single_token
             )
-        self.learner.decay(forgetting, steps=steps, decay_rate=decay_rate)
+        self.learner.decay(forgetting, decay_rate=decay_rate, steps=steps)

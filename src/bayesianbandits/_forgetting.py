@@ -38,6 +38,7 @@ The caller then does::
 
 from __future__ import annotations
 
+import numbers
 import warnings
 from dataclasses import dataclass
 from typing import Any, NamedTuple, Optional, Protocol, Union, cast, runtime_checkable
@@ -600,6 +601,11 @@ def resolve_tick(
     read the rows (the grouped conjugate models) can keep doing so.
     """
     legacy_X = None
+    if isinstance(forgetting, numbers.Real) and not isinstance(forgetting, bool):
+        raise TypeError(
+            "decay() takes a forgetting rule, not a bare rate; pass "
+            "decay_rate=... or a rule such as ExponentialForgetting(rate)."
+        )
     if forgetting is not None and not isinstance(forgetting, TickRule):
         if isinstance(forgetting, UpdateRule):
             raise TypeError(
