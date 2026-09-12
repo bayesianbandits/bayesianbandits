@@ -131,39 +131,39 @@ def test_filter_batch_sparse_1m(benchmark, forgetting_sparse_1m):
 # ---------------------------------------------------------------------------
 
 RULES = [
-    pytest.param(ExponentialForgetting(), id="exponential"),
-    pytest.param(StabilizedForgetting(alpha=1.0), id="stabilized"),
-    pytest.param(SiftForgetting(eps=1e-12), id="sift"),
-    pytest.param(FeatureWiseForgetting(), id="feature-wise"),
+    pytest.param(ExponentialForgetting(LAM), id="exponential"),
+    pytest.param(StabilizedForgetting(LAM, alpha=1.0), id="stabilized"),
+    pytest.param(SiftForgetting(LAM, eps=1e-12), id="sift"),
+    pytest.param(FeatureWiseForgetting(LAM), id="feature-wise"),
 ]
 
 
 @pytest.mark.parametrize("rule", RULES)
 def test_rule_dense_100(benchmark, rule, forgetting_dense_100):
     R, X, y = forgetting_dense_100
-    benchmark(rule, R, X, y, LAM)
+    benchmark(rule.update, R, X, y, alpha=1.0)
 
 
 @pytest.mark.parametrize("rule", RULES)
 def test_rule_dense_1k(benchmark, rule, forgetting_dense_1k):
     R, X, y = forgetting_dense_1k
-    benchmark(rule, R, X, y, LAM)
+    benchmark(rule.update, R, X, y, alpha=1.0)
 
 
 @pytest.mark.parametrize("rule", RULES)
 def test_rule_sparse_1k(benchmark, rule, forgetting_sparse_1k):
     R, X, y = forgetting_sparse_1k
-    benchmark(rule, R, X, y, LAM)
+    benchmark(rule.update, R, X, y, alpha=1.0)
 
 
 @pytest.mark.parametrize("rule", RULES)
 def test_rule_sparse_100k(benchmark, rule, forgetting_sparse_100k):
     R, X, y = forgetting_sparse_100k
-    benchmark(rule, R, X, y, LAM)
+    benchmark(rule.update, R, X, y, alpha=1.0)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize("rule", RULES)
 def test_rule_sparse_1m(benchmark, rule, forgetting_sparse_1m):
     R, X, y = forgetting_sparse_1m
-    benchmark(rule, R, X, y, LAM)
+    benchmark(rule.update, R, X, y, alpha=1.0)

@@ -114,7 +114,7 @@ def test_decay_then_update():
     precision_after_fit = agent.arm(token).learner.cov_inv_.copy()
 
     # Decay widens posterior (lower precision) -- RST uses 0.99
-    agent.decay(np.array([[0.0, 0.0]]), decay_rate=0.99)
+    agent.decay(decay_rate=0.99)
     precision_after_decay = agent.arm(token).learner.cov_inv_.copy()
     assert np.all(np.diag(precision_after_decay) < np.diag(precision_after_fit))
 

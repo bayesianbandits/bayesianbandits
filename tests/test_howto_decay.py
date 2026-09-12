@@ -28,7 +28,7 @@ def test_decoupled_decay():
     precision_before = updated_arm.learner.cov_inv_.copy()
 
     # Decay all arms
-    agent.decay(np.array([[0.0, 0.0]]), decay_rate=0.95)
+    agent.decay(decay_rate=0.95)
 
     # Precision should have shrunk
     precision_after = updated_arm.learner.cov_inv_
@@ -107,7 +107,7 @@ def test_eb_stabilized_forgetting():
 
     # Decay aggressively many times
     for _ in range(100):
-        learner.decay(X, decay_rate=0.5)
+        learner.decay(decay_rate=0.5, steps=len(X))
 
     # With stabilized forgetting, the prior contribution converges to alpha
     # instead of zero. The diagonal should stay bounded above zero.

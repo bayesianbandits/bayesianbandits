@@ -288,7 +288,7 @@ class TestEBNormalRegressor:
         eff_yTy_before = model._eff_yTy
         eff_XTy_before = model._eff_XTy.copy()
 
-        model.decay(X[:1])  # decay by 1 observation
+        model.decay(decay_rate=0.99)  # one tick
 
         decay = 0.99**1
         # Stabilized forgetting: prior_scalar converges to alpha instead of
@@ -311,7 +311,7 @@ class TestEBNormalRegressor:
             model.cov_inv_.toarray().copy() if sparse else model.cov_inv_.copy()
         )
 
-        model.decay(X[:1], decay_rate=1.0)
+        model.decay(decay_rate=1.0)
 
         precision_after = model.cov_inv_.toarray() if sparse else model.cov_inv_
         np.testing.assert_allclose(precision_after, precision_before)
@@ -371,7 +371,7 @@ class TestEBNormalRegressor:
         prior_decay = 0.99**n_obs
         expected_reinjection = (1 - prior_decay) * model.alpha
 
-        model.decay(X[:1])
+        model.decay(decay_rate=0.99)
 
         if sparse:
             diag_after = model.cov_inv_.toarray().diagonal()
@@ -393,10 +393,8 @@ class TestEBNormalRegressor:
             learning_rate=0.99,
             sparse=sparse,
         )
-        rng = np.random.default_rng(0)
-        X = rng.standard_normal((5, 3))
         # Should not raise
-        model.decay(X)
+        model.decay(decay_rate=0.99, steps=5)
 
     def test_partial_fit_cold_start(self, regression_data, sparse):
         """partial_fit with no prior fit() or sample() delegates to fit()."""
@@ -1109,10 +1107,9 @@ class TestEBDirichletClassifier:
         model.fit(X, y)
         prior_after_fit = model.prior_.copy()
 
-        # Decay ALL groups (pass unique group IDs)
-        group_ids = np.array([[1], [2], [3]])
+        # Decay all groups
         for _ in range(200):
-            model.decay(group_ids)
+            model.decay(decay_rate=model.learning_rate)
 
         # Alphas should converge to prior, not zero
         for key in list(model.known_alphas_.keys()):
@@ -1204,7 +1201,7 @@ class TestEBDirichletClassifier:
             model.partial_fit(np.array([[g]]), np.array([cls]))
 
             if i % 3 == 0:
-                model.decay(np.array([[rng.integers(0, 10)]]))
+                model.decay(decay_rate=model.learning_rate)
 
             for key, val in model.known_alphas_.items():
                 if hasattr(val, "__len__"):
@@ -1293,7 +1290,7 @@ class TestEBDirichletClassifier:
         model = EmpiricalBayesDirichletClassifier(
             {0: 2.0, 1: 3.0}, learning_rate=lr, random_state=42
         )
-        model.decay(np.array([[1], [2]]))
+        model.decay(decay_rate=lr)
 
         expected = np.array([2.0, 3.0])
         for key in [1, 2]:
@@ -1448,9 +1445,8 @@ class TestEBGammaRegressor:
         model.fit(X, y)
         prior_after_fit = model.prior_.copy()
 
-        group_ids = np.array([[1], [2], [3]])
         for _ in range(200):
-            model.decay(group_ids)
+            model.decay(decay_rate=model.learning_rate)
 
         for key in list(model.coef_.keys()):
             np.testing.assert_allclose(
@@ -1469,7 +1465,7 @@ class TestEBGammaRegressor:
         model = EmpiricalBayesGammaRegressor(
             alpha=2.0, beta=3.0, learning_rate=lr, random_state=42
         )
-        model.decay(np.array([[1], [2]]))
+        model.decay(decay_rate=lr)
 
         expected = np.array([2.0, 3.0])
         for key in [1, 2]:
@@ -1551,7 +1547,7 @@ class TestEBGammaRegressor:
             model.partial_fit(np.array([[g]]), np.array([count]))
 
             if i % 3 == 0:
-                model.decay(np.array([[rng.integers(0, 10)]]))
+                model.decay(decay_rate=model.learning_rate)
 
             for key, val in model.coef_.items():
                 counts = val - model.prior_

@@ -44,6 +44,7 @@ from ._estimators import (
     _invalidate_cached_properties,
     compute_effective_weights,
 )
+from ._forgetting import StabilizedForgetting, resolve_tick
 from ._gaussian import LaplaceApproximator, LinkFunction, PosteriorApproximator
 from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
@@ -205,26 +206,35 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
 
         return result
 
+    _default_tick_rule: type = StabilizedForgetting
+
     def decay(
         self,
-        X: Union[NDArray[Any], csc_array],
+        forgetting: Any = None,
         *,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
         """
-        Decay the precision matrix with stabilized prior re-injection.
+        Forget: the clock ticked ``steps`` times with no new observations.
 
-        Applies ``Λ_new = γⁿ·Λ_old`` and re-injects ``(1 - γⁿ)·alpha``
-        onto the diagonal (Kulhavy & Zarrop 1993), so the prior's
-        contribution converges to ``alpha`` rather than zero. The
-        running statistics behind the online EB step decay alongside.
+        Defaults to stabilized forgetting (Kulhavy & Zarrop 1993):
+        ``Λ ← γ·Λ + (1 - γ)·alpha·I`` with ``γ = rate ** steps``, so the
+        prior's contribution converges to the tuned ``alpha`` rather than
+        zero. The running statistics behind the online EB step decay
+        alongside. :class:`~bayesianbandits.ExponentialForgetting` is
+        accepted; the directional rules are not, because the EB step
+        relies on the prior being a scalar on the diagonal.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only for its number of rows ``n``.
-        decay_rate : float, default=None
-            Decay factor in (0, 1]. If None, uses ``learning_rate``.
+        forgetting : StabilizedForgetting or ExponentialForgetting, optional
+            The rule to tick with, carrying its own rate. Default:
+            ``StabilizedForgetting(decay_rate)``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for ``forgetting=StabilizedForgetting(decay_rate)``.
 
         See Also
         --------
@@ -232,26 +242,23 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         """
         if not hasattr(self, "coef_"):
             return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None
-        prior_decay = decay_rate ** X.shape[0]
-
-        prior_reinjection = 0.0
+        rule, steps, _ = resolve_tick(
+            forgetting,
+            steps=steps,
+            decay_rate=decay_rate,
+            learning_rate=self.learning_rate,
+            default=self._default_tick_rule,
+        )
+        gamma = rule.rate**steps
         if hasattr(self, "_prior_scalar"):
-            self._prior_scalar = (
-                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
-            )
-            prior_reinjection = (1 - prior_decay) * self.alpha
+            if isinstance(rule, StabilizedForgetting):
+                floor = rule.floor(self.alpha)
+                self._prior_scalar = gamma * self._prior_scalar + (1 - gamma) * floor
+            else:
+                self._prior_scalar = gamma * self._prior_scalar
         if hasattr(self, "_effective_n"):
-            self._decay_stats(prior_decay)
-
-        # Base class applies uniform decay: cov_inv_ *= prior_decay
-        super().decay(X, decay_rate=decay_rate)
-
-        self._reinject_prior(prior_reinjection)
+            self._decay_stats(gamma)
+        self._apply_tick(rule, steps)
 
     # ---- shared mechanics -------------------------------------------------
 
@@ -271,32 +278,6 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
             self.__dict__.pop("_prior_scalar", None)
         else:
             self.__dict__["_prior_scalar"] = prior_scalar_old
-
-    def _drop_factor(self) -> None:
-        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
-        refactorizes from: a diagonal shift leaves the pattern alone."""
-        factor = self.__dict__.pop("_precision_factor")
-        if self.sparse:
-            self._factor_hint = factor
-
-    def _reinject_prior(self, prior_reinjection: float) -> None:
-        """Add stabilized prior re-injection to the precision diagonal.
-
-        After exponential decay the prior contribution shrinks toward zero.
-        This adds back ``prior_reinjection`` to every diagonal entry so that
-        the prior converges to ``alpha`` instead (Kulhavy & Zarrop, 1993).
-        """
-        if prior_reinjection == 0.0:
-            return
-        if self.sparse:
-            cov_inv = cast(csc_array, self.cov_inv_)
-            self._shift_diagonal(cov_inv, prior_reinjection)
-            self.cov_inv_ = cov_inv
-        else:
-            diag_idx = np.diag_indices_from(self.cov_inv_)
-            self.cov_inv_[diag_idx] += prior_reinjection
-        if "_precision_factor" in self.__dict__:
-            self._drop_factor()
 
     def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
         """``cov_inv += shift * I`` in place.
@@ -1549,39 +1530,9 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
 
         return result
 
-    def decay(
-        self,
-        X: NDArray[Any],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """Decay with stabilized prior re-injection.
-
-        Applies exponential forgetting and re-injects the EB-tuned
-        prior so that the prior contribution converges to ``prior_``
-        rather than zero. This ensures that effective counts
-        (``known_alphas - prior``) remain correct after decay.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, 1)
-            Used to identify which groups to decay.
-        decay_rate : float, default=None
-            Decay factor in (0, 1]. If None, uses ``self.learning_rate``.
-        """
-        if not hasattr(self, "known_alphas_"):
-            self._initialize_prior()
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        for x in X:
-            key = x.item()
-            # Stabilized forgetting: decay + re-inject prior
-            self.known_alphas_[key] = np.asarray(
-                decay_rate * self.known_alphas_[key] + (1 - decay_rate) * self.prior_,
-                dtype=np.float64,
-            )
+    # decay() defaults to stabilized forgetting toward the tuned prior_, so
+    # effective counts (known_alphas - prior) stay right after a tick.
+    _default_tick_rule: type = StabilizedForgetting
 
 
 class EmpiricalBayesGammaRegressor(GammaRegressor):
@@ -1864,27 +1815,5 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
 
         return result
 
-    def decay(
-        self,
-        X: NDArray[Any],
-        *,
-        decay_rate: Optional[float] = None,
-    ) -> None:
-        """Decay with stabilized prior re-injection.
-
-        Applies exponential forgetting and re-injects the EB-tuned
-        prior so that the prior contribution converges to ``prior_``
-        rather than zero.
-        """
-        if not hasattr(self, "coef_"):
-            self._initialize_prior()
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        for x in X:
-            key = x.item()
-            self.coef_[key] = np.asarray(
-                decay_rate * self.coef_[key] + (1 - decay_rate) * self.prior_,
-                dtype=np.float64,
-            )
+    # decay() defaults to stabilized forgetting toward the tuned prior_.
+    _default_tick_rule: type = StabilizedForgetting

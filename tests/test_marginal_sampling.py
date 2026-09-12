@@ -89,7 +89,7 @@ class TestMarginalSd:
         X = sp.csc_array(
             sp.random(6, 400, density=0.05, random_state=3)  # type: ignore[call-arg]
         )
-        est.decay(X.toarray(), decay_rate=0.9)
+        est.decay(decay_rate=0.9)
         draws = est.sample_marginal(X, size=100_000)
         sd_ref = _reference_sd(est, X.toarray())
         assert_allclose(draws.std(axis=0), sd_ref, rtol=3e-2)

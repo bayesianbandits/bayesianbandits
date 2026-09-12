@@ -365,18 +365,29 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         self._learner.partial_fit(X_transformed, y, sample_weight)
         return self
 
-    def decay(self, X: X_contra, *, decay_rate: Optional[float] = None) -> None:
-        """Decay the learner's parameters.
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        decay_rate: Optional[float] = None,
+        steps: float = 1,
+    ) -> None:
+        """Forget on the wrapped learner: the clock ticked ``steps`` times.
 
         Parameters
         ----------
-        X : X_contra
-            Input data (enriched features from ArmFeaturizer)
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. A context
+            array here is the deprecated calling convention and is
+            transformed through the pipeline steps before it is passed on.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
         decay_rate : float, optional
-            Rate of decay
+            Shorthand for the learner's default rule at this rate.
         """
-        X_transformed = self._apply_transformers(X)
-        self._learner.decay(X_transformed, decay_rate=decay_rate)
+        if forgetting is not None and not hasattr(forgetting, "tick"):
+            forgetting = self._apply_transformers(forgetting)
+        self._learner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     def predict(self, X: X_contra) -> NDArray[np.float64]:
         """Predict expected values.

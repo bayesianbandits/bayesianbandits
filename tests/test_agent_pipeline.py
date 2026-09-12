@@ -209,10 +209,8 @@ class TestAgentPipeline:
 
         pipeline = AgentPipeline(steps, agent)
 
-        X = np.array([[1.0]])
-
         # Should not raise
-        pipeline.decay(X, decay_rate=0.5)
+        pipeline.decay(decay_rate=0.5)
 
     def test_transform(self):
         """Test direct transform method."""
@@ -603,8 +601,7 @@ class TestCoverage:
         agent = ContextualAgent(arms, ThompsonSampling())
         pipeline = AgentPipeline([("identity", FunctionTransformer())], agent)
 
-        X = np.array([[1.0]])
-        pipeline.decay(X, decay_rate=0.7)
+        pipeline.decay(decay_rate=0.7)
 
     def test_pipeline_len_and_getitem_edge_cases(self):
         """Test pipeline length and indexing edge cases."""

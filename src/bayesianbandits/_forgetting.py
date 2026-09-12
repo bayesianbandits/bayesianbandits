@@ -16,12 +16,18 @@ current precision:
 
 See ``docs/math/forgetting.rst`` for the full mathematical reference.
 
-Each forgetting rule is a frozen dataclass callable with signature::
+Each rule is a frozen dataclass carrying its own forgetting factor
+``rate``. Two events can forget:
 
-    (precision, X, y, lam) -> (R_bar, X_eff, y_eff) | None
-
-where ``R_bar`` is the forgotten precision, ``(X_eff, y_eff)`` is the
-effective batch for the RLS update, and ``None`` means "skip this batch."
+- A **tick** of the clock, with no batch: ``rule.tick(precision, alpha=...,
+  steps=n)`` returns the precision after ``n`` steps. Only the uniform
+  rules (:class:`ExponentialForgetting`, :class:`StabilizedForgetting`)
+  implement it; this is what an estimator's ``decay`` applies.
+- An **update** on a batch: ``rule.update(precision, X, y, alpha=...)``
+  returns ``(R_bar, X_eff, y_eff)`` or ``None``, where ``R_bar`` is the
+  forgotten precision, ``(X_eff, y_eff)`` is the effective batch for the
+  RLS update, and ``None`` means "skip this batch." Every rule implements
+  it; the directional rules forget only along what the batch excites.
 
 The caller then does::
 
@@ -32,8 +38,10 @@ The caller then does::
 
 from __future__ import annotations
 
+import numbers
+import warnings
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Union, cast
+from typing import Any, NamedTuple, Optional, Protocol, Union, cast, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -46,6 +54,28 @@ from bayesianbandits._blas_helpers import dsyrk
 ArrayType = Union[NDArray[Any], csc_array]
 
 ForgettingResult = tuple[ArrayType, NDArray[Any], NDArray[Any]]
+
+
+@runtime_checkable
+class TickRule(Protocol):
+    """A forgetting rule that can be applied without a batch: the clock ticked."""
+
+    rate: float
+
+    def tick(
+        self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
+    ) -> ArrayType: ...
+
+
+@runtime_checkable
+class UpdateRule(Protocol):
+    """A forgetting rule applied to a batch before it is absorbed."""
+
+    rate: float
+
+    def update(
+        self, precision: ArrayType, X: ArrayType, y: NDArray[Any], *, alpha: float
+    ) -> ForgettingResult | None: ...
 
 
 class _SparseFilterResult(NamedTuple):
@@ -287,34 +317,55 @@ def _sift_downdate_sparse(
 
 @dataclass(frozen=True)
 class ExponentialForgetting:
-    """Uniform scalar decay: ``R_bar = lam * R``.
+    """Uniform scalar decay: ``R_bar = rate * R``.
 
     Equivalent to the predict step of a Kalman filter with random-walk
-    process noise ``Q = (1 - lam) * Sigma``.  All eigenvalues of the
-    precision are scaled equally.  Risk: covariance windup when
-    excitation is non-uniform (unexcited eigenvalues → 0).
+    process noise ``Q = (1 - rate) * Sigma``.  All eigenvalues of the
+    precision are scaled equally, the prior included.  Risk: covariance
+    windup when excitation is non-uniform (unexcited eigenvalues → 0).
+
+    Parameters
+    ----------
+    rate : float
+        Forgetting factor in (0, 1], applied once per tick or per batch.
     """
 
-    def __call__(
+    rate: float
+
+    def tick(
+        self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
+    ) -> ArrayType:
+        return (self.rate**steps) * precision
+
+    def update(
         self,
         precision: ArrayType,
         X: ArrayType,
         y: NDArray[Any],
-        lam: float,
+        *,
+        alpha: float,
     ) -> ForgettingResult:
-        return lam * precision, np.asarray(X), y
+        return self.rate * precision, np.asarray(X), y
 
 
 @dataclass(frozen=True)
 class StabilizedForgetting:
-    """Kulhavy-Zarrop stabilized forgetting [1]_.
+    """Kulhavy-Zarrop stabilized forgetting.
 
-    ``R_bar = lam * R + (1 - lam) * alpha * I``
+    ``R_bar = rate * R + (1 - rate) * alpha * I``, from [1]_.
 
-    The prior floor ``(1 - lam) * alpha * I`` prevents precision from
+    The prior floor ``(1 - rate) * alpha * I`` prevents precision from
     collapsing to zero under sustained forgetting.  The prior scalar
     converges to ``alpha`` under repeated application regardless of
     starting value.  Still isotropic: all directions decay equally.
+
+    Parameters
+    ----------
+    rate : float
+        Forgetting factor in (0, 1], applied once per tick or per batch.
+    alpha : float, optional
+        The prior precision to floor at. ``None`` (the default) means the
+        estimator's own ``alpha``.
 
     References
     ----------
@@ -322,28 +373,52 @@ class StabilizedForgetting:
        forgetting." *Int. J. Control*, 58(4), 905--924.
     """
 
-    alpha: float
+    rate: float
+    alpha: Optional[float] = None
 
-    def __call__(
+    def floor(self, alpha: Optional[float]) -> float:
+        """The prior precision this rule floors at, given the estimator's;
+        ``None`` means the estimator has no scalar prior precision."""
+        if self.alpha is not None:
+            return self.alpha
+        if alpha is None:
+            raise TypeError(
+                "StabilizedForgetting needs a scalar prior precision to floor "
+                "at, and this estimator's prior is not a scalar; pass "
+                "StabilizedForgetting(rate, alpha=...)."
+            )
+        return alpha
+
+    def _apply(self, precision: ArrayType, lam: float, alpha: float) -> ArrayType:
+        n = precision.shape[0]
+        if sparse.issparse(precision):
+            floor = (1 - lam) * alpha * sparse.eye(n, format="csc")
+        else:
+            floor = (1 - lam) * alpha * np.eye(n)
+        return precision * lam + floor
+
+    def tick(
+        self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
+    ) -> ArrayType:
+        return self._apply(precision, self.rate**steps, self.floor(alpha))
+
+    def update(
         self,
         precision: ArrayType,
         X: ArrayType,
         y: NDArray[Any],
-        lam: float,
+        *,
+        alpha: float,
     ) -> ForgettingResult:
-        n = precision.shape[0]
-        if sparse.issparse(precision):
-            floor = (1 - lam) * self.alpha * sparse.eye(n, format="csc")
-        else:
-            floor = (1 - lam) * self.alpha * np.eye(n)
-        return precision * lam + floor, np.asarray(X), y
+        return self._apply(precision, self.rate, self.floor(alpha)), np.asarray(X), y
 
 
 @dataclass(frozen=True)
 class SiftForgetting:
-    """Directional forgetting via SIFt-RLS [1]_ [2]_.
+    """Directional forgetting via SIFt-RLS.
 
-    ``R_bar = R - (1 - lam) * R @ X_bar.T @ inv(X_bar @ R @ X_bar.T) @ X_bar @ R``
+    ``R_bar = R - (1 - rate) * R @ X_bar.T @ inv(X_bar @ R @ X_bar.T) @ X_bar @ R``,
+    from [1]_ [2]_.
 
     Decomposes precision relative to the information subspace of the
     current batch and forgets only in excited directions.  Unexcited
@@ -359,7 +434,10 @@ class SiftForgetting:
 
     Parameters
     ----------
-    eps : float
+    rate : float
+        Forgetting factor in (0, 1], applied once per batch along the
+        directions the batch excites.
+    eps : float, default=1e-10
         Eigenvalue threshold for :func:`filter_batch`.  Eigenvalues of
         the batch Gram below this value are discarded.
 
@@ -373,15 +451,18 @@ class SiftForgetting:
        *arXiv:2404.10844*.
     """
 
-    eps: float
+    rate: float
+    eps: float = 1e-10
 
-    def __call__(
+    def update(
         self,
         precision: ArrayType,
         X: ArrayType,
         y: NDArray[Any],
-        lam: float,
+        *,
+        alpha: float,
     ) -> ForgettingResult | None:
+        lam = self.rate
         if sparse.issparse(X):
             result = _filter_batch_sparse(X, y, self.eps)
             if result is None:
@@ -423,14 +504,14 @@ def _active_counts(X: ArrayType) -> NDArray[np.intp]:
 class FeatureWiseForgetting:
     """Vector-type forgetting with the factors chosen from the batch support.
 
-    ``R_bar = D R D`` with ``D = diag(lam ** (m_i / 2))``, where ``m_i``
+    ``R_bar = D R D`` with ``D = diag(rate ** (m_i / 2))``, where ``m_i``
     is the number of rows of ``X`` in which feature ``i`` is nonzero.  A
     feature present in every row of an ``n``-row batch decays by
-    ``lam ** n``, exactly as under :class:`ExponentialForgetting`; a
+    ``rate ** n``, exactly as under :class:`ExponentialForgetting`; a
     feature absent from the batch is untouched.
 
     In covariance form this inflates the standard deviation of each
-    observed coefficient by ``lam ** (-m_i / 2)`` and leaves every
+    observed coefficient by ``rate ** (-m_i / 2)`` and leaves every
     correlation and every unobserved coefficient's marginal unchanged.
     Because it only scales rows and columns, the sparsity pattern of
     ``R`` is preserved and the cost is one pass over its nonzeros.
@@ -445,6 +526,12 @@ class FeatureWiseForgetting:
     with an unobserved one it is correlated with can come out tighter
     than before, by an amount that grows with that correlation.  For
     dense or strongly correlated regressors prefer :class:`SiftForgetting`.
+
+    Parameters
+    ----------
+    rate : float
+        Forgetting factor in (0, 1], applied once per row a feature appears
+        in.
 
     References
     ----------
@@ -467,14 +554,17 @@ class FeatureWiseForgetting:
        *IEEE Trans. Automatic Control*. *arXiv:2308.04259*.
     """
 
-    def __call__(
+    rate: float
+
+    def update(
         self,
         precision: ArrayType,
         X: ArrayType,
         y: NDArray[Any],
-        lam: float,
+        *,
+        alpha: float,
     ) -> ForgettingResult:
-        d = lam ** (_active_counts(X) / 2.0)
+        d = self.rate ** (_active_counts(X) / 2.0)
         if sparse.issparse(precision):
             R = csc_array(precision)
             assert R.shape is not None
@@ -490,3 +580,100 @@ class FeatureWiseForgetting:
         # in the sparse SIFt path.
         X_eff = cast(NDArray[Any], X) if sparse.issparse(X) else np.asarray(X)
         return R_bar, X_eff, y
+
+
+def resolve_tick(
+    forgetting: Any,
+    *,
+    steps: float,
+    decay_rate: Optional[float],
+    learning_rate: float,
+    default: type = ExponentialForgetting,
+    stacklevel: int = 3,
+) -> tuple[TickRule, float, Any]:
+    """Sort out the arguments of an estimator's ``decay``.
+
+    Returns ``(rule, steps, legacy_X)``. ``rule`` is the tick rule to
+    apply: ``forgetting`` itself, or ``default`` built from ``decay_rate``
+    (or, deprecated, from ``learning_rate``). A context array passed where
+    the rule goes is the pre-rule calling convention; it is returned as
+    ``legacy_X`` with ``steps`` set to its row count, so estimators that
+    read the rows (the grouped conjugate models) can keep doing so.
+    """
+    legacy_X = None
+    if isinstance(forgetting, numbers.Real) and not isinstance(forgetting, bool):
+        raise TypeError(
+            "decay() takes a forgetting rule, not a bare rate; pass "
+            "decay_rate=... or a rule such as ExponentialForgetting(rate)."
+        )
+    if forgetting is not None and not isinstance(forgetting, TickRule):
+        if isinstance(forgetting, UpdateRule):
+            raise TypeError(
+                f"{type(forgetting).__name__} forgets along a batch, so it "
+                "belongs on the learner's forgetting= argument, not decay()."
+            )
+        warnings.warn(
+            "Passing a context array to decay() is deprecated; pass "
+            "steps=<number of ticks> and a forgetting rule or decay_rate.",
+            FutureWarning,
+            stacklevel=stacklevel,
+        )
+        legacy_X = forgetting
+        forgetting = None
+        steps = legacy_X.shape[0] if hasattr(legacy_X, "shape") else len(legacy_X)
+    if forgetting is None:
+        if decay_rate is None:
+            warnings.warn(
+                "decay() without a forgetting rule or decay_rate falls back "
+                "to learning_rate; this default is deprecated. Pass a rule "
+                "such as StabilizedForgetting(0.95), or decay_rate=.",
+                FutureWarning,
+                stacklevel=stacklevel,
+            )
+            decay_rate = learning_rate
+        forgetting = default(decay_rate)
+    elif decay_rate is not None:
+        raise TypeError(
+            "Pass either a forgetting rule or decay_rate, not both; the rule "
+            "carries its own rate."
+        )
+    return forgetting, steps, legacy_X
+
+
+def tick_groups(
+    table: dict[Any, NDArray[np.float64]],
+    forgetting: Any,
+    *,
+    steps: float,
+    decay_rate: Optional[float],
+    learning_rate: float,
+    prior: NDArray[np.float64],
+    default: type = ExponentialForgetting,
+) -> None:
+    """``decay`` for a grouped conjugate model: one parameter vector per
+    group in ``table``, all sharing ``prior``. Scales every group by
+    ``rate ** steps``, mixing ``prior`` back in under
+    :class:`StabilizedForgetting`. A legacy context array ticks once per
+    row, on that row's group."""
+    rule, steps, legacy_X = resolve_tick(
+        forgetting,
+        steps=steps,
+        decay_rate=decay_rate,
+        learning_rate=learning_rate,
+        default=default,
+        stacklevel=4,
+    )
+
+    def tick(value: NDArray[np.float64], n: float) -> NDArray[np.float64]:
+        gamma = rule.rate**n
+        if isinstance(rule, StabilizedForgetting):
+            floor = prior if rule.alpha is None else rule.alpha
+            return np.asarray(gamma * value + (1 - gamma) * floor, dtype=np.float64)
+        return np.asarray(gamma * value, dtype=np.float64)
+
+    if legacy_X is not None:
+        for x in legacy_X:
+            table[x.item()] = tick(table[x.item()], 1)
+        return
+    for key in list(table):
+        table[key] = tick(table[key], steps)

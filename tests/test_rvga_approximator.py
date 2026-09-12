@@ -797,7 +797,7 @@ class TestRVGAIntegration:
         )
         glm.fit(X, y)
         prec_before = glm.cov_inv_.copy()
-        glm.decay(X[:5])
+        glm.decay(decay_rate=0.9, steps=5)
         prec_after = glm.cov_inv_.copy()
         # Precision should decrease (uncertainty increases)
         assert np.all(np.diag(prec_after) < np.diag(prec_before))

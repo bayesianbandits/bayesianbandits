@@ -526,21 +526,29 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
 
     def decay(
         self,
-        X: ContextType,
+        forgetting: Any = None,
+        *,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
-        """Decay all arms of the bandit len(X) times.
+        """Forget on every arm: the clock ticked ``steps`` times.
+
+        Widens each arm's posterior so the bandit can follow rewards
+        that change with time. Call it on a schedule, once per unit of
+        time, independently of ``update``.
 
         Parameters
         ----------
-        X : ContextType
-            Context matrix to use for decaying the arm.
-        decay_rate : Optional[float], default=None
-            Decay rate to use for decaying the arm. If None, the decay rate
-            of the arm's learner is used.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default: each
+            learner's own rule at ``decay_rate``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for each learner's default rule at this rate.
         """
         for arm in self.arms:
-            arm.decay(X, decay_rate=decay_rate)
+            arm.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
 
 class Agent(MemoryUsageMixin, Generic[TokenType]):
@@ -798,16 +806,26 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         X_update: NDArray[np.float64] = np.ones_like(y, dtype=np.float64)[:, np.newaxis]
         self._inner.update(X_update, y, sample_weight=sample_weight)
 
-    def decay(self, decay_rate: Optional[float] = None) -> None:
-        """Decay all arms of the bandit.
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        decay_rate: Optional[float] = None,
+        steps: float = 1,
+    ) -> None:
+        """Forget on every arm: the clock ticked ``steps`` times.
 
         Parameters
         ----------
-        decay_rate : Optional[float], default=None
-            Decay rate to use for decaying the arm. If None, the decay rate
-            of the arm's learner is used.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default: each
+            learner's own rule at ``decay_rate``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for each learner's default rule at this rate.
         """
-        self._inner.decay(np.array([[1]], dtype=np.float64), decay_rate=decay_rate)
+        self._inner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
 
 class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
@@ -1446,30 +1464,29 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
 
     def decay(
         self,
-        X: Sized,
+        forgetting: Any = None,
+        *,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
-        """
-        Decay the shared learner with all arms' features.
+        """Forget on the shared learner: the clock ticked ``steps`` times.
+
+        The shared learner is ticked once, whatever the number of arms.
 
         Parameters
         ----------
-        X : Sized
-            Context matrix to use for decaying.
-        decay_rate : Optional[float], default=None
-            Decay rate to use. If None, the learner's default decay rate is used.
-
-        Notes
-        -----
-        This method enriches contexts with a single arm's features and applies
-        decay to the shared learner once. This ensures we decay based on the
-        number of contexts, not the number of arms.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. A context
+            array here is the deprecated calling convention; it is
+            enriched with one arm's features before it is passed on.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for the learner's default rule at this rate.
         """
-        # Use any single arm's token - we just need the enriched shape for one arm
-        single_token = [self.arms[0].action_token]
-
-        # Enrich context with single arm features
-        X_enriched = self.arm_featurizer.transform(X, action_tokens=single_token)
-
-        # Decay the shared learner once
-        self.learner.decay(X_enriched, decay_rate=decay_rate)
+        if forgetting is not None and not hasattr(forgetting, "tick"):
+            single_token = [self.arms[0].action_token]
+            forgetting = self.arm_featurizer.transform(
+                forgetting, action_tokens=single_token
+            )
+        self.learner.decay(forgetting, decay_rate=decay_rate, steps=steps)

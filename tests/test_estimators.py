@@ -210,7 +210,7 @@ def test_dirichletclassifier_decay(
 
     pre_decay = clf.predict(X)
 
-    clf.decay(X)
+    clf.decay(decay_rate=clf.learning_rate, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -228,7 +228,7 @@ def test_dirichletclassifier_manual_decay(
 
     pre_decay = clf.predict(X)
 
-    clf.decay(X, decay_rate=0.9)
+    clf.decay(decay_rate=0.9, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -627,7 +627,7 @@ def test_gamma_regressor_decay(
 
     pre_decay = clf.predict(X)
 
-    clf.decay(X)
+    clf.decay(decay_rate=clf.learning_rate, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -643,7 +643,7 @@ def test_gamma_regressor_manual_decay(
 
     pre_decay = clf.predict(X)
 
-    clf.decay(X, decay_rate=0.9)
+    clf.decay(decay_rate=0.9, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -956,7 +956,7 @@ def test_gamma_regressor_decay_with_weights() -> None:
     assert_almost_equal(pred_before, 20.9 / 2.9)  # ≈ 7.2069
 
     # Apply decay
-    clf.decay(X, decay_rate=0.5)
+    clf.decay(decay_rate=0.5, steps=len(X))
 
     # After decay: [20.9, 2.9] * 0.5 = [10.45, 1.45]
     assert_almost_equal(clf.coef_[1], np.array([10.45, 1.45]))

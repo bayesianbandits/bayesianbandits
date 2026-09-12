@@ -68,12 +68,10 @@ Estimators
 ==========
 
 These estimators are the underlying models for the arms in a bandit. They
-should be passed to the `learner` argument of the `bandit` decorator. Each
-of these Bayesian estimators can be converted to a recursive estimator by
-passing a `learning_rate` argument to the constructor that is less than 1.
-Each of them implement a `decay` method that uses the `learning_rate` to
-increase the variance of the prior. This is a type of state-space model that
-is useful for restless bandits.
+should be passed to the `learner` argument of an `Arm`. Each of them
+implements a `decay` method that forgets: the clock ticked, and the
+posterior widens by a forgetting rule so the model can follow rewards
+that change with time (a restless bandit).
 
 .. autosummary::
 
@@ -83,14 +81,28 @@ is useful for restless bandits.
     NormalRegressor
     NormalInverseGammaRegressor
 
+Forgetting Rules
+================
+
+A forgetting rule says how a posterior widens and carries its own rate.
+The uniform rules are what `decay` applies on a schedule; the directional
+rules forget only along what a batch excited.
+
+.. autosummary::
+
+    ExponentialForgetting
+    StabilizedForgetting
+    FeatureWiseForgetting
+    SiftForgetting
+
 Empirical Bayes Estimators
 ==========================
 
 These estimators automatically tune their hyperparameters via evidence
 maximization (MacKay's update rules). They are drop-in replacements for their
 base estimators and are especially useful when hyperparameters are unknown or
-when the environment may be non-stationary (pair with ``learning_rate < 1``
-for decay as a defensive default).
+when the environment may be non-stationary (their ``decay`` defaults to
+stabilized forgetting, which never forgets the prior).
 
 .. autosummary::
 
@@ -141,6 +153,12 @@ from ._estimators import (
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
+from ._forgetting import (
+    ExponentialForgetting,
+    FeatureWiseForgetting,
+    SiftForgetting,
+    StabilizedForgetting,
+)
 from ._gaussian import LaplaceApproximator, RVGAApproximator
 from ._memory import MemoryUsage, memory_usage
 from .api import (
@@ -184,4 +202,8 @@ __all__ = [
     "EXP3A",
     "AgentPipeline",
     "LearnerPipeline",
+    "ExponentialForgetting",
+    "StabilizedForgetting",
+    "FeatureWiseForgetting",
+    "SiftForgetting",
 ]

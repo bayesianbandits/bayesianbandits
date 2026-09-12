@@ -175,21 +175,27 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
 
     def decay(
         self,
-        X: Any,
+        forgetting: Any = None,
+        *,
         decay_rate: Optional[float] = None,
+        steps: float = 1,
     ) -> None:
-        """Decay all arms of the wrapped agent.
+        """Forget on every arm of the wrapped agent: the clock ticked.
 
         Parameters
         ----------
-        X : Any
-            Input data to transform and use for decaying the arms.
-            Will be transformed through the pipeline steps to ContextType.
-        decay_rate : Optional[float], default=None
-            Decay rate to use for decaying the arms.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. A context
+            array here is the deprecated calling convention and is
+            transformed through the pipeline steps before it is passed on.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for each learner's default rule at this rate.
         """
-        X_transformed = self.transform(X)
-        self._agent.decay(X_transformed, decay_rate=decay_rate)
+        if forgetting is not None and not hasattr(forgetting, "tick"):
+            forgetting = self.transform(forgetting)
+        self._agent.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     # Delegation methods
     def add_arm(self, arm: Arm[Any, TokenType]) -> None:

@@ -4,7 +4,46 @@ Changelog
 Unreleased
 ----------
 
+**Deprecations**
+
+- ``decay()`` no longer takes a context array. It was only ever read for
+  its row count (the grouped conjugate models also read the groups in
+  it), and it invited passing the last batch to a method that is meant
+  to be called on a clock. Pass ``steps=`` for the number of ticks
+  instead; an array still works for now, with a ``FutureWarning``, and
+  keeps its old meaning. ``decay()`` with neither a rule nor
+  ``decay_rate`` still falls back to ``learning_rate``, also with a
+  ``FutureWarning``: a nightly job should not inherit a per-observation
+  number.
+
+**New features**
+
+- The forgetting rules are public, ``ExponentialForgetting``,
+  ``StabilizedForgetting``, ``FeatureWiseForgetting`` and
+  ``SiftForgetting``, and each carries its own ``rate``. The uniform two
+  have a ``tick`` for the clock, and every rule has an ``update`` for a
+  batch. ``decay(rule, steps=)`` accepts a uniform rule on every
+  estimator, arm, agent and pipeline, so stabilized forgetting (Kulhavy &
+  Zarrop) is available to the plain estimators, with the floor at their
+  ``alpha``; the empirical Bayes estimators default to it, as before.
+  ``decay_rate=`` is shorthand for the estimator's default rule at that
+  rate. Passing a directional rule to ``decay`` is a ``TypeError``
+  pointing at where it belongs: the learner's update, coming next.
+
 **Breaking changes**
+
+- ``decay`` has one signature everywhere,
+  ``decay(forgetting=None, *, decay_rate=None, steps=1)``, and the
+  ``Learner`` protocol requires it. ``decay_rate`` is keyword-only on the
+  agents and pipelines, where it used to be positional, and
+  ``Agent.decay(0.9)`` is a ``TypeError`` that says to pass
+  ``decay_rate=``. A learner of your own with the old
+  ``decay(X, *, decay_rate=None)`` signature no longer works inside an
+  ``Arm``: arms call ``decay(forgetting, decay_rate=..., steps=...)``.
+  Internally, the estimators' private ``_apply_decay`` hook is replaced
+  by ``_apply_tick(rule, steps)``, the EB ``_reinject_prior`` helper is
+  gone, and the rule objects in ``_forgetting.py`` are built with a
+  ``rate`` and applied through ``update``/``tick`` rather than called.
 
 - ``NonContextualAgentPipeline`` is removed, and ``AgentPipeline`` is now
   a class rather than a factory dispatching between it and

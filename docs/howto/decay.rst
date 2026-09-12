@@ -62,21 +62,24 @@ the timescale of change in your environment:
    agent.update(X, y=np.array([1.0]))  # purchase signal
 
    # Once per day (e.g. nightly cron): decay all arms
-   agent.decay(np.array([[0.0, 0.0]]), decay_rate=0.95)
+   agent.decay(decay_rate=0.95)
 
-Pass a 1-row array -- ``decay()`` uses ``X.shape[0]`` as the
-exponent, so a 100-row array would apply ``0.95^100`` instead of
-``0.95`` [1]_.
+One call is one tick. If the job missed a few days, pass
+``steps=3`` and the rate is raised to that power. Per-observation
+decay via ``learning_rate < 1`` is usually too aggressive for the
+same reason: most real systems make many decisions per natural time
+period (thousands of recommendations per day), and forgetting once
+per observation in that setting tracks traffic, not time.
 
-.. [1] ``decay()`` raises ``gamma`` to the power of ``X.shape[0]``,
-   so a 1-row array gives one decay step (``gamma^1``). This
-   exponent exists so that ``partial_fit`` on a batch of 10
-   observations gives the same posterior as fitting them one at a
-   time with decay between each. In practice, per-observation decay
-   via ``learning_rate < 1`` is often too aggressive: most real
-   systems make many decisions per natural time period (thousands of
-   recommendations per day), and decaying once per observation in
-   that setting forgets too fast.
+``decay_rate=0.95`` is shorthand for passing the learner's default
+rule, :class:`~bayesianbandits.ExponentialForgetting`, at that rate.
+The rule can be passed explicitly, and the rule carries its rate:
+
+.. code-block:: python
+
+   from bayesianbandits import StabilizedForgetting
+
+   agent.decay(StabilizedForgetting(0.95), steps=1)
 
 
 Choose a decay rate
@@ -115,25 +118,24 @@ Aggressive decay can cause problems:
   along with the data. After enough decay steps, the model is
   effectively unregularized.
 
-:class:`~bayesianbandits.EmpiricalBayesNormalRegressor` (and
-:class:`~bayesianbandits.EmpiricalBayesGLM` for binary or count
-outcomes) mitigates the second problem with stabilized forgetting:
-after each decay step, it re-injects ``(1 - gamma^n) * alpha`` onto
-the precision diagonal so the prior contribution converges to
-``alpha`` instead of zero. If you need decay and want a safety net
-against prior collapse, use EB:
+:class:`~bayesianbandits.StabilizedForgetting` fixes both. After
+scaling by ``gamma``, it adds ``(1 - gamma) * alpha`` back onto the
+precision diagonal, so the prior contribution converges to ``alpha``
+instead of zero and no direction can wind up past the prior. Any
+estimator accepts it in ``decay``:
 
 .. code-block:: python
 
-   from bayesianbandits import EmpiricalBayesNormalRegressor
+   from bayesianbandits import StabilizedForgetting
 
-   learner = EmpiricalBayesNormalRegressor(
-       alpha=1.0,
-       beta=1.0,
-       learning_rate=1.0,  # still decouple from partial_fit
-   )
+   agent.decay(StabilizedForgetting(0.95))
 
-Then call ``decay()`` on a schedule as above.
+The empirical Bayes estimators
+(:class:`~bayesianbandits.EmpiricalBayesNormalRegressor`,
+:class:`~bayesianbandits.EmpiricalBayesGLM`) use it by default, with
+the floor at their tuned ``alpha``, so for them ``decay_rate=0.95`` is
+already stabilized. For the other estimators the default is plain
+exponential forgetting, for compatibility; pass the rule to opt in.
 
 See the :doc:`delayed reward example </notebooks/delayed-reward>` for
 a full simulation that tunes the decay rate with optuna and shows how
