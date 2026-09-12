@@ -163,9 +163,9 @@ class TestBandits:
         ],
     ) -> None:
         if isinstance(bandit_instance, Agent):
-            bandit_instance.decay()
+            bandit_instance.decay(decay_rate=0.5)
         else:
-            bandit_instance.decay(np.array([[2.0]]), decay_rate=0.5)
+            bandit_instance.decay(decay_rate=0.5)
 
         # Check that no exception is raised
 

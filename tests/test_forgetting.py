@@ -1,5 +1,8 @@
 """Tests for forgetting rules: exponential, stabilized (KZ), SIFt, and feature-wise."""
 
+from dataclasses import replace
+from typing import Any
+
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
@@ -17,6 +20,11 @@ from bayesianbandits._forgetting import (
     filter_batch,
 )
 from tests._helpers import symmetrize
+
+
+def _apply(rule, R, X, y, lam) -> Any:
+    """Run ``rule`` at forgetting factor ``lam`` on one batch."""
+    return replace(rule, rate=lam).update(R, X, y, alpha=1.0)
 
 
 def _random_pd(n, rng, cond=10.0):
@@ -44,13 +52,13 @@ def _naive_sift_downdate(R, X_bar, lam):
 @pytest.fixture(params=["exponential", "stabilized", "sift", "feature-wise"])
 def rule(request):
     if request.param == "exponential":
-        return ExponentialForgetting()
+        return ExponentialForgetting(rate=1.0)
     elif request.param == "stabilized":
-        return StabilizedForgetting(alpha=1.0)
+        return StabilizedForgetting(rate=1.0, alpha=1.0)
     elif request.param == "sift":
-        return SiftForgetting(eps=1e-10)
+        return SiftForgetting(rate=1.0, eps=1e-10)
     else:
-        return FeatureWiseForgetting()
+        return FeatureWiseForgetting(rate=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +80,7 @@ class TestSharedInterface:
 
     def test_return_type(self, rule, shared_data):
         R, X, y = shared_data
-        result = rule(R, X, y, 0.95)
+        result = _apply(rule, R, X, y, 0.95)
         assert result is not None
         R_bar, X_eff, y_eff = result
         assert isinstance(R_bar, np.ndarray) or sparse.issparse(R_bar)
@@ -81,14 +89,14 @@ class TestSharedInterface:
 
     def test_passthrough_at_lam_1(self, rule, shared_data):
         R, X, y = shared_data
-        result = rule(R, X, y, 1.0)
+        result = _apply(rule, R, X, y, 1.0)
         assert result is not None
         R_bar, _, _ = result
         assert_allclose(np.asarray(R_bar), R, atol=1e-12)
 
     def test_format_preservation_dense(self, rule, shared_data):
         R, X, y = shared_data
-        result = rule(R, X, y, 0.95)
+        result = _apply(rule, R, X, y, 0.95)
         if result is not None:
             R_bar, _, _ = result
             assert isinstance(R_bar, np.ndarray)
@@ -96,7 +104,7 @@ class TestSharedInterface:
     def test_format_preservation_sparse(self, rule, shared_data):
         R, X, y = shared_data
         R_sparse = sparse.csc_array(R)
-        result = rule(R_sparse, X, y, 0.95)
+        result = _apply(rule, R_sparse, X, y, 0.95)
         if result is not None:
             R_bar, _, _ = result
             if not isinstance(rule, SiftForgetting):
@@ -212,8 +220,8 @@ class TestExponentialForgetting:
         y = rng.standard_normal(3)
         lam = 0.95
 
-        rule = ExponentialForgetting()
-        R_bar, X_eff, y_eff = rule(R, X, y, lam)
+        rule = ExponentialForgetting(rate=1.0)
+        R_bar, X_eff, y_eff = _apply(rule, R, X, y, lam)
 
         assert_allclose(R_bar, lam * R)
         assert_allclose(X_eff, X)
@@ -234,8 +242,8 @@ class TestStabilizedForgetting:
         alpha = 2.0
         lam = 0.9
 
-        rule = StabilizedForgetting(alpha=alpha)
-        R_bar, _, _ = rule(R, X, y, lam)
+        rule = StabilizedForgetting(rate=1.0, alpha=alpha)
+        R_bar, _, _ = _apply(rule, R, X, y, lam)
 
         expected = lam * R + (1 - lam) * alpha * np.eye(5)
         assert_allclose(R_bar, expected, atol=1e-12)
@@ -246,14 +254,14 @@ class TestStabilizedForgetting:
         alpha = 1.5
         lam = 0.8
 
-        rule = StabilizedForgetting(alpha=alpha)
+        rule = StabilizedForgetting(rate=1.0, alpha=alpha)
 
         for _ in range(20):
             R = _random_pd(8, rng)
             X = rng.standard_normal((3, 8))
             y = rng.standard_normal(3)
 
-            R_bar, _, _ = rule(R, X, y, lam)
+            R_bar, _, _ = _apply(rule, R, X, y, lam)
             min_eig = eigvalsh(np.asarray(R_bar))[0]
             assert min_eig >= (1 - lam) * alpha - 1e-10
 
@@ -263,8 +271,8 @@ class TestStabilizedForgetting:
         X = rng.standard_normal((3, 5))
         y = rng.standard_normal(3)
 
-        rule = StabilizedForgetting(alpha=1.0)
-        R_bar, _, _ = rule(R, X, y, 0.9)
+        rule = StabilizedForgetting(rate=1.0, alpha=1.0)
+        R_bar, _, _ = _apply(rule, R, X, y, 0.9)
         assert sparse.issparse(R_bar)
 
 
@@ -399,8 +407,8 @@ class TestSiftForgetting:
             X = rng.standard_normal((3, 5)) * 1e-15
         y = rng.standard_normal(3)
 
-        rule = SiftForgetting(eps=1e-10)
-        result = rule(R, X, y, 0.9)
+        rule = SiftForgetting(rate=1.0, eps=1e-10)
+        result = _apply(rule, R, X, y, 0.9)
         assert result is None
 
     @pytest.mark.parametrize(
@@ -429,8 +437,8 @@ class TestSiftForgetting:
             y = rng.standard_normal(p)
             lam = rng.uniform(0.8, 0.99)
 
-            rule = SiftForgetting(eps=1e-12)
-            result = rule(R, X, y, lam)
+            rule = SiftForgetting(rate=1.0, eps=1e-12)
+            result = _apply(rule, R, X, y, lam)
             assert result is not None
             R_bar, X_bar, y_bar = result
 
@@ -485,7 +493,7 @@ class TestSiftForgetting:
         lam_min_R0 = eigvalsh(R)[0]
         lower_bound = min(eps / (1 - lam), lam_min_R0)
 
-        rule = SiftForgetting(eps=eps)
+        rule = SiftForgetting(rate=1.0, eps=eps)
 
         updates_applied = 0
         for step in range(150):
@@ -493,7 +501,7 @@ class TestSiftForgetting:
             X = rng.standard_normal((p, n))
             y = rng.standard_normal(p)
 
-            result = rule(R, X, y, lam)
+            result = _apply(rule, R, X, y, lam)
             assert result is not None, f"Step {step}: no excitation"
             R_bar, X_bar, y_bar = result
             R_bar_full = symmetrize(R_bar) if isinstance(R_bar, np.ndarray) else R_bar
@@ -524,8 +532,8 @@ class TestSiftForgetting:
         y = rng.standard_normal(p)
 
         # SIFt path
-        rule = SiftForgetting(eps=1e-12)
-        result = rule(R, X, y, lam)
+        rule = SiftForgetting(rate=1.0, eps=1e-12)
+        result = _apply(rule, R, X, y, lam)
         assert result is not None
         R_bar_raw, X_bar, y_bar = result
         R_bar = symmetrize(R_bar_raw)
@@ -569,8 +577,8 @@ class TestSiftForgetting:
             R = sparse.csc_array(R)
             X = sparse.csc_array(X)
 
-        rule = SiftForgetting(eps=1e-10)
-        result = rule(R, X, y, lam)
+        rule = SiftForgetting(rate=1.0, eps=1e-10)
+        result = _apply(rule, R, X, y, lam)
         assert result is not None
         R_bar, X_bar, y_bar = result
 
@@ -616,7 +624,9 @@ class TestFeatureWiseForgetting:
         X = _one_hot_rows(6, [[0, 1], [0, 2]])  # feature 0 in two rows, 1 and 2 in one
         lam = 0.8
 
-        R_bar, X_eff, y_eff = FeatureWiseForgetting()(R, X, np.zeros(2), lam)
+        R_bar, X_eff, y_eff = _apply(
+            FeatureWiseForgetting(rate=1.0), R, X, np.zeros(2), lam
+        )
 
         d = np.array([lam, np.sqrt(lam), np.sqrt(lam), 1.0, 1.0, 1.0])
         assert_allclose(np.asarray(R_bar), np.diag(d) @ R @ np.diag(d), atol=1e-12)
@@ -632,7 +642,7 @@ class TestFeatureWiseForgetting:
         R = sparse.csc_array(np.eye(30) + X_hist.T @ X_hist)
         X = _one_hot_rows(30, [[3, 7, 11]])
 
-        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.9)
+        R_bar, _, _ = _apply(FeatureWiseForgetting(rate=1.0), R, X, np.zeros(1), 0.9)
 
         assert sparse.issparse(R_bar)
         R_bar = sparse.csc_array(R_bar)
@@ -644,9 +654,13 @@ class TestFeatureWiseForgetting:
         R = _random_pd(8, rng)
         X = _one_hot_rows(8, [[1, 4], [4, 6]])
 
-        dense, _, _ = FeatureWiseForgetting()(R, X, np.zeros(2), 0.85)
-        sp, _, _ = FeatureWiseForgetting()(
-            sparse.csc_array(R), sparse.csc_array(X), np.zeros(2), 0.85
+        dense, _, _ = _apply(FeatureWiseForgetting(rate=1.0), R, X, np.zeros(2), 0.85)
+        sp, _, _ = _apply(
+            FeatureWiseForgetting(rate=1.0),
+            sparse.csc_array(R),
+            sparse.csc_array(X),
+            np.zeros(2),
+            0.85,
         )
 
         assert_allclose(sparse.csc_array(sp).toarray(), np.asarray(dense), atol=1e-12)
@@ -660,8 +674,8 @@ class TestFeatureWiseForgetting:
         X = _one_hot_rows(6, [[0]])
         lam = 0.6
 
-        fw, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), lam)
-        result = SiftForgetting(eps=1e-12)(R, X, np.zeros(1), lam)
+        fw, _, _ = _apply(FeatureWiseForgetting(rate=1.0), R, X, np.zeros(1), lam)
+        result = _apply(SiftForgetting(rate=1.0, eps=1e-12), R, X, np.zeros(1), lam)
         assert result is not None
         sift, _, _ = result
 
@@ -678,7 +692,7 @@ class TestFeatureWiseForgetting:
         rest = [1, 3, 4, 5, 6]
         X = _one_hot_rows(7, [obs])
 
-        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.5)
+        R_bar, _, _ = _apply(FeatureWiseForgetting(rate=1.0), R, X, np.zeros(1), 0.5)
         R_bar = np.asarray(R_bar)
 
         def marginal(M):
@@ -706,7 +720,62 @@ class TestFeatureWiseForgetting:
             (np.array([1.0, 0.0]), (np.array([0, 0]), np.array([1, 3]))), shape=(1, 4)
         )
 
-        R_bar, _, _ = FeatureWiseForgetting()(R, X, np.zeros(1), 0.5)
+        R_bar, _, _ = _apply(FeatureWiseForgetting(rate=1.0), R, X, np.zeros(1), 0.5)
 
         d = np.array([1.0, np.sqrt(0.5), 1.0, 1.0])
         assert_allclose(np.asarray(R_bar), np.diag(d) @ R @ np.diag(d), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Tick (clock) interface
+# ---------------------------------------------------------------------------
+
+
+class TestTick:
+    def test_exponential_tick_scales_by_rate_to_the_steps(self):
+        rng = np.random.default_rng(0)
+        R = _random_pd(4, rng)
+        R_bar = ExponentialForgetting(0.9).tick(R, alpha=1.0, steps=3)
+        assert_allclose(np.asarray(R_bar), 0.9**3 * R)
+
+    def test_stabilized_tick_floors_at_the_estimator_alpha_by_default(self):
+        rng = np.random.default_rng(0)
+        R = _random_pd(4, rng)
+        R_bar = StabilizedForgetting(0.9).tick(R, alpha=2.0)
+        assert_allclose(np.asarray(R_bar), 0.9 * R + 0.1 * 2.0 * np.eye(4), atol=1e-12)
+        R_own = StabilizedForgetting(0.9, alpha=5.0).tick(R, alpha=2.0)
+        assert_allclose(np.asarray(R_own), 0.9 * R + 0.1 * 5.0 * np.eye(4), atol=1e-12)
+
+    def test_stabilized_tick_composes_over_steps(self):
+        rng = np.random.default_rng(0)
+        R = _random_pd(4, rng)
+        rule = StabilizedForgetting(0.8)
+        three = rule.tick(R, alpha=1.0, steps=3)
+        one_at_a_time = R
+        for _ in range(3):
+            one_at_a_time = rule.tick(one_at_a_time, alpha=1.0)
+        assert_allclose(np.asarray(three), np.asarray(one_at_a_time), atol=1e-12)
+
+    def test_stabilized_tick_keeps_sparse_format(self):
+        rng = np.random.default_rng(0)
+        R = sparse.csc_array(_random_pd(4, rng))
+        R_bar = StabilizedForgetting(0.9).tick(R, alpha=1.0)
+        assert sparse.issparse(R_bar)
+        assert_allclose(
+            sparse.csc_array(R_bar).toarray(), 0.9 * R.toarray() + 0.1 * np.eye(4)
+        )
+
+    def test_directional_rules_have_no_tick(self):
+        from bayesianbandits._forgetting import TickRule, UpdateRule
+
+        assert isinstance(ExponentialForgetting(0.9), TickRule)
+        assert isinstance(StabilizedForgetting(0.9), TickRule)
+        assert not isinstance(FeatureWiseForgetting(0.9), TickRule)
+        assert not isinstance(SiftForgetting(0.9), TickRule)
+        for rule in (
+            ExponentialForgetting(0.9),
+            StabilizedForgetting(0.9),
+            FeatureWiseForgetting(0.9),
+            SiftForgetting(0.9),
+        ):
+            assert isinstance(rule, UpdateRule)

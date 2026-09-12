@@ -126,7 +126,13 @@ class Learner(Protocol[X_contra]):
         y: NDArray[np.float64],
         sample_weight: Optional[NDArray[np.float64]] = None,
     ) -> Self: ...
-    def decay(self, X: X_contra, *, decay_rate: Optional[float] = None) -> None: ...
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        steps: float = 1,
+        decay_rate: Optional[float] = None,
+    ) -> None: ...
     def predict(self, X: X_contra) -> NDArray[np.float64]: ...
     @property
     def random_state(self) -> Union[np.random.Generator, int, None]: ...
@@ -542,24 +548,31 @@ class Arm(MemoryUsageMixin, Generic[ContextType, TokenType]):
         self.learner.partial_fit(X, y, sample_weight)
 
     @requires_learner
-    def decay(self, X: ContextType, *, decay_rate: Optional[float] = None) -> None:
-        """Increase posterior uncertainty for non-stationary environments.
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        steps: float = 1,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        """Forget: the clock ticked ``steps`` times with no new observations.
 
-        Shrinks the learner's posterior precision, allowing the model
-        to forget old observations and adapt to changing reward
-        distributions (restless bandit setting).
+        Widens the learner's posterior so the arm can follow a reward
+        distribution that changes with time (the restless bandit
+        setting). Call it on a schedule, once per unit of time.
 
         Parameters
         ----------
-        X : ContextType
-            Context matrix (required by the learner interface; used
-            by context-dependent estimators).
-        decay_rate : float or None, default=None
-            Override the learner's default ``learning_rate``. Values
-            less than 1 geometrically shrink posterior precision.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default: the
+            learner's own, at ``decay_rate``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for the learner's default rule at this rate.
         """
         assert self.learner is not None
-        self.learner.decay(X, decay_rate=decay_rate)
+        self.learner.decay(forgetting, steps=steps, decay_rate=decay_rate)
 
     def __repr__(self) -> str:
         return (

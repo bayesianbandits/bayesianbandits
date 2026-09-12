@@ -112,11 +112,10 @@ def test_bayesian_glm_cov_before_fit_dense() -> None:
 @pytest.mark.parametrize("sparse", [True, False])
 def test_bayesian_glm_decay_before_fit_does_nothing(sparse: bool) -> None:
     """Test decay before fit does nothing."""
-    X = np.random.randn(10, 5)
     clf = BayesianGLM(alpha=0.1, link="logit", sparse=sparse)
 
     # Decay should not raise or change anything
-    clf.decay(X, decay_rate=0.9)
+    clf.decay(decay_rate=0.9)
 
 
 @pytest.mark.parametrize("sparse", [True, False])
@@ -251,7 +250,7 @@ def test_bayesian_glm_uncertainty_increases_with_decay(
     std_before = np.std(samples_before, axis=0)
 
     # Apply decay
-    clf.decay(X_fit, decay_rate=0.7)
+    clf.decay(decay_rate=0.7, steps=X.shape[0])
 
     # Get uncertainty after decay
     samples_after = clf.sample(X_fit[:5], size=100)
@@ -355,7 +354,7 @@ def test_bayesian_glm_decay(binary_data, sparse: bool) -> None:
         precision_before = np.diag(clf.cov_inv_)
 
     # Apply decay
-    clf.decay(X_fit)
+    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
 
     # Predictions should stay the same
     preds_after = clf.predict(X_fit)

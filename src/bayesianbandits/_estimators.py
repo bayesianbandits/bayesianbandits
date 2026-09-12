@@ -48,6 +48,12 @@ from ._blas_helpers import (
     standard_normal_f,
     update_precision_dense,
 )
+from ._forgetting import (
+    ExponentialForgetting,
+    TickRule,
+    resolve_tick,
+    tick_groups,
+)
 from ._gaussian import (
     LaplaceApproximator,
     LinkFunction,
@@ -414,26 +420,35 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
             list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
         ).transpose(1, 0, 2)
 
-    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
+    _default_tick_rule: type = ExponentialForgetting
+
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        steps: float = 1,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         """
-        Decay concentration parameters to increase uncertainty.
+        Forget: the clock ticked ``steps`` times with no new observations.
 
-        Scales the posterior concentration parameters
-        :math:`\\alpha_k \\leftarrow \\gamma \\, \\alpha_k` for each
-        group present in ``X``. This uniformly increases posterior
-        variance, allowing the model to adapt to non-stationary
-        environments.
+        Every group seen so far has its posterior concentration scaled
+        by :math:`\\gamma^{\\text{steps}}`. Under
+        :class:`~bayesianbandits.StabilizedForgetting` the prior
+        concentration is mixed back in, so a group forgotten for long
+        enough returns to the prior instead of to zero.
 
-        Has no effect if the model has not been fitted.
+        Has no effect on groups not yet observed.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, 1)
-            Input features. Each unique value of ``X[:, 0]`` identifies
-            a group whose concentration parameters are decayed.
-        decay_rate : float, default=None
-            Multiplicative decay factor :math:`\\gamma` in (0, 1].
-            If None, uses ``self.learning_rate``.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default:
+            ``ExponentialForgetting(decay_rate)``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for ``forgetting=ExponentialForgetting(decay_rate)``.
 
         See Also
         --------
@@ -441,12 +456,15 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         """
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        for x in X:
-            self.known_alphas_[x.item()] *= decay_rate
+        tick_groups(
+            self.known_alphas_,
+            forgetting,
+            steps=steps,
+            decay_rate=decay_rate,
+            learning_rate=self.learning_rate,
+            prior=self.prior_,
+            default=self._default_tick_rule,
+        )
 
 
 class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
@@ -773,27 +791,37 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
             list(rv_gen(alpha, scale=1 / beta) for alpha, beta in shape_params),
         ).T
 
-    def decay(self, X: NDArray[Any], *, decay_rate: Optional[float] = None) -> None:
+    _default_tick_rule: type = ExponentialForgetting
+
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        steps: float = 1,
+        decay_rate: Optional[float] = None,
+    ) -> None:
         """
-        Decay posterior parameters to increase uncertainty.
+        Forget: the clock ticked ``steps`` times with no new observations.
 
-        Scales both shape and rate by the decay factor:
-        :math:`\\alpha \\leftarrow \\gamma \\alpha,\\;
-        \\beta \\leftarrow \\gamma \\beta`. Because both parameters
-        are scaled equally, the posterior mean
-        :math:`\\alpha / \\beta` is preserved but the variance
-        :math:`\\alpha / \\beta^2` increases.
+        Every group seen so far has both shape and rate scaled by
+        :math:`\\gamma^{\\text{steps}}`, which keeps the posterior mean
+        :math:`\\alpha / \\beta` and grows the variance
+        :math:`\\alpha / \\beta^2`. Under
+        :class:`~bayesianbandits.StabilizedForgetting` the prior
+        parameters are mixed back in, so a group forgotten for long
+        enough returns to the prior instead of to zero.
 
-        Has no effect if the model has not been fitted.
+        Has no effect on groups not yet observed.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, 1)
-            Input features. Each unique value of ``X[:, 0]`` identifies
-            a group whose parameters are decayed.
-        decay_rate : float, default=None
-            Multiplicative decay factor :math:`\\gamma` in (0, 1].
-            If None, uses ``self.learning_rate``.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default:
+            ``ExponentialForgetting(decay_rate)``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for ``forgetting=ExponentialForgetting(decay_rate)``.
 
         See Also
         --------
@@ -801,12 +829,15 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior()
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        for x in X:
-            self.coef_[x.item()] *= decay_rate
+        tick_groups(
+            self.coef_,
+            forgetting,
+            steps=steps,
+            decay_rate=decay_rate,
+            learning_rate=self.learning_rate,
+            prior=self.prior_,
+            default=self._default_tick_rule,
+        )
 
 
 def _scaled_identity_f(n: int, scale: float) -> NDArray[np.float64]:
@@ -1264,10 +1295,32 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         here; :class:`BayesianGLM` applies its link."""
         return eta
 
-    def _apply_decay(self, prior_decay: float) -> None:
-        """Scale the parameters ``decay`` forgets by. Only the variance
-        grows, so the posterior mean is untouched."""
-        self.cov_inv_ = prior_decay * self.cov_inv_
+    _default_tick_rule: type = ExponentialForgetting
+
+    def _apply_tick(self, rule: TickRule, steps: float) -> None:
+        """Forget ``steps`` ticks of ``rule`` on the precision. Only the
+        variance grows, so the posterior mean is untouched; the cached
+        factor follows a scalar rule and is dropped for any other."""
+        self.cov_inv_ = rule.tick(self.cov_inv_, alpha=self._prior_floor(), steps=steps)
+        if "_precision_factor" in self.__dict__:
+            if isinstance(rule, ExponentialForgetting):
+                self._precision_factor = scale_factor(
+                    self._precision_factor, rule.rate**steps
+                )
+            else:
+                self._drop_factor()
+
+    def _prior_floor(self) -> Optional[float]:
+        """The scalar prior precision a stabilized tick floors at; ``None``
+        when the prior is not a scalar."""
+        return self.alpha
+
+    def _drop_factor(self) -> None:
+        """Drop the cached factor, keeping it as the hint ``_sparse_factor``
+        refactorizes from: a diagonal shift leaves the pattern alone."""
+        factor = self.__dict__.pop("_precision_factor")
+        if self.sparse:
+            self._factor_hint = factor
 
     # ---- prior and factor ------------------------------------------------
 
@@ -1643,27 +1696,33 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
     @_invalidate_cached_properties
     def decay(
         self,
-        X: Union[NDArray[Any], csc_array],
+        forgetting: Any = None,
         *,
+        steps: float = 1,
         decay_rate: Optional[float] = None,
     ) -> None:
         """
-        Decay the posterior precision to increase uncertainty.
+        Forget: the clock ticked ``steps`` times with no new observations.
 
-        Scales the precision matrix by :math:`\\gamma^n`, where
-        :math:`\\gamma` is the decay rate and :math:`n` is the number
-        of rows in ``X``. This uniformly increases posterior variance
-        while leaving the posterior mean unchanged, allowing the model
-        to adapt to non-stationary environments.
+        Applies a uniform forgetting rule to the posterior precision,
+        :math:`\\Lambda \\leftarrow \\gamma^{\\text{steps}}\\Lambda`
+        under :class:`~bayesianbandits.ExponentialForgetting`, or the same
+        with :math:`(1 - \\gamma^{\\text{steps}})\\,\\alpha I` added
+        back under :class:`~bayesianbandits.StabilizedForgetting` so the
+        prior is never forgotten. Either way the posterior mean is
+        unchanged and every direction widens; this is the step for
+        change that happens with time, whether or not the model is
+        observing. Call it on a schedule, once per unit of time.
 
         Parameters
         ----------
-        X : array-like of shape (n_samples, n_features)
-            Used only for its number of rows ``n``.
-        decay_rate : float, default=None
-            Decay factor :math:`\\gamma` in (0, 1]. If None, uses
-            ``self.learning_rate``. Values less than 1 increase
-            uncertainty; a value of 1 has no effect.
+        forgetting : ExponentialForgetting or StabilizedForgetting, optional
+            The rule to tick with, carrying its own rate. Default:
+            ``ExponentialForgetting(decay_rate)``.
+        steps : float, default=1
+            Number of ticks; the rule's rate is raised to this power.
+        decay_rate : float, optional
+            Shorthand for ``forgetting=ExponentialForgetting(decay_rate)``.
 
         See Also
         --------
@@ -1672,19 +1731,14 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
             return
-
-        if decay_rate is None:
-            decay_rate = self.learning_rate
-
-        assert X.shape is not None  # for the type checker
-        prior_decay = decay_rate ** X.shape[0]
-
-        # Decay the prior without making an update. Because we're only
-        # increasing the prior variance, we do not need to update the
-        # mean.
-        self._apply_decay(prior_decay)
-        if "_precision_factor" in self.__dict__:
-            self._precision_factor = scale_factor(self._precision_factor, prior_decay)
+        rule, steps, _ = resolve_tick(
+            forgetting,
+            steps=steps,
+            decay_rate=decay_rate,
+            learning_rate=self.learning_rate,
+            default=self._default_tick_rule,
+        )
+        self._apply_tick(rule, steps)
 
     # ---- sampling mechanics ----------------------------------------------
 
@@ -2435,13 +2489,17 @@ scipy.sparse.csc_array
         scale = np.sqrt((self.b_ / self.a_) * df / g)
         return draw.joint(size, self.random_state_, mean, scale)
 
-    def _apply_decay(self, prior_decay: float) -> None:
+    def _prior_floor(self) -> Optional[float]:
+        return float(cast(Any, self.lam)) if np.isscalar(self.lam) else None
+
+    def _apply_tick(self, rule: TickRule, steps: float) -> None:
         """Forget the Inverse-Gamma parameters alongside the precision, so
         the marginal t widens on both counts: fewer degrees of freedom and
         a higher scale."""
-        super()._apply_decay(prior_decay)
-        self.a_ = prior_decay * self.a_
-        self.b_ = prior_decay * self.b_
+        super()._apply_tick(rule, steps)
+        gamma = rule.rate**steps
+        self.a_ = gamma * self.a_
+        self.b_ = gamma * self.b_
 
 
 class BayesianGLM(_BayesianLinearModel, RegressorMixin):

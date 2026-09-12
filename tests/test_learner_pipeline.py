@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, Optional
+
 import numpy as np
 import pytest
 from numpy.typing import NDArray
@@ -39,8 +41,14 @@ class MockLearner:
         self.predict_calls.append(X)
         return np.zeros(len(X))
 
-    def decay(self, X, *, decay_rate=None):
-        self.decay_calls.append((X, decay_rate))
+    def decay(
+        self,
+        forgetting: Any = None,
+        *,
+        steps: float = 1,
+        decay_rate: Optional[float] = None,
+    ) -> None:
+        self.decay_calls.append((forgetting, steps, decay_rate))
 
 
 class TestLearnerPipelineInit:
@@ -189,9 +197,10 @@ class TestLearnerPipelineTransformers:
         predict_X = mock_learner.predict_calls[0]
         np.testing.assert_array_equal(predict_X, X)
 
-        pipeline.decay(X, decay_rate=0.9)
-        decay_X, decay_rate = mock_learner.decay_calls[0]
-        np.testing.assert_array_equal(decay_X, X)
+        pipeline.decay(decay_rate=0.9, steps=3)
+        forgetting, steps, decay_rate = mock_learner.decay_calls[0]
+        assert forgetting is None
+        assert steps == 3
         assert decay_rate == 0.9
 
     def test_transformer_not_fitted_error(self):
@@ -269,12 +278,13 @@ class TestLearnerPipelineInterface:
         self.pipeline.partial_fit(X, np.array([1]))
 
         # Now decay
-        self.pipeline.decay(X, decay_rate=0.9)
+        self.pipeline.decay(decay_rate=0.9)
 
         assert len(self.mock_learner.decay_calls) == 1
-        received_X, decay_rate = self.mock_learner.decay_calls[0]
+        forgetting, steps, decay_rate = self.mock_learner.decay_calls[0]
+        assert forgetting is None
+        assert steps == 1
         assert decay_rate == 0.9
-        assert received_X.shape == X.shape
 
     def test_random_state_property(self):
         """Test random_state property delegation."""
@@ -315,7 +325,7 @@ class TestLearnerPipelineIntegration:
         assert predictions.shape == (5,)
 
         # Decay should work
-        pipeline.decay(X[:5], decay_rate=0.95)
+        pipeline.decay(decay_rate=0.95, steps=5)
 
     def test_with_arm_and_lipschitz_agent(self):
         """Test LearnerPipeline used as learner in LipschitzContextualAgent."""

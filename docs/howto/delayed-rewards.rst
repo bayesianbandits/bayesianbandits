@@ -101,7 +101,7 @@ model further than you might expect.
    # ... store decisions ...
 
    # Nightly: decay + update with yesterday's rewards
-   agent.decay(np.array([[0.0, 0.0]]), decay_rate=0.99)
+   agent.decay(decay_rate=0.99)
    for token, X_row, reward in yesterdays_rewards:
        agent.select_for_update(token).update(
            np.atleast_2d(X_row), np.atleast_1d(reward)

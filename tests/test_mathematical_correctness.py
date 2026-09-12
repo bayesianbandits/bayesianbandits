@@ -621,7 +621,7 @@ class TestDirichletClassifierDecay:
         # known_alphas_[1] = [3, 2]
 
         gamma = 0.8
-        clf.decay(np.array([[1]]), decay_rate=gamma)
+        clf.decay(decay_rate=gamma)
 
         assert_allclose(clf.known_alphas_[1], [3.0 * gamma, 2.0 * gamma], atol=1e-10)
 
@@ -633,7 +633,7 @@ class TestDirichletClassifierDecay:
         clf.fit(X, y)
 
         mean_before = clf.known_alphas_[1] / clf.known_alphas_[1].sum()
-        clf.decay(np.array([[1]]), decay_rate=0.7)
+        clf.decay(decay_rate=0.7)
         mean_after = clf.known_alphas_[1] / clf.known_alphas_[1].sum()
 
         assert_allclose(mean_after, mean_before, atol=1e-10)
@@ -649,7 +649,7 @@ class TestGammaRegressorDecay:
         # coef_[1] = [11, 6]
 
         gamma = 0.9
-        model.decay(np.array([[1]]), decay_rate=gamma)
+        model.decay(decay_rate=gamma)
 
         assert_allclose(model.coef_[1], [11.0 * gamma, 6.0 * gamma], atol=1e-10)
 
@@ -661,7 +661,7 @@ class TestGammaRegressorDecay:
         model.fit(X, y)
 
         mean_before = model.coef_[1][0] / model.coef_[1][1]
-        model.decay(np.array([[1]]), decay_rate=0.7)
+        model.decay(decay_rate=0.7)
         mean_after = model.coef_[1][0] / model.coef_[1][1]
 
         assert_allclose(mean_after, mean_before, atol=1e-10)
@@ -684,10 +684,7 @@ class TestNormalRegressorDecay:
 
         gamma = 0.8
         # Decay with 2 rows => factor = gamma^2
-        X_decay = np.array([[0.0, 0.0], [0.0, 0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-        reg.decay(X_decay, decay_rate=gamma)
+        reg.decay(decay_rate=gamma, steps=2)
 
         factor = gamma**2
         assert_allclose(reg.coef_, coef_before, atol=1e-10)  # mean unchanged
@@ -706,10 +703,7 @@ class TestNormalRegressorDecay:
         prec_before = cov_inv_dense(reg).copy()
 
         gamma = 0.5
-        X_decay = np.array([[0.0, 0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-        reg.decay(X_decay, decay_rate=gamma)
+        reg.decay(decay_rate=gamma)
 
         assert_allclose(cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
 
@@ -734,10 +728,7 @@ class TestNIGDecay:
         b_before = reg.b_
 
         gamma = 0.9
-        X_decay = np.array([[0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-        reg.decay(X_decay, decay_rate=gamma)
+        reg.decay(decay_rate=gamma)
 
         assert_allclose(reg.coef_, coef_before, atol=1e-10)
         assert_allclose(cov_inv_dense(reg), gamma * prec_before, atol=1e-10)
@@ -761,10 +752,7 @@ class TestBayesianGLMDecay:
         prec_before = cov_inv_dense(glm).copy()
 
         gamma = 0.75
-        X_decay = np.array([[0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-        glm.decay(X_decay, decay_rate=gamma)
+        glm.decay(decay_rate=gamma)
 
         assert_allclose(glm.coef_, coef_before, atol=1e-10)
         assert_allclose(cov_inv_dense(glm), gamma * prec_before, atol=1e-10)
@@ -803,10 +791,7 @@ class TestEBDecay:
         eff_XTy_before = eb._eff_XTy.copy()
 
         gamma = 0.8
-        X_decay = np.array([[0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-        eb.decay(X_decay, decay_rate=gamma)
+        eb.decay(decay_rate=gamma)
 
         # _prior_scalar: 0.8 * 5.0 + 0.2 * 1.0 = 4.2
         expected_prior_scalar = gamma * prior_scalar_before + (1 - gamma) * eb.alpha
@@ -837,12 +822,8 @@ class TestEBDecay:
         # Start far from fixed point
         eb._prior_scalar = 10.0
 
-        X_decay = np.array([[0.0]])
-        if sparse:
-            X_decay = sp.csc_array(X_decay)
-
         for _ in range(200):
-            eb.decay(X_decay, decay_rate=0.9)
+            eb.decay(decay_rate=0.9)
 
         # Fixed point of s = 0.9*s + 0.1*2.0 is s = 2.0 = alpha
         assert_allclose(eb._prior_scalar, eb.alpha, atol=1e-4)

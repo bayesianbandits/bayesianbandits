@@ -102,7 +102,7 @@ class TestPredictiveCholesky:
         assert dense.M.shape[1] == 0
         assert_allclose(dense.L, L, atol=1e-10)
 
-        est.decay(X.toarray(), decay_rate=0.9)
+        est.decay(decay_rate=0.9)
         _, draw = est._predictive_cholesky(X)
         assert _relative_error(draw.L @ draw.L.T, _reference_S(est, X.toarray())) < 1e-9
 

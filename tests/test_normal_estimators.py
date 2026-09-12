@@ -294,7 +294,7 @@ def test_normal_regressor_decay(
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(X_fit)
+    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -318,7 +318,7 @@ def test_normal_regressor_manual_decay(
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(X_fit, decay_rate=0.9)
+    clf.decay(decay_rate=0.9, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -1007,7 +1007,7 @@ def test_normal_inverse_gamma_regressor_decay(
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(X_fit)
+    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -1046,7 +1046,7 @@ def test_normal_inverse_gamma_regressor_manual_decay(
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(X_fit, decay_rate=0.9)
+    clf.decay(decay_rate=0.9, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -1597,8 +1597,8 @@ def test_normal_inverse_gamma_decay_then_sample(sparse: bool) -> None:
     reg.fit(X_fit, y)
     pre_decay_pred = reg.predict(X_fit)
 
-    # Decay scales the cached factor by prior_decay (0.95^50)
-    reg.decay(X_fit)
+    # Decay scales the cached factor by 0.95^50
+    reg.decay(decay_rate=0.95, steps=50)
     assert reg._precision_factor._scale == pytest.approx(0.95**50)
 
     # Predictions should be unchanged (decay only widens variance)
@@ -1621,8 +1621,7 @@ def test_normal_inverse_gamma_scale_factor_identity(sparse: bool) -> None:
 
     original_factor = reg._precision_factor
 
-    # learning_rate=1.0 means prior_decay = 1.0^N = 1.0, so scale_factor
-    # should return the original factor unchanged
-    reg.decay(sp.csc_array(X) if sparse else X)
+    # a rate of 1.0 means scale_factor returns the original factor unchanged
+    reg.decay(decay_rate=1.0)
 
     assert reg._precision_factor is original_factor

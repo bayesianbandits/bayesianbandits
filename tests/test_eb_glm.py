@@ -311,7 +311,7 @@ class TestEBGLM:
         diag_before = _diag(model)
         s_before = model._prior_scalar
         n_eff_before = model._effective_n
-        model.decay(_X(X[:3], sparse))
+        model.decay(decay_rate=0.9, steps=3)
         g = 0.9**3
         np.testing.assert_allclose(
             _diag(model), g * diag_before + (1 - g) * model.alpha
@@ -392,7 +392,7 @@ class TestEBGLM:
         model = EmpiricalBayesGLM(link=link, sparse=sparse, learning_rate=0.99)
         model.fit(_X(X, sparse), y)
         model.partial_fit(_X(X[:50], sparse), y[:50])
-        model.decay(_X(X[:5], sparse))
+        model.decay(decay_rate=0.99, steps=5)
         restored = pickle.loads(pickle.dumps(model))
         assert "_factor_hint" not in restored.__dict__
         np.testing.assert_allclose(
@@ -420,7 +420,7 @@ class TestEBGLM:
             with pytest.raises(RuntimeError):
                 model.fit(_X(X, sparse), y)
         assert not hasattr(model, "_effective_n")
-        model.decay(_X(X[:5], sparse))
+        model.decay(decay_rate=0.9, steps=5)
 
 
 class TestEBGLMGuardrail:

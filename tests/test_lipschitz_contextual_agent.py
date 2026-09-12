@@ -222,13 +222,11 @@ def test_lipschitz_agent_decay(learner_class, policy, arm_featurizer):
         random_seed=42,
     )
 
-    X = np.array([[25, 50000]])
-
-    # Test decay without rate
-    agent.decay(X)
+    # Test decay
+    agent.decay(decay_rate=0.9)
 
     # Test decay with rate
-    agent.decay(X, decay_rate=0.9)
+    agent.decay(decay_rate=0.9)
 
     # No assertion errors means decay worked
 
@@ -478,7 +476,7 @@ def test_lipschitz_agent_dirichlet_classifier():
     assert all(len(context_result) == 2 for context_result in top_k_result)
 
     # Test decay
-    agent.decay(X, decay_rate=0.95)
+    agent.decay(decay_rate=0.95)
 
 
 def test_lipschitz_agent_gamma_regressor():
@@ -530,7 +528,7 @@ def test_lipschitz_agent_gamma_regressor():
     assert all(len(context_result) == 2 for context_result in top_k_result)
 
     # Test decay
-    agent.decay(X, decay_rate=0.95)
+    agent.decay(decay_rate=0.95)
 
 
 def test_lipschitz_integration():
@@ -697,7 +695,7 @@ def test_lipschitz_integration():
     assert 0 <= new_older_rec < 20, "Should make valid recommendations for new contexts"
 
     # Test decay functionality
-    agent.decay(np.vstack([young_contexts, older_contexts]), decay_rate=0.8)
+    agent.decay(decay_rate=0.8)
 
     post_decay_young = [agent.pull(young_contexts[:1])[0] for _ in range(3)]
     post_decay_older = [agent.pull(older_contexts[:1])[0] for _ in range(3)]
