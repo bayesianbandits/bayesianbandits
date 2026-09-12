@@ -105,14 +105,13 @@ Unreleased
 
 **Documentation**
 
-- New notebook, *Forgetting: Why, and Which Kind*, comparing the four
-  forgetting rules on a shared intercept-plus-arms model with uneven pulls,
-  on the geometry of a correlated two-coefficient posterior, and on
-  fill-in of a sparse hierarchy. It records that feature-wise forgetting
-  loosens a rare arm's prediction through the shared intercept and
-  manufactures precision on the unobservable intercept-versus-arms
-  direction, so it sits between stabilized and SIFt on hierarchies rather
-  than tying SIFt
+- New notebook, *Forgetting: Why, and Which Kind*, built around covariance
+  windup: the four rules on a shared intercept-plus-arms model with uneven
+  pulls, the stretch-versus-blur geometry of a correlated two-coefficient
+  posterior, and fill-in on a sparse hierarchy. It records that
+  feature-wise forgetting has no windup but leaks precision from the
+  shared intercept's sums into the unobservable intercept-versus-arms
+  direction, widening rare arms' predictions well beyond SIFt
 
 **Internal**
 
