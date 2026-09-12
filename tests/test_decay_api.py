@@ -18,7 +18,9 @@ from bayesianbandits import (
     EmpiricalBayesNormalRegressor,
     ExponentialForgetting,
     FeatureWiseForgetting,
+    FunctionArmFeaturizer,
     GammaRegressor,
+    LipschitzContextualAgent,
     NormalInverseGammaRegressor,
     NormalRegressor,
     SiftForgetting,
@@ -34,6 +36,15 @@ def _dense(P):
 
 def _learner(arm) -> Any:
     return arm.learner
+
+
+def _one_hot_arm(X, action_tokens, n_arms=3):
+    """Intercept plus a one-hot column per arm, for any subset of tokens."""
+    out = np.zeros((X.shape[0], 1 + n_arms, len(action_tokens)))
+    for i, token in enumerate(action_tokens):
+        out[:, 0, i] = X[:, 0]
+        out[:, 1 + token, i] = 1.0
+    return out
 
 
 def _fit_normal(sparse, learning_rate=1.0, **kwargs):
@@ -284,6 +295,32 @@ class TestPassThrough:
         assert_allclose(
             _dense(cast(Any, learner.learner).cov_inv_), 0.5 * before + 0.5 * np.eye(2)
         )
+        with pytest.warns(FutureWarning):
+            learner.decay(np.vstack([X, X]), decay_rate=0.5)
+        assert_allclose(
+            _dense(cast(Any, learner.learner).cov_inv_),
+            0.25 * (0.5 * before + 0.5 * np.eye(2)),
+        )
+
+    def test_lipschitz_agent_ticks_the_shared_learner_once(self):
+        arms = [Arm(i) for i in range(3)]
+        agent = LipschitzContextualAgent(
+            arms=arms,
+            policy=ThompsonSampling(),
+            arm_featurizer=FunctionArmFeaturizer(_one_hot_arm),
+            learner=NormalRegressor(alpha=1.0, beta=1.0),
+            random_seed=0,
+        )
+        X = np.array([[1.0]])
+        agent.select_for_update(1).update(X, np.array([1.0]))
+        shared: Any = agent.learner
+        before = _dense(shared.cov_inv_)
+        agent.decay(ExponentialForgetting(0.5), steps=2)
+        assert_allclose(_dense(shared.cov_inv_), 0.25 * before)
+        # The deprecated array form: one tick per context row, not per arm.
+        with pytest.warns(FutureWarning):
+            agent.decay(np.vstack([X, X]), decay_rate=0.5)
+        assert_allclose(_dense(shared.cov_inv_), 0.0625 * before)
 
 
 class TestBreakingChanges:
