@@ -101,6 +101,7 @@ Unreleased
   Not yet wired into the estimators. The math page documents what it gives
   up: it is a coordinate stretch rather than a Bayesian update and can
   over-tighten combinations with strongly correlated unobserved features
+  (#300)
 
 **Internal**
 
