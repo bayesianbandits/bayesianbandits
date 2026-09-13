@@ -137,21 +137,6 @@ class TestTickRules:
         assert not hasattr(est, "coef_")
 
 
-class TestDeprecatedCallingConvention:
-    def test_context_array_means_steps_from_its_rows(self):
-        est, X = _fit_normal(False)
-        twin, _ = _fit_normal(False)
-        with pytest.warns(FutureWarning, match="steps="):
-            est.decay(X[:4], decay_rate=0.9)
-        twin.decay(decay_rate=0.9, steps=4)
-        assert_allclose(_dense(est.cov_inv_), _dense(twin.cov_inv_))
-
-    def test_neither_rule_nor_rate_is_an_error(self):
-        est, _ = _fit_normal(False, forgetting=ExponentialForgetting(0.7))
-        with pytest.raises(TypeError, match="decay_rate="):
-            est.decay(steps=2)
-
-
 class TestNormalInverseGamma:
     def test_stabilized_needs_a_scalar_prior_precision(self):
         rng = np.random.default_rng(0)
@@ -234,15 +219,6 @@ class TestGroupedModels:
             model.decay(StabilizedForgetting(0.8))
         assert_allclose(model.coef_[1], [2.0, 3.0], atol=1e-6)
 
-    def test_legacy_array_ticks_only_the_listed_groups(self):
-        clf = DirichletClassifier({0: 1.0, 1: 1.0}, random_state=0)
-        clf.fit(np.array([[1], [2]]), np.array([0, 1]))
-        a1, a2 = clf.known_alphas_[1].copy(), clf.known_alphas_[2].copy()
-        with pytest.warns(FutureWarning):
-            clf.decay(np.array([[1], [1]]), decay_rate=0.5)
-        assert_allclose(clf.known_alphas_[1], 0.25 * a1)
-        assert_allclose(clf.known_alphas_[2], a2)
-
     @pytest.mark.parametrize(
         "cls, kwargs",
         [
@@ -281,7 +257,7 @@ class TestPassThrough:
         agent.decay(decay_rate=0.5, steps=2)
         assert_allclose(_learner(agent.arm(0)).coef_[1], 0.25 * before)
 
-    def test_pipelines_pass_through_and_transform_a_legacy_array(self):
+    def test_pipelines_pass_the_rule_through(self):
         arms = [Arm(0, learner=NormalRegressor(alpha=1.0, beta=1.0))]
         agent = ContextualAgent(arms, ThompsonSampling(), random_seed=0)
         pipeline = AgentPipeline([("id", FunctionTransformer())], agent)
@@ -290,9 +266,6 @@ class TestPassThrough:
         before = _dense(_learner(arms[0]).cov_inv_)
         pipeline.decay(ExponentialForgetting(0.5))
         assert_allclose(_dense(_learner(arms[0]).cov_inv_), 0.5 * before)
-        with pytest.warns(FutureWarning):
-            pipeline.decay(np.vstack([X, X]), decay_rate=0.5)
-        assert_allclose(_dense(_learner(arms[0]).cov_inv_), 0.125 * before)
 
         learner = LearnerPipeline(
             [("id", FunctionTransformer())], NormalRegressor(alpha=1.0, beta=1.0)
@@ -302,12 +275,6 @@ class TestPassThrough:
         learner.decay(StabilizedForgetting(0.5))
         assert_allclose(
             _dense(cast(Any, learner.learner).cov_inv_), 0.5 * before + 0.5 * np.eye(2)
-        )
-        with pytest.warns(FutureWarning):
-            learner.decay(np.vstack([X, X]), decay_rate=0.5)
-        assert_allclose(
-            _dense(cast(Any, learner.learner).cov_inv_),
-            0.25 * (0.5 * before + 0.5 * np.eye(2)),
         )
 
     def test_lipschitz_agent_ticks_the_shared_learner_once(self):
@@ -325,10 +292,6 @@ class TestPassThrough:
         before = _dense(shared.cov_inv_)
         agent.decay(ExponentialForgetting(0.5), steps=2)
         assert_allclose(_dense(shared.cov_inv_), 0.25 * before)
-        # The deprecated array form: one tick per context row, not per arm.
-        with pytest.warns(FutureWarning):
-            agent.decay(np.vstack([X, X]), decay_rate=0.5)
-        assert_allclose(_dense(shared.cov_inv_), 0.0625 * before)
 
 
 class TestBreakingChanges:
@@ -336,6 +299,11 @@ class TestBreakingChanges:
         est, X = _fit_normal(False)
         with pytest.raises(TypeError):
             est.decay(X, 0.9)  # type: ignore[misc]
+
+    def test_a_context_array_is_refused(self):
+        est, X = _fit_normal(False)
+        with pytest.raises(TypeError, match="decay_rate="):
+            est.decay(X)
 
     def test_a_bare_rate_is_refused_with_a_pointer(self):
         agent = Agent(

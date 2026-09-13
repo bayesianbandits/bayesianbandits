@@ -790,16 +790,7 @@ class TestTick:
         assert C_bar.flags.c_contiguous
 
     def test_directional_rules_have_no_tick(self):
-        from bayesianbandits._forgetting import TickRule, UpdateRule
-
-        assert isinstance(ExponentialForgetting(0.9), TickRule)
-        assert isinstance(StabilizedForgetting(0.9), TickRule)
-        assert not isinstance(FeatureWiseForgetting(0.9), TickRule)
-        assert not isinstance(SiftForgetting(0.9), TickRule)
-        for rule in (
-            ExponentialForgetting(0.9),
-            StabilizedForgetting(0.9),
-            FeatureWiseForgetting(0.9),
-            SiftForgetting(0.9),
-        ):
-            assert isinstance(rule, UpdateRule)
+        for rule in (ExponentialForgetting(0.9), StabilizedForgetting(0.9)):
+            assert hasattr(rule, "tick") and hasattr(rule, "update")
+        for rule in (FeatureWiseForgetting(0.9), SiftForgetting(0.9)):
+            assert not hasattr(rule, "tick") and hasattr(rule, "update")

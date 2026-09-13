@@ -377,16 +377,12 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         Parameters
         ----------
         forgetting : ExponentialForgetting or StabilizedForgetting, optional
-            The rule to tick with, carrying its own rate. A context
-            array here is the deprecated calling convention and is
-            transformed through the pipeline steps before it is passed on.
+            The rule to tick with, carrying its own rate.
         steps : float, default=1
             Number of ticks; the rule's rate is raised to this power.
         decay_rate : float, optional
             Shorthand for the learner's default rule at this rate.
         """
-        if forgetting is not None and not hasattr(forgetting, "tick"):
-            forgetting = self._apply_transformers(forgetting)
         self._learner.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
     def predict(self, X: X_contra) -> NDArray[np.float64]:

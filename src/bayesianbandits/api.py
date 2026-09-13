@@ -1476,17 +1476,10 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         Parameters
         ----------
         forgetting : ExponentialForgetting or StabilizedForgetting, optional
-            The rule to tick with, carrying its own rate. A context
-            array here is the deprecated calling convention; it is
-            enriched with one arm's features before it is passed on.
+            The rule to tick with, carrying its own rate.
         steps : float, default=1
             Number of ticks; the rule's rate is raised to this power.
         decay_rate : float, optional
             Shorthand for the learner's default rule at this rate.
         """
-        if forgetting is not None and not hasattr(forgetting, "tick"):
-            single_token = [self.arms[0].action_token]
-            forgetting = self.arm_featurizer.transform(
-                forgetting, action_tokens=single_token
-            )
         self.learner.decay(forgetting, decay_rate=decay_rate, steps=steps)

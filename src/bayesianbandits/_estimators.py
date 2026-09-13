@@ -49,12 +49,12 @@ from ._blas_helpers import (
     update_precision_dense,
 )
 from ._forgetting import (
+    UNIFORM_RULES,
     ExponentialForgetting,
-    StabilizedForgetting,
-    TickRule,
+    ForgettingRule,
     UniformRule,
-    UpdateRule,
     check_update_rule,
+    convert_legacy_state,
     resolve_tick,
     tick_groups,
     uniform_batch,
@@ -79,20 +79,6 @@ from ._sparse_bayesian_linear_regression import (
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
-
-
-def _grouped_batch(
-    rule: Any, prior: NDArray[np.float64], estimator: str
-) -> tuple[float, Any]:
-    """``(rate, floor)`` for a grouped conjugate model's batch: each row of
-    a group is one step of the rule, so the group's prior is scaled by
-    ``rate ** n`` and ``(1 - rate ** n) * floor`` added back."""
-    check_update_rule(rule, estimator=estimator, uniform_only=True)
-    if rule is None:
-        return 1.0, 0.0
-    if isinstance(rule, StabilizedForgetting):
-        return rule.rate, prior if rule.alpha is None else rule.alpha
-    return rule.rate, 0.0
 
 
 class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
@@ -325,7 +311,10 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
                 )
 
         # Group X values, y, and sample weights together
-        rate, floor = _grouped_batch(self.forgetting, self.prior_, type(self).__name__)
+        check_update_rule(
+            self.forgetting, estimator=type(self).__name__, uniform_only=True
+        )
+        rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
         for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
 
@@ -442,10 +431,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     _default_tick_rule: type = ExponentialForgetting
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        # Models pickled before ``forgetting=`` carried ``learning_rate``.
-        rate = state.pop("learning_rate", None)
-        if rate is not None and "forgetting" not in state:
-            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        convert_legacy_state(state, self._default_tick_rule)
         super().__setstate__(state)
 
     def decay(
@@ -482,14 +468,10 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         """
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
-        tick_groups(
-            self.known_alphas_,
-            forgetting,
-            steps=steps,
-            decay_rate=decay_rate,
-            prior=self.prior_,
-            default=self._default_tick_rule,
+        rule = resolve_tick(
+            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
         )
+        tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
 
 class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
@@ -680,7 +662,10 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
                 )
 
         # Group X values, y, and sample weights together
-        rate, floor = _grouped_batch(self.forgetting, self.prior_, type(self).__name__)
+        check_update_rule(
+            self.forgetting, estimator=type(self).__name__, uniform_only=True
+        )
+        rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
         for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
 
@@ -816,10 +801,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     _default_tick_rule: type = ExponentialForgetting
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        # Models pickled before ``forgetting=`` carried ``learning_rate``.
-        rate = state.pop("learning_rate", None)
-        if rate is not None and "forgetting" not in state:
-            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        convert_legacy_state(state, self._default_tick_rule)
         super().__setstate__(state)
 
     def decay(
@@ -858,14 +840,10 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         """
         if not hasattr(self, "coef_"):
             self._initialize_prior()
-        tick_groups(
-            self.coef_,
-            forgetting,
-            steps=steps,
-            decay_rate=decay_rate,
-            prior=self.prior_,
-            default=self._default_tick_rule,
+        rule = resolve_tick(
+            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
         )
+        tick_groups(self.coef_, rule, steps=steps, prior=self.prior_)
 
 
 def _scaled_identity_f(n: int, scale: float) -> NDArray[np.float64]:
@@ -1301,7 +1279,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         # Read here, owned elsewhere: the concrete ``__init__`` sets the
         # hyperparameters and ``_initialize_prior`` the generator.
         alpha: float
-        forgetting: Optional[UpdateRule]
+        forgetting: Optional[ForgettingRule]
         sparse: bool
         random_state: Union[int, np.random.Generator, None]
         random_state_: np.random.Generator
@@ -1326,10 +1304,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
     _default_tick_rule: type = ExponentialForgetting
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
-        # Models pickled before ``forgetting=`` carried ``learning_rate``.
-        rate = state.pop("learning_rate", None)
-        if rate is not None and "forgetting" not in state:
-            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        convert_legacy_state(state, self._default_tick_rule)
         super().__setstate__(state)
 
     def _forget_batch(
@@ -1354,7 +1329,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         check_update_rule(rule, estimator=type(self).__name__, sparse=self.sparse)
         assert X.shape is not None
         n = X.shape[0]
-        if rule is None or isinstance(rule, TickRule):
+        if rule is None or isinstance(rule, UNIFORM_RULES):
             gamma, floor = uniform_batch(rule, n, alpha=self._prior_floor())
             if getattr(self, "_prior_is_fresh", False):
                 floor = 0.0
@@ -1397,7 +1372,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
             self._diag_pos = cached
         cov_inv.data[cached[1]] += shift
 
-    def _apply_tick(self, rule: TickRule, steps: float) -> None:
+    def _apply_tick(self, rule: UniformRule, steps: float) -> None:
         """Forget ``steps`` ticks of ``rule`` on the precision. Only the
         variance grows, so the posterior mean is untouched; the cached
         factor follows a scalar rule and is dropped for any other."""
@@ -1832,11 +1807,8 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
             return
-        rule, steps, _ = resolve_tick(
-            forgetting,
-            steps=steps,
-            decay_rate=decay_rate,
-            default=self._default_tick_rule,
+        rule = resolve_tick(
+            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
         )
         self._apply_tick(rule, steps)
 
@@ -2042,7 +2014,7 @@ scipy.sparse.csc_array
         alpha: float,
         beta: float,
         *,
-        forgetting: Optional[UpdateRule] = None,
+        forgetting: Optional[ForgettingRule] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
@@ -2283,7 +2255,7 @@ scipy.sparse.csc_array
         lam: Union[ArrayLike, csc_array] = 1.0,
         a: float = 0.1,
         b: float = 0.1,
-        forgetting: Optional[UpdateRule] = None,
+        forgetting: Optional[ForgettingRule] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ):
@@ -2618,7 +2590,7 @@ scipy.sparse.csc_array
     def _prior_floor(self) -> Optional[float]:
         return float(cast(Any, self.lam)) if np.isscalar(self.lam) else None
 
-    def _apply_tick(self, rule: TickRule, steps: float) -> None:
+    def _apply_tick(self, rule: UniformRule, steps: float) -> None:
         """Forget the Inverse-Gamma parameters alongside the precision, so
         the marginal t widens on both counts: fewer degrees of freedom and
         a higher scale."""
@@ -2796,7 +2768,7 @@ scipy.sparse.csc_array
         alpha: float = 1.0,
         *,
         link: LinkFunction = "logit",
-        forgetting: Optional[UpdateRule] = None,
+        forgetting: Optional[ForgettingRule] = None,
         approximator: Optional[PosteriorApproximator] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,

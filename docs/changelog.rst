@@ -4,18 +4,6 @@ Changelog
 Unreleased
 ----------
 
-**Deprecations**
-
-- ``decay()`` no longer takes a context array. It was only ever read for
-  its row count (the grouped conjugate models also read the groups in
-  it), and it invited passing the last batch to a method that is meant
-  to be called on a clock. Pass ``steps=`` for the number of ticks
-  instead; an array still works for now, with a ``FutureWarning``, and
-  keeps its old meaning. ``decay()`` with neither a rule nor
-  ``decay_rate`` still falls back to ``learning_rate``, also with a
-  ``FutureWarning``: a nightly job should not inherit a per-observation
-  number.
-
 **New features**
 
 - The forgetting rules are public, ``ExponentialForgetting``,
@@ -66,7 +54,10 @@ Unreleased
 
 - ``decay`` has one signature everywhere,
   ``decay(forgetting=None, *, decay_rate=None, steps=1)``, and the
-  ``Learner`` protocol requires it. ``decay_rate`` is keyword-only on the
+  ``Learner`` protocol requires it. It no longer takes a context array:
+  the array was only ever read for its row count (and, on the grouped
+  conjugate models, for which groups to tick), so pass ``steps=`` for the
+  number of ticks and let a tick reach every group. ``decay_rate`` is keyword-only on the
   agents and pipelines, where it used to be positional, and
   ``Agent.decay(0.9)`` is a ``TypeError`` that says to pass
   ``decay_rate=``. A learner of your own with the old

@@ -239,11 +239,8 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         """
         if not hasattr(self, "coef_"):
             return
-        rule, steps, _ = resolve_tick(
-            forgetting,
-            steps=steps,
-            decay_rate=decay_rate,
-            default=self._default_tick_rule,
+        rule = resolve_tick(
+            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
         )
         gamma = rule.rate**steps
         if hasattr(self, "_prior_scalar"):
@@ -274,7 +271,8 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         check_update_rule(
             self.forgetting, estimator=type(self).__name__, uniform_only=True
         )
-        return uniform_batch(self.forgetting, n_samples, alpha=self.alpha)
+        rule = cast(Optional[UniformRule], self.forgetting)
+        return uniform_batch(rule, n_samples, alpha=self.alpha)
 
     def _restore_prior_scalar(self, prior_scalar_old: Optional[float]) -> None:
         """Put ``_prior_scalar`` back where a failed update found it, and
