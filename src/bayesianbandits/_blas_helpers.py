@@ -7,7 +7,13 @@ from typing import Any, Optional, Tuple, Union, cast
 import numpy as np
 from numpy.typing import NDArray
 from scipy.linalg import LinAlgError
-from scipy.linalg.blas import dgemm, dgemv, dsymv, dsyrk  # type: ignore[attr-defined]
+from scipy.linalg.blas import (
+    dgemm,  # type: ignore[attr-defined]
+    dgemv,  # type: ignore[attr-defined]
+    dsymm,  # type: ignore[attr-defined]
+    dsymv,  # type: ignore[attr-defined]
+    dsyrk,  # type: ignore[attr-defined]
+)
 from scipy.linalg.lapack import (
     dgeqrf,  # type: ignore[attr-defined]
     dgeqrf_lwork,  # type: ignore[attr-defined]
@@ -18,6 +24,7 @@ from scipy.sparse import csc_array
 __all__ = [
     "dgemv",
     "dsymv",
+    "dsymm",
     "dsyrk",
     "fortran_view",
     "update_precision_dense",

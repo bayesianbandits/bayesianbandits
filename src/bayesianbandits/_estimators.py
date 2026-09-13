@@ -1367,13 +1367,9 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
             X_w: Any = csc_array(X).multiply(w_sqrt.reshape(-1, 1)).tocsc()
         else:
             X_w = np.asarray(X) * w_sqrt[:, np.newaxis]
-        current = self.cov_inv_
-        if not issparse(current):
-            # The dense paths keep only the upper triangle current; a
-            # directional rule reads the whole matrix.
-            upper = np.triu(np.asarray(current))
-            current = upper + np.triu(upper, 1).T
-        result = rule.update(current, X_w, y * w_sqrt, alpha=self._prior_floor())
+        # The dense paths keep only the upper triangle current, and the
+        # rules read and write on that convention (dsymm/dsyrk).
+        result = rule.update(self.cov_inv_, X_w, y * w_sqrt, alpha=self._prior_floor())
         prior = self.cov_inv_ if result is None else result[0]
         return prior, 1.0, weights, 0.0
 

@@ -49,7 +49,8 @@ from scipy import sparse
 from scipy.linalg import cholesky, eigh, lapack, solve_triangular
 from scipy.sparse import csc_array
 
-from bayesianbandits._blas_helpers import dsyrk
+from bayesianbandits import _blas_helpers as blas
+from bayesianbandits._blas_helpers import dsyrk, fortran_view
 
 ArrayType = Union[NDArray[Any], csc_array]
 
@@ -263,8 +264,14 @@ def _sift_downdate_dense(
     Using Cholesky + triangular solve instead of ``solve(H, w.T)``
     ensures the correction ``V^T V`` is exactly symmetric, preventing
     floating-point asymmetry drift over many forgetting steps.
+
+    Only the upper triangle of ``precision`` is read (``dsymm``) and only
+    the upper triangle of the result is written (``dsyrk``), the same
+    convention as the dense fit paths, so no symmetrizing copy is needed.
     """
-    w = np.asarray(precision @ X_bar.T, dtype=np.float64)  # (n, q)
+    RF, transposed = fortran_view(np.asarray(precision, dtype=np.float64))
+    # RF's lower triangle is precision's upper when RF is the transpose.
+    w = blas.dsymm(1.0, RF, np.asfortranarray(X_bar.T), lower=transposed)  # (n, q)
     H = X_bar @ w  # (q, q)
     L = cholesky(H, lower=True)  # H = L L^T
     V = solve_triangular(L, w.T, lower=True)  # (q, n);  V^T V = w H^{-1} w^T
