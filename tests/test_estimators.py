@@ -5,6 +5,7 @@ from numpy.typing import NDArray
 
 from bayesianbandits import (
     DirichletClassifier,
+    ExponentialForgetting,
     GammaRegressor,
 )
 
@@ -204,13 +205,13 @@ def test_dirichletclassifier_decay(
     """Test GammaRegressor decay only increases variance."""
 
     clf = DirichletClassifier(
-        alphas={1: 1, 2: 1, 3: 1}, learning_rate=0.9, random_state=0
+        alphas={1: 1, 2: 1, 3: 1}, forgetting=ExponentialForgetting(0.9), random_state=0
     )
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
 
-    clf.decay(decay_rate=clf.learning_rate, steps=len(X))
+    clf.decay(decay_rate=0.9, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -221,9 +222,7 @@ def test_dirichletclassifier_manual_decay(
 ) -> None:
     """Test GammaRegressor decay only increases variance."""
 
-    clf = DirichletClassifier(
-        alphas={1: 1, 2: 1, 3: 1}, learning_rate=1.0, random_state=0
-    )
+    clf = DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
@@ -347,10 +346,10 @@ def test_dirichletclassifier_partial_fit_with_weights(
     assert_almost_equal(clf1.known_alphas_[2], clf2.known_alphas_[2])
     assert_almost_equal(clf1.known_alphas_[3], clf2.known_alphas_[3])
 
-    # Test sequential partial_fit with learning_rate=1 (no decay)
+    # Test sequential partial_fit with forgetting=ExponentialForgetting(1 (no decay))
     clf3 = DirichletClassifier(
         alphas={1: 1, 2: 1, 3: 1},
-        learning_rate=1.0,  # No decay
+        # No decay
         random_state=0,
     )
     # First batch
@@ -365,10 +364,8 @@ def test_dirichletclassifier_partial_fit_with_weights(
     w2 = weights[5:]
     clf3.partial_fit(X2, y2, sample_weight=w2)
 
-    # With learning_rate=1, sequential partial_fit should equal single fit
-    clf4 = DirichletClassifier(
-        alphas={1: 1, 2: 1, 3: 1}, learning_rate=1.0, random_state=0
-    )
+    # With sequential partial_fit should equal single fit
+    clf4 = DirichletClassifier(alphas={1: 1, 2: 1, 3: 1}, random_state=0)
     clf4.fit(X, y, sample_weight=weights)
 
     assert_almost_equal(clf3.known_alphas_[1], clf4.known_alphas_[1])
@@ -384,7 +381,7 @@ def test_dirichletclassifier_weights_learning_rate_interaction() -> None:
 
     # Test with learning_rate < 1
     clf1 = DirichletClassifier(
-        alphas={1: 1, 2: 1, 3: 1}, learning_rate=0.5, random_state=0
+        alphas={1: 1, 2: 1, 3: 1}, forgetting=ExponentialForgetting(0.5), random_state=0
     )
     weights = np.array([2.0, 1.0, 0.5])
     clf1.fit(X, y, sample_weight=weights)
@@ -402,7 +399,7 @@ def test_dirichletclassifier_weights_learning_rate_interaction() -> None:
     # Also verify that weights and decay compose properly
     # If we double all weights, the posterior should scale accordingly
     clf2 = DirichletClassifier(
-        alphas={1: 1, 2: 1, 3: 1}, learning_rate=0.5, random_state=0
+        alphas={1: 1, 2: 1, 3: 1}, forgetting=ExponentialForgetting(0.5), random_state=0
     )
     weights_double = weights * 2
     clf2.fit(X, y, sample_weight=weights_double)
@@ -622,12 +619,14 @@ def test_gamma_regressor_decay(
 ) -> None:
     """Test GammaRegressor decay only increases variance."""
 
-    clf = GammaRegressor(alpha=1, beta=1, learning_rate=0.9, random_state=0)
+    clf = GammaRegressor(
+        alpha=1, beta=1, forgetting=ExponentialForgetting(0.9), random_state=0
+    )
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
 
-    clf.decay(decay_rate=clf.learning_rate, steps=len(X))
+    clf.decay(decay_rate=0.9, steps=len(X))
 
     assert_almost_equal(clf.predict(X), pre_decay)
 
@@ -638,7 +637,7 @@ def test_gamma_regressor_manual_decay(
 ) -> None:
     """Test GammaRegressor decay only increases variance."""
 
-    clf = GammaRegressor(alpha=1, beta=1, learning_rate=1.0, random_state=0)
+    clf = GammaRegressor(alpha=1, beta=1, random_state=0)
     clf.fit(X, y)
 
     pre_decay = clf.predict(X)
@@ -765,11 +764,11 @@ def test_gamma_regressor_partial_fit_with_weights(
     assert_almost_equal(clf1.coef_[2], clf2.coef_[2])
     assert_almost_equal(clf1.coef_[3], clf2.coef_[3])
 
-    # Test sequential partial_fit with learning_rate=1 (no decay)
+    # Test sequential partial_fit with forgetting=ExponentialForgetting(1 (no decay))
     clf3 = GammaRegressor(
         alpha=1,
         beta=1,
-        learning_rate=1.0,  # No decay
+        # No decay
         random_state=0,
     )
     # First batch
@@ -784,8 +783,8 @@ def test_gamma_regressor_partial_fit_with_weights(
     w2 = weights[5:]
     clf3.partial_fit(X2, y2, sample_weight=w2)
 
-    # With learning_rate=1, sequential partial_fit should equal single fit
-    clf4 = GammaRegressor(alpha=1, beta=1, learning_rate=1.0, random_state=0)
+    # With sequential partial_fit should equal single fit
+    clf4 = GammaRegressor(alpha=1, beta=1, random_state=0)
     clf4.fit(X, y, sample_weight=weights)
 
     assert_almost_equal(clf3.coef_[1], clf4.coef_[1])
@@ -800,7 +799,9 @@ def test_gamma_regressor_weights_learning_rate_interaction() -> None:
     y = np.array([2, 4, 6])
 
     # Test with learning_rate < 1
-    clf1 = GammaRegressor(alpha=1, beta=1, learning_rate=0.5, random_state=0)
+    clf1 = GammaRegressor(
+        alpha=1, beta=1, forgetting=ExponentialForgetting(0.5), random_state=0
+    )
     weights = np.array([2.0, 1.0, 0.5])
     clf1.fit(X, y, sample_weight=weights)
 
@@ -942,10 +943,12 @@ def test_gamma_regressor_decay_with_weights() -> None:
     y = np.array([10])
     weights = np.array([2.0])
 
-    clf = GammaRegressor(alpha=1, beta=1, learning_rate=0.9, random_state=0)
+    clf = GammaRegressor(
+        alpha=1, beta=1, forgetting=ExponentialForgetting(0.9), random_state=0
+    )
     clf.fit(X, y, sample_weight=weights)
 
-    # With learning_rate=0.9:
+    # With forgetting=ExponentialForgetting(0.9:)
     # Stack: [[1, 1], [20, 2]]
     # Decay: [0.9^1, 0.9^0] = [0.9, 1.0]
     # Result: [1, 1]*0.9 + [20, 2]*1.0 = [0.9, 0.9] + [20, 2] = [20.9, 2.9]

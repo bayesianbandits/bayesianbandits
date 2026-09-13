@@ -140,12 +140,18 @@ class TestLaplaceApproximation:
 
         # With no decay, prior dominates
         posterior_no_decay = update_gaussian_posterior_laplace(
-            X, y, prior_mean, prior_precision, link="logit", learning_rate=1.0
+            X, y, prior_mean, prior_precision, link="logit"
         )
 
         # With decay, data has more influence
         posterior_decay = update_gaussian_posterior_laplace(
-            X, y, prior_mean, prior_precision, link="logit", learning_rate=0.5
+            X,
+            y,
+            prior_mean,
+            prior_precision,
+            link="logit",
+            prior_decay=0.5**10,
+            sample_weight=compute_effective_weights(10, None, 0.5),
         )
 
         # Decayed version should move further from prior
@@ -396,8 +402,8 @@ def _fit_overshoot(X, y, sample_weight, n_iter, sparse=False):
         np.zeros(p),
         csc_array(P) if sparse else P,
         link="log",
-        sample_weight=sample_weight,
-        learning_rate=0.98,
+        sample_weight=compute_effective_weights(X.shape[0], sample_weight, 0.98),
+        prior_decay=0.98 ** X.shape[0],
         sparse=sparse,
         n_iter=n_iter,
         tol=1e-6,

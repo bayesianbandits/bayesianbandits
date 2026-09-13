@@ -187,10 +187,11 @@ Hyperparameter semantics
      - Set to :math:`1/\sigma^2` if the noise scale is known.
        Otherwise consider
        :class:`~bayesianbandits.NormalInverseGammaRegressor`.
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. Applied per observation during
-       ``partial_fit`` and per row during ``decay``.
-     - 1.0 (default) for stationary environments. See
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, one step per row
+       for a uniform rule at rate :math:`\gamma`, or along what the
+       batch excites for a directional one.
+     - ``None`` (default) for stationary environments. See
        :doc:`/howto/decay` for tuning advice.
 
 

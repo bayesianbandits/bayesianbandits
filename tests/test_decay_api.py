@@ -47,13 +47,11 @@ def _one_hot_arm(X, action_tokens, n_arms=3):
     return out
 
 
-def _fit_normal(sparse, learning_rate=1.0, **kwargs):
+def _fit_normal(sparse, **kwargs):
     rng = np.random.default_rng(0)
     X = rng.standard_normal((30, 4))
     y = X @ np.array([1.0, -1.0, 0.5, 0.0]) + rng.normal(0, 0.1, 30)
-    est = NormalRegressor(
-        alpha=2.0, beta=1.0, sparse=sparse, learning_rate=learning_rate, **kwargs
-    )
+    est = NormalRegressor(alpha=2.0, beta=1.0, sparse=sparse, **kwargs)
     est.fit(sp.csc_array(X) if sparse else X, y)
     return est, X
 
@@ -136,12 +134,10 @@ class TestDeprecatedCallingConvention:
         twin.decay(decay_rate=0.9, steps=4)
         assert_allclose(_dense(est.cov_inv_), _dense(twin.cov_inv_))
 
-    def test_falling_back_to_learning_rate_warns(self):
-        est, _ = _fit_normal(False, learning_rate=0.7)
-        before = _dense(est.cov_inv_)
-        with pytest.warns(FutureWarning, match="learning_rate"):
+    def test_neither_rule_nor_rate_is_an_error(self):
+        est, _ = _fit_normal(False, forgetting=ExponentialForgetting(0.7))
+        with pytest.raises(TypeError, match="decay_rate="):
             est.decay(steps=2)
-        assert_allclose(_dense(est.cov_inv_), 0.7**2 * before)
 
 
 class TestNormalInverseGamma:

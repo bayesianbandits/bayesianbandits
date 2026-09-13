@@ -50,9 +50,14 @@ from ._blas_helpers import (
 )
 from ._forgetting import (
     ExponentialForgetting,
+    StabilizedForgetting,
     TickRule,
+    UniformRule,
+    UpdateRule,
+    check_update_rule,
     resolve_tick,
     tick_groups,
+    uniform_batch,
 )
 from ._gaussian import (
     LaplaceApproximator,
@@ -76,6 +81,20 @@ ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 
+def _grouped_batch(
+    rule: Any, prior: NDArray[np.float64], estimator: str
+) -> tuple[float, Any]:
+    """``(rate, floor)`` for a grouped conjugate model's batch: each row of
+    a group is one step of the rule, so the group's prior is scaled by
+    ``rate ** n`` and ``(1 - rate ** n) * floor`` added back."""
+    check_update_rule(rule, estimator=estimator, uniform_only=True)
+    if rule is None:
+        return 1.0, 0.0
+    if isinstance(rule, StabilizedForgetting):
+        return rule.rate, prior if rule.alpha is None else rule.alpha
+    return rule.rate, 0.0
+
+
 class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     """
     Intercept-only Dirichlet-Multinomial classifier.
@@ -92,12 +111,11 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         the set of classes; values are the initial Dirichlet
         :math:`\\alpha_k`. A uniform prior (e.g. ``{0: 1, 1: 1}``)
         encodes no prior preference.
-    learning_rate : float, default=1.0
-        Decay rate for the concentration parameters. Values less
-        than 1 geometrically shrink the posterior on each call to
-        ``decay``, increasing uncertainty over time. This converts
-        the model into a forgetting estimator suitable for restless
-        bandit problems.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed. ``None`` (default) forgets nothing. Forgetting with
+        time is ``decay``.
     random_state : int, np.random.Generator, or None, default=None
         Controls the random number generator for ``sample``. Pass an
         int for reproducible results across calls.
@@ -141,9 +159,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
         \\mathbb{E}[\\theta_k] = \\frac{\\alpha_k}{\\sum_j \\alpha_j}
 
-    When ``learning_rate < 1``, calling ``decay`` scales all
-    concentration parameters by the decay rate, uniformly increasing
-    posterior uncertainty.
+    Calling ``decay`` scales all concentration parameters by the
+    rule's rate, uniformly increasing posterior uncertainty.
 
     References
     ----------
@@ -177,11 +194,11 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         self,
         alphas: Dict[Union[int, str], float],
         *,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alphas = alphas
-        self.learning_rate = learning_rate
+        self.forgetting = forgetting
         self.random_state = random_state
 
     def fit(
@@ -308,6 +325,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
                 )
 
         # Group X values, y, and sample weights together
+        rate, floor = _grouped_batch(self.forgetting, self.prior_, type(self).__name__)
         for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
 
@@ -317,10 +335,11 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
             # Stack with prior
             vals = np.vstack((self.known_alphas_[key], weighted_arr))
 
-            # Apply learning rate decay
             decay_idx = np.flip(np.arange(len(vals)))
-            posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
-            self.known_alphas_[key] = posterior.sum(axis=0)
+            posterior = vals * (rate**decay_idx)[:, np.newaxis]
+            self.known_alphas_[key] = (
+                posterior.sum(axis=0) + (1 - rate ** len(arr)) * floor
+            )
 
     def predict_proba(self, X: NDArray[Any]) -> Any:
         """
@@ -422,6 +441,13 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
     _default_tick_rule: type = ExponentialForgetting
 
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # Models pickled before ``forgetting=`` carried ``learning_rate``.
+        rate = state.pop("learning_rate", None)
+        if rate is not None and "forgetting" not in state:
+            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        super().__setstate__(state)
+
     def decay(
         self,
         forgetting: Any = None,
@@ -461,7 +487,6 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
             forgetting,
             steps=steps,
             decay_rate=decay_rate,
-            learning_rate=self.learning_rate,
             prior=self.prior_,
             default=self._default_tick_rule,
         )
@@ -490,12 +515,11 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         ``alpha``, determines the prior mean
         :math:`\\mathbb{E}[\\lambda] = \\alpha / \\beta` and prior
         variance :math:`\\text{Var}[\\lambda] = \\alpha / \\beta^2`.
-    learning_rate : float, default=1.0
-        Decay rate for the posterior parameters. Values less than 1
-        geometrically shrink both :math:`\\alpha` and :math:`\\beta`
-        on each call to ``decay``, increasing posterior variance
-        while preserving the mean. This converts the model into a
-        forgetting estimator suitable for restless bandit problems.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed. ``None`` (default) forgets nothing. Forgetting with
+        time is ``decay``.
     random_state : int, np.random.Generator, or None, default=None
         Controls the random number generator for ``sample``. Pass an
         int for reproducible results across calls.
@@ -535,9 +559,9 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     posterior variance is
     :math:`\\text{Var}[\\lambda] = \\alpha / \\beta^2`.
 
-    When ``learning_rate < 1``, calling ``decay`` scales both
-    :math:`\\alpha` and :math:`\\beta` equally, so the posterior
-    mean is preserved but the variance increases.
+    Calling ``decay`` scales both :math:`\\alpha` and :math:`\\beta`
+    equally, so the posterior mean is preserved but the variance
+    increases.
 
     References
     ----------
@@ -572,12 +596,12 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         alpha: float,
         beta: float,
         *,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.beta = beta
-        self.learning_rate = learning_rate
+        self.forgetting = forgetting
         self.random_state = random_state
 
     def fit(
@@ -656,6 +680,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
                 )
 
         # Group X values, y, and sample weights together
+        rate, floor = _grouped_batch(self.forgetting, self.prior_, type(self).__name__)
         for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
             key = group[0].item()
 
@@ -666,12 +691,9 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
             vals = np.vstack((self.coef_[key], weighted_data))
 
-            # Calculate the decay index for nonstationary models
             decay_idx = np.flip(np.arange(len(vals)))
-            # Calculate the posterior
-            posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
-            # Calculate the coefficient
-            self.coef_[key] = posterior.sum(axis=0)
+            posterior = vals * (rate**decay_idx)[:, np.newaxis]
+            self.coef_[key] = posterior.sum(axis=0) + (1 - rate ** len(arr)) * floor
 
     def partial_fit(
         self,
@@ -793,6 +815,13 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
     _default_tick_rule: type = ExponentialForgetting
 
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # Models pickled before ``forgetting=`` carried ``learning_rate``.
+        rate = state.pop("learning_rate", None)
+        if rate is not None and "forgetting" not in state:
+            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        super().__setstate__(state)
+
     def decay(
         self,
         forgetting: Any = None,
@@ -834,7 +863,6 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
             forgetting,
             steps=steps,
             decay_rate=decay_rate,
-            learning_rate=self.learning_rate,
             prior=self.prior_,
             default=self._default_tick_rule,
         )
@@ -1273,7 +1301,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         # Read here, owned elsewhere: the concrete ``__init__`` sets the
         # hyperparameters and ``_initialize_prior`` the generator.
         alpha: float
-        learning_rate: float
+        forgetting: Optional[UpdateRule]
         sparse: bool
         random_state: Union[int, np.random.Generator, None]
         random_state_: np.random.Generator
@@ -1296,6 +1324,82 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         return eta
 
     _default_tick_rule: type = ExponentialForgetting
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        # Models pickled before ``forgetting=`` carried ``learning_rate``.
+        rate = state.pop("learning_rate", None)
+        if rate is not None and "forgetting" not in state:
+            state["forgetting"] = None if rate == 1.0 else self._default_tick_rule(rate)
+        super().__setstate__(state)
+
+    def _forget_batch(
+        self,
+        X: Union[NDArray[Any], csc_array],
+        y: NDArray[Any],
+        sample_weight: Optional[NDArray[Any]],
+    ) -> tuple[Any, float, NDArray[np.float64], float]:
+        """Forget before absorbing a batch, per ``self.forgetting``.
+
+        Returns ``(prior, prior_decay, weights, floor)``: the prior
+        precision to update from, a scalar it is still to be multiplied
+        by, the effective row weights, and the precision a stabilized
+        rule floors at (``(1 - prior_decay) * floor`` goes on the
+        diagonal). A uniform rule counts each row as one step, so
+        ``prior_decay = rate ** n`` and older rows of the batch weigh
+        less; a directional rule returns its own forgotten precision
+        with ``prior_decay = 1``. A fresh prior, from ``fit`` or a first
+        ``sample``, is never floored: nothing has been forgotten yet.
+        """
+        rule = self.forgetting
+        check_update_rule(rule, estimator=type(self).__name__, sparse=self.sparse)
+        assert X.shape is not None
+        n = X.shape[0]
+        if rule is None or isinstance(rule, TickRule):
+            gamma, floor = uniform_batch(rule, n, alpha=self._prior_floor())
+            if getattr(self, "_prior_is_fresh", False):
+                floor = 0.0
+            rate = 1.0 if rule is None else rule.rate
+            weights = compute_effective_weights(n, sample_weight, rate)
+            return self.cov_inv_, gamma, weights, floor
+        weights = compute_effective_weights(n, sample_weight, 1.0)
+        w_sqrt = np.sqrt(weights)
+        if issparse(X):
+            X_w: Any = csc_array(X).multiply(w_sqrt.reshape(-1, 1)).tocsc()
+        else:
+            X_w = np.asarray(X) * w_sqrt[:, np.newaxis]
+        current = self.cov_inv_
+        if not issparse(current):
+            # The dense paths keep only the upper triangle current; a
+            # directional rule reads the whole matrix.
+            upper = np.triu(np.asarray(current))
+            current = upper + np.triu(upper, 1).T
+        result = rule.update(current, X_w, y * w_sqrt, alpha=self._prior_floor())
+        prior = self.cov_inv_ if result is None else result[0]
+        return prior, 1.0, weights, 0.0
+
+    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
+        """``cov_inv += shift * I`` in place.
+
+        The diagonal is always stored (the prior is ``alpha * I``), so
+        its positions, found once per pattern by running ``diagonal()``
+        over entry numbers and cached against the index array's
+        identity, make this a gather-add; ``setdiag`` relocates it on
+        every call.
+        """
+        if shift == 0.0:
+            return
+        cached = self.__dict__.get("_diag_pos")
+        if cached is None or cached[0] is not cov_inv.indices:
+            values = cov_inv.data
+            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
+            pos = cov_inv.diagonal().astype(np.intp) - 1
+            cov_inv.data = values
+            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
+                cov_inv.setdiag(cov_inv.diagonal() + shift)
+                return
+            cached = (cov_inv.indices, pos)
+            self._diag_pos = cached
+        cov_inv.data[cached[1]] += shift
 
     def _apply_tick(self, rule: TickRule, steps: float) -> None:
         """Forget ``steps`` ticks of ``rule`` on the precision. Only the
@@ -1333,6 +1437,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         assert X.shape is not None  # for the type checker
         self.n_features_ = X.shape[1]
         self.coef_ = np.zeros(self.n_features_)
+        self._prior_is_fresh = True
         if self.sparse:
             self.cov_inv_ = csc_array(eye(self.n_features_, format="csc")) * self.alpha
         else:
@@ -1462,7 +1567,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         Incrementally update the posterior with new data.
 
         Uses the current posterior as the prior for the new update,
-        decayed by ``learning_rate``. If the model has not been
+        forgotten per ``forgetting``. If the model has not been
         fitted, this is equivalent to calling ``fit``.
 
         Parameters
@@ -1735,7 +1840,6 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
             forgetting,
             steps=steps,
             decay_rate=decay_rate,
-            learning_rate=self.learning_rate,
             default=self._default_tick_rule,
         )
         self._apply_tick(rule, steps)
@@ -1844,12 +1948,14 @@ class NormalRegressor(_BayesianLinearModel, RegressorMixin):
     beta : float
         Known noise precision. The likelihood is
         :math:`y \\mid x, w \\sim \\mathcal{N}(x^T w, \\beta^{-1})`.
-    learning_rate : float, default=1.0
-        Decay rate for the posterior precision on each call to
-        ``decay``. Values less than 1 geometrically shrink the
-        precision matrix, increasing posterior uncertainty over time.
-        This converts the model into a forgetting estimator suitable
-        for restless bandit problems.
+    forgetting : forgetting rule, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, for change that happens because you observed. A
+        uniform rule (``ExponentialForgetting``, ``StabilizedForgetting``)
+        takes one step per row; a directional rule
+        (``FeatureWiseForgetting``, ``SiftForgetting``) forgets only along
+        what the batch excites. ``None`` (default) forgets nothing.
+        Forgetting with time is ``decay``.
     sparse : bool, default=False
         If True, use sparse matrix operations for the precision
         matrix. Input ``X`` must be a ``scipy.sparse.csc_array``.
@@ -1889,14 +1995,15 @@ scipy.sparse.csc_array
         \\mu_n = \\Lambda_n^{-1}
         (\\gamma^n \\Lambda_0 \\mu_0 + \\beta X^T W y)
 
-    where :math:`\\gamma` is the learning rate (1.0 for standard
-    Bayesian update) and :math:`W` is a diagonal matrix of effective
-    sample weights incorporating both user-supplied weights and
-    learning-rate decay.
+    where :math:`\\gamma` is the rate of a uniform ``forgetting`` rule
+    (1.0 with none) and :math:`W` is a diagonal matrix of effective
+    sample weights incorporating both user-supplied weights and the
+    within-batch forgetting. A directional rule replaces
+    :math:`\\gamma^n \\Lambda_0` with its own forgotten precision.
 
-    When ``learning_rate < 1``, calling ``decay`` scales the precision
-    matrix by :math:`\\gamma^n`, uniformly increasing posterior
-    uncertainty while preserving the mean.
+    Calling ``decay`` scales the precision matrix by the rule's rate,
+    uniformly increasing posterior uncertainty while preserving the
+    mean.
 
     References
     ----------
@@ -1939,13 +2046,13 @@ scipy.sparse.csc_array
         alpha: float,
         beta: float,
         *,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UpdateRule] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.beta = beta
-        self.learning_rate = learning_rate
+        self.forgetting = forgetting
         self.sparse = sparse
         self.random_state = random_state
 
@@ -1955,31 +2062,21 @@ scipy.sparse.csc_array
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
+        *,
+        pending_eta: Optional[NDArray[np.float64]] = None,
     ):
+        """One recursive update from the forgotten prior. ``pending_eta``,
+        when given, is the prior information vector ``Λ·coef_`` already in
+        hand (an empirical-Bayes correction leaves it instead of solving),
+        so the matvec is skipped."""
         if self.sparse:
             X = csc_array(X)
-
         assert X.shape is not None  # for the type checker
 
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
-
-        # Apply the learning rate decay to get effective weights
-        effective_weights = compute_effective_weights(
-            X.shape[0], sample_weight, self.learning_rate
+        prior, prior_decay, effective_weights, floor = self._forget_batch(
+            X, y, sample_weight
         )
-
-        assert X.shape is not None  # for the type checker
-        prior_decay = self.learning_rate ** X.shape[0]
-
+        reinjection = (1.0 - prior_decay) * floor
         y_weighted = y * effective_weights
 
         if self.sparse:
@@ -1988,31 +2085,52 @@ scipy.sparse.csc_array
             assert isinstance(X, csc_array)
             w_sqrt = np.sqrt(self.beta * effective_weights)
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
-            cov_inv = cast(
-                csc_array,
-                prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted,
+            prior_csc = cast(csc_array, prior)
+            if prior_decay != 1.0:
+                # New data array, not in-place: leaves cov_inv_ untouched if the solve below fails.
+                prior_csc = csc_array(
+                    (prior_csc.data * prior_decay, prior_csc.indices, prior_csc.indptr),
+                    shape=prior_csc.shape,
+                )
+            prior_eta = (
+                prior_csc @ self.coef_
+                if pending_eta is None
+                else prior_decay * pending_eta
             )
-            # Scale vectors instead of sparse matrices to avoid copies
-            eta = cast(
-                NDArray[np.float64],
-                self.cov_inv_ @ (prior_decay * self.coef_)
-                + X.T @ (self.beta * y_weighted),
-            )
+            cov_inv = cast(csc_array, prior_csc + X_weighted.T @ X_weighted)
+            self._shift_diagonal(cov_inv, reinjection)
+            eta = cast(NDArray[np.float64], prior_eta + X.T @ (self.beta * y_weighted))
             factor: PrecisionFactor = self._sparse_factor(cov_inv)
             coef = factor.solve(eta)
             self._precision_factor = factor
         else:
             assert isinstance(X, np.ndarray)
+            prior_dense = np.asarray(prior)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
-            eta = compute_eta_dense(
-                prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
-            )
+            if pending_eta is None:
+                eta = compute_eta_dense(
+                    prior_decay, prior_dense, self.coef_, self.beta, X, y_weighted
+                )
+            else:
+                # As compute_eta_dense, but dgemv accumulates onto the already-done dsymv term.
+                XF, xt = fortran_view(X)
+                eta = dgemv(
+                    self.beta,
+                    XF,
+                    y_weighted,
+                    trans=1 - xt,
+                    beta=1.0,
+                    y=prior_decay * pending_eta,
+                    overwrite_y=True,
+                )
             # Copy, not a view: dsyrk below writes this buffer, so aliasing cov_inv_
             # would corrupt it before cho_factor gets a chance to reject the update.
-            prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
+            prior_scaled = np.array(prior_dense, order="F", copy=True)
             if prior_decay != 1.0:
                 prior_scaled *= prior_decay
+            if reinjection != 0.0:
+                prior_scaled[np.diag_indices_from(prior_scaled)] += reinjection
             # Fused X^T W X + prior via dsyrk (upper triangle only)
             cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
             # Cache the Cholesky factor for reuse in cov_/sample
@@ -2022,6 +2140,7 @@ scipy.sparse.csc_array
 
         self.cov_inv_ = cov_inv
         self.coef_ = coef
+        self._prior_is_fresh = False
 
 
 class NormalInverseGammaRegressor(NormalRegressor):
@@ -2053,11 +2172,14 @@ array-like of shape (n_features, n_features), default=1.0
         Prior rate parameter of the Inverse-Gamma distribution.
         The prior mean of the noise variance is :math:`b / (a - 1)`
         for :math:`a > 1`.
-    learning_rate : float, default=1.0
-        Decay rate for sequential updates. Values less than 1
-        geometrically shrink the precision and Inverse-Gamma
-        parameters on each call to ``decay``, enabling adaptation
-        to non-stationary environments.
+    forgetting : forgetting rule, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, for change that happens because you observed. A
+        uniform rule (``ExponentialForgetting``, ``StabilizedForgetting``)
+        takes one step per row; a directional rule
+        (``FeatureWiseForgetting``, ``SiftForgetting``) forgets only along
+        what the batch excites. ``None`` (default) forgets nothing.
+        Forgetting with time is ``decay``.
     sparse : bool, default=False
         If True, use sparse matrix operations for the precision
         matrix. Input ``X`` must be a ``scipy.sparse.csc_array``.
@@ -2165,7 +2287,7 @@ scipy.sparse.csc_array
         lam: Union[ArrayLike, csc_array] = 1.0,
         a: float = 0.1,
         b: float = 0.1,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UpdateRule] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ):
@@ -2173,7 +2295,7 @@ scipy.sparse.csc_array
         self.lam = lam
         self.a = a
         self.b = b
-        self.learning_rate = learning_rate
+        self.forgetting = forgetting
         self.sparse = sparse
         self.random_state = random_state
 
@@ -2191,6 +2313,7 @@ scipy.sparse.csc_array
 
         assert X.shape is not None  # for the type checker
         self.n_features_ = X.shape[1]
+        self._prior_is_fresh = True
         if np.isscalar(self.mu):
             self.coef_ = np.full(self.n_features_, self.mu, dtype=np.float64)
         elif cast(NDArray[np.float64], self.mu).ndim == 1:
@@ -2233,7 +2356,10 @@ scipy.sparse.csc_array
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
+        *,
+        pending_eta: Optional[NDArray[np.float64]] = None,
     ):
+        assert pending_eta is None  # only the EB Normal regressor leaves one
         if self.sparse:
             X = csc_array(X)
 
@@ -2250,13 +2376,10 @@ scipy.sparse.csc_array
                     f"equal to X.shape[0]={X.shape[0]}"
                 )
 
-        # Apply the learning rate decay to get effective weights
-        effective_weights = compute_effective_weights(
-            X.shape[0], sample_weight, self.learning_rate
+        prior, prior_decay, effective_weights, floor = self._forget_batch(
+            X, y, sample_weight
         )
-
-        assert X.shape is not None  # for the type checker
-        prior_decay = self.learning_rate ** X.shape[0]
+        reinjection = (1.0 - prior_decay) * floor
 
         # Update the inverse covariance matrix with weights
         if self.sparse:
@@ -2264,13 +2387,19 @@ scipy.sparse.csc_array
             assert isinstance(X, csc_array)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
-            V_n = prior_decay * self.cov_inv_ + X_weighted.T @ X_weighted
+            V_n: Any = cast(csc_array, prior_decay * prior + X_weighted.T @ X_weighted)
+            self._shift_diagonal(V_n, reinjection)
         else:
             assert isinstance(X, np.ndarray)
             w_sqrt = np.sqrt(effective_weights)
             X_weighted = X * w_sqrt[:, np.newaxis]
+            # Copy, not a view: dsyrk writes this buffer.
+            prior_scaled = np.array(prior, order="F", copy=True)
+            if prior_decay != 1.0:
+                prior_scaled *= prior_decay
+            if reinjection != 0.0:
+                prior_scaled[np.diag_indices_from(prior_scaled)] += reinjection
             # Fused X^T W X + prior via dsyrk (upper triangle only)
-            prior_scaled = np.asfortranarray(prior_decay * self.cov_inv_)
             V_n = update_precision_dense(1.0, X_weighted, prior_scaled)
 
         # Apply weights to y for the linear term
@@ -2280,7 +2409,7 @@ scipy.sparse.csc_array
         if self.sparse:
             # Compute prior term and extract prior_quad before adding
             # the data term, mirroring the dense path optimisation.
-            prior_cov_coef = self.cov_inv_ @ (prior_decay * self.coef_)
+            prior_cov_coef = prior @ (prior_decay * self.coef_)
             prior_quad = float(self.coef_.dot(prior_cov_coef))
             eta = prior_cov_coef + X.T @ y_weighted
             eta = cast(NDArray[np.float64], eta)
@@ -2291,7 +2420,7 @@ scipy.sparse.csc_array
         else:
             # Inline compute_eta_dense to reuse the intermediate dsymv
             # result for prior_quad, saving one O(p²) matvec.
-            prior_cov_coef = dsymv(prior_decay, self.cov_inv_, self.coef_)
+            prior_cov_coef = dsymv(prior_decay, prior, self.coef_)
             prior_quad = self.coef_.dot(prior_cov_coef)
             # eta = prior_decay * cov_inv @ coef + X^T @ y_weighted
             assert isinstance(X, np.ndarray)
@@ -2328,6 +2457,7 @@ scipy.sparse.csc_array
         self.coef_ = m_n
         self.a_ = a_n
         self.b_ = b_n
+        self._prior_is_fresh = False
 
     @cached_property
     def shape_(self) -> PrecisionFactor:
@@ -2527,12 +2657,14 @@ class BayesianGLM(_BayesianLinearModel, RegressorMixin):
           (Bernoulli likelihood).
         - ``'log'``: Exponential. Use for count outcomes (Poisson
           likelihood).
-    learning_rate : float, default=1.0
-        Decay rate for the posterior precision on each call to ``decay``.
-        Values less than 1 geometrically shrink the precision matrix,
-        increasing posterior uncertainty over time. This converts the
-        model into a forgetting (non-stationary) estimator suitable for
-        restless bandit problems.
+    forgetting : forgetting rule, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, for change that happens because you observed. A
+        uniform rule (``ExponentialForgetting``, ``StabilizedForgetting``)
+        takes one step per row; a directional rule
+        (``FeatureWiseForgetting``, ``SiftForgetting``) forgets only along
+        what the batch excites. ``None`` (default) forgets nothing.
+        Forgetting with time is ``decay``.
     approximator : PosteriorApproximator, default=LaplaceApproximator()
         Strategy object for approximating the posterior. The default
         ``LaplaceApproximator`` performs 5 IRLS iterations per update.
@@ -2598,11 +2730,9 @@ scipy.sparse.csc_array
     and :math:`W` is the diagonal matrix of IRLS weights. See Chapter 8
     of [1]_ for details.
 
-    When ``learning_rate < 1``, calling ``decay`` scales the precision
-    matrix by :math:`\\gamma^n` where :math:`\\gamma` is the learning rate
-    and :math:`n` is the number of samples. This uniformly increases
-    posterior uncertainty, allowing the model to adapt to non-stationary
-    environments.
+    Calling ``decay`` scales the precision matrix by the rule's rate,
+    uniformly increasing posterior uncertainty so the model can follow
+    a non-stationary environment.
 
     References
     ----------
@@ -2670,14 +2800,14 @@ scipy.sparse.csc_array
         alpha: float = 1.0,
         *,
         link: LinkFunction = "logit",
-        learning_rate: float = 1.0,
+        forgetting: Optional[UpdateRule] = None,
         approximator: Optional[PosteriorApproximator] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         self.alpha = alpha
         self.link: LinkFunction = link
-        self.learning_rate = learning_rate
+        self.forgetting = forgetting
         self.approximator = approximator
         self.sparse = sparse
         self.random_state = random_state
@@ -2713,28 +2843,33 @@ scipy.sparse.csc_array
             prior_factor = self._pop_factor_hint()
             self.__dict__.pop("_precision_factor", None)
 
-        # Only the EB subclass sets these; left out otherwise so a custom
-        # approximator written without them keeps working on BayesianGLM.
+        prior, prior_decay, weights, floor = self._forget_batch(X, y, sample_weight)
+        if prior is not self.cov_inv_:
+            # A directional rule changed the prior; the cached factor is of
+            # the old one.
+            prior_factor = None
+        # Left out when unused so a custom approximator written without
+        # them keeps working on BayesianGLM.
         extra: dict[str, Any] = {}
-        prior_floor = getattr(self, "_pending_floor", 0.0)
-        if prior_floor != 0.0:
-            extra["prior_floor"] = prior_floor
+        if floor != 0.0:
+            extra["prior_floor"] = floor
         if coef_init is not None:
             extra["coef_init"] = coef_init
         posterior = self.approximator_.update_posterior(
             X,
             y,
             self.coef_,
-            self.cov_inv_,  # type: ignore
+            prior,  # type: ignore
             link=self.link,
-            sample_weight=sample_weight,
-            learning_rate=self.learning_rate,
+            sample_weight=weights,
+            prior_decay=prior_decay,
             sparse=self.sparse,
             prior_factor=prior_factor,
             **extra,
         )
         self.coef_ = posterior.mean
         self.cov_inv_ = posterior.precision
+        self._prior_is_fresh = False
         self._laplace_converged = posterior.converged
         if not posterior.converged:
             warnings.warn(

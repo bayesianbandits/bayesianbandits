@@ -5,6 +5,7 @@ import pytest
 from scipy.sparse import csc_array
 from scipy.sparse import random as sparse_random
 
+from bayesianbandits import StabilizedForgetting
 from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
 from bayesianbandits._estimators import (
     BayesianGLM,
@@ -500,7 +501,7 @@ def test_fit_eb_normal_dense_100(benchmark):
 
     def run():
         est = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=False
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=False
         )
         est.fit(X, y)
 
@@ -551,7 +552,7 @@ def test_fit_eb_normal_dense_1k(benchmark):
 
     def run():
         est = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=False
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=False
         )
         est.fit(X, y)
 
@@ -602,7 +603,7 @@ def test_fit_eb_normal_sparse_1k(benchmark):
 
     def run():
         est = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=True
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=True
         )
         est.fit(X, y)
 
@@ -655,7 +656,7 @@ def test_fit_eb_normal_sparse_100k(benchmark):
 
     def run():
         est = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=True
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=True
         )
         est.fit(X, y)
 

@@ -552,7 +552,7 @@ def update_gaussian_posterior_laplace(
     *,
     link: LinkFunction,
     sample_weight: Optional[NDArray[np.float64]] = None,
-    learning_rate: float = 1.0,
+    prior_decay: float = 1.0,
     sparse: bool = False,
     prior_floor: float = 0.0,
     n_iter: int = 3,
@@ -591,9 +591,9 @@ def update_gaussian_posterior_laplace(
     link : {'logit', 'log'}
         Link function
     sample_weight : array-like of shape (n_samples,), optional
-        Sample weights
-    learning_rate : float
-        Decay factor for prior contribution
+        Sample weights, as the rows are to count
+    prior_decay : float
+        Factor the prior precision is scaled by before the update
     sparse : bool
         Whether to use sparse operations
     n_iter : int, default=3
@@ -626,10 +626,7 @@ def update_gaussian_posterior_laplace(
     if n_samples == 0:
         return GaussianPosterior(prior_mean.copy(), prior_precision.copy(), None)
 
-    effective_weights = compute_effective_weights(
-        n_samples, sample_weight, learning_rate
-    )
-    prior_decay = learning_rate**n_samples
+    effective_weights = compute_effective_weights(n_samples, sample_weight, 1.0)
 
     if sparse:
         return _irls_sparse(
@@ -682,11 +679,12 @@ class PosteriorApproximator(Protocol):
     place for the posterior (the caller no longer holds it as the
     prior's factor), or ignore it entirely.
 
+    ``prior_decay`` scales the prior precision before the update, and
     ``prior_floor``, when nonzero, requests stabilized forgetting
-    (Kulhavy & Zarrop 1993): after decaying the prior precision by
-    ``γⁿ``, ``(1 - γⁿ)·prior_floor`` is added back to its diagonal so
-    the prior's contribution converges to ``prior_floor·I`` instead of
-    vanishing.  Only the precision is shifted, never the prior's eta
+    (Kulhavy & Zarrop 1993): ``(1 - prior_decay)·prior_floor`` is added
+    back to the scaled prior's diagonal so the prior's contribution
+    converges to ``prior_floor·I`` instead of vanishing. ``sample_weight``
+    arrives with any within-batch forgetting already applied.  Only the precision is shifted, never the prior's eta
     term, so the re-injected prior is centered at zero.
 
     ``coef_init``, when given, is the starting point for iterative
@@ -702,7 +700,7 @@ class PosteriorApproximator(Protocol):
         prior_precision: ArrayType,
         link: LinkFunction,
         sample_weight: Optional[NDArray[np.float64]],
-        learning_rate: float,
+        prior_decay: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
@@ -779,7 +777,7 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
         prior_precision: ArrayType,
         link: LinkFunction,
         sample_weight: Optional[NDArray[np.float64]],
-        learning_rate: float,
+        prior_decay: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
@@ -792,7 +790,7 @@ class LaplaceApproximator(MemoryUsageMixin, PosteriorApproximator):
             prior_precision,
             link=link,
             sample_weight=sample_weight,
-            learning_rate=learning_rate,
+            prior_decay=prior_decay,
             sparse=sparse,
             prior_floor=prior_floor,
             n_iter=self.n_iter,
@@ -1153,7 +1151,7 @@ def update_gaussian_posterior_rvga(
     *,
     link: LinkFunction,
     sample_weight: Optional[NDArray[np.float64]] = None,
-    learning_rate: float = 1.0,
+    prior_decay: float = 1.0,
     sparse: bool = False,
     prior_floor: float = 0.0,
     n_iter: int = 5,
@@ -1173,9 +1171,10 @@ def update_gaussian_posterior_rvga(
         native recursive mode), threading the posterior factor between
         chunks. Bounds the Gram-matrix allocation at
         ``8 * batch_size**2`` bytes instead of ``8 * n_samples**2``.
-        Decay and sample weights compose exactly across chunks; the
-        variational weights make the result mildly dependent on row
-        order. Ignored when ``sparse=False``.
+        The prior is forgotten once, before the first chunk, and the
+        row weights are as given; the variational weights make the
+        result mildly dependent on row order. Ignored when
+        ``sparse=False``.
 
     References
     ----------
@@ -1204,9 +1203,9 @@ def update_gaussian_posterior_rvga(
                 sample_weight=(
                     sample_weight[start:end] if sample_weight is not None else None
                 ),
-                learning_rate=learning_rate,
+                prior_decay=prior_decay if start == 0 else 1.0,
                 sparse=True,
-                prior_floor=prior_floor,
+                prior_floor=prior_floor if start == 0 else 0.0,
                 n_iter=n_iter,
                 tol=tol,
                 n_gh_nodes=n_gh_nodes,
@@ -1215,10 +1214,7 @@ def update_gaussian_posterior_rvga(
             )
         return posterior
 
-    effective_weights = compute_effective_weights(
-        n_samples, sample_weight, learning_rate
-    )
-    prior_decay = learning_rate**n_samples
+    effective_weights = compute_effective_weights(n_samples, sample_weight, 1.0)
 
     if sparse:
         return _rvga_sparse(
@@ -1313,7 +1309,7 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
         prior_precision: ArrayType,
         link: LinkFunction,
         sample_weight: Optional[NDArray[np.float64]],
-        learning_rate: float,
+        prior_decay: float,
         sparse: bool,
         prior_factor: Optional[Any] = None,
         prior_floor: float = 0.0,
@@ -1326,7 +1322,7 @@ class RVGAApproximator(MemoryUsageMixin, PosteriorApproximator):
             prior_precision,
             link=link,
             sample_weight=sample_weight,
-            learning_rate=learning_rate,
+            prior_decay=prior_decay,
             sparse=sparse,
             prior_floor=prior_floor,
             n_iter=self.n_iter,

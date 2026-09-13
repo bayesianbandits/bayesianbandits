@@ -15,6 +15,7 @@ from bayesianbandits import (
     EmpiricalBayesGLM,
     LaplaceApproximator,
     RVGAApproximator,
+    StabilizedForgetting,
 )
 from bayesianbandits._empirical_bayes import glm_log_likelihood
 
@@ -306,7 +307,9 @@ class TestEBGLM:
 
     def test_decay_reinjects_prior(self, link, sparse):
         X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.9, sparse=sparse)
+        model = EmpiricalBayesGLM(
+            link=link, forgetting=StabilizedForgetting(0.9), sparse=sparse
+        )
         model.fit(_X(X, sparse), y)
         diag_before = _diag(model)
         s_before = model._prior_scalar
@@ -325,7 +328,9 @@ class TestEBGLM:
         """With learning_rate < 1 the prior component after partial_fit is
         γⁿ·s_old + (1 - γⁿ)·alpha_old, then rescaled by the MacKay step."""
         X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, learning_rate=0.95, sparse=sparse)
+        model = EmpiricalBayesGLM(
+            link=link, forgetting=StabilizedForgetting(0.95), sparse=sparse
+        )
         model.fit(_X(X[:100], sparse), y[:100])
         s_old, alpha_old = model._prior_scalar, model.alpha
         g = 0.95**20
@@ -389,7 +394,9 @@ class TestEBGLM:
 
     def test_pickle_after_online_update(self, link, sparse):
         X, y = _simulate(link)
-        model = EmpiricalBayesGLM(link=link, sparse=sparse, learning_rate=0.99)
+        model = EmpiricalBayesGLM(
+            link=link, sparse=sparse, forgetting=StabilizedForgetting(0.99)
+        )
         model.fit(_X(X, sparse), y)
         model.partial_fit(_X(X[:50], sparse), y[:50])
         model.decay(decay_rate=0.99, steps=5)
@@ -464,7 +471,9 @@ class TestFailedPartialFitLeavesEBStateIntact:
     @staticmethod
     def _fitted(sparse):
         X, y = _simulate("log", n=40, p=4)
-        model = EmpiricalBayesGLM(link="log", learning_rate=0.9, sparse=sparse)
+        model = EmpiricalBayesGLM(
+            link="log", forgetting=StabilizedForgetting(0.9), sparse=sparse
+        )
         return model.fit(_X(X, sparse), y), X, y
 
     @pytest.mark.parametrize("sparse", [False, True])
@@ -493,7 +502,9 @@ class TestEffectiveN:
     def test_counts_the_effective_row_weights(self):
         X, y = _simulate("log", n=4, p=3)
         w = np.array([2.0, 3.0, 1.0, 4.0])
-        model = EmpiricalBayesGLM(link="log", learning_rate=0.9).fit(X, y, w)
+        model = EmpiricalBayesGLM(link="log", forgetting=StabilizedForgetting(0.9)).fit(
+            X, y, w
+        )
         assert model._effective_n == pytest.approx(
             np.sum(w * 0.9 ** np.arange(3, -1, -1))
         )

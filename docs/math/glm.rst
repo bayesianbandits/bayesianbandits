@@ -286,9 +286,10 @@ Hyperparameter semantics
        ``LaplaceApproximator(n_iter=5, tol=1e-4)``.
      - ``RVGAApproximator()`` for better-calibrated uncertainty.
        See the R-VGA section above.
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
-     - 1.0 (default) for stationary environments.
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, carrying its rate
+       :math:`\gamma`. See :doc:`/howto/decay`.
+     - ``None`` (default) for stationary environments.
 
 
 Trade-offs

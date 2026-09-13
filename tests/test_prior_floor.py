@@ -12,9 +12,19 @@ from scipy.sparse import csc_array
 from scipy.special import expit
 
 from bayesianbandits._gaussian import (
+    compute_effective_weights,
     update_gaussian_posterior_laplace,
     update_gaussian_posterior_rvga,
 )
+
+
+def _forget(rate: float, n: int) -> dict[str, Any]:
+    """What an estimator hands the approximator for a uniform rule over
+    ``n`` rows: the prior decay and the within-batch row weights."""
+    return {
+        "prior_decay": rate**n,
+        "sample_weight": compute_effective_weights(n, None, rate),
+    }
 
 
 def _data(seed: int = 0, n: int = 30, p: int = 4):
@@ -60,8 +70,17 @@ def _call(method: str, sparse: bool, X, y, prior_mean, prior_precision, **kw):
 class TestPriorFloor:
     def test_zero_floor_is_a_no_op(self, method: str, sparse: bool) -> None:
         X, y, m, P = _data()
-        a = _call(method, sparse, X, y, m, P, learning_rate=0.9)
-        b = _call(method, sparse, X, y, m, P, learning_rate=0.9, prior_floor=0.0)
+        a = _call(method, sparse, X, y, m, P, **_forget(0.9, X.shape[0]))
+        b = _call(
+            method,
+            sparse,
+            X,
+            y,
+            m,
+            P,
+            **_forget(0.9, X.shape[0]),
+            prior_floor=0.0,
+        )
         np.testing.assert_allclose(a[0], b[0])
         np.testing.assert_allclose(a[1], b[1])
 
@@ -81,16 +100,21 @@ class TestPriorFloor:
         g = lr**n
         s = (1.0 - g) * floor
 
-        got = _call(method, sparse, X, y, m, P, learning_rate=lr, prior_floor=floor)
+        got = _call(
+            method,
+            sparse,
+            X,
+            y,
+            m,
+            P,
+            **_forget(lr, n),
+            prior_floor=floor,
+        )
 
         # Equivalent prior: precision γⁿP + sI, mean solving (γⁿP + sI) m' = γⁿP m.
         P_eq = g * P + s * np.eye(P.shape[0])
         m_eq = np.linalg.solve(P_eq, g * P @ m)
-        # Run with learning_rate=1 but the same per-row weights: the
-        # effective weights depend on learning_rate, so replicate them
-        # via sample_weight.
-        from bayesianbandits._estimators import compute_effective_weights
-
+        # Run without prior decay but the same per-row weights.
         w = compute_effective_weights(n, None, lr)
         want = _call(method, sparse, X, y, m_eq, P_eq, sample_weight=w)
 
@@ -101,7 +125,16 @@ class TestPriorFloor:
         X, y, m, P = _data()
         P_F = np.asfortranarray(P)
         P_copy = P_F.copy()
-        _call(method, False, X, y, m, P_F, learning_rate=0.9, prior_floor=3.0)
+        _call(
+            method,
+            False,
+            X,
+            y,
+            m,
+            P_F,
+            **_forget(0.9, X.shape[0]),
+            prior_floor=3.0,
+        )
         np.testing.assert_array_equal(P_F, P_copy)
 
 
@@ -123,7 +156,7 @@ def test_rvga_sparse_chunked_floor_composes() -> None:
             csc_array(P),
             link="logit",
             sparse=True,
-            learning_rate=lr,
+            **_forget(lr, n),
             prior_floor=floor,
             n_iter=3,
             batch_size=bs,

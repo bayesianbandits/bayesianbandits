@@ -65,7 +65,7 @@ instead of N sequential ones:
 
 The posterior is the same whether you update in one batch or one row
 at a time: the sufficient statistics are identical either way. (With
-``learning_rate < 1``, each row triggers decay, so order matters. See
+``forgetting=`` set, each row is one forgetting step, so order matters. See
 :doc:`decay` for why decoupling decay from updates avoids this.)
 
 

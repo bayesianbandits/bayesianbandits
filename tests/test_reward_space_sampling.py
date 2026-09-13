@@ -6,6 +6,8 @@ is what the identity does not cover: the per-estimator scaling on top
 of the factor (NIG's chi-square mixing, the GLM link) and the guards.
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -222,9 +224,10 @@ def _fit_cold(cls=NormalRegressor, p=300, m=20, rows=60, seed=0, **kwargs):
             ]
         )
     )
+    params: dict[str, Any] = dict(kwargs)
     if cls is NormalRegressor:
-        kwargs = dict(alpha=0.7, beta=1.0, **kwargs)
-    est = cls(sparse=True, random_state=seed, **kwargs)
+        params.update(alpha=0.7, beta=1.0)
+    est = cls(sparse=True, random_state=seed, **params)
     est.fit(X_train, rng.standard_normal(rows))
     assert est._precision_factor.n_factored == m
     return est, rng

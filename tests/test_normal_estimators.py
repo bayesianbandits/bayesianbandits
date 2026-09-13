@@ -8,6 +8,7 @@ from numpy.typing import NDArray
 from sklearn.datasets import make_regression
 
 from bayesianbandits import (
+    ExponentialForgetting,
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
@@ -288,13 +289,17 @@ def test_normal_regressor_decay(
         X_fit = X
 
     clf = NormalRegressor(
-        alpha=1, beta=1, learning_rate=0.9, sparse=sparse, random_state=0
+        alpha=1,
+        beta=1,
+        forgetting=ExponentialForgetting(0.9),
+        sparse=sparse,
+        random_state=0,
     )
     clf.fit(X_fit, y)
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
+    clf.decay(decay_rate=0.9, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -311,9 +316,7 @@ def test_normal_regressor_manual_decay(
     else:
         X_fit = X
 
-    clf = NormalRegressor(
-        alpha=1, beta=1, learning_rate=1.0, sparse=sparse, random_state=0
-    )
+    clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     clf.fit(X_fit, y)
 
     pre_decay = clf.predict(X_fit)
@@ -339,9 +342,7 @@ def test_normal_regressor_serialization(
     else:
         X_fit = X
 
-    clf = NormalRegressor(
-        alpha=1, beta=1, learning_rate=1.0, sparse=sparse, random_state=0
-    )
+    clf = NormalRegressor(alpha=1, beta=1, sparse=sparse, random_state=0)
     clf.fit(X_fit, y)
 
     pre_dump_cov_inv = clf.cov_inv_
@@ -547,20 +548,16 @@ def test_normal_regressor_partial_fit_with_weights(sparse: bool) -> None:
     X, y = make_regression(n_samples=10, n_features=2, noise=0.1, random_state=42)  # type: ignore
     weights = np.random.rand(10) * 2  # Random weights between 0 and 2
 
-    # Single fit with learning_rate=1 (no decay)
-    reg1 = NormalRegressor(
-        alpha=0.1, beta=1.0, learning_rate=1.0, sparse=sparse, random_state=0
-    )
+    # Single fit with forgetting=ExponentialForgetting(1 (no decay))
+    reg1 = NormalRegressor(alpha=0.1, beta=1.0, sparse=sparse, random_state=0)
     if sparse:
         X_fit = sp.csc_array(X)
     else:
         X_fit = X
     reg1.fit(X_fit, y, sample_weight=weights)
 
-    # Sequential partial_fit with learning_rate=1 (no decay)
-    reg2 = NormalRegressor(
-        alpha=0.1, beta=1.0, learning_rate=1.0, sparse=sparse, random_state=0
-    )
+    # Sequential partial_fit with forgetting=ExponentialForgetting(1 (no decay))
+    reg2 = NormalRegressor(alpha=0.1, beta=1.0, sparse=sparse, random_state=0)
     if sparse:
         X1_fit = sp.csc_array(X[:5])
         X2_fit = sp.csc_array(X[5:])
@@ -623,7 +620,11 @@ def test_normal_regressor_weights_learning_rate_interaction(sparse: bool) -> Non
 
     # With learning rate < 1
     reg = NormalRegressor(
-        alpha=8.0, beta=1.0, learning_rate=0.5, sparse=sparse, random_state=0
+        alpha=8.0,
+        beta=1.0,
+        forgetting=ExponentialForgetting(0.5),
+        sparse=sparse,
+        random_state=0,
     )
     if sparse:
         X_fit = sp.csc_array(X)
@@ -636,9 +637,7 @@ def test_normal_regressor_weights_learning_rate_interaction(sparse: bool) -> Non
     # effective_weights = weights * decay_factors = [2.0*0.25, 1.0*0.5, 0.5*1.0] = [0.5, 0.5, 0.5]
 
     # Fit same data with uniform weights AND SAME learning rate
-    reg_uniform = NormalRegressor(
-        alpha=1.0, beta=1.0, learning_rate=1.0, sparse=sparse, random_state=0
-    )
+    reg_uniform = NormalRegressor(alpha=1.0, beta=1.0, sparse=sparse, random_state=0)
     reg_uniform.fit(X_fit, y, sample_weight=np.array([0.5, 0.5, 0.5]))
 
     # Should be very close (exact up to numerical precision)
@@ -651,7 +650,11 @@ def test_normal_regressor_weights_learning_rate_interaction(sparse: bool) -> Non
     # Also test that weights scale linearly
     # If we double all weights, the precision matrix should scale
     reg_double = NormalRegressor(
-        alpha=1.0, beta=1.0, learning_rate=0.5, sparse=sparse, random_state=0
+        alpha=1.0,
+        beta=1.0,
+        forgetting=ExponentialForgetting(0.5),
+        sparse=sparse,
+        random_state=0,
     )
     reg_double.fit(X_fit, y, sample_weight=weights * 2)
 
@@ -997,7 +1000,9 @@ def test_normal_inverse_gamma_regressor_decay(
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
 
-    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=0.9, sparse=sparse)
+    clf = NormalInverseGammaRegressor(
+        random_state=0, forgetting=ExponentialForgetting(0.9), sparse=sparse
+    )
     if sparse:
         X_fit = sp.csc_array(X)
     else:
@@ -1007,7 +1012,7 @@ def test_normal_inverse_gamma_regressor_decay(
 
     pre_decay = clf.predict(X_fit)
 
-    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
+    clf.decay(decay_rate=0.9, steps=X.shape[0])
 
     assert_almost_equal(clf.predict(X_fit), pre_decay)
 
@@ -1037,7 +1042,7 @@ def test_normal_inverse_gamma_regressor_manual_decay(
 ) -> None:
     """Test NormalRegressor decay only increases variance."""
 
-    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0, sparse=sparse)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     if sparse:
         X_fit = sp.csc_array(X)
     else:
@@ -1067,7 +1072,7 @@ def test_normal_inverse_gamma_regressor_serialization(
     else:
         X_fit = X
 
-    clf = NormalInverseGammaRegressor(random_state=0, learning_rate=1.0, sparse=sparse)
+    clf = NormalInverseGammaRegressor(random_state=0, sparse=sparse)
     clf.fit(X_fit, y)
 
     pre_dump_cov_inv = clf.cov_inv_
@@ -1339,16 +1344,16 @@ def test_normal_inverse_gamma_regressor_partial_fit_with_weights(sparse: bool) -
     X, y = make_regression(n_samples=10, n_features=2, noise=0.1, random_state=42)  # type: ignore
     weights = np.random.rand(10) * 2  # Random weights between 0 and 2
 
-    # Single fit with learning_rate=1 (no decay)
-    reg1 = NormalInverseGammaRegressor(learning_rate=1.0, sparse=sparse, random_state=0)
+    # Single fit with forgetting=ExponentialForgetting(1 (no decay))
+    reg1 = NormalInverseGammaRegressor(sparse=sparse, random_state=0)
     if sparse:
         X_fit = sp.csc_array(X)
     else:
         X_fit = X
     reg1.fit(X_fit, y, sample_weight=weights)
 
-    # Sequential partial_fit with learning_rate=1 (no decay)
-    reg2 = NormalInverseGammaRegressor(learning_rate=1.0, sparse=sparse, random_state=0)
+    # Sequential partial_fit with forgetting=ExponentialForgetting(1 (no decay))
+    reg2 = NormalInverseGammaRegressor(sparse=sparse, random_state=0)
     if sparse:
         X1_fit = sp.csc_array(X[:5])
         X2_fit = sp.csc_array(X[5:])
@@ -1429,7 +1434,13 @@ def test_normal_inverse_gamma_regressor_weights_learning_rate_interaction(
     # With learning rate < 1
     # Prior parameters need to compensate for decay
     reg = NormalInverseGammaRegressor(
-        mu=0.0, lam=8.0, a=8.0, b=8.0, learning_rate=0.5, sparse=sparse, random_state=0
+        mu=0.0,
+        lam=8.0,
+        a=8.0,
+        b=8.0,
+        forgetting=ExponentialForgetting(0.5),
+        sparse=sparse,
+        random_state=0,
     )
     if sparse:
         X_fit = sp.csc_array(X)
@@ -1439,7 +1450,7 @@ def test_normal_inverse_gamma_regressor_weights_learning_rate_interaction(
 
     # Fit same effective model with no decay
     reg_uniform = NormalInverseGammaRegressor(
-        mu=0.0, lam=1.0, a=1.0, b=1.0, learning_rate=1.0, sparse=sparse, random_state=0
+        mu=0.0, lam=1.0, a=1.0, b=1.0, sparse=sparse, random_state=0
     )
     reg_uniform.fit(X_fit, y, sample_weight=np.array([0.5, 0.5, 0.5]))
 
@@ -1587,7 +1598,7 @@ def test_normal_inverse_gamma_decay_then_sample(sparse: bool) -> None:
     X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
 
     reg = NormalInverseGammaRegressor(
-        sparse=sparse, random_state=42, learning_rate=0.95
+        sparse=sparse, random_state=42, forgetting=ExponentialForgetting(0.95)
     )
     if sparse:
         X_fit = sp.csc_array(X)
@@ -1616,7 +1627,7 @@ def test_normal_inverse_gamma_scale_factor_identity(sparse: bool) -> None:
     """Test scale_factor early return when scale == 1.0."""
     X, y = make_regression(n_samples=50, n_features=3, noise=1.0, random_state=0)
 
-    reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42, learning_rate=1.0)
+    reg = NormalInverseGammaRegressor(sparse=sparse, random_state=42)
     reg.fit(sp.csc_array(X) if sparse else X, y)
 
     original_factor = reg._precision_factor

@@ -60,7 +60,8 @@ ForgettingResult = tuple[ArrayType, NDArray[Any], NDArray[Any]]
 class TickRule(Protocol):
     """A forgetting rule that can be applied without a batch: the clock ticked."""
 
-    rate: float
+    @property
+    def rate(self) -> float: ...
 
     def tick(
         self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
@@ -71,10 +72,16 @@ class TickRule(Protocol):
 class UpdateRule(Protocol):
     """A forgetting rule applied to a batch before it is absorbed."""
 
-    rate: float
+    @property
+    def rate(self) -> float: ...
 
     def update(
-        self, precision: ArrayType, X: ArrayType, y: NDArray[Any], *, alpha: float
+        self,
+        precision: ArrayType,
+        X: ArrayType,
+        y: NDArray[Any],
+        *,
+        alpha: Optional[float],
     ) -> ForgettingResult | None: ...
 
 
@@ -343,7 +350,7 @@ class ExponentialForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         return self.rate * precision, np.asarray(X), y
 
@@ -408,7 +415,7 @@ class StabilizedForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         return self._apply(precision, self.rate, self.floor(alpha)), np.asarray(X), y
 
@@ -460,7 +467,7 @@ class SiftForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult | None:
         lam = self.rate
         if sparse.issparse(X):
@@ -562,7 +569,7 @@ class FeatureWiseForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         d = self.rate ** (_active_counts(X) / 2.0)
         if sparse.issparse(precision):
@@ -582,23 +589,27 @@ class FeatureWiseForgetting:
         return R_bar, X_eff, y
 
 
+UniformRule = Union[ExponentialForgetting, StabilizedForgetting]
+"""The rules that forget every direction alike: the only ones the grouped
+conjugate models and the empirical Bayes estimators accept."""
+
+
 def resolve_tick(
     forgetting: Any,
     *,
     steps: float,
     decay_rate: Optional[float],
-    learning_rate: float,
     default: type = ExponentialForgetting,
     stacklevel: int = 3,
 ) -> tuple[TickRule, float, Any]:
     """Sort out the arguments of an estimator's ``decay``.
 
     Returns ``(rule, steps, legacy_X)``. ``rule`` is the tick rule to
-    apply: ``forgetting`` itself, or ``default`` built from ``decay_rate``
-    (or, deprecated, from ``learning_rate``). A context array passed where
-    the rule goes is the pre-rule calling convention; it is returned as
-    ``legacy_X`` with ``steps`` set to its row count, so estimators that
-    read the rows (the grouped conjugate models) can keep doing so.
+    apply: ``forgetting`` itself, or ``default`` built from ``decay_rate``.
+    A context array passed where the rule goes is the pre-rule calling
+    convention; it is returned as ``legacy_X`` with ``steps`` set to its
+    row count, so estimators that read the rows (the grouped conjugate
+    models) can keep doing so.
     """
     legacy_X = None
     if isinstance(forgetting, numbers.Real) and not isinstance(forgetting, bool):
@@ -623,14 +634,10 @@ def resolve_tick(
         steps = legacy_X.shape[0] if hasattr(legacy_X, "shape") else len(legacy_X)
     if forgetting is None:
         if decay_rate is None:
-            warnings.warn(
-                "decay() without a forgetting rule or decay_rate falls back "
-                "to learning_rate; this default is deprecated. Pass a rule "
-                "such as StabilizedForgetting(0.95), or decay_rate=.",
-                FutureWarning,
-                stacklevel=stacklevel,
+            raise TypeError(
+                "decay() needs a forgetting rule such as "
+                "StabilizedForgetting(0.95), or decay_rate=."
             )
-            decay_rate = learning_rate
         forgetting = default(decay_rate)
     elif decay_rate is not None:
         raise TypeError(
@@ -646,7 +653,6 @@ def tick_groups(
     *,
     steps: float,
     decay_rate: Optional[float],
-    learning_rate: float,
     prior: NDArray[np.float64],
     default: type = ExponentialForgetting,
 ) -> None:
@@ -659,7 +665,6 @@ def tick_groups(
         forgetting,
         steps=steps,
         decay_rate=decay_rate,
-        learning_rate=learning_rate,
         default=default,
         stacklevel=4,
     )
@@ -677,3 +682,44 @@ def tick_groups(
         return
     for key in list(table):
         table[key] = tick(table[key], steps)
+
+
+def uniform_batch(
+    rule: Optional[Any], n: int, *, alpha: Optional[float]
+) -> tuple[float, float]:
+    """``(gamma, floor)`` for a uniform rule over an ``n``-row batch: each
+    row is one step, so the prior is scaled by ``gamma = rate ** n`` and
+    ``(1 - gamma) * floor`` is added back to its diagonal. ``(1.0, 0.0)``
+    with no rule."""
+    if rule is None:
+        return 1.0, 0.0
+    gamma = rule.rate**n
+    if isinstance(rule, StabilizedForgetting):
+        return gamma, rule.floor(alpha)
+    return gamma, 0.0
+
+
+def check_update_rule(
+    rule: Any, *, estimator: str, uniform_only: bool = False, sparse: bool = False
+) -> None:
+    """Raise unless ``rule`` can be the ``forgetting`` of ``estimator``."""
+    if rule is None:
+        return
+    if uniform_only:
+        if not isinstance(rule, (ExponentialForgetting, StabilizedForgetting)):
+            raise TypeError(
+                f"{estimator} forgets uniformly: forgetting= takes "
+                "ExponentialForgetting or StabilizedForgetting, not "
+                f"{type(rule).__name__}."
+            )
+        return
+    if not isinstance(rule, UpdateRule):
+        raise TypeError(
+            f"forgetting= takes a forgetting rule such as "
+            f"ExponentialForgetting(0.99), not {rule!r}."
+        )
+    if sparse and isinstance(rule, SiftForgetting):
+        raise TypeError(
+            "SiftForgetting fills in a sparse precision matrix; use "
+            "FeatureWiseForgetting on a sparse estimator."
+        )
