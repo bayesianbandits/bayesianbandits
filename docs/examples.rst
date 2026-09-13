@@ -12,4 +12,5 @@ Worked examples as Jupyter notebooks.
    notebooks/rvga-glm
    notebooks/adversarial
    notebooks/delayed-reward
+   notebooks/forgetting
    notebooks/offline-learning

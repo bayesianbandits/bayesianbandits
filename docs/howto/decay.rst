@@ -23,6 +23,9 @@ Explicit ``agent.decay()`` calls
     own schedule, independently of when observations arrive. This is
     for change that happens *with time*.
 
+The :doc:`forgetting notebook </notebooks/forgetting>` works through
+which rule belongs on which event.
+
 
 Start with no decay
 --------------------

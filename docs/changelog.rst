@@ -29,6 +29,12 @@ Unreleased
   Combined with ``decay()`` on a schedule this is the TrueSkill 2 model
   of change: some from each observation, some from the passage of time.
 
+- A notebook, :doc:`How do you pick a forgetting strategy?
+  </notebooks/forgetting>`, that shows covariance windup under uneven
+  excitation, why the directional rules stop it, why SIFt is dense-only,
+  and why a stabilized tick is still needed for change that happens with
+  time.
+
 **Breaking changes**
 
 - ``learning_rate`` is removed from every estimator. What it did,
