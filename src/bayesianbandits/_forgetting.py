@@ -38,10 +38,8 @@ The caller then does::
 
 from __future__ import annotations
 
-import numbers
-import warnings
 from dataclasses import dataclass
-from typing import Any, NamedTuple, Optional, Protocol, Union, cast, runtime_checkable
+from typing import Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -49,33 +47,12 @@ from scipy import sparse
 from scipy.linalg import cholesky, eigh, lapack, solve_triangular
 from scipy.sparse import csc_array
 
-from bayesianbandits._blas_helpers import dsyrk
+from bayesianbandits import _blas_helpers as blas
+from bayesianbandits._blas_helpers import dsyrk, fortran_view
 
 ArrayType = Union[NDArray[Any], csc_array]
 
 ForgettingResult = tuple[ArrayType, NDArray[Any], NDArray[Any]]
-
-
-@runtime_checkable
-class TickRule(Protocol):
-    """A forgetting rule that can be applied without a batch: the clock ticked."""
-
-    rate: float
-
-    def tick(
-        self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
-    ) -> ArrayType: ...
-
-
-@runtime_checkable
-class UpdateRule(Protocol):
-    """A forgetting rule applied to a batch before it is absorbed."""
-
-    rate: float
-
-    def update(
-        self, precision: ArrayType, X: ArrayType, y: NDArray[Any], *, alpha: float
-    ) -> ForgettingResult | None: ...
 
 
 class _SparseFilterResult(NamedTuple):
@@ -256,8 +233,14 @@ def _sift_downdate_dense(
     Using Cholesky + triangular solve instead of ``solve(H, w.T)``
     ensures the correction ``V^T V`` is exactly symmetric, preventing
     floating-point asymmetry drift over many forgetting steps.
+
+    Only the upper triangle of ``precision`` is read (``dsymm``) and only
+    the upper triangle of the result is written (``dsyrk``), the same
+    convention as the dense fit paths, so no symmetrizing copy is needed.
     """
-    w = np.asarray(precision @ X_bar.T, dtype=np.float64)  # (n, q)
+    RF, transposed = fortran_view(np.asarray(precision, dtype=np.float64))
+    # RF's lower triangle is precision's upper when RF is the transpose.
+    w = blas.dsymm(1.0, RF, np.asfortranarray(X_bar.T), lower=transposed)  # (n, q)
     H = X_bar @ w  # (q, q)
     L = cholesky(H, lower=True)  # H = L L^T
     V = solve_triangular(L, w.T, lower=True)  # (q, n);  V^T V = w H^{-1} w^T
@@ -343,7 +326,7 @@ class ExponentialForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         return self.rate * precision, np.asarray(X), y
 
@@ -376,7 +359,7 @@ class StabilizedForgetting:
     rate: float
     alpha: Optional[float] = None
 
-    def floor(self, alpha: Optional[float]) -> float:
+    def floor(self, alpha: Any) -> Any:
         """The prior precision this rule floors at, given the estimator's;
         ``None`` means the estimator has no scalar prior precision."""
         if self.alpha is not None:
@@ -390,12 +373,16 @@ class StabilizedForgetting:
         return alpha
 
     def _apply(self, precision: ArrayType, lam: float, alpha: float) -> ArrayType:
-        n = precision.shape[0]
+        shift = (1 - lam) * alpha
         if sparse.issparse(precision):
-            floor = (1 - lam) * alpha * sparse.eye(n, format="csc")
-        else:
-            floor = (1 - lam) * alpha * np.eye(n)
-        return precision * lam + floor
+            n = precision.shape[0]
+            return precision * lam + shift * sparse.eye(n, format="csc")
+        # Scale into a new array of the same layout and shift its diagonal
+        # in place: no identity matrix, and a Fortran input stays Fortran,
+        # which the dense fit paths rely on to read the right triangle.
+        R = np.asarray(precision) * lam
+        R[np.diag_indices_from(R)] += shift
+        return R
 
     def tick(
         self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
@@ -408,7 +395,7 @@ class StabilizedForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         return self._apply(precision, self.rate, self.floor(alpha)), np.asarray(X), y
 
@@ -460,7 +447,7 @@ class SiftForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult | None:
         lam = self.rate
         if sparse.issparse(X):
@@ -562,7 +549,7 @@ class FeatureWiseForgetting:
         X: ArrayType,
         y: NDArray[Any],
         *,
-        alpha: float,
+        alpha: Optional[float],
     ) -> ForgettingResult:
         d = self.rate ** (_active_counts(X) / 2.0)
         if sparse.issparse(precision):
@@ -582,98 +569,113 @@ class FeatureWiseForgetting:
         return R_bar, X_eff, y
 
 
-def resolve_tick(
-    forgetting: Any,
-    *,
-    steps: float,
-    decay_rate: Optional[float],
-    learning_rate: float,
-    default: type = ExponentialForgetting,
-    stacklevel: int = 3,
-) -> tuple[TickRule, float, Any]:
-    """Sort out the arguments of an estimator's ``decay``.
+UniformRule = Union[ExponentialForgetting, StabilizedForgetting]
+"""The rules that forget every direction alike, and so can tick on the
+clock; the only ones the grouped conjugate models and the empirical Bayes
+estimators accept."""
 
-    Returns ``(rule, steps, legacy_X)``. ``rule`` is the tick rule to
-    apply: ``forgetting`` itself, or ``default`` built from ``decay_rate``
-    (or, deprecated, from ``learning_rate``). A context array passed where
-    the rule goes is the pre-rule calling convention; it is returned as
-    ``legacy_X`` with ``steps`` set to its row count, so estimators that
-    read the rows (the grouped conjugate models) can keep doing so.
-    """
-    legacy_X = None
-    if isinstance(forgetting, numbers.Real) and not isinstance(forgetting, bool):
-        raise TypeError(
-            "decay() takes a forgetting rule, not a bare rate; pass "
-            "decay_rate=... or a rule such as ExponentialForgetting(rate)."
-        )
-    if forgetting is not None and not isinstance(forgetting, TickRule):
-        if isinstance(forgetting, UpdateRule):
-            raise TypeError(
-                f"{type(forgetting).__name__} forgets along a batch, so it "
-                "belongs on the learner's forgetting= argument, not decay()."
-            )
-        warnings.warn(
-            "Passing a context array to decay() is deprecated; pass "
-            "steps=<number of ticks> and a forgetting rule or decay_rate.",
-            FutureWarning,
-            stacklevel=stacklevel,
-        )
-        legacy_X = forgetting
-        forgetting = None
-        steps = legacy_X.shape[0] if hasattr(legacy_X, "shape") else len(legacy_X)
+ForgettingRule = Union[
+    ExponentialForgetting, StabilizedForgetting, FeatureWiseForgetting, SiftForgetting
+]
+"""Any rule an estimator's ``forgetting=`` accepts."""
+
+UNIFORM_RULES = (ExponentialForgetting, StabilizedForgetting)
+DIRECTIONAL_RULES = (FeatureWiseForgetting, SiftForgetting)
+
+
+def resolve_tick(
+    forgetting: Any, *, decay_rate: Optional[float], default: type
+) -> UniformRule:
+    """The rule an estimator's ``decay`` ticks with: ``forgetting`` itself,
+    or ``default`` built from ``decay_rate``."""
     if forgetting is None:
         if decay_rate is None:
-            warnings.warn(
-                "decay() without a forgetting rule or decay_rate falls back "
-                "to learning_rate; this default is deprecated. Pass a rule "
-                "such as StabilizedForgetting(0.95), or decay_rate=.",
-                FutureWarning,
-                stacklevel=stacklevel,
+            raise TypeError(
+                "decay() needs a forgetting rule such as "
+                "StabilizedForgetting(0.95), or decay_rate=."
             )
-            decay_rate = learning_rate
-        forgetting = default(decay_rate)
-    elif decay_rate is not None:
+        return default(decay_rate)
+    if decay_rate is not None:
         raise TypeError(
             "Pass either a forgetting rule or decay_rate, not both; the rule "
             "carries its own rate."
         )
-    return forgetting, steps, legacy_X
+    if isinstance(forgetting, DIRECTIONAL_RULES):
+        raise TypeError(
+            f"{type(forgetting).__name__} forgets along a batch, so it "
+            "belongs on the learner's forgetting= argument, not decay()."
+        )
+    if not isinstance(forgetting, UNIFORM_RULES):
+        raise TypeError(
+            "decay() takes a forgetting rule such as ExponentialForgetting(rate) "
+            f"or decay_rate=..., not {forgetting!r}."
+        )
+    return forgetting
 
 
 def tick_groups(
     table: dict[Any, NDArray[np.float64]],
-    forgetting: Any,
+    rule: UniformRule,
     *,
     steps: float,
-    decay_rate: Optional[float],
-    learning_rate: float,
     prior: NDArray[np.float64],
-    default: type = ExponentialForgetting,
 ) -> None:
     """``decay`` for a grouped conjugate model: one parameter vector per
     group in ``table``, all sharing ``prior``. Scales every group by
     ``rate ** steps``, mixing ``prior`` back in under
-    :class:`StabilizedForgetting`. A legacy context array ticks once per
-    row, on that row's group."""
-    rule, steps, legacy_X = resolve_tick(
-        forgetting,
-        steps=steps,
-        decay_rate=decay_rate,
-        learning_rate=learning_rate,
-        default=default,
-        stacklevel=4,
-    )
-
-    def tick(value: NDArray[np.float64], n: float) -> NDArray[np.float64]:
-        gamma = rule.rate**n
-        if isinstance(rule, StabilizedForgetting):
-            floor = prior if rule.alpha is None else rule.alpha
-            return np.asarray(gamma * value + (1 - gamma) * floor, dtype=np.float64)
-        return np.asarray(gamma * value, dtype=np.float64)
-
-    if legacy_X is not None:
-        for x in legacy_X:
-            table[x.item()] = tick(table[x.item()], 1)
-        return
+    :class:`StabilizedForgetting`."""
+    gamma, floor = uniform_batch(rule, steps, alpha=prior)
     for key in list(table):
-        table[key] = tick(table[key], steps)
+        table[key] = np.asarray(
+            gamma * table[key] + (1 - gamma) * floor, dtype=np.float64
+        )
+
+
+def uniform_batch(
+    rule: Optional[UniformRule], n: float, *, alpha: Any
+) -> tuple[float, Any]:
+    """``(gamma, floor)`` for a uniform rule over ``n`` steps: the prior is
+    scaled by ``gamma = rate ** n`` and ``(1 - gamma) * floor`` added back,
+    where ``floor`` is the estimator's prior precision (a scalar, or the
+    grouped models' prior vector) unless the rule carries its own.
+    ``(1.0, 0.0)`` with no rule."""
+    if rule is None:
+        return 1.0, 0.0
+    gamma = rule.rate**n
+    if isinstance(rule, StabilizedForgetting):
+        return gamma, rule.floor(alpha)
+    return gamma, 0.0
+
+
+def check_update_rule(
+    rule: Any, *, estimator: str, uniform_only: bool = False, sparse: bool = False
+) -> None:
+    """Raise unless ``rule`` can be the ``forgetting`` of ``estimator``."""
+    if rule is None:
+        return
+    if uniform_only:
+        if not isinstance(rule, UNIFORM_RULES):
+            raise TypeError(
+                f"{estimator} forgets uniformly: forgetting= takes "
+                "ExponentialForgetting or StabilizedForgetting, not "
+                f"{type(rule).__name__}."
+            )
+        return
+    if not isinstance(rule, UNIFORM_RULES + DIRECTIONAL_RULES):
+        raise TypeError(
+            f"forgetting= takes a forgetting rule such as "
+            f"ExponentialForgetting(0.99), not {rule!r}."
+        )
+    if sparse and isinstance(rule, SiftForgetting):
+        raise TypeError(
+            "SiftForgetting fills in a sparse precision matrix; use "
+            "FeatureWiseForgetting on a sparse estimator."
+        )
+
+
+def convert_legacy_state(state: dict[str, Any], default: type) -> None:
+    """Models pickled before ``forgetting=`` carried ``learning_rate``:
+    turn it into the rule the class used to apply."""
+    rate = state.pop("learning_rate", None)
+    if rate is not None and "forgetting" not in state:
+        state["forgetting"] = None if rate == 1.0 else default(rate)

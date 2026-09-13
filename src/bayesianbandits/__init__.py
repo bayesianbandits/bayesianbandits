@@ -85,8 +85,11 @@ Forgetting Rules
 ================
 
 A forgetting rule says how a posterior widens and carries its own rate.
-The uniform rules are what `decay` applies on a schedule; the directional
-rules forget only along what a batch excited.
+Pass one as an estimator's `forgetting=` to forget on every `partial_fit`,
+for change that happens because you observed, or to `decay` on a
+schedule, for change that happens with time. The uniform rules serve
+both; the directional rules forget only along what a batch excited and
+belong on `forgetting=`.
 
 .. autosummary::
 

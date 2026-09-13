@@ -6,7 +6,12 @@ import scipy.sparse as sp
 from numpy.testing import assert_allclose, assert_array_less
 from sklearn.datasets import make_classification, make_regression
 
-from bayesianbandits import BayesianGLM, LaplaceApproximator, RVGAApproximator
+from bayesianbandits import (
+    BayesianGLM,
+    ExponentialForgetting,
+    LaplaceApproximator,
+    RVGAApproximator,
+)
 
 
 # Fixtures and parametrization
@@ -48,7 +53,11 @@ def test_bayesian_glm_init(sparse: bool, link: str, rng) -> None:
     """Test BayesianGLM initialization."""
     # Default approximator
     clf = BayesianGLM(
-        alpha=1.0, link=link, learning_rate=0.9, sparse=sparse, random_state=0
+        alpha=1.0,
+        link=link,
+        forgetting=ExponentialForgetting(0.9),
+        sparse=sparse,
+        random_state=0,
     )
     assert clf.alpha == 1.0
     assert clf.link == link
@@ -340,7 +349,7 @@ def test_bayesian_glm_decay(binary_data, sparse: bool) -> None:
     clf = BayesianGLM(
         alpha=1.0,
         link="logit",
-        learning_rate=0.9,
+        forgetting=ExponentialForgetting(0.9),
         approximator=LaplaceApproximator(n_iter=10),
         sparse=sparse,
     )
@@ -354,7 +363,7 @@ def test_bayesian_glm_decay(binary_data, sparse: bool) -> None:
         precision_before = np.diag(clf.cov_inv_)
 
     # Apply decay
-    clf.decay(decay_rate=clf.learning_rate, steps=X.shape[0])
+    clf.decay(decay_rate=0.9, steps=X.shape[0])
 
     # Predictions should stay the same
     preds_after = clf.predict(X_fit)

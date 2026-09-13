@@ -12,21 +12,23 @@ two ways to apply it:
    posteriors drive re-exploration via more diverse Thompson samples
    and higher UCB values.
 
-``learning_rate < 1`` on the estimator
-    Decay is coupled to ``partial_fit``: every update automatically
-    down-weights the prior by ``learning_rate ** n_samples`` before
-    incorporating new data.
+``forgetting=`` on the estimator
+    Forgetting is coupled to ``partial_fit``: every update forgets
+    before incorporating the new data, one step per row under a
+    uniform rule such as ``ExponentialForgetting(0.99)``. This is for
+    change that happens *because you observed*.
 
 Explicit ``agent.decay()`` calls
-    Decay is decoupled from updates. You call ``decay()`` on your own
-    schedule, independently of when observations arrive.
+    Forgetting is decoupled from updates. You call ``decay()`` on your
+    own schedule, independently of when observations arrive. This is
+    for change that happens *with time*.
 
 
 Start with no decay
 --------------------
 
 If you are unsure whether your environment is non-stationary, start
-with ``learning_rate=1.0`` (the default) and no ``decay()`` calls.
+with no ``forgetting`` rule (the default) and no ``decay()`` calls.
 Adding decay when you don't need it throws away information and
 widens your posterior for no benefit.
 
@@ -37,11 +39,11 @@ Decouple decay from updates
 Consider a product recommendation system. You ``pull()`` thousands of
 times per day as users visit the site, and ``update()`` as purchases
 arrive. But user preferences don't shift on a per-request basis --
-they shift over weeks or months. If you set ``learning_rate < 1``,
-the amount of forgetting depends on how many observations land in
-each update batch, not how fast tastes actually change. Keep
-``learning_rate=1.0`` and call ``decay()`` on a schedule that matches
-the timescale of change in your environment:
+they shift over weeks or months. If you set ``forgetting=`` on the
+estimator, the amount of forgetting depends on how many observations
+land in each update batch, not how fast tastes actually change. Leave
+it unset and call ``decay()`` on a schedule that matches the
+timescale of change in your environment:
 
 .. code-block:: python
 
@@ -66,7 +68,7 @@ the timescale of change in your environment:
 
 One call is one tick. If the job missed a few days, pass
 ``steps=3`` and the rate is raised to that power. Per-observation
-decay via ``learning_rate < 1`` is usually too aggressive for the
+forgetting through ``forgetting=`` is usually too aggressive for the
 same reason: most real systems make many decisions per natural time
 period (thousands of recommendations per day), and forgetting once
 per observation in that setting tracks traffic, not time.

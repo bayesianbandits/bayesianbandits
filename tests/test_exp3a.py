@@ -13,6 +13,7 @@ from bayesianbandits import (
     EXP3A,
     Arm,
     ContextualAgent,
+    ExponentialForgetting,
     NormalInverseGammaRegressor,
     NormalRegressor,
 )
@@ -397,8 +398,18 @@ class TestEXP3ANonStationarity:
         """Test that EXP3A adapts when rewards change."""
         # Create two arms
         arms = [
-            Arm(0, learner=NormalInverseGammaRegressor(learning_rate=0.9)),
-            Arm(1, learner=NormalInverseGammaRegressor(learning_rate=0.9)),
+            Arm(
+                0,
+                learner=NormalInverseGammaRegressor(
+                    forgetting=ExponentialForgetting(0.9)
+                ),
+            ),
+            Arm(
+                1,
+                learner=NormalInverseGammaRegressor(
+                    forgetting=ExponentialForgetting(0.9)
+                ),
+            ),
         ]
 
         policy = EXP3A(gamma=0.1, eta=2.0, samples=20)

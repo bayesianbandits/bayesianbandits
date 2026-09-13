@@ -6,6 +6,7 @@ from bayesianbandits import (
     Arm,
     ContextualAgent,
     EmpiricalBayesNormalRegressor,
+    ExponentialForgetting,
     NormalRegressor,
     ThompsonSampling,
 )
@@ -49,7 +50,7 @@ def test_effective_window_size():
 
 
 def test_no_decay_by_default():
-    """learning_rate=1.0 means no decay on partial_fit."""
+    """No forgetting rule means no forgetting on partial_fit."""
     learner = NormalRegressor(alpha=1.0, beta=1.0)
     X = np.array([[1.0]])
     y = np.array([1.0])
@@ -57,7 +58,7 @@ def test_no_decay_by_default():
 
     precision_after_fit = learner.cov_inv_.copy()
 
-    # partial_fit with learning_rate=1.0 should only add information
+    # partial_fit with forgetting=ExponentialForgetting(1.0 should only add information)
     learner.partial_fit(X, y)
     precision_after_update = learner.cov_inv_
 
@@ -70,8 +71,12 @@ def test_coupled_decay_depends_on_batch_size():
     # Two learners with same learning_rate but different batch sizes
     lr = 0.99
 
-    learner_one = NormalRegressor(alpha=1.0, beta=1.0, learning_rate=lr)
-    learner_ten = NormalRegressor(alpha=1.0, beta=1.0, learning_rate=lr)
+    learner_one = NormalRegressor(
+        alpha=1.0, beta=1.0, forgetting=ExponentialForgetting(lr)
+    )
+    learner_ten = NormalRegressor(
+        alpha=1.0, beta=1.0, forgetting=ExponentialForgetting(lr)
+    )
 
     # Fit both on same initial data
     X_init = np.array([[1.0]])
@@ -98,7 +103,6 @@ def test_eb_stabilized_forgetting():
     learner = EmpiricalBayesNormalRegressor(
         alpha=1.0,
         beta=1.0,
-        learning_rate=1.0,
     )
 
     X = np.array([[1.0, 2.0]])

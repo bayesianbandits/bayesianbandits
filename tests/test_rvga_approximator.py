@@ -9,11 +9,12 @@ import scipy.sparse as sp
 from numpy.testing import assert_allclose
 from scipy.special import expit
 
-from bayesianbandits import BayesianGLM
+from bayesianbandits import BayesianGLM, ExponentialForgetting
 from bayesianbandits._gaussian import (
     GaussianPosterior,
     LaplaceApproximator,
     RVGAApproximator,
+    compute_effective_weights,
     gh_expected_weights,
     log_expected_weights,
     probit_expected_weights,
@@ -792,7 +793,7 @@ class TestRVGAIntegration:
         glm = BayesianGLM(
             link="logit",
             approximator=RVGAApproximator(),
-            learning_rate=0.9,
+            forgetting=ExponentialForgetting(0.9),
             random_state=0,
         )
         glm.fit(X, y)
@@ -950,16 +951,18 @@ class TestSequentialMinibatching:
         sw = np.random.default_rng(1).uniform(0.5, 2.0, 100)
         prior_mean = np.zeros(30)
         prior_prec = sp.csc_array(sp.eye(30, format="csc"))
-        kwargs: dict[str, Any] = dict(
-            link="logit", learning_rate=0.99, sparse=True, n_iter=3, tol=0.0
-        )
+        kwargs: dict[str, Any] = dict(link="logit", sparse=True, n_iter=3, tol=0.0)
+        # What an estimator hands over for ExponentialForgetting(0.99) on
+        # 100 rows: the prior decay once, and the within-batch row weights.
+        w = compute_effective_weights(100, sw, 0.99)
 
         auto = update_gaussian_posterior_rvga(
             X,
             y,
             prior_mean,
             prior_prec,
-            sample_weight=sw,
+            sample_weight=w,
+            prior_decay=0.99**100,
             batch_size=30,
             **kwargs,
         )
@@ -971,7 +974,8 @@ class TestSequentialMinibatching:
                 y[s : s + 30],
                 manual.mean,
                 manual.precision,
-                sample_weight=sw[s : s + 30],
+                sample_weight=w[s : s + 30],
+                prior_decay=0.99**100 if s == 0 else 1.0,
                 prior_factor=manual.factor,
                 **kwargs,
             )

@@ -312,9 +312,10 @@ Hyperparameter semantics
        iterations.
      - 1e-4 (default). Lower values give tighter convergence at the
        cost of more iterations.
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
-     - 1.0 (default) for stationary environments.
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, carrying its rate
+       :math:`\gamma`. See :doc:`/howto/decay`.
+     - ``None`` (default) for stationary environments.
    * - ``trace_method``
      - Method for computing
        :math:`\operatorname{tr}(\boldsymbol{\Lambda}^{-1})`.

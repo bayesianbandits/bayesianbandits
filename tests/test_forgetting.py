@@ -139,6 +139,19 @@ class TestFilterBatch:
         surviving = eigvals_orig[eigvals_orig >= 1e-12]
         assert_allclose(eigvals_bar, surviving, rtol=1e-10)
 
+    def test_dense_reads_only_the_upper_triangle(self):
+        """The dense fit paths keep only the upper triangle current, in
+        either memory layout; the downdate must not read the other one."""
+        rng = np.random.default_rng(7)
+        R = _random_pd(6, rng)
+        X_bar = rng.standard_normal((2, 6))
+        clean = np.triu(_sift_downdate_dense(np.asfortranarray(R), X_bar, 0.8))
+        for order in ("C", "F"):
+            junk = np.array(R, order=order)
+            junk[np.tril_indices(6, -1)] = 1e9
+            out = _sift_downdate_dense(junk, X_bar, 0.8)
+            assert_allclose(np.triu(out), clean, rtol=1e-12)
+
     @pytest.mark.parametrize("use_sparse", [False, True], ids=["dense", "sparse"])
     def test_q_zero_returns_none(self, use_sparse):
         """When no eigenvalues survive thresholding, return None."""
@@ -765,17 +778,19 @@ class TestTick:
             sparse.csc_array(R_bar).toarray(), 0.9 * R.toarray() + 0.1 * np.eye(4)
         )
 
-    def test_directional_rules_have_no_tick(self):
-        from bayesianbandits._forgetting import TickRule, UpdateRule
+    def test_stabilized_tick_keeps_the_dense_layout(self):
+        rng = np.random.default_rng(0)
+        R = np.asfortranarray(_random_pd(4, rng))
+        R_bar = np.asarray(StabilizedForgetting(0.9).tick(R, alpha=2.0))
+        assert R_bar.flags.f_contiguous
+        assert_allclose(R_bar, 0.9 * R + 0.1 * 2.0 * np.eye(4), atol=1e-12)
+        C_bar = np.asarray(
+            StabilizedForgetting(0.9).tick(np.ascontiguousarray(R), alpha=2.0)
+        )
+        assert C_bar.flags.c_contiguous
 
-        assert isinstance(ExponentialForgetting(0.9), TickRule)
-        assert isinstance(StabilizedForgetting(0.9), TickRule)
-        assert not isinstance(FeatureWiseForgetting(0.9), TickRule)
-        assert not isinstance(SiftForgetting(0.9), TickRule)
-        for rule in (
-            ExponentialForgetting(0.9),
-            StabilizedForgetting(0.9),
-            FeatureWiseForgetting(0.9),
-            SiftForgetting(0.9),
-        ):
-            assert isinstance(rule, UpdateRule)
+    def test_directional_rules_have_no_tick(self):
+        for rule in (ExponentialForgetting(0.9), StabilizedForgetting(0.9)):
+            assert hasattr(rule, "tick") and hasattr(rule, "update")
+        for rule in (FeatureWiseForgetting(0.9), SiftForgetting(0.9)):
+            assert not hasattr(rule, "tick") and hasattr(rule, "update")

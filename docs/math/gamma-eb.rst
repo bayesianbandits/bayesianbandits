@@ -136,7 +136,7 @@ Stabilized forgetting
 drives all parameters to zero.
 
 **The solution.** Every decay (both explicit via ``decay()`` and
-implicit via ``learning_rate`` in ``partial_fit``) re-injects the
+implicit via ``forgetting=`` in ``partial_fit``) re-injects the
 EB-tuned prior:
 
 .. math::
@@ -189,9 +189,10 @@ Hyperparameter semantics
    * - ``eb_tol``
      - Convergence tolerance on log evidence change.
      - 1e-4 (default).
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
-     - 1.0 (default) for stationary environments.
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, carrying its rate
+       :math:`\gamma`. See :doc:`/howto/decay`.
+     - ``None`` (default) for stationary environments.
 
 
 Robustness to misspecified priors

@@ -13,18 +13,12 @@ from typing import TYPE_CHECKING, Any, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.linalg import cho_solve
 from scipy.sparse import csc_array
 from sklearn.utils.validation import check_X_y
 from typing_extensions import Self
 
 from ._blas_helpers import (
-    cho_factor_f,
-    compute_eta_dense,
-    dgemv,
     dsymv,
-    fortran_view,
-    update_precision_dense,
 )
 from ._empirical_bayes import (
     accumulate_sufficient_stats,
@@ -44,12 +38,15 @@ from ._estimators import (
     _invalidate_cached_properties,
     compute_effective_weights,
 )
-from ._forgetting import StabilizedForgetting, resolve_tick
+from ._forgetting import (
+    StabilizedForgetting,
+    UniformRule,
+    check_update_rule,
+    resolve_tick,
+    uniform_batch,
+)
 from ._gaussian import LaplaceApproximator, LinkFunction, PosteriorApproximator
-from ._np_utils import groupby_array
 from ._sparse_bayesian_linear_regression import (
-    DenseFactor,
-    PrecisionFactor,
     scale_factor,
 )
 
@@ -129,10 +126,10 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         online EB step from the running statistics, and corrects the
         precision to the retuned hyperparameters.
 
-        When ``learning_rate < 1``, stabilized forgetting (Kulhavy &
-        Zarrop 1993) re-injects ``(1 - γⁿ)·alpha`` into the precision
-        diagonal so that the prior contribution converges to ``alpha``
-        instead of decaying to zero.
+        Under ``forgetting=StabilizedForgetting(γ)`` the prior
+        contribution is floored at the tuned ``alpha`` (Kulhavy & Zarrop
+        1993): ``(1 - γⁿ)·alpha`` is re-injected into the precision
+        diagonal so it converges to ``alpha`` instead of zero.
 
         Parameters
         ----------
@@ -158,11 +155,11 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         prior_scalar_old = self.__dict__.get("_prior_scalar")
 
         n_samples = X.shape[0] if hasattr(X, "shape") else len(X)  # type: ignore[arg-type]
-        prior_decay = self.learning_rate**n_samples
+        prior_decay, floor = self._batch_forgetting(n_samples)
 
         if had_prior_scalar:
             self._prior_scalar = (
-                prior_decay * self._prior_scalar + (1 - prior_decay) * self.alpha
+                prior_decay * self._prior_scalar + (1 - prior_decay) * floor
             )
         self._book_update(prior_decay, had_prior_scalar)
         old = self._hyperparams()
@@ -242,12 +239,8 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         """
         if not hasattr(self, "coef_"):
             return
-        rule, steps, _ = resolve_tick(
-            forgetting,
-            steps=steps,
-            decay_rate=decay_rate,
-            learning_rate=self.learning_rate,
-            default=self._default_tick_rule,
+        rule = resolve_tick(
+            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
         )
         gamma = rule.rate**steps
         if hasattr(self, "_prior_scalar"):
@@ -266,9 +259,20 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         self, n_samples: int, sample_weight: Optional[NDArray[Any]]
     ) -> NDArray[np.float64]:
         """The effective row weights the precision is built with: sample
-        weight times within-batch decay. Every EB statistic that is set
-        against the precision has to carry the same weights."""
-        return compute_effective_weights(n_samples, sample_weight, self.learning_rate)
+        weight times within-batch forgetting. Every EB statistic that is
+        set against the precision has to carry the same weights."""
+        rate = 1.0 if self.forgetting is None else self.forgetting.rate
+        return compute_effective_weights(n_samples, sample_weight, rate)
+
+    def _batch_forgetting(self, n_samples: int) -> tuple[float, float]:
+        """``(prior_decay, floor)`` of this batch's forgetting. Only the
+        uniform rules keep the prior a scalar on the diagonal, which the
+        EB step relies on."""
+        check_update_rule(
+            self.forgetting, estimator=type(self).__name__, uniform_only=True
+        )
+        rule = cast(Optional[UniformRule], self.forgetting)
+        return uniform_batch(rule, n_samples, alpha=self.alpha)
 
     def _restore_prior_scalar(self, prior_scalar_old: Optional[float]) -> None:
         """Put ``_prior_scalar`` back where a failed update found it, and
@@ -278,30 +282,6 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
             self.__dict__.pop("_prior_scalar", None)
         else:
             self.__dict__["_prior_scalar"] = prior_scalar_old
-
-    def _shift_diagonal(self, cov_inv: csc_array, shift: float) -> None:
-        """``cov_inv += shift * I`` in place.
-
-        The diagonal is always stored (the prior is ``alpha * I``), so
-        its positions, found once per pattern by running ``diagonal()``
-        over entry numbers and cached against the index array's
-        identity, make this a gather-add; ``setdiag`` relocates it on
-        every call.
-        """
-        if shift == 0.0:
-            return
-        cached = self.__dict__.get("_diag_pos")
-        if cached is None or cached[0] is not cov_inv.indices:
-            values = cov_inv.data
-            cov_inv.data = np.arange(1, values.size + 1, dtype=np.float64)
-            pos = cov_inv.diagonal().astype(np.intp) - 1
-            cov_inv.data = values
-            if np.any(pos < 0):  # missing diagonal entry: let scipy insert it
-                cov_inv.setdiag(cov_inv.diagonal() + shift)
-                return
-            cached = (cov_inv.indices, pos)
-            self._diag_pos = cached
-        cov_inv.data[cached[1]] += shift
 
 
 class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
@@ -314,10 +294,10 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     likelihood. During ``partial_fit``, a single online MacKay step is
     performed using accumulated sufficient statistics.
 
-    When ``learning_rate < 1``, exponential forgetting is applied to the
-    precision matrix. To prevent the prior contribution from collapsing
-    to zero under repeated decay, *stabilized forgetting* [2]_ re-injects
-    a fixed prior floor after each decay step.
+    Forgetting, on ``partial_fit`` through ``forgetting=`` and on the
+    clock through ``decay``, defaults to *stabilized forgetting* [2]_:
+    the prior contribution is floored at the tuned ``alpha`` instead of
+    collapsing to zero under repeated decay.
 
     Parameters
     ----------
@@ -342,11 +322,12 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     eb_tol : float, default=1e-4
         Convergence tolerance on the change in log marginal likelihood
         between successive EB iterations.
-    learning_rate : float, default=1.0
-        Decay rate for sequential updates. Values less than 1
-        geometrically shrink the precision matrix on each call to
-        ``decay`` or ``partial_fit``, enabling adaptation to
-        non-stationary environments.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed; ``StabilizedForgetting`` floors at the tuned prior.
+        ``None`` (default) forgets nothing. Forgetting with time is
+        ``decay``.
     sparse : bool, default=False
         If True, use sparse matrix operations for the precision matrix.
         Input ``X`` must be a ``scipy.sparse.csc_array``. When CHOLMOD
@@ -458,7 +439,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     Online learning with forgetting for non-stationary environments:
 
     >>> model = EmpiricalBayesNormalRegressor(
-    ...     learning_rate=0.99, random_state=42
+    ...     forgetting=StabilizedForgetting(0.99), random_state=42
     ... )
     >>> for i in range(10):  # doctest: +SKIP
     ...     X_batch = rng.standard_normal((5, 3))
@@ -474,7 +455,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         alpha_prior_strength: float = 0.2,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
         trace_method: str = "auto",
@@ -482,7 +463,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         super().__init__(
             alpha=alpha,
             beta=beta,
-            learning_rate=learning_rate,
+            forgetting=forgetting,
             sparse=sparse,
             random_state=random_state,
         )
@@ -623,7 +604,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
             accept_sparse="csc" if self.sparse else False,
         )
 
-        prior_decay = self.learning_rate ** y.shape[0]
+        prior_decay, _ = self._batch_forgetting(y.shape[0])
 
         self.eb_updates_rejected_ = 0
 
@@ -781,127 +762,32 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         else:
             self.cov_inv_ *= ratio
 
-    @_invalidate_cached_properties
     def _fit_helper(
         self,
         X: Union[NDArray[Any], csc_array],
         y: NDArray[Any],
         sample_weight: Optional[NDArray[Any]] = None,
-    ) -> None:  # type: ignore[override]
-        """Override to fold prior reinjection into precision construction,
-        and to take the prior information vector from ``partial_fit``.
-
-        When ``_pending_reinjection > 0``, adds ``(1 - γ) · α · I`` to
-        the precision during the decay + data update.  This means the
-        factorization for the linear solve already reflects the
-        reinjected prior — no separate ``_reinject_prior`` call or
-        refactorization needed.
-
-        When ``_pending_prior_eta`` is set, a MacKay correction left the
-        posterior mean unsolved (see the ``coef_`` property) and handed
-        the information vector here instead.  ``Λ·coef_`` is exactly
-        that vector, so using it skips both the deferred solve and the
-        matvec that would undo it.
-        """
-        reinjection = getattr(self, "_pending_reinjection", 0.0)
-        pending_eta = getattr(self, "_pending_prior_eta", None)
+        *,
+        pending_eta: Optional[NDArray[np.float64]] = None,
+    ) -> None:
+        """Take the prior information vector from ``partial_fit`` when a
+        MacKay correction left the posterior mean unsolved (see the
+        ``coef_`` property): ``Λ·coef_`` is exactly that vector, so using
+        it skips both the deferred solve and the matvec that would undo
+        it."""
+        if pending_eta is None:
+            pending_eta = getattr(self, "_pending_prior_eta", None)
         # Consumed here, so partial_fit can tell an update that raised
         # before this point from one that used the vector.
         self._pending_prior_eta = None
-        if reinjection == 0.0 and pending_eta is None:
-            # Nothing to fold in — delegate to base class.
-            super()._fit_helper(X, y, sample_weight)
-            return
-
-        # -- Below: base class logic with reinjection folded in --
-
-        if self.sparse:
-            X = csc_array(X)
-
-        assert X.shape is not None
-
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-
-        effective_weights = compute_effective_weights(
-            X.shape[0], sample_weight, self.learning_rate
-        )
-
-        prior_decay = self.learning_rate ** X.shape[0]
-
-        y_weighted = y * effective_weights
-
-        if self.sparse:
-            # Element-wise scaling; absorb beta into weights
-            assert isinstance(X, csc_array)
-            w_sqrt = np.sqrt(self.beta * effective_weights)
-            X_weighted = X.multiply(w_sqrt.reshape(-1, 1)).tocsc()
-            prior = cast(csc_array, self.cov_inv_)
-            if prior_decay != 1.0:
-                # New data array, not in-place: leaves cov_inv_ untouched if the solve below fails.
-                prior = csc_array(
-                    (prior.data * prior_decay, prior.indices, prior.indptr),
-                    shape=prior.shape,
-                )
-            prior_eta = (
-                prior @ self.coef_ if pending_eta is None else prior_decay * pending_eta
-            )
-            cov_inv = cast(csc_array, prior + X_weighted.T @ X_weighted)
-            self._shift_diagonal(cov_inv, reinjection)
-            eta = cast(NDArray[np.float64], prior_eta + X.T @ (self.beta * y_weighted))
-            factor: PrecisionFactor = self._sparse_factor(cov_inv)
-            coef = factor.solve(eta)
-            self._precision_factor = factor
-        else:
-            assert isinstance(X, np.ndarray)
-            w_sqrt = np.sqrt(effective_weights)
-            X_weighted = X * w_sqrt[:, np.newaxis]
-            if pending_eta is None:
-                eta = compute_eta_dense(
-                    prior_decay, self.cov_inv_, self.coef_, self.beta, X, y_weighted
-                )
-            else:
-                # As compute_eta_dense, but dgemv accumulates onto the already-done dsymv term.
-                XF, xt = fortran_view(X)
-                eta = dgemv(
-                    self.beta,
-                    XF,
-                    y_weighted,
-                    trans=1 - xt,
-                    beta=1.0,
-                    y=prior_decay * pending_eta,
-                    overwrite_y=True,
-                )
-            # Copy, not a view: dsyrk below writes this buffer, so aliasing cov_inv_
-            # would corrupt it before cho_factor gets a chance to reject the update.
-            prior_scaled = np.array(self.cov_inv_, order="F", copy=True)
-            if prior_decay != 1.0:
-                prior_scaled *= prior_decay
-            if reinjection != 0.0:
-                diag_idx = np.diag_indices_from(prior_scaled)
-                prior_scaled[diag_idx] += reinjection
-            # Fused X^T W X + prior via dsyrk (upper triangle only)
-            cov_inv = update_precision_dense(self.beta, X_weighted, prior_scaled)
-            # Cache the Cholesky factor for reuse in cov_/sample
-            cho = cho_factor_f(cov_inv)
-            self._precision_factor = DenseFactor(_U=cho[0], _n_features=cho[0].shape[0])
-            coef = cho_solve(cho, eta, check_finite=False)
-
-        self.cov_inv_ = cov_inv
-        self.coef_ = coef
+        super()._fit_helper(X, y, sample_weight, pending_eta=pending_eta)
 
     def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
-        # Folded into _fit_helper's precision build; the pending eta is popped
-        # here, before super()'s check_is_fitted would read coef_ and force it.
-        self._pending_reinjection = (
-            (1 - prior_decay) * self.alpha if had_prior_scalar else 0.0
-        )
+        # The pending eta is popped here, before super()'s check_is_fitted
+        # would read coef_ and force it.
         self._pending_prior_eta = self.__dict__.pop("_pending_eta", None)
 
     def _unbook_update(self) -> None:
-        self._pending_reinjection = 0.0
         if self._pending_prior_eta is not None:
             # The update raised before _fit_helper consumed it; hand it
             # back so coef_ stays solvable and the correction is not
@@ -947,10 +833,10 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     the mode, so the fixed point sits near, not at, the evidence
     maximum (within a few percent in practice).
 
-    When ``learning_rate < 1``, stabilized forgetting [2]_ re-injects
-    ``(1 - γⁿ)·alpha`` onto the precision diagonal after each decay so
-    the prior's contribution converges to ``alpha`` instead of
-    vanishing, which keeps ``alpha`` tuning load-bearing indefinitely.
+    Under stabilized forgetting [2]_, ``(1 - γⁿ)·alpha`` is re-injected
+    onto the precision diagonal after each forget so the prior's
+    contribution converges to ``alpha`` instead of vanishing, which
+    keeps ``alpha`` tuning load-bearing indefinitely.
 
     Parameters
     ----------
@@ -967,8 +853,12 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     eb_tol : float, default=1e-4
         Convergence tolerance on the change in log evidence between
         successive EB iterations.
-    learning_rate : float, default=1.0
-        Decay rate for sequential updates; see :class:`BayesianGLM`.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed; ``StabilizedForgetting`` floors at the tuned prior.
+        ``None`` (default) forgets nothing. Forgetting with time is
+        ``decay``.
     approximator : PosteriorApproximator, optional
         Defaults to ``LaplaceApproximator(n_iter=25, tol=1e-6)`` rather
         than the base class's 5 fixed iterations: the evidence is only
@@ -1024,7 +914,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         alpha_prior_strength: float = 0.2,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         approximator: Optional[PosteriorApproximator] = None,
         sparse: bool = False,
         random_state: Union[int, np.random.Generator, None] = None,
@@ -1033,7 +923,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         super().__init__(
             alpha=alpha,
             link=link,
-            learning_rate=learning_rate,
+            forgetting=forgetting,
             approximator=approximator,
             sparse=sparse,
             random_state=random_state,
@@ -1118,9 +1008,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             accept_sparse="csc" if self.sparse else False,
         )
 
-        prior_decay = self.learning_rate ** y.shape[0]
+        prior_decay, _ = self._batch_forgetting(y.shape[0])
         self.eb_updates_rejected_ = 0
-        self._pending_floor = 0.0
         effective_n = float(np.sum(self._row_weights(y.shape[0], sample_weight)))
 
         self._initialize_prior(X_fit)
@@ -1194,12 +1083,6 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
             self._drop_factor()
         self.coef_ = self._precision_factor.solve(data_eta)
 
-    def _book_update(self, prior_decay: float, had_prior_scalar: bool) -> None:
-        self._pending_floor = self.alpha if had_prior_scalar else 0.0
-
-    def _unbook_update(self) -> None:
-        self._pending_floor = 0.0
-
     def _hyperparams(self) -> tuple[float]:
         return (self.alpha,)
 
@@ -1247,9 +1130,8 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
     measure (prior shape). The ``m`` and ``s`` updates are alternated
     for faster convergence.
 
-    When ``learning_rate < 1``, exponential forgetting is applied.
-    Stabilized forgetting re-injects the EB-tuned prior after each
-    decay step, ensuring the prior contribution converges to the tuned
+    Forgetting defaults to stabilized: the EB-tuned prior is re-injected
+    after each forget, so the prior contribution converges to the tuned
     value rather than zero.
 
     Parameters
@@ -1260,8 +1142,12 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
         Maximum number of EB iterations during ``fit``.
     eb_tol : float, default=1e-4
         Convergence tolerance on change in log marginal likelihood.
-    learning_rate : float, default=1.0
-        Decay rate for sequential updates.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed; ``StabilizedForgetting`` floors at the tuned prior.
+        ``None`` (default) forgets nothing. Forgetting with time is
+        ``decay``.
     random_state : int, np.random.Generator, or None, default=None
         Controls RNG for ``sample``.
 
@@ -1299,9 +1185,8 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
 
     **Stabilized forgetting**
 
-    Every time ``learning_rate`` :math:`\\gamma < 1` causes decay
-    (both in ``partial_fit`` and in ``decay``), the prior is
-    re-injected:
+    Every forget at rate :math:`\\gamma` (``forgetting=`` in
+    ``partial_fit`` and ``decay``) re-injects the prior:
 
     .. math::
 
@@ -1354,58 +1239,16 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
         *,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         super().__init__(
             alphas=alphas,
-            learning_rate=learning_rate,
+            forgetting=forgetting,
             random_state=random_state,
         )
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
-
-    def _fit_helper(
-        self,
-        X: NDArray[Any],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]],
-    ) -> None:
-        """Override to add stabilized prior re-injection after decay.
-
-        The base class ``_fit_helper`` decays the existing posterior by
-        ``learning_rate ** n_obs`` when stacking with new observations,
-        but does not re-inject the prior. Without re-injection the prior
-        contribution decays toward zero, breaking the invariant
-        ``known_alphas_[g] - prior_ = decayed_counts``.
-        """
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
-
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
-            key = group[0].item()
-
-            weighted_arr = arr * weights[:, np.newaxis]
-
-            vals = np.vstack((self.known_alphas_[key], weighted_arr))
-
-            decay_idx = np.flip(np.arange(len(vals)))
-            posterior = vals * (self.learning_rate**decay_idx)[:, np.newaxis]
-
-            # Stabilized forgetting: the prior was decayed by lr^n_obs,
-            # reinject (1 - lr^n_obs) * prior so the prior contribution
-            # converges to prior_ instead of zero.
-            n_obs = len(arr)
-            reinjection = (1 - self.learning_rate**n_obs) * self.prior_
-
-            self.known_alphas_[key] = posterior.sum(axis=0) + reinjection
 
     def fit(
         self,
@@ -1551,9 +1394,8 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
     for the shared prior, using the generalized Newton method for the
     shape parameter [1]_.
 
-    When ``learning_rate < 1``, exponential forgetting is applied.
-    Stabilized forgetting re-injects the EB-tuned prior after each
-    decay step, ensuring the prior contribution converges to the tuned
+    Forgetting defaults to stabilized: the EB-tuned prior is re-injected
+    after each forget, so the prior contribution converges to the tuned
     value rather than zero.
 
     Parameters
@@ -1566,8 +1408,12 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
         Maximum number of EB iterations during ``fit``.
     eb_tol : float, default=1e-4
         Convergence tolerance on change in log marginal likelihood.
-    learning_rate : float, default=1.0
-        Decay rate for sequential updates.
+    forgetting : ExponentialForgetting or StabilizedForgetting, optional
+        Forgetting applied on every ``partial_fit`` before the batch is
+        absorbed, one step per row, for change that happens because you
+        observed; ``StabilizedForgetting`` floors at the tuned prior.
+        ``None`` (default) forgets nothing. Forgetting with time is
+        ``decay``.
     random_state : int, np.random.Generator, or None, default=None
         Controls RNG for ``sample``.
 
@@ -1630,8 +1476,8 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
 
     **Stabilized forgetting**
 
-    Every time ``learning_rate`` :math:`\\gamma < 1` causes decay,
-    the prior is re-injected:
+    Every forget at rate :math:`\\gamma` (``forgetting=`` in
+    ``partial_fit`` and ``decay``) re-injects the prior:
 
     .. math::
 
@@ -1671,62 +1517,17 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
         *,
         n_eb_iter: int = 10,
         eb_tol: float = 1e-4,
-        learning_rate: float = 1.0,
+        forgetting: Optional[UniformRule] = None,
         random_state: Union[int, np.random.Generator, None] = None,
     ) -> None:
         super().__init__(
             alpha=alpha,
             beta=beta,
-            learning_rate=learning_rate,
+            forgetting=forgetting,
             random_state=random_state,
         )
         self.n_eb_iter = n_eb_iter
         self.eb_tol = eb_tol
-
-    def _fit_helper(
-        self,
-        X: NDArray[Any],
-        y: NDArray[Any],
-        sample_weight: Optional[NDArray[Any]],
-    ) -> None:
-        """Override to add stabilized prior re-injection after decay.
-
-        The base class ``_fit_helper`` decays the existing posterior by
-        ``learning_rate ** n_obs`` when stacking with new observations,
-        but does not re-inject the prior. Without re-injection the prior
-        contribution decays toward zero, breaking the invariant
-        ``coef_[g] - prior_ = decayed_counts``.
-        """
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
-
-        lr = self.learning_rate
-        no_decay = lr == 1.0
-
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
-            key = group[0].item()
-
-            weighted_counts = arr * weights
-            weighted_data = np.column_stack((weighted_counts, weights))
-
-            if no_decay:
-                self.coef_[key] = self.coef_[key] + weighted_data.sum(axis=0)
-            else:
-                n_obs = len(arr)
-                decay_factor = lr**n_obs
-                data_weights = lr ** np.arange(n_obs - 1, -1, -1)
-                data_contribution = data_weights @ weighted_data
-                reinjection = (1 - decay_factor) * self.prior_
-                self.coef_[key] = (
-                    decay_factor * self.coef_[key] + data_contribution + reinjection
-                )
 
     def fit(
         self,

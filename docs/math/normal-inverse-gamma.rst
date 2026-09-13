@@ -200,9 +200,10 @@ Hyperparameter semantics
      - Prior rate of the IG. The prior mean of :math:`\sigma^2` is
        :math:`b/(a-1)` for :math:`a > 1`.
      - 0.1 (default).
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
-     - 1.0 (default) for stationary environments.
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, carrying its rate
+       :math:`\gamma`. See :doc:`/howto/decay`.
+     - ``None`` (default) for stationary environments.
 
 
 References

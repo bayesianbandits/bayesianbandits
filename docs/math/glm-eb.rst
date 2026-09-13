@@ -245,9 +245,10 @@ Hyperparameter semantics
      - Default ``LaplaceApproximator(n_iter=25, tol=1e-6)``. With
        ``RVGAApproximator`` the precision is an expected rather than
        observed curvature and ``log_evidence_`` is a heuristic.
-   * - ``learning_rate``
-     - Decay factor :math:`\gamma`. See :doc:`/howto/decay`.
-     - 1.0 (default) for stationary environments.
+   * - ``forgetting``
+     - Forgetting rule applied on ``partial_fit``, carrying its rate
+       :math:`\gamma`. See :doc:`/howto/decay`.
+     - ``None`` (default) for stationary environments.
    * - ``trace_method``
      - Method for computing
        :math:`\operatorname{tr}(\boldsymbol{\Lambda}^{-1})`.

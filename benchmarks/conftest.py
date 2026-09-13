@@ -7,6 +7,7 @@ import pytest
 from scipy.sparse import csc_array
 from scipy.sparse import random as sparse_random
 
+from bayesianbandits import StabilizedForgetting
 from bayesianbandits._eb_estimators import EmpiricalBayesNormalRegressor
 from bayesianbandits._estimators import (
     BayesianGLM,
@@ -35,7 +36,7 @@ def _make_estimator(estimator_type, sparse):
         )
     elif estimator_type == "eb_normal":
         return EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=sparse
         )
     else:
         raise ValueError(f"Unknown estimator type: {estimator_type}")

@@ -4,18 +4,6 @@ Changelog
 Unreleased
 ----------
 
-**Deprecations**
-
-- ``decay()`` no longer takes a context array. It was only ever read for
-  its row count (the grouped conjugate models also read the groups in
-  it), and it invited passing the last batch to a method that is meant
-  to be called on a clock. Pass ``steps=`` for the number of ticks
-  instead; an array still works for now, with a ``FutureWarning``, and
-  keeps its old meaning. ``decay()`` with neither a rule nor
-  ``decay_rate`` still falls back to ``learning_rate``, also with a
-  ``FutureWarning``: a nightly job should not inherit a per-observation
-  number.
-
 **New features**
 
 - The forgetting rules are public, ``ExponentialForgetting``,
@@ -28,13 +16,48 @@ Unreleased
   ``alpha``; the empirical Bayes estimators default to it, as before.
   ``decay_rate=`` is shorthand for the estimator's default rule at that
   rate. Passing a directional rule to ``decay`` is a ``TypeError``
-  pointing at where it belongs: the learner's update, coming next.
+  pointing at where it belongs: the learner's update.
+
+- ``forgetting=`` on every estimator: the rule applied on each
+  ``partial_fit`` before the batch is absorbed, for change that happens
+  because you observed. The linear estimators take any rule; the
+  directional ones, ``FeatureWiseForgetting`` and ``SiftForgetting``,
+  forget only along what the batch excites and leave everything else at
+  full precision. ``SiftForgetting`` is refused on a sparse estimator,
+  since its correction fills in the precision; the grouped conjugate
+  models and the empirical Bayes estimators take the uniform rules only.
+  Combined with ``decay()`` on a schedule this is the TrueSkill 2 model
+  of change: some from each observation, some from the passage of time.
 
 **Breaking changes**
 
+- ``learning_rate`` is removed from every estimator. What it did,
+  forgetting on each ``partial_fit`` before the batch is absorbed, is now
+  ``forgetting=`` taking a rule that carries its rate. To migrate:
+
+  - ``NormalRegressor(..., learning_rate=0.99)`` and the other plain
+    estimators: ``forgetting=ExponentialForgetting(0.99)``.
+  - ``EmpiricalBayesNormalRegressor(..., learning_rate=0.99)`` and the
+    other empirical Bayes estimators, which always forgot with the prior
+    floored: ``forgetting=StabilizedForgetting(0.99)``.
+  - ``learning_rate=1.0``: drop it; ``forgetting=None`` is the default.
+
+  The numbers are unchanged: a uniform rule takes one step per row, so
+  a batch of ``n`` rows scales the prior by ``rate ** n`` and weighs its
+  older rows less, as before. Models pickled with ``learning_rate`` load
+  unchanged and are converted on load, to the rule the class used to
+  apply. ``decay()`` no longer falls back to a constructor rate: with
+  neither a rule nor ``decay_rate`` it raises. The
+  ``PosteriorApproximator`` protocol takes ``prior_decay`` (the factor
+  already raised to the batch size) instead of ``learning_rate``, with
+  ``sample_weight`` arriving as the final per-row weights.
+
 - ``decay`` has one signature everywhere,
   ``decay(forgetting=None, *, decay_rate=None, steps=1)``, and the
-  ``Learner`` protocol requires it. ``decay_rate`` is keyword-only on the
+  ``Learner`` protocol requires it. It no longer takes a context array:
+  the array was only ever read for its row count (and, on the grouped
+  conjugate models, for which groups to tick), so pass ``steps=`` for the
+  number of ticks and let a tick reach every group. ``decay_rate`` is keyword-only on the
   agents and pipelines, where it used to be positional, and
   ``Agent.decay(0.9)`` is a ``TypeError`` that says to pass
   ``decay_rate=``. A learner of your own with the old

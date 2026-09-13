@@ -13,6 +13,8 @@ from bayesianbandits import (
     EmpiricalBayesDirichletClassifier,
     EmpiricalBayesGammaRegressor,
     EmpiricalBayesNormalRegressor,
+    ExponentialForgetting,
+    StabilizedForgetting,
 )
 from bayesianbandits._estimators import NormalRegressor
 
@@ -278,7 +280,7 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(
             alpha=1.0,
             beta=1.0,
-            learning_rate=0.99,
+            forgetting=StabilizedForgetting(0.99),
             sparse=sparse,
         )
         model.fit(X, y)
@@ -303,7 +305,7 @@ class TestEBNormalRegressor:
         """decay() with decay_rate=1.0 is a no-op (zero reinjection)."""
         X, y = regression_data
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99), sparse=sparse
         )
         model.fit(X, y)
 
@@ -322,7 +324,7 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(
             alpha=1.0,
             beta=1.0,
-            learning_rate=0.99,
+            forgetting=StabilizedForgetting(0.99),
             sparse=sparse,
         )
         model.fit(X[:50], y[:50])
@@ -357,7 +359,7 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(
             alpha=1.0,
             beta=1.0,
-            learning_rate=0.99,
+            forgetting=StabilizedForgetting(0.99),
             sparse=sparse,
         )
         model.fit(X, y)
@@ -390,7 +392,7 @@ class TestEBNormalRegressor:
         model = EmpiricalBayesNormalRegressor(
             alpha=1.0,
             beta=1.0,
-            learning_rate=0.99,
+            forgetting=StabilizedForgetting(0.99),
             sparse=sparse,
         )
         # Should not raise
@@ -493,7 +495,7 @@ class TestEBNormalRegressor:
     def test_partial_fit_tracks_full_fit(self, sparse):
         """Chunked partial_fit from far-off α, β must land on the full fit.
 
-        With ``learning_rate=1`` the online learner sees the same
+        With ``forgetting=ExponentialForgetting(1`` the online learner sees the same)
         sufficient statistics as ``fit``, so its MacKay fixed point is
         the same one. Before ``_correct_precision`` re-solved ``coef_``
         it drifted (α off by 1.8x, β off by 0.5x, coef off by 0.3).
@@ -729,7 +731,7 @@ class TestSampleWeight:
         weights[:5] = 2.0  # upweight first half
 
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+            alpha=1.0, beta=1.0, sparse=sparse, forgetting=StabilizedForgetting(0.99)
         )
         model.fit(X[:50], y[:50])
 
@@ -745,14 +747,14 @@ class TestSampleWeight:
         X, y = regression_data
 
         model_uniform = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+            alpha=1.0, beta=1.0, sparse=sparse, forgetting=StabilizedForgetting(0.99)
         )
         model_uniform.fit(X[:50], y[:50])
         model_uniform.partial_fit(X[50:60], y[50:60])
         coef_uniform = model_uniform.coef_.copy()
 
         model_weighted = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=0.99
+            alpha=1.0, beta=1.0, sparse=sparse, forgetting=StabilizedForgetting(0.99)
         )
         model_weighted.fit(X[:50], y[:50])
         weights = np.ones(10)
@@ -786,7 +788,7 @@ class TestPriorScalar:
     """``_prior_scalar`` is the prior's real contribution to Λ's diagonal.
 
     Under forgetting ``_fit_helper`` scales the prior by
-    ``learning_rate ** n_samples``, so ``alpha`` itself overstates it.
+    ``rate ** n_samples``, so ``alpha`` itself overstates it.
     MacKay's ``gamma = p - prior_scalar * tr(Λ⁻¹)`` is sensitive to
     that: every unobserved feature contributes exactly
     ``1 / prior_scalar`` to the trace, so overstating the scalar pushes
@@ -800,15 +802,13 @@ class TestPriorScalar:
         y = X @ rng.standard_normal(8) + 0.1 * rng.standard_normal(200)
 
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99), sparse=sparse
         )
         model.fit(X, y)
 
         diagonal = model.cov_inv_.diagonal() if sparse else np.diag(model.cov_inv_)
         assert model._prior_scalar <= np.min(diagonal) * (1 + 1e-9)
-        assert model._prior_scalar == pytest.approx(
-            model.learning_rate ** X.shape[0] * model.alpha
-        )
+        assert model._prior_scalar == pytest.approx(0.99 ** X.shape[0] * model.alpha)
 
     def test_gamma_stays_in_range_when_features_are_unobserved(self, sparse):
         """Wide data with all-zero columns keeps gamma in (0, min(n, p)].
@@ -826,7 +826,7 @@ class TestPriorScalar:
         y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(n_samples)
 
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=sparse
         )
         model.fit(X, y)
 
@@ -841,7 +841,7 @@ class TestPriorScalar:
         y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(30)
 
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=sparse
         )
         model.fit(X, y)
 
@@ -856,7 +856,7 @@ class TestPriorScalar:
         y = X[:, :20] @ rng.standard_normal(20) + 0.1 * rng.standard_normal(30)
 
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.99999, sparse=sparse
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.99999), sparse=sparse
         )
         model.fit(X[:20], y[:20])
         before = (model.alpha, model.beta)
@@ -1102,14 +1102,14 @@ class TestEBDirichletClassifier:
         y = np.concatenate(y_parts)
 
         model = EmpiricalBayesDirichletClassifier(
-            {0: 1.0, 1: 1.0}, learning_rate=0.9, random_state=42
+            {0: 1.0, 1: 1.0}, forgetting=StabilizedForgetting(0.9), random_state=42
         )
         model.fit(X, y)
         prior_after_fit = model.prior_.copy()
 
         # Decay all groups
         for _ in range(200):
-            model.decay(decay_rate=model.learning_rate)
+            model.decay(decay_rate=0.9)
 
         # Alphas should converge to prior, not zero
         for key in list(model.known_alphas_.keys()):
@@ -1137,10 +1137,10 @@ class TestEBDirichletClassifier:
         lr = 0.9
 
         batch_model = EmpiricalBayesDirichletClassifier(
-            {0: 1.0, 1: 1.0}, learning_rate=lr, random_state=42
+            {0: 1.0, 1: 1.0}, forgetting=StabilizedForgetting(lr), random_state=42
         )
         seq_model = EmpiricalBayesDirichletClassifier(
-            {0: 1.0, 1: 1.0}, learning_rate=lr, random_state=42
+            {0: 1.0, 1: 1.0}, forgetting=StabilizedForgetting(lr), random_state=42
         )
 
         # Phase 1: diverge
@@ -1192,7 +1192,9 @@ class TestEBDirichletClassifier:
         """Stabilized forgetting prevents negative counts with lr < 1."""
         rng = np.random.default_rng(42)
         model = EmpiricalBayesDirichletClassifier(
-            {0: 1.0, 1: 1.0, 2: 1.0}, learning_rate=0.8, random_state=0
+            {0: 1.0, 1: 1.0, 2: 1.0},
+            forgetting=StabilizedForgetting(0.8),
+            random_state=0,
         )
 
         for i in range(200):
@@ -1201,7 +1203,7 @@ class TestEBDirichletClassifier:
             model.partial_fit(np.array([[g]]), np.array([cls]))
 
             if i % 3 == 0:
-                model.decay(decay_rate=model.learning_rate)
+                model.decay(decay_rate=0.8)
 
             for key, val in model.known_alphas_.items():
                 if hasattr(val, "__len__"):
@@ -1288,7 +1290,7 @@ class TestEBDirichletClassifier:
         """Decay on unfitted model: stabilized forgetting gives lr*α + (1-lr)*α = α."""
         lr = 0.9
         model = EmpiricalBayesDirichletClassifier(
-            {0: 2.0, 1: 3.0}, learning_rate=lr, random_state=42
+            {0: 2.0, 1: 3.0}, forgetting=StabilizedForgetting(lr), random_state=42
         )
         model.decay(decay_rate=lr)
 
@@ -1440,13 +1442,13 @@ class TestEBGammaRegressor:
         y = np.concatenate(y_parts)
 
         model = EmpiricalBayesGammaRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.9, random_state=42
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.9), random_state=42
         )
         model.fit(X, y)
         prior_after_fit = model.prior_.copy()
 
         for _ in range(200):
-            model.decay(decay_rate=model.learning_rate)
+            model.decay(decay_rate=0.9)
 
         for key in list(model.coef_.keys()):
             np.testing.assert_allclose(
@@ -1463,7 +1465,7 @@ class TestEBGammaRegressor:
         """Decay on unfitted model: stabilized forgetting gives lr*p + (1-lr)*p = p."""
         lr = 0.9
         model = EmpiricalBayesGammaRegressor(
-            alpha=2.0, beta=3.0, learning_rate=lr, random_state=42
+            alpha=2.0, beta=3.0, forgetting=StabilizedForgetting(lr), random_state=42
         )
         model.decay(decay_rate=lr)
 
@@ -1538,7 +1540,7 @@ class TestEBGammaRegressor:
         """Stabilized forgetting prevents negative counts with lr < 1."""
         rng = np.random.default_rng(42)
         model = EmpiricalBayesGammaRegressor(
-            alpha=1.0, beta=1.0, learning_rate=0.8, random_state=0
+            alpha=1.0, beta=1.0, forgetting=StabilizedForgetting(0.8), random_state=0
         )
 
         for i in range(200):
@@ -1547,7 +1549,7 @@ class TestEBGammaRegressor:
             model.partial_fit(np.array([[g]]), np.array([count]))
 
             if i % 3 == 0:
-                model.decay(decay_rate=model.learning_rate)
+                model.decay(decay_rate=0.8)
 
             for key, val in model.coef_.items():
                 counts = val - model.prior_
@@ -1680,7 +1682,9 @@ class TestFailedUpdateLeavesEstimatorIntact:
         y = rng.standard_normal(30)
         X_fit = sp.csc_array(X) if sparse else X
 
-        est = cls(alpha=1.0, beta=1.0, learning_rate=0.9, sparse=sparse)
+        est = cls(
+            alpha=1.0, beta=1.0, forgetting=ExponentialForgetting(0.9), sparse=sparse
+        )
         est.partial_fit(X_fit[:15], y[:15])
 
         def _dense(matrix):
@@ -1700,13 +1704,10 @@ class TestFailedUpdateLeavesEstimatorIntact:
                 side_effect=np.linalg.LinAlgError("boom"),
             )
         else:
-            module = (
-                "bayesianbandits._eb_estimators"
-                if cls is EmpiricalBayesNormalRegressor
-                else "bayesianbandits._estimators"
-            )
+            # The EB estimator delegates its update to the base class.
             failure = mock.patch(
-                f"{module}.cho_factor_f", side_effect=np.linalg.LinAlgError("boom")
+                "bayesianbandits._estimators.cho_factor_f",
+                side_effect=np.linalg.LinAlgError("boom"),
             )
 
         with failure, pytest.raises(np.linalg.LinAlgError):
@@ -1722,7 +1723,7 @@ class TestFailedUpdateLeavesEstimatorIntact:
         rng = np.random.default_rng(0)
         X = rng.standard_normal((10, 4))
         y = rng.standard_normal(10)
-        est = EmpiricalBayesNormalRegressor(learning_rate=0.9)
+        est = EmpiricalBayesNormalRegressor(forgetting=StabilizedForgetting(0.9))
 
         with mock.patch.object(
             EmpiricalBayesNormalRegressor,
@@ -1761,7 +1762,10 @@ class TestSufficientStatsCarryTheRowWeights:
         X, y = regression_data
         X, y = X[:12], y[:12]
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+            alpha=1.0,
+            beta=1.0,
+            sparse=sparse,
+            forgetting=StabilizedForgetting(learning_rate),
         )
         model.fit(sp.csc_array(X) if sparse else X, y)
 
@@ -1779,7 +1783,10 @@ class TestSufficientStatsCarryTheRowWeights:
         X, y = regression_data
         Xf = sp.csc_array(X) if sparse else X
         model = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+            alpha=1.0,
+            beta=1.0,
+            sparse=sparse,
+            forgetting=StabilizedForgetting(learning_rate),
         )
         model.fit(Xf[:10], y[:10])
         for i in range(10, 40, 5):
@@ -1788,7 +1795,10 @@ class TestSufficientStatsCarryTheRowWeights:
         assert model.beta != 1.0
 
         one_at_a_time = EmpiricalBayesNormalRegressor(
-            alpha=1.0, beta=1.0, sparse=sparse, learning_rate=learning_rate
+            alpha=1.0,
+            beta=1.0,
+            sparse=sparse,
+            forgetting=StabilizedForgetting(learning_rate),
         )
         one_at_a_time.fit(Xf[:10], y[:10])
         for i in range(10, 40):
@@ -1802,16 +1812,14 @@ class TestSufficientStatsCarryTheRowWeights:
         self, regression_data, sparse
     ):
         """The sklearn invariant, and the sharpest form of the bug: at
-        ``learning_rate=1`` there is no decay, so any discrepancy is
+        ``forgetting=ExponentialForgetting(1`` there is no decay), so any discrepancy is
         ``sample_weight`` alone."""
         X, y = regression_data
         X, y = X[:12], y[:12]
         Xd, yd = np.repeat(X, 2, axis=0), np.repeat(y, 2)
 
         def run(X_, y_, step, **kw):
-            model = EmpiricalBayesNormalRegressor(
-                alpha=1.0, beta=1.0, sparse=sparse, learning_rate=1.0
-            )
+            model = EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
             Xf = sp.csc_array(X_) if sparse else X_
             sw = kw.get("sample_weight")
             model.fit(
