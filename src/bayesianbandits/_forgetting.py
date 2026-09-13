@@ -404,12 +404,16 @@ class StabilizedForgetting:
         return alpha
 
     def _apply(self, precision: ArrayType, lam: float, alpha: float) -> ArrayType:
-        n = precision.shape[0]
+        shift = (1 - lam) * alpha
         if sparse.issparse(precision):
-            floor = (1 - lam) * alpha * sparse.eye(n, format="csc")
-        else:
-            floor = (1 - lam) * alpha * np.eye(n)
-        return precision * lam + floor
+            n = precision.shape[0]
+            return precision * lam + shift * sparse.eye(n, format="csc")
+        # Scale into a new array of the same layout and shift its diagonal
+        # in place: no identity matrix, and a Fortran input stays Fortran,
+        # which the dense fit paths rely on to read the right triangle.
+        R = np.asarray(precision) * lam
+        R[np.diag_indices_from(R)] += shift
+        return R
 
     def tick(
         self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1

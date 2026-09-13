@@ -11,6 +11,7 @@ from sklearn.preprocessing import FunctionTransformer
 from bayesianbandits import (
     Agent,
     Arm,
+    BayesianGLM,
     ContextualAgent,
     DirichletClassifier,
     EmpiricalBayesDirichletClassifier,
@@ -79,6 +80,17 @@ class TestTickRules:
         est.decay(StabilizedForgetting(0.9), steps=2)
         g = 0.9**2
         assert_allclose(_dense(est.cov_inv_), g * before + (1 - g) * 2.0 * np.eye(4))
+
+    def test_stabilized_tick_keeps_the_precision_fortran_ordered(self):
+        """The dense update reads one triangle through a Fortran view, so
+        a tick must not hand it back a C-ordered matrix."""
+        est, X = _fit_normal(False)
+        assert np.asarray(est.cov_inv_).flags.f_contiguous
+        est.decay(StabilizedForgetting(0.9))
+        assert np.asarray(est.cov_inv_).flags.f_contiguous
+        glm = BayesianGLM(alpha=1.0).fit(X, (X[:, 0] > 0).astype(float))
+        glm.decay(StabilizedForgetting(0.9))
+        assert np.asarray(glm.cov_inv_).flags.f_contiguous
 
     def test_stabilized_with_its_own_alpha(self):
         est, _ = _fit_normal(False)
