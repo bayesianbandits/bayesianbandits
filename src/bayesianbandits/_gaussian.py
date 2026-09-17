@@ -19,6 +19,7 @@ from scipy.special import expit
 
 from ._blas_helpers import cho_factor_f, fortran_view
 from ._memory import MemoryUsageMixin
+from ._np_utils import validated_sample_weight
 
 # Type aliases
 ArrayType = Union[NDArray[np.float64], csc_array]
@@ -52,16 +53,9 @@ class GaussianPosterior(NamedTuple):
 def compute_effective_weights(
     n_samples: int, sample_weight: Optional[NDArray[np.float64]], learning_rate: float
 ) -> NDArray[np.float64]:
-    """Apply learning rate decay to sample weights."""
-    if sample_weight is None:
-        sample_weight = np.ones(n_samples, dtype=np.float64)
-    else:
-        sample_weight = np.asarray(sample_weight, dtype=np.float64)
-        if sample_weight.shape[0] != n_samples:
-            raise ValueError(
-                f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                f"equal to n_samples={n_samples}"
-            )
+    """Apply learning rate decay to sample weights, which
+    :func:`~bayesianbandits._np_utils.validated_sample_weight` checks."""
+    sample_weight = validated_sample_weight(n_samples, sample_weight)
 
     if n_samples > 1:
         decay_factors = np.flip(np.power(learning_rate, np.arange(n_samples)))

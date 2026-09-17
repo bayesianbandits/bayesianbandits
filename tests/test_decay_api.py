@@ -324,3 +324,47 @@ class TestBreakingChanges:
         agent.select_for_update(0).update(np.array([3.0]))
         with pytest.raises(TypeError, match="decay_rate="):
             agent.decay(0.5)
+
+
+class TestStepsValidation:
+    """``steps`` is a count of ticks, and reaches the rules only as
+    ``rate ** steps``: negative sharpens the posterior without bound,
+    non-finite hands back a precision that is NaN or zero. Each of
+    those used to land in the posterior in silence, and the first sign
+    of it was a draw coming back non-finite."""
+
+    @pytest.mark.parametrize("steps", [-1, -0.5, np.nan, np.inf, -np.inf])
+    def test_a_step_count_that_is_not_one_is_refused(self, steps):
+        est, _ = _fit_normal(False)
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(ExponentialForgetting(0.9), steps=steps)
+
+    @pytest.mark.parametrize("steps", [0, 0.5, 1, 7.25])
+    def test_a_real_step_count_is_accepted(self, steps):
+        est, _ = _fit_normal(False)
+        before = _dense(est.cov_inv_).copy()
+        est.decay(ExponentialForgetting(0.9), steps=steps)
+        after = _dense(est.cov_inv_)
+        assert np.all(np.isfinite(after))
+        if steps == 0:
+            assert_allclose(after, before, rtol=1e-12)
+        else:
+            assert np.linalg.eigvalsh(after).min() < np.linalg.eigvalsh(before).min()
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: DirichletClassifier({1: 1.0, 2: 1.0}),
+            lambda: GammaRegressor(alpha=1.0, beta=1.0),
+            lambda: EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0),
+        ],
+    )
+    def test_every_decay_checks_it(self, make):
+        """The grouped conjugate models and the empirical Bayes
+        estimators reach the same gate."""
+        est = make()
+        X = np.arange(6).reshape(-1, 1)
+        y = np.array([1, 2, 1, 2, 1, 2])
+        est.fit(X, y if not isinstance(est, EmpiricalBayesNormalRegressor) else y * 1.0)
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(decay_rate=0.9, steps=-1)

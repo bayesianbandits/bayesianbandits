@@ -66,7 +66,7 @@ from ._gaussian import (
     compute_effective_weights,
 )
 from ._memory import MemoryUsageMixin
-from ._np_utils import groupby_array
+from ._np_utils import groupby_array, validated_sample_weight
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
@@ -299,16 +299,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
@@ -469,7 +460,10 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
@@ -650,16 +644,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
@@ -841,7 +826,10 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         if not hasattr(self, "coef_"):
             self._initialize_prior()
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         tick_groups(self.coef_, rule, steps=steps, prior=self.prior_)
 
@@ -1808,7 +1796,10 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         if not hasattr(self, "coef_"):
             return
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         self._apply_tick(rule, steps)
 
@@ -2333,16 +2324,7 @@ scipy.sparse.csc_array
 
         assert X.shape is not None  # for the type checker
 
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
 
         prior, prior_decay, effective_weights, floor = self._forget_batch(
             X, y, sample_weight

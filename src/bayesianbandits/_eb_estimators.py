@@ -240,7 +240,10 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         if not hasattr(self, "coef_"):
             return
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         gamma = rule.rate**steps
         if hasattr(self, "_prior_scalar"):

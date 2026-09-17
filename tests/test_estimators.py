@@ -970,22 +970,43 @@ def test_gamma_regressor_decay_with_weights() -> None:
 
 
 def test_gamma_regressor_negative_weights() -> None:
-    """Test behavior with negative weights."""
+    """A negative weight is refused, because the update cannot survive it.
+
+    The weights go straight onto the Gamma's shape and rate, so a
+    negative one subtracts observations that were never made: a weight
+    of -3 here left ``coef_`` at ``[-9, -1]``, which is not a Gamma.
+    ``predict`` then returned a perfectly plausible 9 (the ratio of two
+    negatives) and ``sample`` raised a scipy domain error from inside
+    ``rvs``, nowhere near the call that caused it.
+    """
     X = np.array([1, 1]).reshape(-1, 1)
     y = np.array([5, 5])
-
     clf = GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    # Negative weights could be mathematically valid (like negative observations)
-    # but might not make sense for importance sampling
-    # Test that it at least doesn't crash
-    weights = np.array([1.0, -0.5])
-    clf.fit(X, y, sample_weight=weights)
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        clf.fit(X, y, sample_weight=np.array([1.0, -0.5]))
 
-    # The update would be: [1,1] + [1*5, 1] + [-0.5*5, -0.5]
-    #                    = [1,1] + [5, 1] + [-2.5, -0.5]
-    #                    = [3.5, 1.5]
-    assert_almost_equal(clf.coef_[1], np.array([3.5, 1.5]))
+    # zero is not negative: it drops the row, which is well defined
+    clf.fit(X, y, sample_weight=np.array([1.0, 0.0]))
+    assert_almost_equal(clf.coef_[1], np.array([6.0, 2.0]))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf, -1.0])
+@pytest.mark.parametrize(
+    "make, target",
+    [
+        (lambda: DirichletClassifier({1: 1.0, 2: 1.0}), np.array([1, 2, 1])),
+        (lambda: GammaRegressor(alpha=1.0, beta=1.0), np.array([1, 2, 3])),
+    ],
+)
+def test_grouped_models_refuse_a_weight_that_is_not_a_count(make, target, bad) -> None:
+    """The conjugate models add the weights onto a concentration, where
+    a NaN or a negative gives a parameter vector that is not a
+    distribution. They validate at the same gate the linear models do."""
+    X = np.array([1, 1, 2]).reshape(-1, 1)
+    weights = np.array([1.0, bad, 1.0])
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        make().fit(X, target, sample_weight=weights)
 
 
 def test_gamma_regressor_weight_dtype_conversion() -> None:

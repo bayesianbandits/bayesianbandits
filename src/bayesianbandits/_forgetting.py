@@ -621,16 +621,27 @@ DIRECTIONAL_RULES = (FeatureWiseForgetting, SiftForgetting)
 
 
 def resolve_tick(
-    forgetting: Any, *, decay_rate: Optional[float], default: type
+    forgetting: Any, *, decay_rate: Optional[float], default: type, steps: Any = 1
 ) -> UniformRule:
     """The rule an estimator's ``decay`` ticks with: ``forgetting`` itself,
-    or ``default`` built from ``decay_rate``.
+    or ``default`` built from ``decay_rate``, having checked ``steps``.
 
     What ``forgetting`` *is* is settled before whether it clashes with
     ``decay_rate``: ``decay`` used to take a context array first, and
     ``decay(X, decay_rate=...)`` reporting that a rule and a rate were
     both given names neither of the two things actually wrong with it.
+
+    ``steps`` is a count of ticks and only ever reaches the rules as
+    ``rate ** steps``, so a negative one sharpens the posterior rather
+    than widening it, without bound, and a NaN or an infinity hands back
+    a precision that is NaN or zero. Each of those used to land in the
+    posterior in silence, and the first sign of it was a draw coming
+    back non-finite.
     """
+    if not np.isfinite(steps) or steps < 0:
+        raise ValueError(
+            f"decay() steps must be finite and non-negative, got {steps!r}."
+        )
     if forgetting is None:
         if decay_rate is None:
             raise TypeError(
