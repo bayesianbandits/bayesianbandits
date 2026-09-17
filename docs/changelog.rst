@@ -76,21 +76,18 @@ Unreleased
 **Performance**
 
 - Posterior sampling on ``NormalRegressor``, ``NormalInverseGammaRegressor``
-  and ``BayesianGLM``: joint ``sample`` picks the cheapest of three exact
-  routes, sparse factors are sized by the observed features rather than
-  ``n_features``, and draws are no longer copied on the way out (#265,
+  and ``BayesianGLM`` is faster, most of all for joint draws with many
+  samples and on sparse models with many never-observed features (#265,
   #269, #273)
-- ``UpperConfidenceBound``, ``EXP3A`` and ``EpsilonGreedy`` draw through
-  the marginal path; ``ThompsonSampling`` is unchanged (#258, #260)
+- ``UpperConfidenceBound``, ``EXP3A`` and ``EpsilonGreedy`` pull faster;
+  ``ThompsonSampling`` is unchanged (#258, #260)
 - ``InformationDirectedSampling.select`` is 50-100x faster with identical
   decisions (#270, #273)
-- Dense ``partial_fit`` and the cached dense factor stay Fortran-ordered,
-  avoiding a copy per update and a slowdown of every solve under scipy 1.18
-  (#297, #299)
-- Sparse empirical Bayes ``partial_fit`` reuses symbolic analyses and pays
-  one Cholesky per step (#276, #277, #283)
-- Sparse factors hold less memory: a bounded Takahashi workspace and no
-  retained refactorization pattern (#278, #290)
+- Dense ``partial_fit`` is faster, and no longer slows down under scipy
+  1.18 (#297, #299)
+- Sparse empirical Bayes ``partial_fit`` is faster (#276, #277, #283)
+- Sparse models hold less memory in long-lived serving processes (#278,
+  #290)
 
 **Documentation**
 
