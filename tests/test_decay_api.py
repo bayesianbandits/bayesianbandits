@@ -125,6 +125,16 @@ class TestTickRules:
         with pytest.raises(TypeError, match="not both"):
             est.decay(ExponentialForgetting(0.9), decay_rate=0.9)
 
+    def test_a_context_array_is_reported_as_not_being_a_rule(self):
+        """``decay`` took a context array before this release. Passing
+        one now is a migration error, and saying a rule and a rate were
+        both given names neither of the two things wrong with it."""
+        est, X = _fit_normal(False)
+        with pytest.raises(TypeError, match="not a ndarray"):
+            est.decay(X, decay_rate=0.95)
+        with pytest.raises(TypeError, match="not a ndarray"):
+            est.decay(X)
+
     @pytest.mark.parametrize("rule", [FeatureWiseForgetting(0.9), SiftForgetting(0.9)])
     def test_directional_rules_are_refused_with_a_pointer(self, rule):
         est, _ = _fit_normal(False)

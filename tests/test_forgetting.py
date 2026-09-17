@@ -794,3 +794,52 @@ class TestTick:
             assert hasattr(rule, "tick") and hasattr(rule, "update")
         for rule in (FeatureWiseForgetting(0.9), SiftForgetting(0.9)):
             assert not hasattr(rule, "tick") and hasattr(rule, "update")
+
+
+class TestRateValidation:
+    """A rule's rate is a forgetting factor in (0, 1].
+
+    Outside that range nothing forgets: above 1 the precision grows
+    without bound, at or below 0 (or at a NaN) it stops being a
+    precision at all. Neither was caught before it had been written
+    into a posterior, where the symptom was a Cholesky failing several
+    calls later, or a coefficient quietly coming back NaN.
+    """
+
+    RULES = [
+        ExponentialForgetting,
+        StabilizedForgetting,
+        FeatureWiseForgetting,
+        SiftForgetting,
+    ]
+
+    @pytest.mark.parametrize("rule", RULES)
+    @pytest.mark.parametrize("rate", [0.0, -0.5, 1.5, np.nan, np.inf])
+    def test_rate_outside_the_unit_interval_is_refused(self, rule, rate):
+        with pytest.raises(ValueError, match=r"rate must be in \(0, 1\]"):
+            rule(rate)
+
+    @pytest.mark.parametrize("rule", RULES)
+    @pytest.mark.parametrize("rate", [1.0, 0.5, 1e-8])
+    def test_a_valid_rate_is_accepted(self, rule, rate):
+        assert rule(rate).rate == rate
+
+    @pytest.mark.parametrize("alpha", [0.0, -1.0, np.nan])
+    def test_stabilized_refuses_a_non_positive_floor(self, alpha):
+        with pytest.raises(ValueError, match="must be positive"):
+            StabilizedForgetting(0.9, alpha=alpha)
+
+    def test_stabilized_keeps_a_positive_floor(self):
+        assert StabilizedForgetting(0.9, alpha=2.5).alpha == 2.5
+
+    @pytest.mark.parametrize("eps", [-1.0, np.nan])
+    def test_sift_refuses_a_negative_threshold(self, eps):
+        with pytest.raises(ValueError, match="non-negative threshold"):
+            SiftForgetting(0.9, eps=eps)
+
+    @pytest.mark.parametrize("rule", RULES)
+    def test_replace_revalidates(self, rule):
+        """``dataclasses.replace`` runs ``__post_init__`` too, so the
+        tests' own rate-sweeping helper cannot smuggle one past."""
+        with pytest.raises(ValueError, match=r"rate must be in \(0, 1\]"):
+            replace(rule(0.9), rate=0.0)
