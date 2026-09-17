@@ -786,11 +786,25 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         """Unit-diagonal ``L`` (CSC) and its inverse diagonal, cached
         because ``spsolve_triangular`` otherwise re-copies and re-scales
         the factor on every call (O(nnz) per solve). Lazy, like
-        ``_perm``, so ``fit``/``partial_fit`` pay no extra cost."""
+        ``_perm``, so ``fit``/``partial_fit`` pay no extra cost.
+
+        The index arrays are copied rather than shared with :attr:`_L`.
+        SuperLU hands back an ``L`` whose column indices are unsorted,
+        and ``half_solve`` passes this one ``overwrite_A=True``, under
+        which ``spsolve_triangular`` sorts the operand in place -- which
+        would permute :attr:`_L`'s indices without touching its own
+        (separately allocated) data, leaving every later reader of the
+        factor, :meth:`trace_inv` and :attr:`_Lt` among them, holding a
+        silently wrong matrix.
+        """
         L = self._L
         invdiag = np.asarray(1.0 / L.diagonal(), dtype=np.float64)
         L_unit = csc_array(
-            (L.data * np.repeat(invdiag, np.diff(L.indptr)), L.indices, L.indptr),
+            (
+                L.data * np.repeat(invdiag, np.diff(L.indptr)),
+                L.indices.copy(),
+                L.indptr.copy(),
+            ),
             shape=L.shape,
         )
         return L_unit, invdiag
