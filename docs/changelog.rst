@@ -17,20 +17,14 @@ Unreleased
   array (pass ``steps=``), ``decay_rate`` is keyword-only, and a call with
   neither raises. A custom learner used inside an ``Arm`` must accept the
   new signature (#302, #303)
-- ``PosteriorApproximator.update_posterior`` takes ``prior_decay`` in place
-  of ``learning_rate`` and gains optional ``prior_floor`` and ``coef_init``
-  keywords, which :class:`~bayesianbandits.EmpiricalBayesGLM` requires
-  (#283, #303)
 - :class:`~bayesianbandits.ContextualAgent` and :class:`~bayesianbandits.Agent`
   require one learner per arm and raise from ``add_arm`` otherwise. Arms
   sharing a learner were sampled independently, discarding their
   correlation; use :class:`~bayesianbandits.LipschitzContextualAgent` to
   share a model (#267)
-- ``NonContextualAgentPipeline`` is removed, and
-  :class:`~bayesianbandits.AgentPipeline` raises ``TypeError`` on a plain
-  ``Agent``: its steps transform context, so they never ran. Use the agent
-  directly, or :class:`~bayesianbandits.LearnerPipeline` for the arms'
-  features (#291)
+- :class:`~bayesianbandits.AgentPipeline` raises ``TypeError`` on a
+  non-contextual ``Agent``, whose steps had nothing to transform and never
+  ran. Use the agent directly (#291)
 - :class:`~bayesianbandits.EmpiricalBayesNormalRegressor` regularizes the
   MacKay ``alpha`` update with a Gamma hyperprior, weighted by the new
   ``alpha_prior_strength`` (default ``0.2``; ``0.0`` restores the previous
@@ -64,11 +58,8 @@ Unreleased
   (#258, #269)
 - :func:`~bayesianbandits.memory_usage` on agents, arms, learners,
   pipelines and precision factors, reporting retained bytes by part (#271)
-- ``BayesianGLM``'s Laplace IRLS damps each Newton step and reports
-  convergence: ``GaussianPosterior.converged`` is new and the estimator
-  raises ``ConvergenceWarning`` when the budget runs out (#285)
-- ``PolicyDefaultUpdate`` implements ``__call__``, so a custom policy needs
-  only ``samples_needed`` and ``select`` (#291)
+- ``BayesianGLM`` damps each IRLS step and raises ``ConvergenceWarning``
+  when the iteration budget runs out short of the mode (#285)
 
 **Bug fixes**
 
@@ -84,24 +75,22 @@ Unreleased
 
 **Performance**
 
-- Joint ``sample`` picks the cheapest of three exact routes, and sparse
-  factors are sized by the observed features rather than ``n_features``
-  (#269)
+- Posterior sampling on ``NormalRegressor``, ``NormalInverseGammaRegressor``
+  and ``BayesianGLM``: joint ``sample`` picks the cheapest of three exact
+  routes, sparse factors are sized by the observed features rather than
+  ``n_features``, and draws are no longer copied on the way out (#265,
+  #269, #273)
 - ``UpperConfidenceBound``, ``EXP3A`` and ``EpsilonGreedy`` draw through
   the marginal path; ``ThompsonSampling`` is unchanged (#258, #260)
 - ``InformationDirectedSampling.select`` is 50-100x faster with identical
   decisions (#270, #273)
-- Draws are written into their output buffers rather than copied there
-  (#273)
-- Dense factors stay Fortran-ordered under scipy 1.18, whose ``cho_factor``
-  made every solve against the cached factor several times slower (#299)
-- Dense ``partial_fit`` hands Fortran views of ``X`` to BLAS instead of
-  copying (#297)
+- Dense ``partial_fit`` and the cached dense factor stay Fortran-ordered,
+  avoiding a copy per update and a slowdown of every solve under scipy 1.18
+  (#297, #299)
 - Sparse empirical Bayes ``partial_fit`` reuses symbolic analyses and pays
   one Cholesky per step (#276, #277, #283)
-- Bounded Takahashi workspace (#278) and no retained gather pattern on the
-  sparse factors (#290)
-- ``sample`` and ``sample_marginal`` no longer copy ``X`` (#265)
+- Sparse factors hold less memory: a bounded Takahashi workspace and no
+  retained refactorization pattern (#278, #290)
 
 **Documentation**
 
@@ -109,9 +98,6 @@ Unreleased
   </notebooks/forgetting>` (#304)
 - Math reference for :doc:`EmpiricalBayesGLM </math/glm-eb>` (#283) and
   :doc:`feature-wise forgetting </math/forgetting>` (#300)
-- Class pages render inherited members (#292, #294)
-- README: current test matrix and features, fixed the hybrid-bandits
-  example (#274)
 
 **Infrastructure**
 
