@@ -1089,7 +1089,7 @@ class TestGroupedModelsAwayFromFit:
         agent = LipschitzContextualAgent(
             [Arm(i) for i in range(2)],
             ThompsonSampling(),
-            ArmColumnFeaturizer(column_name=1),
+            ArmColumnFeaturizer(),  # appends the arm column to the numpy design
             make(),
             random_seed=0,
         )
