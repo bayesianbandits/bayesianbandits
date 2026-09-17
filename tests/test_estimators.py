@@ -1041,3 +1041,72 @@ def test_gamma_regressor_extreme_weights() -> None:
     # Mean ≈ 4
     pred = clf.predict(X)[0]
     assert 3.9 < pred < 4.1  # Should be close to 4
+
+
+class TestGroupedModelsAwayFromFit:
+    """``fit`` is not the only entry point, and the others were not
+    holding the same contract it does."""
+
+    MODELS = [
+        (
+            lambda: DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0),
+            np.array([1, 2]),
+        ),
+        (lambda: GammaRegressor(alpha=1.0, beta=1.0, random_state=0), np.array([2, 3])),
+    ]
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    @pytest.mark.parametrize("call", ["fit", "predict", "sample"])
+    def test_a_wider_design_is_refused_the_same_way_everywhere(self, make, y, call):
+        """These models key a posterior on ``X[:, 0]``.
+
+        ``fit`` said so; the rest read the column with ``.item()`` on
+        each row, so a wider design reached numpy and came back as "can
+        only convert an array of size 1 to a Python scalar", from inside
+        a generator, naming neither the estimator nor the shape. A first
+        ``pull`` samples before anything is fitted, so that was the
+        message for putting one of these behind an arm featurizer.
+        """
+        X = np.array([[1, 0], [2, 1]])
+        model = make()
+        with pytest.raises(NotImplementedError, match="Only one feature supported"):
+            if call == "fit":
+                model.fit(X, y)
+            elif call == "predict":
+                model.predict(X)
+            else:
+                model.sample(X, size=2)
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    def test_the_agent_gets_that_message_too(self, make, y):
+        from bayesianbandits import (
+            Arm,
+            ArmColumnFeaturizer,
+            LipschitzContextualAgent,
+            ThompsonSampling,
+        )
+
+        agent = LipschitzContextualAgent(
+            [Arm(i) for i in range(2)],
+            ThompsonSampling(),
+            ArmColumnFeaturizer(column_name=1),
+            make(),
+            random_seed=0,
+        )
+        with pytest.raises(NotImplementedError, match="Only one feature supported"):
+            agent.pull(np.array([[1]]))
+
+    def test_predict_on_an_unfitted_classifier_uses_the_prior(self):
+        """``predict_proba`` and ``sample`` both document the unfitted
+        case as the prior predictive. ``predict`` read ``classes_``
+        before the call that initializes it, so on that same path it
+        raised an AttributeError instead."""
+        X = np.array([[1], [2]])
+        clf = DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0)
+        got = clf.predict(X)
+
+        reference = DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0)
+        proba = reference.predict_proba(X)  # this is what sets classes_
+        want = reference.classes_[proba.argmax(axis=1)]
+        assert_almost_equal(got, want)
+        assert set(np.unique(got)) <= {1, 2}

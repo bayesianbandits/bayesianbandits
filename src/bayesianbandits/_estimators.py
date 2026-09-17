@@ -81,6 +81,27 @@ ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 
+def _one_group_column(X: NDArray[Any], estimator: str) -> NDArray[Any]:
+    """``X`` as a 2-D array, refusing anything but a single group column.
+
+    The grouped conjugate models key a posterior on ``X[:, 0]``, which
+    is why ``fit`` refuses a wider design. Every other entry point read
+    the column by calling ``.item()`` on each row, so a wider one
+    reached numpy instead and came back as "can only convert an array
+    of size 1 to a Python scalar" -- from inside a generator, naming
+    neither the estimator nor the shape. A first ``pull`` samples
+    before anything is fitted, so that was the message for putting one
+    of these behind an arm featurizer.
+    """
+    X = np.atleast_2d(X)
+    if X.shape[1] > 1:
+        raise NotImplementedError(
+            f"Only one feature supported: {estimator} keys a posterior on "
+            f"X[:, 0], and this X has {X.shape[1]} columns."
+        )
+    return X
+
+
 class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     """
     Intercept-only Dirichlet-Multinomial classifier.
@@ -228,8 +249,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
         self.n_features_ = X.shape[1]
 
-        if self.n_features_ > 1:
-            raise NotImplementedError("Only one feature supported")
+        _one_group_column(X, type(self).__name__)
 
         self._fit_helper(X, y_encoded, sample_weight)
 
@@ -354,6 +374,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
         X_pred = check_array(X, copy=False, ensure_2d=True)
 
+        X_pred = _one_group_column(X_pred, type(self).__name__)
         alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
         return alphas / alphas.sum(axis=1)[:, np.newaxis]
 
@@ -379,7 +400,12 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         --------
         predict_proba : Return full probability vectors.
         """
-        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+        # predict_proba first: it is what initializes the prior on an
+        # unfitted model, and reading classes_ before it ran was an
+        # AttributeError on the very path predict_proba and sample both
+        # document as returning the prior predictive.
+        proba = self.predict_proba(X)
+        return self.classes_[proba.argmax(axis=1)]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
@@ -414,6 +440,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
+        X = _one_group_column(X, type(self).__name__)
         alphas = list(self.known_alphas_[x.item()] for x in X)
         return np.stack(
             list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
@@ -621,8 +648,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
         self.n_features_ = X.shape[1]
 
-        if self.n_features_ > 1:
-            raise NotImplementedError("Only one feature supported")
+        _one_group_column(X, type(self).__name__)
 
         self._fit_helper(X, y_encoded, sample_weight)
 
@@ -740,6 +766,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
         X_pred = check_array(X, copy=False, ensure_2d=True)
 
+        X_pred = _one_group_column(X_pred, type(self).__name__)
         shape_params = np.vstack(list(self.coef_[x.item()] for x in X_pred))
         return shape_params[:, 0] / shape_params[:, 1]
 
@@ -775,6 +802,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
+        X = _one_group_column(X, type(self).__name__)
         shape_params = list(self.coef_[x.item()] for x in X)
 
         rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
