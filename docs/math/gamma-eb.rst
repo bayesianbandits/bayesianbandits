@@ -81,16 +81,10 @@ Compute posterior moments of :math:`\lambda_g` under
 M-step
 ~~~~~~
 
-Solve the Gamma MLE on expected sufficient statistics.
-
-**Rate update** (closed-form given :math:`\alpha`):
-
-.. math::
-
-   \beta = \frac{\alpha}{\bar{\mathbb{E}}[\lambda]}
-
-where :math:`\bar{\mathbb{E}}[\lambda] =
-\frac{1}{G} \sum_g \mathbb{E}[\lambda_g]`.
+Solve the Gamma MLE on expected sufficient statistics. The shape
+goes first: its equation is the pair of MLE conditions with the rate
+already substituted out, so the rate that closes the step is the one
+built from the shape the Newton iteration has just produced.
 
 **Shape update** (generalized Newton [1]_, section 1). The
 fixed-point equation is:
@@ -101,7 +95,8 @@ fixed-point equation is:
    = \log \bar{\mathbb{E}}[\lambda]
      - \bar{\mathbb{E}}[\log \lambda]
 
-solved by the iteration:
+where :math:`\bar{\mathbb{E}}[\lambda] =
+\frac{1}{G} \sum_g \mathbb{E}[\lambda_g]`, solved by the iteration:
 
 .. math::
 
@@ -111,6 +106,20 @@ solved by the iteration:
      - \log \alpha + \psi(\alpha)}
         {\alpha^2 \left(\frac{1}{\alpha}
         - \psi'(\alpha)\right)}
+
+**Rate update** (closed-form given :math:`\alpha^{\text{new}}`):
+
+.. math::
+
+   \beta^{\text{new}} = \frac{\alpha^{\text{new}}}{\bar{\mathbb{E}}[\lambda]}
+
+Taking the rate from :math:`\alpha` rather than
+:math:`\alpha^{\text{new}}` leaves the pair solving neither condition
+while the shape is moving, and scales the prior mean by the shape's
+growth on every iteration. That is invisible once the shape settles,
+and not at all invisible when it does not: groups that agree send
+:math:`\alpha \to \infty` along a ridge of the likelihood, and the
+prior mean has to walk to the pooled rate as it goes.
 
 
 Counts and exposure extraction

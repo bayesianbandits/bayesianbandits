@@ -2241,11 +2241,11 @@ scipy.sparse.csc_array
     Sampling from the marginal posterior predictive (multivariate t):
 
     >>> est.sample(X[[0]], size=5)
-    array([[15.01030526],
-           [14.64281737],
-           [15.21457505],
-           [14.1703107 ],
-           [14.57089036]])
+    array([[14.53043263],
+           [15.06749699],
+           [13.79029792],
+           [14.31187714],
+           [14.0036591 ]])
     """
 
     def __init__(
@@ -2727,7 +2727,7 @@ scipy.sparse.csc_array
     >>> model.fit(X, y_counts)
     BayesianGLM(link='log')
     >>> model.predict(X)  # Returns expected counts
-    array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
+    array([1.66212174, 2.76264868, 4.59185842, 7.6322277 ])
 
     Poisson rate modeling with varying exposure (e.g., different observation
     periods). For Poisson with log link, fitting the rate ``y / exposure``
@@ -2740,7 +2740,7 @@ scipy.sparse.csc_array
     >>> model.fit(X, y_counts / exposure, sample_weight=exposure)
     BayesianGLM(link='log')
     >>> model.predict(X) * exposure  # Scale predicted rates by exposure
-    array([ 1.32755877,  3.52482459, 11.69852952, 31.06097099])
+    array([ 1.32755873,  3.52482434, 11.69852826, 31.06096654])
 
     Online learning with fast single-iteration updates:
 

@@ -1214,7 +1214,7 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
     >>> clf = EmpiricalBayesDirichletClassifier(
     ...     {1: 1, 2: 1}, random_state=0
     ... )
-    >>> clf.fit(X, y)
+    >>> clf.fit(X, y)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
     EmpiricalBayesDirichletClassifier(alphas={1: ..., 2: ...}, random_state=0)
 
     Misspecified priors converge to the true shape. Here the true
@@ -1506,7 +1506,7 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
     >>> model = EmpiricalBayesGammaRegressor(
     ...     alpha=1.0, beta=1.0, random_state=0
     ... )
-    >>> model.fit(X, y)
+    >>> model.fit(X, y)  # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
     EmpiricalBayesGammaRegressor(alpha=..., beta=..., random_state=0)
     """
 
