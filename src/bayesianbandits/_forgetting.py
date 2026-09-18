@@ -38,7 +38,9 @@ The caller then does::
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -308,7 +310,8 @@ def _checked_rate(rate: Any, cls: str) -> None:
     posterior, where the only symptom was a later factorization failing
     or a coefficient coming back NaN.
     """
-    if not np.isfinite(rate) or not 0.0 < rate <= 1.0:
+    value = float(rate) if isinstance(rate, Real) else math.nan
+    if not (math.isfinite(value) and 0.0 < value <= 1.0):
         raise ValueError(f"{cls} rate must be in (0, 1], got {rate!r}.")
 
 

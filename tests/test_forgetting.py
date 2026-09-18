@@ -820,7 +820,14 @@ class TestRateValidation:
             rule(rate)
 
     @pytest.mark.parametrize("rule", RULES)
-    @pytest.mark.parametrize("rate", [1.0, 0.5, 1e-8])
+    @pytest.mark.parametrize("rate", [None, "0.9", [0.9]])
+    def test_a_rate_that_is_not_a_number_gets_the_same_message(self, rule, rate):
+        """A non-numeric rate gets the rule's message, not numpy's."""
+        with pytest.raises(ValueError, match=r"rate must be in \(0, 1\]"):
+            rule(rate)
+
+    @pytest.mark.parametrize("rule", RULES)
+    @pytest.mark.parametrize("rate", [1.0, 0.5, 1e-8, np.float32(0.5), 1])
     def test_a_valid_rate_is_accepted(self, rule, rate):
         assert rule(rate).rate == rate
 
