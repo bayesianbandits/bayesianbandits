@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Generator, Tuple, TypeVar
+from typing import Any, Generator, Optional, Tuple, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -47,3 +47,52 @@ def groupby_array(
 
     for split in split_indexes:
         yield tuple(array[split] for array in sorted_arrays)
+
+
+def validated_sample_weight(
+    n_samples: int, sample_weight: Optional[NDArray[Any]]
+) -> NDArray[np.float64]:
+    """``sample_weight`` as float64 of length ``n_samples``, ones if absent.
+
+    A weight is how many observations a row counts as, so it has to be
+    finite and non-negative; zero is fine and drops the row. Nothing
+    downstream checks: the conjugate models add the weights straight
+    onto a Dirichlet or Gamma concentration, where a negative one gives
+    a parameter vector that is not a distribution, and the linear
+    models square them into a precision through ``sqrt``, where a
+    negative or NaN one gives a NaN coefficient. Both used to happen in
+    silence.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from bayesianbandits._np_utils import validated_sample_weight
+    >>> validated_sample_weight(3, None)
+    array([1., 1., 1.])
+    >>> validated_sample_weight(2, np.array([2.0, 0.0]))
+    array([2., 0.])
+    >>> validated_sample_weight(2, np.array([1.0, -1.0]))
+    Traceback (most recent call last):
+    ValueError: sample_weight must be finite and non-negative; got -1.0 at index 1.
+    """
+    if sample_weight is None:
+        return np.ones(n_samples, dtype=np.float64)
+    weights = np.asarray(sample_weight, dtype=np.float64)
+    if weights.ndim != 1:
+        raise ValueError(
+            f"sample_weight must be 1-D of length n_samples={n_samples}; "
+            f"got shape {weights.shape}."
+        )
+    if weights.shape[0] != n_samples:
+        raise ValueError(
+            f"sample_weight.shape[0]={weights.shape[0]} should be "
+            f"equal to n_samples={n_samples}"
+        )
+    bad = ~(weights >= 0.0) | np.isinf(weights)  # NaN fails the >= too
+    if bad.any():
+        index = int(np.argmax(bad))
+        raise ValueError(
+            "sample_weight must be finite and non-negative; got "
+            f"{weights[index]} at index {index}."
+        )
+    return weights

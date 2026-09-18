@@ -24,6 +24,7 @@ from bayesianbandits import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits._arm import posterior_identity
 from bayesianbandits.pipelines import LearnerPipeline
 
 POLICIES = [
@@ -79,6 +80,68 @@ def test_distinct_pipelines_wrapping_one_estimator_are_rejected():
     ]
     with pytest.raises(ValueError, match="own learner"):
         ContextualAgent(arms, ThompsonSampling())
+
+
+def test_nested_pipelines_wrapping_one_estimator_are_rejected():
+    """A pipeline is a learner, so the delegation nests.
+
+    Unwrapping one level compared the two distinct *inner* pipelines
+    and let the arms through. They are not independent: updating the
+    first moved the second's posterior, which is the whole thing this
+    check exists to prevent.
+    """
+    shared = _learner()
+
+    def nest():
+        return LearnerPipeline(
+            steps=[], learner=LearnerPipeline(steps=[], learner=shared)
+        )
+
+    arms = [Arm(0, learner=nest()), Arm(1, learner=nest())]
+    with pytest.raises(ValueError, match="own learner"):
+        ContextualAgent(arms, ThompsonSampling())
+
+    agent = ContextualAgent([Arm(0, learner=nest())], ThompsonSampling())
+    with pytest.raises(ValueError, match="own learner"):
+        agent.add_arm(Arm(1, learner=nest()))
+
+
+def test_nested_pipelines_over_distinct_estimators_are_accepted():
+    """The walk reaches the estimator, so nesting alone is not sharing."""
+
+    def nest(seed):
+        return LearnerPipeline(
+            steps=[], learner=LearnerPipeline(steps=[], learner=_learner(seed))
+        )
+
+    agent = ContextualAgent(
+        [Arm(0, learner=nest(0)), Arm(1, learner=nest(1))], ThompsonSampling()
+    )
+    assert len(agent.arms) == 2
+
+
+def test_a_delegation_cycle_does_not_hang_the_check():
+    """The walk terminates on any object it is handed.
+
+    ``LearnerPipeline.learner`` is read-only, so the library cannot
+    build a cycle itself, but ``posterior_identity`` takes whatever
+    implements the protocol and a user's own delegating learner need
+    not be. Looping forever in a validation path is worse than any
+    answer it could return.
+    """
+
+    class Delegating:
+        learner: object
+
+    a, b = Delegating(), Delegating()
+    a.learner, b.learner = b, a
+
+    assert posterior_identity(a) in (a, b)
+
+    # and a learner that delegates to itself
+    c = Delegating()
+    c.learner = c
+    assert posterior_identity(c) is c
 
 
 def test_error_points_at_the_agent_that_supports_sharing():

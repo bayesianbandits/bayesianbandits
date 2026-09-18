@@ -970,22 +970,51 @@ def test_gamma_regressor_decay_with_weights() -> None:
 
 
 def test_gamma_regressor_negative_weights() -> None:
-    """Test behavior with negative weights."""
+    """A negative weight is refused, because the update cannot survive it.
+
+    The weights go straight onto the Gamma's shape and rate, so a
+    negative one subtracts observations that were never made: a weight
+    of -3 here left ``coef_`` at ``[-9, -1]``, which is not a Gamma.
+    ``predict`` then returned a perfectly plausible 9 (the ratio of two
+    negatives) and ``sample`` raised a scipy domain error from inside
+    ``rvs``, nowhere near the call that caused it.
+    """
     X = np.array([1, 1]).reshape(-1, 1)
     y = np.array([5, 5])
-
     clf = GammaRegressor(alpha=1, beta=1, random_state=0)
 
-    # Negative weights could be mathematically valid (like negative observations)
-    # but might not make sense for importance sampling
-    # Test that it at least doesn't crash
-    weights = np.array([1.0, -0.5])
-    clf.fit(X, y, sample_weight=weights)
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        clf.fit(X, y, sample_weight=np.array([1.0, -0.5]))
 
-    # The update would be: [1,1] + [1*5, 1] + [-0.5*5, -0.5]
-    #                    = [1,1] + [5, 1] + [-2.5, -0.5]
-    #                    = [3.5, 1.5]
-    assert_almost_equal(clf.coef_[1], np.array([3.5, 1.5]))
+    # zero is not negative: it drops the row, which is well defined
+    clf.fit(X, y, sample_weight=np.array([1.0, 0.0]))
+    assert_almost_equal(clf.coef_[1], np.array([6.0, 2.0]))
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf, -1.0])
+@pytest.mark.parametrize(
+    "make, target",
+    [
+        (lambda: DirichletClassifier({1: 1.0, 2: 1.0}), np.array([1, 2, 1])),
+        (lambda: GammaRegressor(alpha=1.0, beta=1.0), np.array([1, 2, 3])),
+    ],
+)
+def test_grouped_models_refuse_a_weight_that_is_not_a_count(make, target, bad) -> None:
+    """The conjugate models add the weights onto a concentration, where
+    a NaN or a negative gives a parameter vector that is not a
+    distribution. They validate at the same gate the linear models do."""
+    X = np.array([1, 1, 2]).reshape(-1, 1)
+    weights = np.array([1.0, bad, 1.0])
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        make().fit(X, target, sample_weight=weights)
+
+
+@pytest.mark.parametrize("weights", [1.0, np.array([[1.0], [1.0]]), np.ones((2, 2))])
+def test_sample_weight_must_be_one_dimensional(weights) -> None:
+    """A scalar or a column vector is refused by shape, not by accident."""
+    X = np.array([1, 1]).reshape(-1, 1)
+    with pytest.raises(ValueError, match="must be 1-D"):
+        GammaRegressor(alpha=1, beta=1).fit(X, np.array([5, 5]), sample_weight=weights)
 
 
 def test_gamma_regressor_weight_dtype_conversion() -> None:
@@ -1020,3 +1049,86 @@ def test_gamma_regressor_extreme_weights() -> None:
     # Mean ≈ 4
     pred = clf.predict(X)[0]
     assert 3.9 < pred < 4.1  # Should be close to 4
+
+
+class TestGroupedModelsAwayFromFit:
+    """``fit`` is not the only entry point, and the others were not
+    holding the same contract it does."""
+
+    MODELS = [
+        (
+            lambda: DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0),
+            np.array([1, 2]),
+        ),
+        (lambda: GammaRegressor(alpha=1.0, beta=1.0, random_state=0), np.array([2, 3])),
+    ]
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    @pytest.mark.parametrize("call", ["fit", "partial_fit", "predict", "sample"])
+    def test_a_wider_design_is_refused_the_same_way_everywhere(self, make, y, call):
+        """These models key a posterior on ``X[:, 0]``.
+
+        ``fit`` said so; the rest read the column with ``.item()`` on
+        each row, so a wider design reached numpy and came back as "can
+        only convert an array of size 1 to a Python scalar", from inside
+        a generator, naming neither the estimator nor the shape. A first
+        ``pull`` samples before anything is fitted, so that was the
+        message for putting one of these behind an arm featurizer.
+        """
+        X = np.array([[1, 0], [2, 1]])
+        model = make()
+        if call == "partial_fit":
+            model.fit(X[:, :1], y)
+        with pytest.raises(NotImplementedError, match="Only one feature supported"):
+            if call == "fit":
+                model.fit(X, y)
+            elif call == "partial_fit":
+                model.partial_fit(X, y)
+            elif call == "predict":
+                model.predict(X)
+            else:
+                model.sample(X, size=2)
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    def test_a_flat_design_gets_the_reshape_hint_everywhere(self, make, y):
+        """``sample`` gives the same reshape hint ``predict`` does."""
+        X = np.array([1, 2])
+        model = make()
+        with pytest.raises(ValueError, match=r"reshape\(-1, 1\)"):
+            model.predict(X)
+        with pytest.raises(ValueError, match=r"reshape\(-1, 1\)"):
+            model.sample(X, size=2)
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    def test_the_agent_gets_that_message_too(self, make, y):
+        from bayesianbandits import (
+            Arm,
+            ArmColumnFeaturizer,
+            LipschitzContextualAgent,
+            ThompsonSampling,
+        )
+
+        agent = LipschitzContextualAgent(
+            [Arm(i) for i in range(2)],
+            ThompsonSampling(),
+            ArmColumnFeaturizer(),  # appends the arm column to the numpy design
+            make(),
+            random_seed=0,
+        )
+        with pytest.raises(NotImplementedError, match="Only one feature supported"):
+            agent.pull(np.array([[1]]))
+
+    def test_predict_on_an_unfitted_classifier_uses_the_prior(self):
+        """``predict_proba`` and ``sample`` both document the unfitted
+        case as the prior predictive. ``predict`` read ``classes_``
+        before the call that initializes it, so on that same path it
+        raised an AttributeError instead."""
+        X = np.array([[1], [2]])
+        clf = DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0)
+        got = clf.predict(X)
+
+        reference = DirichletClassifier({1: 1.0, 2: 1.0}, random_state=0)
+        proba = reference.predict_proba(X)  # this is what sets classes_
+        want = reference.classes_[proba.argmax(axis=1)]
+        assert_almost_equal(got, want)
+        assert set(np.unique(got)) <= {1, 2}

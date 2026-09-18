@@ -8,6 +8,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Optional,
     TypeVar,
     Union,
@@ -66,7 +67,7 @@ from ._gaussian import (
     compute_effective_weights,
 )
 from ._memory import MemoryUsageMixin
-from ._np_utils import groupby_array
+from ._np_utils import groupby_array, validated_sample_weight
 from ._sparse_bayesian_linear_regression import (
     DenseFactor,
     PrecisionFactor,
@@ -79,6 +80,18 @@ from ._sparse_bayesian_linear_regression import (
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
+
+
+def _group_column(X: NDArray[Any], estimator: str) -> NDArray[Any]:
+    """The one column the grouped conjugate models key a posterior on;
+    every entry point reads its keys through here."""
+    X = check_array(X, copy=False, ensure_2d=True)
+    if X.shape[1] != 1:
+        raise NotImplementedError(
+            f"Only one feature supported: {estimator} keys a posterior on "
+            f"X[:, 0], and this X has {X.shape[1]} columns."
+        )
+    return X[:, 0]
 
 
 class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
@@ -228,9 +241,6 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
         self.n_features_ = X.shape[1]
 
-        if self.n_features_ > 1:
-            raise NotImplementedError("Only one feature supported")
-
         self._fit_helper(X, y_encoded, sample_weight)
 
         return self
@@ -299,23 +309,15 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        groups = _group_column(X, type(self).__name__)
+        sample_weight = validated_sample_weight(groups.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
             self.forgetting, estimator=type(self).__name__, uniform_only=True
         )
         rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+        for group, arr, weights in groupby_array(groups, y, sample_weight, by=groups):
             key = group[0].item()
 
             # Apply sample weights to the observations
@@ -361,9 +363,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=False, ensure_2d=True)
-
-        alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        alphas = np.vstack([self.known_alphas_[k] for k in keys])
         return alphas / alphas.sum(axis=1)[:, np.newaxis]
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
@@ -388,7 +389,12 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         --------
         predict_proba : Return full probability vectors.
         """
-        return self.classes_[self.predict_proba(X).argmax(axis=1)]
+        # predict_proba first: it is what initializes the prior on an
+        # unfitted model, and reading classes_ before it ran was an
+        # AttributeError on the very path predict_proba and sample both
+        # document as returning the prior predictive.
+        proba = self.predict_proba(X)
+        return self.classes_[proba.argmax(axis=1)]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
         """
@@ -423,7 +429,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        alphas = list(self.known_alphas_[x.item()] for x in X)
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        alphas = [self.known_alphas_[k] for k in keys]
         return np.stack(
             list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
         ).transpose(1, 0, 2)
@@ -469,7 +476,10 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         if not hasattr(self, "known_alphas_"):
             self._initialize_prior()
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
@@ -627,9 +637,6 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
         self.n_features_ = X.shape[1]
 
-        if self.n_features_ > 1:
-            raise NotImplementedError("Only one feature supported")
-
         self._fit_helper(X, y_encoded, sample_weight)
 
         return self
@@ -650,23 +657,15 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        groups = _group_column(X, type(self).__name__)
+        sample_weight = validated_sample_weight(groups.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
             self.forgetting, estimator=type(self).__name__, uniform_only=True
         )
         rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+        for group, arr, weights in groupby_array(groups, y, sample_weight, by=groups):
             key = group[0].item()
 
             # The update is computed by stacking the prior with the weighted data
@@ -753,9 +752,8 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=False, ensure_2d=True)
-
-        shape_params = np.vstack(list(self.coef_[x.item()] for x in X_pred))
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        shape_params = np.vstack([self.coef_[k] for k in keys])
         return shape_params[:, 0] / shape_params[:, 1]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
@@ -790,7 +788,8 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        shape_params = list(self.coef_[x.item()] for x in X)
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        shape_params = [self.coef_[k] for k in keys]
 
         rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
 
@@ -841,7 +840,10 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         if not hasattr(self, "coef_"):
             self._initialize_prior()
         rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
         )
         tick_groups(self.coef_, rule, steps=steps, prior=self.prior_)
 
@@ -1804,12 +1806,15 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         --------
         partial_fit : Update the model with new observations.
         """
+        rule = resolve_tick(
+            forgetting,
+            decay_rate=decay_rate,
+            default=self._default_tick_rule,
+            steps=steps,
+        )
         # If the model has not been fit, there is no prior to decay
         if not hasattr(self, "coef_"):
             return
-        rule = resolve_tick(
-            forgetting, decay_rate=decay_rate, default=self._default_tick_rule
-        )
         self._apply_tick(rule, steps)
 
     # ---- sampling mechanics ----------------------------------------------
@@ -2241,11 +2246,11 @@ scipy.sparse.csc_array
     Sampling from the marginal posterior predictive (multivariate t):
 
     >>> est.sample(X[[0]], size=5)
-    array([[15.01030526],
-           [14.64281737],
-           [15.21457505],
-           [14.1703107 ],
-           [14.57089036]])
+    array([[14.53043263],
+           [15.06749699],
+           [13.79029792],
+           [14.31187714],
+           [14.0036591 ]])
     """
 
     def __init__(
@@ -2333,16 +2338,7 @@ scipy.sparse.csc_array
 
         assert X.shape is not None  # for the type checker
 
-        # Handle sample weights
-        if sample_weight is None:
-            sample_weight = np.ones(X.shape[0], dtype=np.float64)
-        else:
-            sample_weight = np.asarray(sample_weight, dtype=np.float64)
-            if sample_weight.shape[0] != X.shape[0]:
-                raise ValueError(
-                    f"sample_weight.shape[0]={sample_weight.shape[0]} should be "
-                    f"equal to X.shape[0]={X.shape[0]}"
-                )
+        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
 
         prior, prior_decay, effective_weights, floor = self._forget_batch(
             X, y, sample_weight
@@ -2727,7 +2723,7 @@ scipy.sparse.csc_array
     >>> model.fit(X, y_counts)
     BayesianGLM(link='log')
     >>> model.predict(X)  # Returns expected counts
-    array([1.72636481, 2.98033545, 5.14514623, 8.88239939])
+    array([1.66212174, 2.76264868, 4.59185842, 7.6322277 ])
 
     Poisson rate modeling with varying exposure (e.g., different observation
     periods). For Poisson with log link, fitting the rate ``y / exposure``
@@ -2740,7 +2736,7 @@ scipy.sparse.csc_array
     >>> model.fit(X, y_counts / exposure, sample_weight=exposure)
     BayesianGLM(link='log')
     >>> model.predict(X) * exposure  # Scale predicted rates by exposure
-    array([ 1.32755877,  3.52482459, 11.69852952, 31.06097099])
+    array([ 1.32755873,  3.52482434, 11.69852826, 31.06096654])
 
     Online learning with fast single-iteration updates:
 

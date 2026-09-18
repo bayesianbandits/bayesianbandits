@@ -1619,8 +1619,8 @@ class TestEBGammaRegressor:
             loaded.predict(X[:5]),
         )
 
-    def test_single_em_step_matches_hand_computation(self):
-        """One EM iteration on a 2-group example matches hand-derived values.
+    def test_single_em_step_solves_both_m_step_equations(self):
+        """One EM iteration on a 2-group example satisfies the Gamma MLE.
 
         Prior: Gamma(alpha=2, beta=1) (rate parameterization).
         Group 1: count=3, exposure=2 -> posterior [5, 3].
@@ -1631,11 +1631,15 @@ class TestEBGammaRegressor:
             E[lambda_2] = (1+2)/(1+1) = 3/2
             E[log lambda_1] = psi(5) - log(3)
             E[log lambda_2] = psi(3) - log(2)
-
-        M-step (beta first, then alpha via Newton):
             mean_E_lambda = (5/3 + 3/2) / 2 = 19/12
-            beta_new = alpha_old / mean_E_lambda = 2 / (19/12) = 24/19
-            alpha_new = 3.705... (5 Newton iterations converged)
+
+        The M-step is the Gamma MLE at those expected statistics, which
+        is both ``alpha / beta == mean_E_lambda`` and
+        ``log alpha - psi(alpha) == log mean_E_lambda - mean_E_log``.
+        The second is the first with ``beta = alpha / mean_E_lambda``
+        substituted in, so the pair only solves either equation when the
+        rate is built from the shape the Newton step just produced --
+        not from the shape it started at.
         """
         from scipy.special import digamma
 
@@ -1647,27 +1651,60 @@ class TestEBGammaRegressor:
             "g2": np.array([3.0, 2.0]),
         }
 
-        result, _, _ = negbin_update_gamma_poisson(posterior_params, prior, n_iter=1)
+        alpha_new, beta_new = negbin_update_gamma_poisson(
+            posterior_params, prior, n_iter=1
+        )[0]
 
-        # Beta: closed-form given old alpha
-        # mean_E_lambda = ((3+2)/(2+1) + (1+2)/(1+1)) / 2 = 19/12
-        expected_beta = 2.0 / (19.0 / 12.0)  # = 24/19
-        np.testing.assert_allclose(result[1], expected_beta, atol=1e-14)
+        mean_E_lambda = 19.0 / 12.0
+        np.testing.assert_allclose(alpha_new / beta_new, mean_E_lambda, rtol=1e-12)
 
-        # Alpha: verify E-step feeds correct target into Newton
-        E_log_lambda = np.array(
-            [
-                float(digamma(5)) - np.log(3),
-                float(digamma(3)) - np.log(2),
-            ]
+        mean_E_log_lambda = np.mean(
+            [float(digamma(5)) - np.log(3), float(digamma(3)) - np.log(2)]
         )
-        mean_E_log_lambda = E_log_lambda.mean()
-        target = np.log(19.0 / 12.0) - mean_E_log_lambda
-        # At convergence: log(alpha) - psi(alpha) = target
-        residual = abs(np.log(result[0]) - float(digamma(result[0])) - target)
+        target = np.log(mean_E_lambda) - mean_E_log_lambda
+        residual = abs(np.log(alpha_new) - float(digamma(alpha_new)) - target)
         assert residual < 1e-10, (
-            f"Newton did not converge: log(a)-psi(a)={np.log(result[0]) - float(digamma(result[0])):.10f}, "
+            "Newton did not converge: "
+            f"log(a)-psi(a)={np.log(alpha_new) - float(digamma(alpha_new)):.10f}, "
             f"target={target:.10f}, residual={residual:.2e}"
+        )
+
+    def test_a_homogeneous_pool_tunes_the_prior_to_the_pooled_rate(self):
+        """Groups that agree drive the shape off to infinity along the
+        likelihood ridge, and the prior mean has to walk to the pooled
+        rate while it does. Taking the rate from the previous shape
+        scaled the mean by the shape's growth on every iteration, so it
+        settled near twice the pooled rate and the predictions -- which
+        a shape that large dominates -- went with it."""
+        from bayesianbandits._empirical_bayes import negbin_update_gamma_poisson
+
+        counts = np.array([93.0, 90.0, 87.0, 85.0, 90.0])
+        exposures = np.full(5, 30.0)
+        prior = np.array([1.0, 1.0])
+        posterior_params = {
+            g: np.array([c + prior[0], n + prior[1]])
+            for g, (c, n) in enumerate(zip(counts, exposures))
+        }
+        pooled = counts.sum() / exposures.sum()
+
+        for n_iter in (10, 200):
+            alpha, beta = negbin_update_gamma_poisson(
+                posterior_params, prior, n_iter=n_iter
+            )[0]
+            assert alpha / beta == pytest.approx(pooled, rel=2e-3)
+
+    def test_a_homogeneous_pool_predicts_the_pooled_rate(self):
+        """The same thing end to end: Poisson(3) over five groups."""
+        rng = np.random.default_rng(42)
+        X = np.repeat(np.arange(1, 6), 30).reshape(-1, 1)
+        y = rng.poisson(3.0, size=150)
+
+        model = EmpiricalBayesGammaRegressor(alpha=1.0, beta=1.0, random_state=0)
+        model.fit(X, y)
+
+        assert model.alpha / model.beta == pytest.approx(y.mean(), rel=0.02)
+        np.testing.assert_allclose(
+            model.predict(np.arange(1, 6).reshape(-1, 1)), y.mean(), rtol=0.02
         )
 
 

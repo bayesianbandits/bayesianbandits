@@ -671,12 +671,16 @@ def negbin_update_gamma_poisson(
         mean_E_lambda = float(np.mean(E_lambda))
         mean_E_log_lambda = float(np.mean(E_log_lambda))
 
-        # --- M-step: beta update (closed-form given alpha) ---
-        if mean_E_lambda > _EPS:
-            beta = alpha / mean_E_lambda
-        beta = max(beta, _EPS)
-
         # --- M-step: alpha update (Minka's generalized Newton) ---
+        # The shape equation ``log α - ψ(α) = log x̄ - log-bar`` is the
+        # Gamma MLE with ``β = α / x̄`` already substituted in, so the
+        # rate that closes the M-step is the one built from *this* alpha.
+        # Taking the rate from the previous one instead scaled the prior
+        # mean by however much the shape had just grown, every iteration:
+        # harmless once alpha settles, but alpha does not settle when the
+        # groups agree -- the shape runs off to infinity along the
+        # likelihood ridge -- and there the mean crawled toward roughly
+        # twice the pooled rate rather than the pooled rate itself.
         target = math.log(max(mean_E_lambda, _EPS)) - mean_E_log_lambda
         if target > _EPS:
             for _ in range(5):
@@ -690,6 +694,11 @@ def negbin_update_gamma_poisson(
                 if inv_alpha_new > _EPS:
                     alpha = 1.0 / inv_alpha_new
                 alpha = max(alpha, _EPS)
+
+        # --- M-step: beta update (closed-form given the new alpha) ---
+        if mean_E_lambda > _EPS:
+            beta = alpha / mean_E_lambda
+        beta = max(beta, _EPS)
 
         if tol > 0:
             ev = _negbin_log_evidence(counts, exposures, alpha, beta)

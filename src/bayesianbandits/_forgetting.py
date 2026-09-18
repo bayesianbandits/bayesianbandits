@@ -38,7 +38,9 @@ The caller then does::
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, NamedTuple, Optional, Union, cast
 
 import numpy as np
@@ -298,6 +300,21 @@ def _sift_downdate_sparse(
     return precision + correction
 
 
+def _checked_rate(rate: Any, cls: str) -> None:
+    """Raise unless ``rate`` is a forgetting factor in ``(0, 1]``.
+
+    Outside that interval the rule is not forgetting: ``rate > 1``
+    sharpens the posterior on every step, without bound, and ``rate <= 0``
+    or a NaN drives the precision to something that is not a covariance
+    at all. Neither raised before it had already been written into the
+    posterior, where the only symptom was a later factorization failing
+    or a coefficient coming back NaN.
+    """
+    value = float(rate) if isinstance(rate, Real) else math.nan
+    if not (math.isfinite(value) and 0.0 < value <= 1.0):
+        raise ValueError(f"{cls} rate must be in (0, 1], got {rate!r}.")
+
+
 @dataclass(frozen=True)
 class ExponentialForgetting:
     """Uniform scalar decay: ``R_bar = rate * R``.
@@ -314,6 +331,9 @@ class ExponentialForgetting:
     """
 
     rate: float
+
+    def __post_init__(self) -> None:
+        _checked_rate(self.rate, "ExponentialForgetting")
 
     def tick(
         self, precision: ArrayType, *, alpha: Optional[float], steps: float = 1
@@ -358,6 +378,16 @@ class StabilizedForgetting:
 
     rate: float
     alpha: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        _checked_rate(self.rate, "StabilizedForgetting")
+        if self.alpha is not None and not (
+            np.isfinite(self.alpha) and self.alpha > 0.0
+        ):
+            raise ValueError(
+                "StabilizedForgetting alpha is the prior precision it floors "
+                f"at and must be positive, got {self.alpha!r}."
+            )
 
     def floor(self, alpha: Any) -> Any:
         """The prior precision this rule floors at, given the estimator's;
@@ -440,6 +470,13 @@ class SiftForgetting:
 
     rate: float
     eps: float = 1e-10
+
+    def __post_init__(self) -> None:
+        _checked_rate(self.rate, "SiftForgetting")
+        if not np.isfinite(self.eps) or self.eps < 0.0:
+            raise ValueError(
+                f"SiftForgetting eps must be a non-negative threshold, got {self.eps!r}."
+            )
 
     def update(
         self,
@@ -543,6 +580,9 @@ class FeatureWiseForgetting:
 
     rate: float
 
+    def __post_init__(self) -> None:
+        _checked_rate(self.rate, "FeatureWiseForgetting")
+
     def update(
         self,
         precision: ArrayType,
@@ -584,10 +624,27 @@ DIRECTIONAL_RULES = (FeatureWiseForgetting, SiftForgetting)
 
 
 def resolve_tick(
-    forgetting: Any, *, decay_rate: Optional[float], default: type
+    forgetting: Any, *, decay_rate: Optional[float], default: type, steps: Any = 1
 ) -> UniformRule:
     """The rule an estimator's ``decay`` ticks with: ``forgetting`` itself,
-    or ``default`` built from ``decay_rate``."""
+    or ``default`` built from ``decay_rate``, having checked ``steps``.
+
+    What ``forgetting`` *is* is settled before whether it clashes with
+    ``decay_rate``: ``decay`` used to take a context array first, and
+    ``decay(X, decay_rate=...)`` reporting that a rule and a rate were
+    both given names neither of the two things actually wrong with it.
+
+    ``steps`` is a count of ticks and only ever reaches the rules as
+    ``rate ** steps``, so a negative one sharpens the posterior rather
+    than widening it, without bound, and a NaN or an infinity hands back
+    a precision that is NaN or zero. Each of those used to land in the
+    posterior in silence, and the first sign of it was a draw coming
+    back non-finite.
+    """
+    if not np.isfinite(steps) or steps < 0:
+        raise ValueError(
+            f"decay() steps must be finite and non-negative, got {steps!r}."
+        )
     if forgetting is None:
         if decay_rate is None:
             raise TypeError(
@@ -595,11 +652,6 @@ def resolve_tick(
                 "StabilizedForgetting(0.95), or decay_rate=."
             )
         return default(decay_rate)
-    if decay_rate is not None:
-        raise TypeError(
-            "Pass either a forgetting rule or decay_rate, not both; the rule "
-            "carries its own rate."
-        )
     if isinstance(forgetting, DIRECTIONAL_RULES):
         raise TypeError(
             f"{type(forgetting).__name__} forgets along a batch, so it "
@@ -608,7 +660,12 @@ def resolve_tick(
     if not isinstance(forgetting, UNIFORM_RULES):
         raise TypeError(
             "decay() takes a forgetting rule such as ExponentialForgetting(rate) "
-            f"or decay_rate=..., not {forgetting!r}."
+            f"or decay_rate=..., not a {type(forgetting).__name__}."
+        )
+    if decay_rate is not None:
+        raise TypeError(
+            "Pass either a forgetting rule or decay_rate, not both; the rule "
+            "carries its own rate."
         )
     return forgetting
 

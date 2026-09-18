@@ -94,8 +94,11 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
     Parameters
     ----------
     gamma : float, default=0.0
-        Exploration rate for forced exploration. Each arm pulled with probability
-        at least γ/K when gamma > 0. Default is 0 (no forced exploration).
+        Exploration rate for forced exploration, in [0, 1]. The selection
+        distribution is the exponential weights mixed with the uniform at
+        this weight, so each arm is pulled with probability at least γ/K
+        when gamma > 0, and gamma=1 is uniform. Default is 0 (no forced
+        exploration).
     eta : float, default=1.0
         Temperature for exponential weights. Higher values create sharper
         distinctions between arms. Unlike standard EXP3, doesn't need scaling
@@ -206,8 +209,14 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         ix_gamma: Union[float, None] = None,
         samples: int = 100,
     ):
-        if gamma < 0:
-            raise ValueError("gamma must be non-negative")
+        # gamma mixes the exponential weights toward uniform, so it is a
+        # weight in [0, 1]. Past 1 the mixture runs backwards -- at
+        # gamma=1.5 over three arms, an arm scoring +3 was played 2.7% of
+        # the time and one scoring -3 was played 49% -- and it only
+        # becomes an error, raised by numpy and naming no parameter, once
+        # a probability actually goes negative.
+        if not 0.0 <= gamma <= 1.0:
+            raise ValueError(f"gamma must be in [0, 1], got {gamma!r}")
         if eta <= 0:
             raise ValueError("eta must be positive")
         if ix_gamma is not None and ix_gamma < 0:

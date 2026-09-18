@@ -337,6 +337,15 @@ class TestLegacyPickles:
         est = EmpiricalBayesNormalRegressor().fit(X, y)
         assert self._relabel(est, 0.9).forgetting == StabilizedForgetting(0.9)
 
+    @pytest.mark.parametrize("rate", [0.0, 1.5, -0.5, float("nan")])
+    def test_a_rate_that_was_never_a_forgetting_factor_is_refused(self, rate):
+        """A pickle carrying one raises on load rather than restoring a
+        model whose next fit comes back NaN."""
+        X, y = _data()
+        est = NormalRegressor(alpha=1.0, beta=1.0).fit(X, y)
+        with pytest.raises(ValueError, match=r"rate must be in \(0, 1\]"):
+            self._relabel(est, rate)
+
     def test_grouped_rate_converts_too(self):
         clf = DirichletClassifier({0: 1.0, 1: 1.0}).fit(np.array([[1]]), np.array([0]))
         assert self._relabel(clf, 0.8).forgetting == ExponentialForgetting(0.8)

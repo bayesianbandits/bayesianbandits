@@ -693,5 +693,18 @@ def posterior_identity(learner: Any) -> Any:
     learner, so two pipelines wrapping one estimator share a posterior
     even though the pipeline objects differ. Comparing this identity
     catches that, where comparing the learners themselves would not.
+
+    A pipeline is itself a learner, so the delegation nests, and the
+    walk follows it all the way down: unwrapping a single level
+    compared two distinct inner pipelines and called arms independent
+    that in fact updated each other. ``seen`` bounds a cycle, since
+    ``learner`` is a plain attribute anyone can rebind and looping
+    forever in a validation path is worse than any answer.
     """
-    return getattr(learner, "learner", learner)
+    seen: set[int] = set()
+    while True:
+        inner = getattr(learner, "learner", learner)
+        if inner is learner or id(inner) in seen:
+            return learner
+        seen.add(id(learner))
+        learner = inner

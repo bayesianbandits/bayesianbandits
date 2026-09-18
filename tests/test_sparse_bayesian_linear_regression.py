@@ -330,3 +330,36 @@ class TestHalfSolve:
         factor = create_sparse_factor(precision, solver=solver)
         B = factor.half_solve(X.T[:, :1])
         assert B.shape == (self.D, 1)
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_half_solve_leaves_the_factor_intact(self, precision, X, solver):
+        """A half-solve must not disturb the factor it reads.
+
+        ``SuperLU`` hands back an ``L`` with unsorted column indices, and
+        the cached unit-diagonal copy is passed ``overwrite_A=True``; when
+        that copy shared index arrays with ``_L``, the in-place sort
+        permuted ``_L``'s indices and left its data where it was, so
+        every later reader -- ``trace_inv``, ``get_L_csc``, the ``Lᵀ``
+        behind ``sample_at`` -- saw a different matrix.
+        """
+        factor = create_sparse_factor(precision, solver=solver)
+        before = (factor.trace_inv(), factor.logdet(), factor.get_L_csc())
+        draws = factor.sample_at(None, 4, np.random.default_rng(0))
+
+        factor.half_solve(X.T)
+
+        assert factor.trace_inv() == pytest.approx(before[0], rel=1e-12)
+        assert factor.logdet() == pytest.approx(before[1], rel=1e-12)
+        after_L = factor.get_L_csc()
+        assert_allclose(after_L.toarray(), before[2].toarray(), rtol=0, atol=0)
+        assert_allclose(
+            factor.sample_at(None, 4, np.random.default_rng(0)), draws, rtol=0, atol=0
+        )
+
+    @pytest.mark.parametrize("solver", [SparseSolver.SUPERLU, SparseSolver.CHOLMOD])
+    def test_trace_inv_is_exact_after_a_half_solve(self, precision, X, solver):
+        """The Takahashi trace reads the same factor ``half_solve`` does."""
+        factor = create_sparse_factor(precision, solver=solver)
+        factor.half_solve(X.T)
+        want = np.trace(np.linalg.inv(precision.toarray()))
+        assert factor.trace_inv() == pytest.approx(want, rel=1e-10)

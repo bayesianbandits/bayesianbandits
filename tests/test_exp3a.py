@@ -37,10 +37,46 @@ class TestEXP3ABasics:
         assert policy.eta == 2.0
         assert policy.samples == 50
 
-    def test_gamma_less_than_zero(self):
-        """Test that gamma cannot be negative."""
-        with pytest.raises(ValueError, match="gamma must be non-negative"):
-            EXP3A(gamma=-0.1)
+    @pytest.mark.parametrize("gamma", [-0.1, 1.0001, 1.5, 3.0])
+    def test_gamma_outside_the_unit_interval(self, gamma):
+        """gamma mixes the exponential weights toward uniform, so it is a
+        weight in [0, 1].
+
+        Past 1 the mixture runs backwards: with three arms at gamma=1.5,
+        an arm scoring +3 came out at probability 0.025 and one scoring
+        -3 at 0.499, so the policy systematically played the worst arm.
+        It only became an error, raised by numpy's ``choice`` and naming
+        no parameter of this class, once the weights grew lopsided
+        enough to push a probability below zero.
+        """
+        with pytest.raises(ValueError, match=r"gamma must be in \[0, 1\]"):
+            EXP3A(gamma=gamma)
+
+    @pytest.mark.parametrize("gamma", [0.0, 0.5, 1.0])
+    def test_gamma_inside_it_is_accepted(self, gamma):
+        assert EXP3A(gamma=gamma).gamma == gamma
+
+    def test_gamma_one_is_uniform_and_zero_is_pure_weights(self):
+        """The two ends of the mixture, on rewards that separate the arms."""
+        import numpy as np
+
+        from bayesianbandits import Arm, NormalRegressor
+
+        rewards = np.array([[3.0], [0.0], [-3.0]])
+        samples = np.repeat(rewards[:, :, None], 4, axis=2)
+        arms = [Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0)) for i in range(3)]
+
+        def frequencies(gamma):
+            rng = np.random.default_rng(0)
+            policy = EXP3A(gamma=gamma, eta=1.0, samples=4)
+            counts = np.zeros(3)
+            for _ in range(4000):
+                counts[policy.select(samples, arms, rng)[0].action_token] += 1
+            return counts / 4000
+
+        np.testing.assert_allclose(frequencies(1.0), np.full(3, 1 / 3), atol=0.03)
+        best = frequencies(0.0)
+        assert best[0] > 0.9 and best[0] > best[1] > best[2]
 
     def test_eta_less_than_zero(self):
         """Test that eta cannot be negative."""

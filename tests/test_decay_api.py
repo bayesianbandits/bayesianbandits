@@ -125,6 +125,16 @@ class TestTickRules:
         with pytest.raises(TypeError, match="not both"):
             est.decay(ExponentialForgetting(0.9), decay_rate=0.9)
 
+    def test_a_context_array_is_reported_as_not_being_a_rule(self):
+        """``decay`` took a context array before this release. Passing
+        one now is a migration error, and saying a rule and a rate were
+        both given names neither of the two things wrong with it."""
+        est, X = _fit_normal(False)
+        with pytest.raises(TypeError, match="not a ndarray"):
+            est.decay(X, decay_rate=0.95)
+        with pytest.raises(TypeError, match="not a ndarray"):
+            est.decay(X)
+
     @pytest.mark.parametrize("rule", [FeatureWiseForgetting(0.9), SiftForgetting(0.9)])
     def test_directional_rules_are_refused_with_a_pointer(self, rule):
         est, _ = _fit_normal(False)
@@ -134,6 +144,22 @@ class TestTickRules:
     def test_unfitted_estimator_ignores_decay(self):
         est = NormalRegressor(alpha=1.0, beta=1.0)
         est.decay(StabilizedForgetting(0.5))
+        assert not hasattr(est, "coef_")
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: NormalRegressor(alpha=1.0, beta=1.0),
+            lambda: EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0),
+        ],
+    )
+    def test_unfitted_estimator_still_checks_the_call(self, make):
+        """Arguments are checked before the nothing-to-tick early return."""
+        est = make()
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(ExponentialForgetting(0.9), steps=-1)
+        with pytest.raises(TypeError, match="forgetting="):
+            est.decay(FeatureWiseForgetting(0.9))
         assert not hasattr(est, "coef_")
 
 
@@ -314,3 +340,47 @@ class TestBreakingChanges:
         agent.select_for_update(0).update(np.array([3.0]))
         with pytest.raises(TypeError, match="decay_rate="):
             agent.decay(0.5)
+
+
+class TestStepsValidation:
+    """``steps`` is a count of ticks, and reaches the rules only as
+    ``rate ** steps``: negative sharpens the posterior without bound,
+    non-finite hands back a precision that is NaN or zero. Each of
+    those used to land in the posterior in silence, and the first sign
+    of it was a draw coming back non-finite."""
+
+    @pytest.mark.parametrize("steps", [-1, -0.5, np.nan, np.inf, -np.inf])
+    def test_a_step_count_that_is_not_one_is_refused(self, steps):
+        est, _ = _fit_normal(False)
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(ExponentialForgetting(0.9), steps=steps)
+
+    @pytest.mark.parametrize("steps", [0, 0.5, 1, 7.25])
+    def test_a_real_step_count_is_accepted(self, steps):
+        est, _ = _fit_normal(False)
+        before = _dense(est.cov_inv_).copy()
+        est.decay(ExponentialForgetting(0.9), steps=steps)
+        after = _dense(est.cov_inv_)
+        assert np.all(np.isfinite(after))
+        if steps == 0:
+            assert_allclose(after, before, rtol=1e-12)
+        else:
+            assert np.linalg.eigvalsh(after).min() < np.linalg.eigvalsh(before).min()
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: DirichletClassifier({1: 1.0, 2: 1.0}),
+            lambda: GammaRegressor(alpha=1.0, beta=1.0),
+            lambda: EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0),
+        ],
+    )
+    def test_every_decay_checks_it(self, make):
+        """The grouped conjugate models and the empirical Bayes
+        estimators reach the same gate."""
+        est = make()
+        X = np.arange(6).reshape(-1, 1)
+        y = np.array([1, 2, 1, 2, 1, 2])
+        est.fit(X, y if not isinstance(est, EmpiricalBayesNormalRegressor) else y * 1.0)
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(decay_rate=0.9, steps=-1)

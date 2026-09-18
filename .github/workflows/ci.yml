@@ -54,7 +54,10 @@ jobs:
           uv sync --extra cholmod
 
       - name: Run tests
-        run: uv run pytest tests --cov=./ --cov-report=xml
+        # No path argument: testpaths is tests + src, and the src half is
+        # the docstring examples. Naming tests/ here left them uncollected,
+        # and four of them had drifted.
+        run: uv run pytest --cov=./ --cov-report=xml
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v3
