@@ -126,3 +126,19 @@ the non-conjugate posterior. Pass to the ``approximator`` argument.
 
    bayesianbandits.LaplaceApproximator
    bayesianbandits.RVGAApproximator
+
+Memory Accounting
+-----------------
+
+Agents, arms, learners, pipelines and precision factors each carry a
+``memory_usage`` property reporting the bytes they retain, broken down by
+part. The same walk is available as a function for anything else. Both
+return a ``MemoryUsage`` with a ``total``, an ``exact`` flag, the ``parts``
+by name, and a ``note`` on any number that is not obvious. Buffers
+reachable more than once are charged once, so a total is what dropping the
+object would free.
+
+.. autosummary::
+   :toctree: generated/
+
+   bayesianbandits.memory_usage
