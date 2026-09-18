@@ -78,6 +78,11 @@ def validated_sample_weight(
     if sample_weight is None:
         return np.ones(n_samples, dtype=np.float64)
     weights = np.asarray(sample_weight, dtype=np.float64)
+    if weights.ndim != 1:
+        raise ValueError(
+            f"sample_weight must be 1-D of length n_samples={n_samples}; "
+            f"got shape {weights.shape}."
+        )
     if weights.shape[0] != n_samples:
         raise ValueError(
             f"sample_weight.shape[0]={weights.shape[0]} should be "

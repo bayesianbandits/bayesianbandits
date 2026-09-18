@@ -1009,6 +1009,14 @@ def test_grouped_models_refuse_a_weight_that_is_not_a_count(make, target, bad) -
         make().fit(X, target, sample_weight=weights)
 
 
+@pytest.mark.parametrize("weights", [1.0, np.array([[1.0], [1.0]]), np.ones((2, 2))])
+def test_sample_weight_must_be_one_dimensional(weights) -> None:
+    """A scalar or a column vector is refused by shape, not by accident."""
+    X = np.array([1, 1]).reshape(-1, 1)
+    with pytest.raises(ValueError, match="must be 1-D"):
+        GammaRegressor(alpha=1, beta=1).fit(X, np.array([5, 5]), sample_weight=weights)
+
+
 def test_gamma_regressor_weight_dtype_conversion() -> None:
     """Test that integer weights are properly converted to float."""
     clf = GammaRegressor(alpha=1, beta=1, random_state=0)
