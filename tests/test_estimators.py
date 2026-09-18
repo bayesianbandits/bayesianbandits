@@ -1064,7 +1064,7 @@ class TestGroupedModelsAwayFromFit:
     ]
 
     @pytest.mark.parametrize("make, y", MODELS)
-    @pytest.mark.parametrize("call", ["fit", "predict", "sample"])
+    @pytest.mark.parametrize("call", ["fit", "partial_fit", "predict", "sample"])
     def test_a_wider_design_is_refused_the_same_way_everywhere(self, make, y, call):
         """These models key a posterior on ``X[:, 0]``.
 
@@ -1077,13 +1077,27 @@ class TestGroupedModelsAwayFromFit:
         """
         X = np.array([[1, 0], [2, 1]])
         model = make()
+        if call == "partial_fit":
+            model.fit(X[:, :1], y)
         with pytest.raises(NotImplementedError, match="Only one feature supported"):
             if call == "fit":
                 model.fit(X, y)
+            elif call == "partial_fit":
+                model.partial_fit(X, y)
             elif call == "predict":
                 model.predict(X)
             else:
                 model.sample(X, size=2)
+
+    @pytest.mark.parametrize("make, y", MODELS)
+    def test_a_flat_design_gets_the_reshape_hint_everywhere(self, make, y):
+        """``sample`` gives the same reshape hint ``predict`` does."""
+        X = np.array([1, 2])
+        model = make()
+        with pytest.raises(ValueError, match=r"reshape\(-1, 1\)"):
+            model.predict(X)
+        with pytest.raises(ValueError, match=r"reshape\(-1, 1\)"):
+            model.sample(X, size=2)
 
     @pytest.mark.parametrize("make, y", MODELS)
     def test_the_agent_gets_that_message_too(self, make, y):

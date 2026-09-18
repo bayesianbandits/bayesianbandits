@@ -8,6 +8,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    List,
     Optional,
     TypeVar,
     Union,
@@ -81,25 +82,16 @@ ReturnType = TypeVar("ReturnType")
 SelfType = TypeVar("SelfType", bound="NormalRegressor | BayesianGLM")
 
 
-def _one_group_column(X: NDArray[Any], estimator: str) -> NDArray[Any]:
-    """``X`` as a 2-D array, refusing anything but a single group column.
-
-    The grouped conjugate models key a posterior on ``X[:, 0]``, which
-    is why ``fit`` refuses a wider design. Every other entry point read
-    the column by calling ``.item()`` on each row, so a wider one
-    reached numpy instead and came back as "can only convert an array
-    of size 1 to a Python scalar" -- from inside a generator, naming
-    neither the estimator nor the shape. A first ``pull`` samples
-    before anything is fitted, so that was the message for putting one
-    of these behind an arm featurizer.
-    """
-    X = np.atleast_2d(X)
-    if X.shape[1] > 1:
+def _group_column(X: NDArray[Any], estimator: str) -> NDArray[Any]:
+    """The one column the grouped conjugate models key a posterior on;
+    every entry point reads its keys through here."""
+    X = check_array(X, copy=False, ensure_2d=True)
+    if X.shape[1] != 1:
         raise NotImplementedError(
             f"Only one feature supported: {estimator} keys a posterior on "
             f"X[:, 0], and this X has {X.shape[1]} columns."
         )
-    return X
+    return X[:, 0]
 
 
 class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
@@ -249,8 +241,6 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
 
         self.n_features_ = X.shape[1]
 
-        _one_group_column(X, type(self).__name__)
-
         self._fit_helper(X, y_encoded, sample_weight)
 
         return self
@@ -319,14 +309,15 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
+        groups = _group_column(X, type(self).__name__)
+        sample_weight = validated_sample_weight(groups.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
             self.forgetting, estimator=type(self).__name__, uniform_only=True
         )
         rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+        for group, arr, weights in groupby_array(groups, y, sample_weight, by=groups):
             key = group[0].item()
 
             # Apply sample weights to the observations
@@ -372,10 +363,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=False, ensure_2d=True)
-
-        X_pred = _one_group_column(X_pred, type(self).__name__)
-        alphas = np.vstack(list(self.known_alphas_[x.item()] for x in X_pred))
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        alphas = np.vstack([self.known_alphas_[k] for k in keys])
         return alphas / alphas.sum(axis=1)[:, np.newaxis]
 
     def predict(self, X: NDArray[Any]) -> NDArray[Any]:
@@ -440,8 +429,8 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X = _one_group_column(X, type(self).__name__)
-        alphas = list(self.known_alphas_[x.item()] for x in X)
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        alphas = [self.known_alphas_[k] for k in keys]
         return np.stack(
             list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
         ).transpose(1, 0, 2)
@@ -648,8 +637,6 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
 
         self.n_features_ = X.shape[1]
 
-        _one_group_column(X, type(self).__name__)
-
         self._fit_helper(X, y_encoded, sample_weight)
 
         return self
@@ -670,14 +657,15 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
     def _fit_helper(
         self, X: NDArray[Any], y: NDArray[Any], sample_weight: Optional[NDArray[Any]]
     ):
-        sample_weight = validated_sample_weight(X.shape[0], sample_weight)
+        groups = _group_column(X, type(self).__name__)
+        sample_weight = validated_sample_weight(groups.shape[0], sample_weight)
 
         # Group X values, y, and sample weights together
         check_update_rule(
             self.forgetting, estimator=type(self).__name__, uniform_only=True
         )
         rate, floor = uniform_batch(self.forgetting, 1, alpha=self.prior_)
-        for group, arr, weights in groupby_array(X[:, 0], y, sample_weight, by=X[:, 0]):
+        for group, arr, weights in groupby_array(groups, y, sample_weight, by=groups):
             key = group[0].item()
 
             # The update is computed by stacking the prior with the weighted data
@@ -764,10 +752,8 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X_pred = check_array(X, copy=False, ensure_2d=True)
-
-        X_pred = _one_group_column(X_pred, type(self).__name__)
-        shape_params = np.vstack(list(self.coef_[x.item()] for x in X_pred))
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        shape_params = np.vstack([self.coef_[k] for k in keys])
         return shape_params[:, 0] / shape_params[:, 1]
 
     def sample(self, X: NDArray[Any], size: int = 1) -> NDArray[np.float64]:
@@ -802,8 +788,8 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         except NotFittedError:
             self._initialize_prior()
 
-        X = _one_group_column(X, type(self).__name__)
-        shape_params = list(self.coef_[x.item()] for x in X)
+        keys: List[Any] = _group_column(X, type(self).__name__).tolist()
+        shape_params = [self.coef_[k] for k in keys]
 
         rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
 
