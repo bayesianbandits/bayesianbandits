@@ -146,6 +146,22 @@ class TestTickRules:
         est.decay(StabilizedForgetting(0.5))
         assert not hasattr(est, "coef_")
 
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: NormalRegressor(alpha=1.0, beta=1.0),
+            lambda: EmpiricalBayesNormalRegressor(alpha=1.0, beta=1.0),
+        ],
+    )
+    def test_unfitted_estimator_still_checks_the_call(self, make):
+        """Arguments are checked before the nothing-to-tick early return."""
+        est = make()
+        with pytest.raises(ValueError, match="finite and non-negative"):
+            est.decay(ExponentialForgetting(0.9), steps=-1)
+        with pytest.raises(TypeError, match="forgetting="):
+            est.decay(FeatureWiseForgetting(0.9))
+        assert not hasattr(est, "coef_")
+
 
 class TestNormalInverseGamma:
     def test_stabilized_needs_a_scalar_prior_precision(self):

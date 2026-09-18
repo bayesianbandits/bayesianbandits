@@ -237,14 +237,14 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         --------
         partial_fit : Update the model with new observations.
         """
-        if not hasattr(self, "coef_"):
-            return
         rule = resolve_tick(
             forgetting,
             decay_rate=decay_rate,
             default=self._default_tick_rule,
             steps=steps,
         )
+        if not hasattr(self, "coef_"):
+            return
         gamma = rule.rate**steps
         if hasattr(self, "_prior_scalar"):
             if isinstance(rule, StabilizedForgetting):

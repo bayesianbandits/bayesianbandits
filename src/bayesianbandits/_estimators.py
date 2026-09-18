@@ -1820,15 +1820,15 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         --------
         partial_fit : Update the model with new observations.
         """
-        # If the model has not been fit, there is no prior to decay
-        if not hasattr(self, "coef_"):
-            return
         rule = resolve_tick(
             forgetting,
             decay_rate=decay_rate,
             default=self._default_tick_rule,
             steps=steps,
         )
+        # If the model has not been fit, there is no prior to decay
+        if not hasattr(self, "coef_"):
+            return
         self._apply_tick(rule, steps)
 
     # ---- sampling mechanics ----------------------------------------------
