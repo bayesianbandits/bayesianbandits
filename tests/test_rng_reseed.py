@@ -1,6 +1,10 @@
 """Tests for rng property with setter for reseeding after deserialization."""
 
+import pickle
+
 import numpy as np
+import pytest
+from sklearn.preprocessing import FunctionTransformer
 
 from bayesianbandits import (
     Agent,
@@ -11,9 +15,12 @@ from bayesianbandits import (
 )
 from bayesianbandits.api import LipschitzContextualAgent
 from bayesianbandits.featurizers._arm_column import ArmColumnFeaturizer
+from bayesianbandits.pipelines import LearnerPipeline
 from bayesianbandits.pipelines._agent import (
     AgentPipeline,
 )
+
+X = np.ones((1, 2))
 
 
 def _make_contextual_agent(seed=None):
@@ -131,6 +138,65 @@ class TestReseedProducesNewState:
         # All arm learners should share the new rng
         for arm in agent.arms:
             assert arm.learner.random_state is agent.rng
+
+
+def _trained():
+    agent = _make_contextual_agent(seed=0)
+    for arm in agent.arms:
+        agent.select_for_update(arm.action_token).update(X, np.array([1.0]))
+    return agent
+
+
+def _sampled_only():
+    agent = _make_contextual_agent(seed=0)
+    agent.pull(X)
+    return agent
+
+
+def _nested_pipeline():
+    def learner():
+        inner = LearnerPipeline(
+            [("a", FunctionTransformer())], NormalRegressor(alpha=1.0, beta=1.0)
+        )
+        return LearnerPipeline([("b", FunctionTransformer())], inner)
+
+    arms = [Arm(i, learner=learner()) for i in range(3)]
+    agent = ContextualAgent(arms, ThompsonSampling(), random_seed=0)
+    agent.pull(X)
+    return agent
+
+
+def _added_trained_arm():
+    agent = _make_contextual_agent(seed=0)
+    learner = NormalRegressor(alpha=1.0, beta=1.0).fit(X, np.array([1.0]))
+    agent.add_arm(Arm(99, learner=learner))
+    return agent
+
+
+def _lipschitz():
+    agent = _make_lipschitz_agent(seed=0)
+    agent.pull(X)
+    return agent
+
+
+def _draw(agent):
+    if isinstance(agent, LipschitzContextualAgent):
+        return agent.learner.sample(np.ones((1, 3)), size=5)
+    return agent.arms[-1].sample(X, size=5)
+
+
+@pytest.mark.parametrize(
+    "make_agent",
+    [_trained, _sampled_only, _nested_pipeline, _added_trained_arm, _lipschitz],
+)
+def test_reseed_after_load_changes_draws(make_agent):
+    blob = pickle.dumps(make_agent())
+    a, b, c = (pickle.loads(blob) for _ in range(3))
+    a.rng, b.rng, c.rng = 111, 222, 111
+    da, db, dc = _draw(a), _draw(b), _draw(c)
+
+    assert not np.array_equal(da, db)
+    assert np.array_equal(da, dc)
 
 
 class _NoopTransformer:  # pragma: no cover

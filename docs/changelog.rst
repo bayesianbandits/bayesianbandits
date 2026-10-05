@@ -1,6 +1,19 @@
 Changelog
 =========
 
+Unreleased
+----------
+
+**Bug fixes**
+
+- Assigning ``agent.rng`` now reseeds every arm learner whose prior is
+  already initialized, including one wrapped in a ``LearnerPipeline``, one
+  passed to ``add_arm``, and the shared learner of
+  ``LipschitzContextualAgent``. A ``Generator`` passed as an estimator's
+  ``random_state`` is the generator it samples from; ``random_state_`` now
+  only holds one derived from an ``int`` or ``None`` seed. Copies of a
+  pickled agent reseeded differently replayed identical draws (#308)
+
 1.5.0rc1 (2026-09-18)
 ---------------------
 

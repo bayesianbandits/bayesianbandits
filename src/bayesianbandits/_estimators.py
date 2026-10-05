@@ -94,7 +94,24 @@ def _group_column(X: NDArray[Any], estimator: str) -> NDArray[Any]:
     return X[:, 0]
 
 
-class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
+class _LiveRngMixin:
+    """The generator draws come from. A ``Generator`` passed as
+    ``random_state`` is used directly, so assigning one reseeds a fitted
+    estimator; an ``int`` or ``None`` seeds ``random_state_`` once."""
+
+    if TYPE_CHECKING:
+        random_state: Union[int, np.random.Generator, None]
+        random_state_: Any
+
+    @property
+    def _rng(self) -> np.random.Generator:
+        rs = self.random_state
+        return rs if isinstance(rs, np.random.Generator) else self.random_state_
+
+
+class DirichletClassifier(
+    _LiveRngMixin, MemoryUsageMixin, BaseEstimator, ClassifierMixin
+):
     """
     Intercept-only Dirichlet-Multinomial classifier.
 
@@ -432,7 +449,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         keys: List[Any] = _group_column(X, type(self).__name__).tolist()
         alphas = [self.known_alphas_[k] for k in keys]
         return np.stack(
-            list(dirichlet.rvs(alpha, size, self.random_state_) for alpha in alphas),
+            list(dirichlet.rvs(alpha, size, self._rng) for alpha in alphas),
         ).transpose(1, 0, 2)
 
     _default_tick_rule: type = ExponentialForgetting
@@ -484,7 +501,7 @@ class DirichletClassifier(MemoryUsageMixin, BaseEstimator, ClassifierMixin):
         tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
 
-class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
+class GammaRegressor(_LiveRngMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin):
     """
     Intercept-only Gamma-Poisson conjugate regression model.
 
@@ -791,7 +808,7 @@ class GammaRegressor(MemoryUsageMixin, BaseEstimator, RegressorMixin):
         keys: List[Any] = _group_column(X, type(self).__name__).tolist()
         shape_params = [self.coef_[k] for k in keys]
 
-        rv_gen = partial(gamma.rvs, size=size, random_state=self.random_state_)
+        rv_gen = partial(gamma.rvs, size=size, random_state=self._rng)
 
         return np.stack(
             list(rv_gen(alpha, scale=1 / beta) for alpha, beta in shape_params),
@@ -1258,7 +1275,7 @@ def _blocked_colorize(
     return out.reshape(n_blocks * k, size).T
 
 
-class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
+class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
     """A Gaussian posterior over weights, its cached precision factor, and
     the prediction and sampling routes built on them.
 
@@ -1704,7 +1721,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         predict : Point predictions using the posterior mean.
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
-        z = standard_normal_f(self.random_state_, size, mean.shape[0])
+        z = standard_normal_f(self._rng, size, mean.shape[0])
         return self._inverse_link(marginal_draw(mean, sd, z))
 
     def sample_reward_space(
@@ -1769,7 +1786,7 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         """
         X_sample = self._validated_for_sampling(X)
         mean, draw = self._predictive_cholesky(X_sample, block_size)
-        return self._inverse_link(draw.joint(size, self.random_state_, mean))
+        return self._inverse_link(draw.joint(size, self._rng, mean))
 
     @_invalidate_cached_properties
     def decay(
@@ -1836,12 +1853,8 @@ class _BayesianLinearModel(MemoryUsageMixin, BaseEstimator):
         if draw is not None:
             scale = None if divisor is None else 1.0 / divisor
             mean = _predictive_mean(X, self.coef_)
-            return cast(
-                NDArray[np.float64], draw.joint(size, self.random_state_, mean, scale)
-            )
-        return _weight_space_rows(
-            factor, X, self.coef_, size, self.random_state_, divisor
-        )
+            return cast(NDArray[np.float64], draw.joint(size, self._rng, mean, scale))
+        return _weight_space_rows(factor, X, self.coef_, size, self._rng, divisor)
 
     def _predictive_cholesky(
         self, X: Union[NDArray[Any], csc_array], block_size: Optional[int] = None
@@ -2473,7 +2486,7 @@ scipy.sparse.csc_array
         # a chi-square over its degrees of freedom. The chi-square is
         # drawn first, then the normals.
         df = 2 * self.a_
-        x = self.random_state_.chisquare(df, size) / df
+        x = self._rng.chisquare(df, size) / df
         return self._joint_rows(self.shape_, X_sample, size, divisor=np.sqrt(x))
 
     def sample_marginal(
@@ -2514,11 +2527,11 @@ scipy.sparse.csc_array
         """
         mean, sd = _validated_marginal_mean_sd(self, X)
         df = 2.0 * self.a_
-        z = standard_normal_f(self.random_state_, size, mean.shape[0])
+        z = standard_normal_f(self._rng, size, mean.shape[0])
         # one chi-square per (draw, row) cell: rows must be fully
         # independent, not merely marginally exact; transposed fill for
         # the draw-contiguous layout
-        g = self.random_state_.chisquare(df, size=(mean.shape[0], size)).T
+        g = self._rng.chisquare(df, size=(mean.shape[0], size)).T
         # the (b/a) scale factor and the df/g mixing fold into one
         # per-cell scale, written over the chi-square draws nothing else
         # holds rather than through a temporary per operator
@@ -2577,11 +2590,11 @@ scipy.sparse.csc_array
         # shape scaling folded into the per-draw scale; one chi-square per
         # draw, or per (draw, block) when blocked: joint t within a block,
         # independence across blocks
-        g = self.random_state_.chisquare(
+        g = self._rng.chisquare(
             df, size=size if block_size is None else (size, mean.shape[0] // block_size)
         )
         scale = np.sqrt((self.b_ / self.a_) * df / g)
-        return draw.joint(size, self.random_state_, mean, scale)
+        return draw.joint(size, self._rng, mean, scale)
 
     def _prior_floor(self) -> Optional[float]:
         return float(cast(Any, self.lam)) if np.isscalar(self.lam) else None
