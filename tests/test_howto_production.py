@@ -138,6 +138,12 @@ def test_independent_copies_via_load():
         worker_a.rng = 111
         worker_b.rng = 222
 
+        # Different seeds give different exploration draws
+        assert not np.array_equal(
+            worker_a.arms[0].learner.sample(np.array([[1]]), size=5),
+            worker_b.arms[0].learner.sample(np.array([[1]]), size=5),
+        )
+
         # Mutating one copy doesn't affect the other
         worker_a.pull()
         worker_a.update(np.array([5.0]))
