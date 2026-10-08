@@ -57,6 +57,52 @@ This creates a fresh ``numpy.random.Generator`` and propagates it to
 all arm learners. Pass an ``int`` instead if you need reproducibility.
 
 
+Save state without pickle
+-------------------------
+
+A pickle restores classes by name, so a checkpoint can break when the
+library is refactored, and loading one runs whatever code it names.
+``state_dict`` returns only what the agent learned -- each arm's
+posterior and tuned hyperparameters, the arm queued for update, and the
+generator state -- as dicts, lists, numpy arrays and Python scalars.
+Build the agent in code as before and load the state into it:
+
+.. code-block:: python
+
+   import numpy as np
+   from bayesianbandits import Agent, Arm, GammaRegressor, ThompsonSampling
+
+   def make_agent():
+       arms = [
+           Arm("ad_a", learner=GammaRegressor(alpha=1, beta=1)),
+           Arm("ad_b", learner=GammaRegressor(alpha=1, beta=1)),
+       ]
+       return Agent(arms, ThompsonSampling())
+
+   agent = make_agent()
+   agent.pull()
+   agent.update(np.array([1.0]))
+
+   state = agent.state_dict()  # store with any codec for plain data
+   loaded = make_agent()
+   loaded.load_state_dict(state)
+
+   # The loaded agent continues the original's random stream
+   assert loaded.pull() == agent.pull()
+
+Learner states are keyed by action token, and loading raises if the
+tokens differ from the agent's arms. A ``LipschitzContextualAgent``
+stores its shared learner once. Every estimator and ``LearnerPipeline``
+has the same two methods. Each state carries a ``version``, and loading
+rejects a state of another version instead of misreading it.
+
+The generator continues where it left off, so reseed with
+``loaded.rng = None`` for copies that should explore differently.
+Factorizations are rebuilt rather than stored, so after a ``decay``, or
+a sparse update without ``scikit-sparse``, draws can differ from the
+original's in the last bit, as after unpickling.
+
+
 Add and remove arms at runtime
 -------------------------------
 

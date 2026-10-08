@@ -59,6 +59,7 @@ from typing import (
     Dict,
     Generic,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -91,6 +92,13 @@ from ._arm_featurizer import ArmFeaturizer
 from ._blas_helpers import draw_contiguous
 from ._draw_kind import DrawKind
 from ._memory import MemoryUsageMixin
+from ._state import (
+    STATE_VERSION,
+    check_state,
+    check_tokens,
+    stage_generator,
+    stage_load,
+)
 from .policies import (  # noqa: F401
     EpsilonGreedy,
     InformationDirectedSampling,
@@ -182,6 +190,28 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     ]: ...
 
 
+def _queued_state(queued: Arm[Any, Any], arms: Sequence[Arm[Any, Any]]) -> List[Any]:
+    """The arm queued for update as ``[token]``, or ``[]`` if
+    ``remove_arm`` took it out. A list tells an arm whose token is
+    ``None`` from no arm, and, unlike a position, survives a codec that
+    reorders the arms."""
+    return [queued.action_token] if any(arm is queued for arm in arms) else []
+
+
+def _queued_token(value: Any, tokens: Sequence[Any], owner: str) -> List[Any]:
+    """The queued token of a state, as :func:`_queued_state` wrote it."""
+    if not isinstance(value, (list, tuple)) or len(value) > 1:
+        raise TypeError(
+            f"{owner} state 'arm_to_update' must be [token] or [], not {value!r}."
+        )
+    if value and value[0] not in tokens:
+        raise ValueError(
+            f"{owner} state queues arm {value[0]!r} for update, which is not "
+            "one of its arms."
+        )
+    return list(value)
+
+
 def _reject_shared_learner(
     arm: Arm[Any, Any], existing: Sequence[Arm[Any, Any]]
 ) -> None:
@@ -264,7 +294,10 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
 
     **Serialization.** The agent (including all arm learners) is
     pickle-compatible, making it straightforward to persist to a
-    database or message queue for use in live services.
+    database or message queue for use in live services. To persist
+    without pickle, :meth:`state_dict` returns the learned state as plain
+    data, which :meth:`load_state_dict` restores into an agent built the
+    same way.
 
     References
     ----------
@@ -550,6 +583,76 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         for arm in self.arms:
             arm.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Return the agent's learned state as plain data.
+
+        ``"arms"`` maps each arm's action token to its learner's
+        ``state_dict()``. The state also holds ``arm_to_update`` as
+        ``[token]`` (``[]`` if that arm was removed), the state of the
+        generator the policy and learners share, and a ``version``.
+        Policies, reward functions and the learners' constructor
+        arguments stay in code: build the agent the same way and call
+        :meth:`load_state_dict`.
+
+        Returns
+        -------
+        state : dict
+            Dicts, lists, numpy arrays and Python scalars only.
+
+        Raises
+        ------
+        AttributeError
+            If an arm's learner has no ``state_dict``.
+        """
+        return {
+            "version": STATE_VERSION,
+            "arms": {
+                arm.action_token: cast(Any, arm.learner).state_dict()
+                for arm in self.arms
+            },
+            "arm_to_update": _queued_state(self.arm_to_update, self.arms),
+            "rng": self.rng.bit_generator.state,
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a state from :meth:`state_dict`.
+
+        Each learner loads the state saved under its arm's token, and the
+        shared generator continues the saved stream, so the agent pulls
+        and updates as the original would. The arms must carry the same
+        tokens, in any order. Every state is checked before any is
+        written, so a rejected state leaves the agent as it was; a custom
+        learner with only ``load_state_dict`` is checked as it loads.
+        Reseed with ``agent.rng = None`` for copies that should explore
+        differently.
+
+        Parameters
+        ----------
+        state : dict
+            A state from :meth:`state_dict`.
+
+        Raises
+        ------
+        ValueError
+            If the state is of another version, its tokens differ from
+            the arms', its generator state is for another kind of bit
+            generator, or a learner rejects its state.
+        """
+        owner = type(self).__name__
+        check_state(state, ("arms", "arm_to_update", "rng"), owner)
+        arms = state["arms"]
+        if not isinstance(arms, Mapping):
+            raise TypeError(f"{owner} state 'arms' must be a dict of learner states.")
+        check_tokens(list(arms), [arm.action_token for arm in self.arms], owner)
+        queued = _queued_token(state["arm_to_update"], list(arms), owner)
+        writes = [stage_generator(self.rng, state["rng"])] + [
+            stage_load(arm.learner, arms[arm.action_token]) for arm in self.arms
+        ]
+        for write in writes:
+            write()
+        for token in queued:
+            self.select_for_update(token)
+
 
 class Agent(MemoryUsageMixin, Generic[TokenType]):
     """
@@ -826,6 +929,16 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
             Shorthand for each learner's default rule at this rate.
         """
         self._inner.decay(forgetting, decay_rate=decay_rate, steps=steps)
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Return the agent's learned state as plain data; see
+        :meth:`ContextualAgent.state_dict`."""
+        return self._inner.state_dict()
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a state from :meth:`state_dict`; see
+        :meth:`ContextualAgent.load_state_dict`."""
+        self._inner.load_state_dict(state)
 
 
 class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
@@ -1483,3 +1596,70 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             Shorthand for the learner's default rule at this rate.
         """
         self.learner.decay(forgetting, decay_rate=decay_rate, steps=steps)
+
+    def state_dict(self) -> Dict[str, Any]:
+        """Return the agent's learned state as plain data.
+
+        The arms share one learner, so its ``state_dict()`` is stored
+        once under ``"learner"``, beside the arms' action tokens under
+        ``"arms"``. The state also holds ``arm_to_update`` as ``[token]``
+        (``[]`` if that arm was removed), the state of the generator the
+        policy and learner share, and a ``version``. The policy,
+        featurizer, reward functions and the learner's constructor
+        arguments stay in code: build the agent the same way and call
+        :meth:`load_state_dict`.
+
+        Returns
+        -------
+        state : dict
+            Dicts, lists, numpy arrays and Python scalars only.
+
+        Raises
+        ------
+        AttributeError
+            If the learner has no ``state_dict``.
+        """
+        return {
+            "version": STATE_VERSION,
+            "arms": [arm.action_token for arm in self.arms],
+            "learner": cast(Any, self.learner).state_dict(),
+            "arm_to_update": _queued_state(self.arm_to_update, self.arms),
+            "rng": self.rng.bit_generator.state,
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a state from :meth:`state_dict`.
+
+        The shared learner loads the saved learner state, and the
+        generator continues the saved stream, so the agent pulls and
+        updates as the original would. The arms must carry the same
+        tokens, in any order. Both states are checked before either is
+        written, so a rejected state leaves the agent as it was. Reseed
+        with ``agent.rng = None`` for copies that should explore
+        differently.
+
+        Parameters
+        ----------
+        state : dict
+            A state from :meth:`state_dict`.
+
+        Raises
+        ------
+        ValueError
+            If the state is of another version, its tokens differ from
+            the arms', its generator state is for another kind of bit
+            generator, or the learner rejects its state.
+        """
+        owner = type(self).__name__
+        check_state(state, ("arms", "learner", "arm_to_update", "rng"), owner)
+        tokens = list(state["arms"])
+        check_tokens(tokens, [arm.action_token for arm in self.arms], owner)
+        queued = _queued_token(state["arm_to_update"], tokens, owner)
+        writes = [
+            stage_generator(self.rng, state["rng"]),
+            stage_load(self.learner, state["learner"]),
+        ]
+        for write in writes:
+            write()
+        for token in queued:
+            self.select_for_update(token)

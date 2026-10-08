@@ -150,3 +150,25 @@ def test_independent_copies_via_load():
 
         # worker_b still has original learned state
         assert worker_b.arms[0].learner.coef_[1][0] == agent.arms[0].learner.coef_[1][0]
+
+
+def test_state_dict_roundtrip():
+    """Save the learned state without pickle and load it into a new agent."""
+
+    def make_agent():
+        arms = [
+            Arm("ad_a", learner=GammaRegressor(alpha=1, beta=1)),
+            Arm("ad_b", learner=GammaRegressor(alpha=1, beta=1)),
+        ]
+        return Agent(arms, ThompsonSampling())
+
+    agent = make_agent()
+    agent.pull()
+    agent.update(np.array([1.0]))
+
+    state = agent.state_dict()
+    loaded = make_agent()
+    loaded.load_state_dict(state)
+
+    # The loaded agent continues the original's random stream
+    assert loaded.pull() == agent.pull()

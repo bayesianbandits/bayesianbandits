@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
     TypeVar,
     Union,
@@ -76,6 +77,19 @@ from ._sparse_bayesian_linear_regression import (
     create_sparse_factor,
     scale_factor,
 )
+from ._state import (
+    LearnerStateMixin,
+    load_array,
+    load_bool,
+    load_float,
+    load_int,
+    load_optional,
+    load_precision,
+    load_table,
+    precision_state,
+    set_optional,
+    table_state,
+)
 
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
@@ -110,7 +124,7 @@ class _LiveRngMixin:
 
 
 class DirichletClassifier(
-    _LiveRngMixin, MemoryUsageMixin, BaseEstimator, ClassifierMixin
+    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator, ClassifierMixin
 ):
     """
     Intercept-only Dirichlet-Multinomial classifier.
@@ -500,8 +514,45 @@ class DirichletClassifier(
         )
         tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
+    _initialized_by = "known_alphas_"
+    _state_keys: tuple[str, ...] = ("classes_", "n_features_", "known_alphas_")
 
-class GammaRegressor(_LiveRngMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin):
+    def _fitted_state(self) -> Dict[str, Any]:
+        return {
+            "classes_": self.classes_.tolist(),
+            "n_features_": self.__dict__.get("n_features_"),
+            "known_alphas_": table_state(self.known_alphas_, self.n_classes_),
+        }
+
+    def _check_classes(self, state: Mapping[str, Any], owner: str) -> None:
+        classes = np.array(list(self.alphas)).tolist()
+        if list(state["classes_"]) != classes:
+            raise ValueError(
+                f"{owner} state has classes {list(state['classes_'])!r}, but "
+                f"alphas has {classes!r}."
+            )
+
+    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
+        self._check_classes(state, owner)
+        return {
+            "n_features_": load_optional(
+                state["n_features_"], load_int, f"{owner} state 'n_features_'"
+            ),
+            "known_alphas_": load_table(
+                state["known_alphas_"],
+                len(self.alphas),
+                f"{owner} state 'known_alphas_'",
+            ),
+        }
+
+    def _write_state(self, restored: Mapping[str, Any]) -> None:
+        self.known_alphas_.update(restored["known_alphas_"])
+        set_optional(self, "n_features_", restored["n_features_"])
+
+
+class GammaRegressor(
+    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
+):
     """
     Intercept-only Gamma-Poisson conjugate regression model.
 
@@ -863,6 +914,27 @@ class GammaRegressor(_LiveRngMixin, MemoryUsageMixin, BaseEstimator, RegressorMi
             steps=steps,
         )
         tick_groups(self.coef_, rule, steps=steps, prior=self.prior_)
+
+    _initialized_by = "coef_"
+    _state_keys: tuple[str, ...] = ("n_features_", "coef_")
+
+    def _fitted_state(self) -> Dict[str, Any]:
+        return {
+            "n_features_": self.__dict__.get("n_features_"),
+            "coef_": table_state(self.coef_, 2),
+        }
+
+    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
+        return {
+            "n_features_": load_optional(
+                state["n_features_"], load_int, f"{owner} state 'n_features_'"
+            ),
+            "coef_": load_table(state["coef_"], 2, f"{owner} state 'coef_'"),
+        }
+
+    def _write_state(self, restored: Mapping[str, Any]) -> None:
+        self.coef_.update(restored["coef_"])
+        set_optional(self, "n_features_", restored["n_features_"])
 
 
 def _scaled_identity_f(n: int, scale: float) -> NDArray[np.float64]:
@@ -1275,7 +1347,9 @@ def _blocked_colorize(
     return out.reshape(n_blocks * k, size).T
 
 
-class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
+class _BayesianLinearModel(
+    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator
+):
     """A Gaussian posterior over weights, its cached precision factor, and
     the prediction and sampling routes built on them.
 
@@ -1833,6 +1907,44 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
         if not hasattr(self, "coef_"):
             return
         self._apply_tick(rule, steps)
+
+    # ---- state -----------------------------------------------------------
+
+    _initialized_by = "n_features_"
+    _state_keys: tuple[str, ...] = ("coef_", "cov_inv_", "prior_is_fresh")
+
+    def _restore_prior(self, restored: Mapping[str, Any]) -> None:
+        self._initialize_prior(np.empty((0, restored["cov_inv_"].shape[0])))
+
+    def _fitted_state(self) -> Dict[str, Any]:
+        return {
+            "coef_": self._coef_state(),
+            "cov_inv_": precision_state(self.cov_inv_),
+            "prior_is_fresh": bool(self.__dict__.get("_prior_is_fresh", False)),
+        }
+
+    def _coef_state(self) -> Optional[NDArray[np.float64]]:
+        return np.array(self.coef_, dtype=np.float64)
+
+    def _read_coef(self, value: Any, n: int, owner: str) -> Any:
+        return load_array(value, (n,), f"{owner} state 'coef_'")
+
+    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
+        cov_inv = load_precision(
+            state["cov_inv_"], self.sparse, f"{owner} state 'cov_inv_'"
+        )
+        return {
+            "coef_": self._read_coef(state["coef_"], cov_inv.shape[0], owner),
+            "cov_inv_": cov_inv,
+            "prior_is_fresh": load_bool(
+                state["prior_is_fresh"], f"{owner} state 'prior_is_fresh'"
+            ),
+        }
+
+    def _write_state(self, restored: Mapping[str, Any]) -> None:
+        self.coef_ = restored["coef_"]
+        self.cov_inv_ = restored["cov_inv_"]
+        self._prior_is_fresh = restored["prior_is_fresh"]
 
     # ---- sampling mechanics ----------------------------------------------
 
@@ -2607,6 +2719,23 @@ scipy.sparse.csc_array
         gamma = rule.rate**steps
         self.a_ = gamma * self.a_
         self.b_ = gamma * self.b_
+
+    _state_keys = NormalRegressor._state_keys + ("a_", "b_")
+
+    def _fitted_state(self) -> Dict[str, Any]:
+        return {**super()._fitted_state(), "a_": float(self.a_), "b_": float(self.b_)}
+
+    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
+        return {
+            **super()._read_state(state, owner),
+            "a_": load_float(state["a_"], f"{owner} state 'a_'"),
+            "b_": load_float(state["b_"], f"{owner} state 'b_'"),
+        }
+
+    def _write_state(self, restored: Mapping[str, Any]) -> None:
+        super()._write_state(restored)
+        self.a_ = restored["a_"]
+        self.b_ = restored["b_"]
 
 
 class BayesianGLM(_BayesianLinearModel, RegressorMixin):
