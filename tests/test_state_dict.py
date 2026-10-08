@@ -38,11 +38,20 @@ pytestmark = pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceW
 # ---- estimators -------------------------------------------------------------
 
 
-def _scaled_normal() -> LearnerPipeline:
-    scaler = StandardScaler().fit(np.random.default_rng(9).standard_normal((50, 6)))
-    return LearnerPipeline(
-        steps=[("scale", scaler)], learner=NormalRegressor(alpha=1.0, beta=1.0)
-    )
+def _scaled_normal(sparse: bool = False) -> LearnerPipeline:
+    if sparse:
+        history = sp.csc_array(
+            sp.random(50, 30, density=0.15, random_state=9)  # type: ignore[call-arg]
+        )
+    else:
+        history = np.random.default_rng(9).standard_normal((50, 6))
+    scaler = StandardScaler(with_mean=not sparse).fit(history)
+    learner = NormalRegressor(alpha=1.0, beta=1.0, sparse=sparse)
+    return LearnerPipeline(steps=[("scale", scaler)], learner=learner)
+
+
+def _is_sparse(est) -> bool:
+    return getattr(getattr(est, "learner", est), "sparse", False)
 
 
 # (factory, data kind); every built-in estimator, and a pipeline around one
@@ -74,6 +83,7 @@ SPARSE = [
         lambda: EmpiricalBayesNormalRegressor(sparse=True), "real", id="EBNormal"
     ),
     pytest.param(lambda: EmpiricalBayesGLM(sparse=True), "binary", id="EBGLM"),
+    pytest.param(lambda: _scaled_normal(sparse=True), "real", id="LearnerPipeline"),
 ]
 
 
@@ -190,7 +200,7 @@ def test_sparse_round_trip_matches_original(factory, kind, sparse_solver):
 @pytest.mark.parametrize("factory, kind", DENSE + SPARSE)
 def test_state_is_plain_data(factory, kind):
     est = factory()
-    sparse = getattr(est, "sparse", False)
+    sparse = _is_sparse(est)
     est.partial_fit(*_batch(kind, sparse, seed=0))
 
     def check(value):
@@ -218,7 +228,7 @@ def test_state_survives_json(factory, kind):
     """Arrays as nested lists and tuples as lists, as a JSON codec gives
     them back, load to the same model."""
     est = factory()
-    sparse = getattr(est, "sparse", False)
+    sparse = _is_sparse(est)
     est.partial_fit(*_batch(kind, sparse, seed=0))
     encoded = json.dumps(est.state_dict(), default=lambda a: a.tolist())
 
@@ -231,7 +241,7 @@ def test_state_survives_json(factory, kind):
 @pytest.mark.parametrize("factory, kind", DENSE + SPARSE)
 def test_state_is_a_copy(factory, kind):
     est = factory()
-    sparse = getattr(est, "sparse", False)
+    sparse = _is_sparse(est)
     est.partial_fit(*_batch(kind, sparse, seed=0))
     X, _ = _batch(kind, sparse, seed=4)
     state = est.state_dict()
@@ -256,7 +266,7 @@ def test_unfitted_state_returns_to_a_fresh_estimator(factory, kind):
     blank = factory().state_dict()
     assert set(blank) <= {"version", "alpha", "beta", "classes_", "alphas"}
 
-    sparse = getattr(factory(), "sparse", False)
+    sparse = _is_sparse(factory())
     est, fresh = factory(), factory()
     est.partial_fit(*_batch(kind, sparse, seed=0))
     est.load_state_dict(blank)
@@ -270,7 +280,7 @@ def test_unfitted_state_returns_to_a_fresh_estimator(factory, kind):
 def test_load_replaces_a_fit(factory, kind):
     """Loading into a fitted estimator leaves nothing of its own fit:
     caches included, it matches a fresh estimator loading the state."""
-    sparse = getattr(factory(), "sparse", False)
+    sparse = _is_sparse(factory())
     source = factory()
     source.partial_fit(*_batch(kind, sparse, seed=0))
     state = source.state_dict()
