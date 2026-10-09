@@ -401,6 +401,18 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         X_transformed = self._apply_transformers(X)
         return self._learner.predict(X_transformed)
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Return the final learner's state as plain data.
+
+        The transformers are fitted or stateless before the pipeline is
+        built, and stay in code, so the state is the learner's alone.
+        """
+        return cast(Any, self._learner).state_dict()
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a state from :meth:`state_dict` into the final learner."""
+        cast(Any, self._learner).load_state_dict(state)
+
     @property
     def named_steps(self) -> Dict[str, Any]:
         """Access pipeline transformer steps by name."""

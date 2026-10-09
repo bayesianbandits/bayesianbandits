@@ -4,6 +4,15 @@ Changelog
 Unreleased
 ----------
 
+**New features**
+
+- ``state_dict`` and ``load_state_dict`` on every agent, estimator and
+  pipeline save and restore the learned state without pickle, as plain
+  data: dicts, lists, numpy arrays and Python scalars. A state describes
+  the posterior by family in versioned blocks, so any estimator of the
+  family loads it. Build the agent in code and load the state into it.
+  See :doc:`/howto/production` (#309)
+
 **Bug fixes**
 
 - Assigning ``agent.rng`` now reseeds every arm learner whose prior is

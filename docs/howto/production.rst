@@ -57,6 +57,56 @@ This creates a fresh ``numpy.random.Generator`` and propagates it to
 all arm learners. Pass an ``int`` instead if you need reproducibility.
 
 
+Save state without pickle
+-------------------------
+
+A pickle restores classes by name, so a checkpoint can break when the
+library is refactored, and loading one runs whatever code it names.
+``state_dict`` returns only what the agent learned -- each arm's
+posterior and tuned hyperparameters, the arm queued for update, and the
+generator state -- as dicts, lists, numpy arrays and Python scalars.
+Build the agent in code as before and load the state into it:
+
+.. code-block:: python
+
+   import numpy as np
+   from bayesianbandits import Agent, Arm, GammaRegressor, ThompsonSampling
+
+   def make_agent():
+       arms = [
+           Arm("ad_a", learner=GammaRegressor(alpha=1, beta=1)),
+           Arm("ad_b", learner=GammaRegressor(alpha=1, beta=1)),
+       ]
+       return Agent(arms, ThompsonSampling())
+
+   agent = make_agent()
+   agent.pull()
+   agent.update(np.array([1.0]))
+
+   state = agent.state_dict()  # store with any codec for plain data
+   loaded = make_agent()
+   loaded.load_state_dict(state)
+
+   # The loaded agent continues the original's random stream
+   assert loaded.pull() == agent.pull()
+
+A learner's state describes its posterior, not the class: a ``family``
+(``gaussian``, ``dirichlet`` or ``gamma``) and blocks such as ``prior``
+and ``posterior``, each with its own version, which loading checks. So
+any estimator of a family loads it -- a dense model's state into a
+sparse one, or a ``NormalRegressor``'s into an
+``EmpiricalBayesNormalRegressor``, which tunes on from there. An agent
+stores ``[token, state]`` pairs, so tokens that are not strings survive
+JSON, and loading raises if the tokens differ from its arms. A
+``LipschitzContextualAgent`` stores its shared learner once.
+
+The generator continues where it left off, so reseed with
+``loaded.rng = None`` for copies that should explore differently.
+Factorizations are rebuilt rather than stored, so after a ``decay``, or
+a sparse update without ``scikit-sparse``, draws can differ from the
+original's in the last bit, as after unpickling.
+
+
 Add and remove arms at runtime
 -------------------------------
 

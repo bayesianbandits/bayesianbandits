@@ -9,7 +9,7 @@ rate estimation.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -49,6 +49,19 @@ from ._gaussian import LaplaceApproximator, LinkFunction, PosteriorApproximator
 from ._sparse_bayesian_linear_regression import (
     scale_factor,
 )
+from ._state import (
+    discard,
+    optional_float,
+    report_state,
+    write_report,
+)
+
+
+def _reported(estimator: Any) -> Optional[dict[str, Any]]:
+    """What a conjugate empirical Bayes estimator reports of its last
+    tuning, ``None`` before any."""
+    report = report_state(estimator)
+    return report if any(value is not None for value in report.values()) else None
 
 
 class _StabilizedPriorMixin(_BayesianLinearModel):
@@ -286,6 +299,59 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
         else:
             self.__dict__["_prior_scalar"] = prior_scalar_old
 
+    # ---- state -----------------------------------------------------------
+
+    #: The hyperparameters tuning moves, each kept as built in ``_<name>0``
+    _tuned: tuple[str, ...] = ("alpha",)
+    #: The running statistics beyond ``effective_n``, as ``(eb block key,
+    #: attribute)``
+    _statistics: tuple[tuple[str, str], ...] = ()
+
+    def _write_prior(self, tuned: Mapping[str, Optional[float]]) -> None:
+        for name in self._tuned:
+            value = tuned[name]
+            setattr(self, name, getattr(self, f"_{name}0") if value is None else value)
+
+    def _prior_weight(self) -> Optional[float]:
+        return optional_float(self.__dict__.get("_prior_scalar"))
+
+    def _eb_state(self) -> Optional[dict[str, Any]]:
+        if "_effective_n" not in self.__dict__:
+            return None
+        state: dict[str, Any] = {
+            "effective_n": float(self._effective_n),
+            "yty": None,
+            "xty": None,
+            "loglik": None,
+            "updates_rejected": int(self.eb_updates_rejected_),
+            **report_state(self),
+        }
+        for key, attribute in self._statistics:
+            value = self.__dict__[attribute]
+            state[key] = (
+                np.array(value, dtype=np.float64) if np.ndim(value) else float(value)
+            )
+        return state
+
+    def _write_eb(
+        self, eb: Optional[Mapping[str, Any]], prior_weight: Optional[float]
+    ) -> None:
+        """Restore the running statistics, or clear them so tuning starts
+        from the loaded posterior, as after ``sample`` initialized the
+        prior; also when they are another model's."""
+        discard(self, ("_prior_scalar", "_effective_n", "eb_updates_rejected_"))
+        discard(self, [attribute for _, attribute in self._statistics])
+        if eb is None or any(eb[key] is None for key, _ in self._statistics):
+            write_report(self, None)
+            return
+        write_report(self, eb)
+        assert prior_weight is not None  # read checks it comes with eb
+        self._prior_scalar = prior_weight
+        self._effective_n = eb["effective_n"]
+        self.eb_updates_rejected_ = eb["updates_rejected"]
+        for key, attribute in self._statistics:
+            self.__dict__[attribute] = eb[key]
+
 
 class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     """Bayesian linear regression with empirical Bayes hyperparameter tuning.
@@ -475,6 +541,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self.eb_tol = eb_tol
         self.trace_method = trace_method
         self._alpha0 = alpha  # EB overwrites alpha; keep the prior
+        self._beta0 = beta  # likewise, for a state that has no beta
 
     @property
     def coef_(self) -> NDArray[np.float64]:
@@ -816,6 +883,19 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self._eb_mackay_step_online()
         self._correct_precision(alpha_old, beta_old)
 
+    # ---- state -----------------------------------------------------------
+
+    _tuned: tuple[str, ...] = ("alpha", "beta")
+    _statistics = (("yty", "_eff_yTy"), ("xty", "_eff_XTy"))
+
+    def _solved_mean(self) -> NDArray[np.float64]:
+        # A pending mean is solved without being kept, so the model's next
+        # update takes the same path whether or not it was saved
+        pending = self.__dict__.get("_pending_eta")
+        if pending is None:
+            return np.array(self.__dict__["_coef"], dtype=np.float64)
+        return np.array(self._precision_factor.solve(pending), dtype=np.float64)
+
 
 class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
     """Bayesian GLM with empirical Bayes tuning of the prior precision.
@@ -1116,6 +1196,8 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._eb_mackay_step()
         self._correct_precision(old[0])
 
+    _statistics = (("loglik", "_eff_loglik"),)
+
 
 class EmpiricalBayesDirichletClassifier(DirichletClassifier):
     """Dirichlet-Multinomial classifier with empirical Bayes prior tuning.
@@ -1380,6 +1462,15 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
     # effective counts (known_alphas - prior) stay right after a tick.
     _default_tick_rule: type = StabilizedForgetting
 
+    def _write_prior(self, alphas: dict[Any, float]) -> None:
+        self.alphas = alphas
+
+    def _report_state(self) -> Optional[dict[str, Any]]:
+        return _reported(self)
+
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        write_report(self, report)
+
 
 class EmpiricalBayesGammaRegressor(GammaRegressor):
     """Gamma-Poisson regressor with empirical Bayes prior tuning.
@@ -1621,3 +1712,12 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
 
     # decay() defaults to stabilized forgetting toward the tuned prior_.
     _default_tick_rule: type = StabilizedForgetting
+
+    def _write_prior(self, alpha: float, beta: float) -> None:
+        self.alpha, self.beta = alpha, beta
+
+    def _report_state(self) -> Optional[dict[str, Any]]:
+        return _reported(self)
+
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        write_report(self, report)
