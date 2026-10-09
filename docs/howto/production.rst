@@ -90,11 +90,15 @@ Build the agent in code as before and load the state into it:
    # The loaded agent continues the original's random stream
    assert loaded.pull() == agent.pull()
 
-Learner states are keyed by action token, and loading raises if the
-tokens differ from the agent's arms. A ``LipschitzContextualAgent``
-stores its shared learner once. Every estimator and ``LearnerPipeline``
-has the same two methods. Each state carries a ``version``, and loading
-rejects a state of another version instead of misreading it.
+A learner's state describes its posterior, not the class: a ``family``
+(``gaussian``, ``dirichlet`` or ``gamma``) and blocks such as ``prior``
+and ``posterior``, each with its own version, which loading checks. So
+any estimator of a family loads it -- a dense model's state into a
+sparse one, or a ``NormalRegressor``'s into an
+``EmpiricalBayesNormalRegressor``, which tunes on from there. An agent
+stores ``[token, state]`` pairs, so tokens that are not strings survive
+JSON, and loading raises if the tokens differ from its arms. A
+``LipschitzContextualAgent`` stores its shared learner once.
 
 The generator continues where it left off, so reseed with
 ``loaded.rng = None`` for copies that should explore differently.

@@ -6,18 +6,7 @@ preprocessing to be applied to enriched features (e.g., after ArmFeaturizer
 transforms contexts with arm-specific information).
 """
 
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Generic,
-    List,
-    Optional,
-    Tuple,
-    TypeVar,
-    Union,
-    cast,
-)
+from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar, Union, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -30,7 +19,6 @@ from .._arm import (
     resolve_reward_space_sampler,
 )
 from .._memory import MemoryUsageMixin
-from .._state import stage_load
 
 X_contra = TypeVar("X_contra", contravariant=True)
 
@@ -423,10 +411,7 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
         """Restore a state from :meth:`state_dict` into the final learner."""
-        self._stage_load(state)()
-
-    def _stage_load(self, state: Any) -> Callable[[], None]:
-        return stage_load(self._learner, state)
+        cast(Any, self._learner).load_state_dict(state)
 
     @property
     def named_steps(self) -> Dict[str, Any]:

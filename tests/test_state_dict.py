@@ -28,6 +28,7 @@ from bayesianbandits import (
     StabilizedForgetting,
     ThompsonSampling,
 )
+from bayesianbandits._estimators import _GAUSSIAN_VERSIONS
 from bayesianbandits._sparse_bayesian_linear_regression import SparseSolver
 
 # A few IRLS steps per update is all the GLMs need here; whether they
@@ -159,8 +160,11 @@ def test_round_trip_matches_original_exactly(factory, kind):
 
 
 @pytest.mark.parametrize("factory, kind", DENSE)
-def test_update_right_after_load_matches_exactly(factory, kind):
-    """Nothing read in between: the update takes what the state holds."""
+def test_update_right_after_load_matches(factory, kind):
+    """Nothing read in between: the update takes what the state holds.
+    Exact but for an EB Normal whose mean a MacKay correction left
+    pending: the state holds it solved, and the original updates from
+    the unsolved information vector, which differs in the last bit."""
     original = factory()
     original.partial_fit(*_batch(kind, False, seed=0))
     original.partial_fit(*_batch(kind, False, seed=1))
@@ -168,7 +172,8 @@ def test_update_right_after_load_matches_exactly(factory, kind):
     restored.load_state_dict(original.state_dict())
     for est in (original, restored):
         est.partial_fit(*_batch(kind, False, seed=2))
-    _compare(original, restored, _batch(kind, False, seed=4)[0], exact=True)
+    exact = not isinstance(original, EmpiricalBayesNormalRegressor)
+    _compare(original, restored, _batch(kind, False, seed=4)[0], exact=exact)
 
 
 @pytest.mark.parametrize("factory, kind", DENSE)
@@ -199,13 +204,15 @@ def test_sparse_round_trip_matches_original(factory, kind, sparse_solver):
 
 @pytest.mark.parametrize("factory, kind", DENSE + SPARSE)
 def test_state_is_plain_data(factory, kind):
+    """Blocks of plain data, each versioned, and no class or attribute
+    names."""
     est = factory()
     sparse = _is_sparse(est)
     est.partial_fit(*_batch(kind, sparse, seed=0))
 
     def check(value):
         if isinstance(value, dict):
-            assert all(isinstance(k, str) for k in value)
+            assert all(isinstance(k, str) and not k.endswith("_") for k in value)
             for v in value.values():
                 check(v)
         elif isinstance(value, (list, tuple)):
@@ -219,7 +226,8 @@ def test_state_is_plain_data(factory, kind):
             ), repr(value)
 
     state = est.state_dict()
-    assert state["version"] == 1
+    assert state["family"] in ("gaussian", "dirichlet", "gamma")
+    assert all(state[name]["v"] == 1 for name in state if name != "family")
     check(state)
 
 
@@ -264,7 +272,7 @@ def test_unfitted_state_returns_to_a_fresh_estimator(factory, kind):
     hyperparameters; loading it over a fit, tuning included, leaves an
     estimator that trains as a fresh one does."""
     blank = factory().state_dict()
-    assert set(blank) <= {"version", "alpha", "beta", "classes_", "alphas"}
+    assert set(blank) == {"family", "prior"}
 
     sparse = _is_sparse(factory())
     est, fresh = factory(), factory()
@@ -313,20 +321,24 @@ def test_prior_initialized_by_sampling_stays_unfloored():
     np.testing.assert_array_equal(restored.cov_inv_, original.cov_inv_)
 
 
-def test_eb_normal_keeps_a_pending_mean():
-    """After a MacKay correction the mean is left as an unsolved
-    information vector; a restored model updates from that same vector."""
+def test_eb_state_has_no_eb_block_before_tuning():
+    est = EmpiricalBayesNormalRegressor()
+    est.sample(_batch("real", False, seed=0)[0])
+    assert "posterior" in est.state_dict() and "eb" not in est.state_dict()
+
+
+def test_saving_solves_a_pending_mean_but_leaves_the_model_alone():
+    """A MacKay correction leaves the mean unsolved behind its
+    information vector. The state holds the mean, and saving does not
+    solve it on the model, whose next update takes the same path either
+    way."""
     original = EmpiricalBayesNormalRegressor()
     original.fit(*_batch("real", False, seed=0))
     original.partial_fit(*_batch("real", False, seed=1))
+    assert "_pending_eta" in original.__dict__
     state = original.state_dict()
-    assert state["coef_"] is None and state["pending_eta"] is not None
-
-    restored = EmpiricalBayesNormalRegressor()
-    restored.load_state_dict(state)
-    for est in (original, restored):
-        est.partial_fit(*_batch("real", False, seed=2))
-    np.testing.assert_array_equal(restored.coef_, original.coef_)
+    assert "_pending_eta" in original.__dict__
+    np.testing.assert_array_equal(state["posterior"]["mean"], original.coef_)
 
 
 def test_eb_conjugate_hyperparameters_follow_the_tuned_prior():
@@ -395,58 +407,151 @@ def _drop(*path) -> Callable[[dict], None]:
 
 # (setup, corruption, error, message)
 MALFORMED = [
-    pytest.param(NORMAL, _set("version", to=2), ValueError, "1, not 2", id="version"),
-    pytest.param(NORMAL, _drop("prior_is_fresh"), ValueError, "missing", id="missing"),
-    pytest.param(NORMAL, _set("x", to=1), ValueError, "unexpected", id="unexpected"),
-    pytest.param(NORMAL, _set("coef_", to=lambda c: c[:-1]), ValueError, "shape"),
-    pytest.param(NORMAL, _set("prior_is_fresh", to="no"), TypeError, "a bool"),
-    pytest.param(NIG, _set("a_", to="x"), TypeError, "a number", id="float"),
-    pytest.param(GAMMA, _set("n_features_", to=True), TypeError, "an integer"),
-    pytest.param(GAMMA, _set("n_features_", to=1.5), TypeError, "an integer"),
-    pytest.param(NIG, _set("cov_inv_", to=lambda m: m[:, :-1]), ValueError, "square"),
-    pytest.param(SPARSE_NORMAL, _drop("cov_inv_", "shape"), ValueError, "the keys"),
+    pytest.param(NORMAL, _set("family", to="gamma"), ValueError, "reads gaussian"),
+    pytest.param(NORMAL, _set("x", to={}), ValueError, "unexpected blocks"),
+    pytest.param(NORMAL, _set("posterior", to=[1]), TypeError, "must be a dict"),
+    pytest.param(NORMAL, _drop("forgetting"), ValueError, "no forgetting block"),
+    pytest.param(NORMAL, _drop("posterior"), ValueError, "has no posterior"),
+    pytest.param(NORMAL, _set("posterior", "v", to=2), ValueError, "version 2"),
+    pytest.param(NORMAL, _drop("forgetting", "fresh"), ValueError, "missing keys"),
+    pytest.param(NORMAL, _set("prior", "x", to=1), ValueError, "unexpected keys"),
+    pytest.param(
+        NORMAL, _set("posterior", "mean", to=lambda c: c[:-1]), ValueError, "shape"
+    ),
+    pytest.param(NORMAL, _set("forgetting", "fresh", to="no"), TypeError, "a bool"),
+    pytest.param(NORMAL, _set("prior", "alpha", to="x"), TypeError, "a number"),
+    pytest.param(NIG, _set("noise", "a", to="x"), TypeError, "a number", id="noise"),
+    pytest.param(
+        NIG,
+        _set("posterior", "precision", to=lambda m: m[:, :-1]),
+        ValueError,
+        "square",
+        id="dense-square",
+    ),
     pytest.param(
         SPARSE_NORMAL,
-        _set("cov_inv_", "shape", to=lambda s: (s[0], s[1] + 1)),
+        _drop("posterior", "precision", "shape"),
+        ValueError,
+        "the keys",
+        id="csc-keys",
+    ),
+    pytest.param(
+        SPARSE_NORMAL,
+        _set("posterior", "precision", "shape", to=lambda s: [s[0], s[1] + 1]),
         ValueError,
         "square",
         id="csc-shape",
     ),
     pytest.param(
         SPARSE_NORMAL,
-        _set("cov_inv_", "indices", to=lambda i: i.astype(float)),
+        _set("posterior", "precision", "indices", to=lambda i: i.astype(float)),
         ValueError,
         "integer array",
         id="csc-index-type",
     ),
     pytest.param(
         SPARSE_NORMAL,
-        _set("cov_inv_", "indices", to=lambda i: i + 1000),
+        _set("posterior", "precision", "indices", to=lambda i: i + 1000),
         ValueError,
         "indices must be <",
         id="csc-index-range",
     ),
     pytest.param(
-        GAMMA, _set("coef_", to=[1.0, 2.0]), ValueError, "'keys' and 'values'"
+        GAMMA,
+        _set("posterior", "groups", to=lambda k: [k[0]] * len(k)),
+        ValueError,
+        "repeat",
+        id="groups-repeat",
     ),
     pytest.param(
         GAMMA,
-        _set("coef_", "keys", to=lambda k: [k[0]] * len(k)),
+        _set("posterior", "beta", to=lambda b: b[:-1]),
         ValueError,
-        "unique",
-        id="table-keys",
+        "shape",
+        id="groups-shape",
     ),
     pytest.param(
         EB_NORMAL,
-        _set("coef_", to=lambda _: np.zeros(6)),
-        ValueError,
-        "exactly one of",
-        id="eb-mean",
+        _set("eb", "updates_rejected", to=1.5),
+        TypeError,
+        "an integer",
+        id="eb-int",
     ),
     pytest.param(
-        EB_NORMAL, _set("eff_XTy", to=None), ValueError, "together", id="eb-running"
+        EB_NORMAL,
+        _set("eb", "updates_rejected", to=True),
+        TypeError,
+        "an integer",
+        id="eb-int-bool",
     ),
-    pytest.param(EB_NORMAL, _set("alpha", to=None), TypeError, "number", id="eb-tuned"),
+    pytest.param(
+        GAMMA,
+        _set("posterior", "groups", to="ab"),
+        TypeError,
+        "must be a list",
+        id="groups-type",
+    ),
+    pytest.param(
+        EB_NORMAL,
+        _set("forgetting", "prior_weight", to=None),
+        ValueError,
+        "no forgetting prior_weight",
+        id="eb-prior-weight",
+    ),
+    pytest.param(
+        EB_NORMAL,
+        _set("eb", "xty", to=None),
+        ValueError,
+        "must hold the Normal",
+        id="eb-statistics-partial",
+    ),
+    pytest.param(
+        EB_NORMAL,
+        _set("eb", "loglik", to=0.0),
+        ValueError,
+        "must hold the Normal",
+        id="eb-statistics-mixed",
+    ),
+    pytest.param(
+        NORMAL,
+        _set("posterior", "mean", to=lambda c: np.full_like(c, np.nan)),
+        ValueError,
+        "finite",
+        id="nan",
+    ),
+    pytest.param(NORMAL, _set("prior", "alpha", to=-1.0), ValueError, "positive"),
+    pytest.param(
+        EB_NORMAL,
+        _set("forgetting", "prior_weight", to=float("nan")),
+        ValueError,
+        "finite",
+        id="prior-weight-nan",
+    ),
+    pytest.param(
+        EB_NORMAL,
+        _set("eb", "effective_n", to=float("nan")),
+        ValueError,
+        "finite",
+        id="effective-n-nan",
+    ),
+    pytest.param(
+        EB_NORMAL, _set("eb", "yty", to=-1.0), ValueError, "non-negative", id="yty"
+    ),
+    pytest.param(NIG, _set("noise", "b", to=0.0), ValueError, "positive", id="noise-b"),
+    pytest.param(
+        NORMAL,
+        _set("posterior", "precision", to=lambda m: np.triu(m) + np.eye(len(m))),
+        ValueError,
+        "symmetric",
+        id="asymmetric",
+    ),
+    pytest.param(
+        GAMMA,
+        _set("posterior", "alpha", to=lambda a: -a),
+        ValueError,
+        "positive",
+        id="gamma-negative",
+    ),
 ]
 
 
@@ -458,27 +563,15 @@ def test_rejects_malformed(setup, corrupt, error, match):
         setup[0]().load_state_dict(state)
 
 
-def test_rejects_another_estimators_state():
-    with pytest.raises(ValueError, match=r"unexpected keys \['a_', 'b_'\]"):
-        NormalRegressor(alpha=1.0, beta=1.0).load_state_dict(_fitted_state(NIG))
-
-
 def test_rejects_a_state_that_is_not_a_dict():
     with pytest.raises(TypeError, match="must be a dict"):
         NormalRegressor(alpha=1.0, beta=1.0).load_state_dict([1])  # type: ignore[arg-type]
 
 
-def test_rejects_the_other_precision_form():
-    with pytest.raises(TypeError, match="estimator is sparse"):
-        NormalRegressor(1.0, 1.0, sparse=True).load_state_dict(_fitted_state(NORMAL))
-    with pytest.raises(TypeError, match="estimator is dense"):
-        NormalRegressor(1.0, 1.0).load_state_dict(_fitted_state(SPARSE_NORMAL))
-
-
 def test_rejects_other_classes():
     classes = (lambda: DirichletClassifier({0: 1, 1: 1, 2: 1}), "classes", False)
     with pytest.raises(ValueError, match="classes"):
-        DirichletClassifier({0: 1, 2: 1, 1: 1}).load_state_dict(_fitted_state(classes))
+        DirichletClassifier({0: 1, 1: 1, 3: 1}).load_state_dict(_fitted_state(classes))
 
 
 def test_rejected_state_leaves_the_estimator_alone():
@@ -486,10 +579,116 @@ def test_rejected_state_leaves_the_estimator_alone():
     est.fit(*_batch("real", False, seed=3))
     before = est.state_dict()
     state = _fitted_state(NORMAL)
-    state["coef_"] = state["coef_"][:-1]
+    state["posterior"]["mean"] = state["posterior"]["mean"][:-1]
     with pytest.raises(ValueError):
         est.load_state_dict(state)
     _assert_same_state(est.state_dict(), before)
+
+
+# ---- states across a family -------------------------------------------------
+
+GAUSSIAN = [
+    pytest.param(lambda: NormalRegressor(alpha=1.0, beta=2.0), id="Normal"),
+    pytest.param(NormalInverseGammaRegressor, id="NIG"),
+    pytest.param(BayesianGLM, id="GLM"),
+    pytest.param(EmpiricalBayesNormalRegressor, id="EBNormal"),
+    pytest.param(EmpiricalBayesGLM, id="EBGLM"),
+]
+
+
+@pytest.mark.parametrize("target", GAUSSIAN)
+@pytest.mark.parametrize("source", GAUSSIAN)
+def test_any_gaussian_state_loads_into_any_gaussian_estimator(source, target):
+    """The posterior carries over; what the target has no use for is set
+    aside, and what it lacks starts from its own prior."""
+    original = source()
+    original.partial_fit(*_batch("binary", False, seed=0))
+    state = original.state_dict()
+    restored = target()
+    restored.load_state_dict(state)
+    np.testing.assert_array_equal(restored.coef_, state["posterior"]["mean"])
+    restored.partial_fit(*_batch("binary", False, seed=1))
+
+
+@pytest.mark.parametrize(
+    "sparse", [False, True], ids=["dense-to-sparse", "sparse-to-dense"]
+)
+def test_dense_and_sparse_states_load_into_each_other(sparse):
+    """The precision converts to the target's form. Dense and sparse
+    arithmetic differ in the last bit, so the models agree to rounding."""
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((40, 6))
+    y = X @ rng.standard_normal(6)
+    as_input = (lambda A: sp.csc_array(A)) if sparse else (lambda A: A)
+    from_input = (lambda A: A) if sparse else (lambda A: sp.csc_array(A))
+    original = NormalRegressor(1.0, 1.0, sparse=not sparse)
+    original.fit(from_input(X), y)
+    restored = NormalRegressor(1.0, 1.0, sparse=sparse)
+    restored.load_state_dict(original.state_dict())
+    assert sp.issparse(restored.cov_inv_) == sparse
+    np.testing.assert_array_equal(restored.predict(X), original.predict(X))
+    original.partial_fit(from_input(X[:10]), y[:10])
+    restored.partial_fit(as_input(X[:10]), y[:10])
+    np.testing.assert_allclose(restored.predict(X), original.predict(X), rtol=1e-9)
+
+
+@pytest.mark.parametrize("source", [BayesianGLM, NormalInverseGammaRegressor])
+def test_load_does_not_depend_on_what_the_estimator_learned_before(source):
+    """A state without beta, or without either hyperparameter, gives an
+    EB Normal the ones it was built with, however it was tuned before."""
+    original = source()
+    original.partial_fit(*_batch("binary", False, seed=0))
+    state = original.state_dict()
+    fresh, tuned = EmpiricalBayesNormalRegressor(), EmpiricalBayesNormalRegressor()
+    tuned.fit(*_batch("real", False, seed=5))
+    for est in (fresh, tuned):
+        est.load_state_dict(state)
+        est.partial_fit(*_batch("real", False, seed=1))
+    assert (tuned.alpha, tuned.beta) == (fresh.alpha, fresh.beta)
+    _compare(fresh, tuned, _batch("real", False, seed=4)[0], exact=True)
+
+
+def test_hyperparameters_stay_as_built_where_nothing_tunes_them():
+    original = NormalRegressor(alpha=2.0, beta=3.0)
+    original.fit(*_batch("real", False, seed=0))
+    restored = NormalRegressor(alpha=5.0, beta=7.0)
+    restored.load_state_dict(original.state_dict())
+    assert (restored.alpha, restored.beta) == (5.0, 7.0)
+
+
+def test_a_block_version_change_leaves_other_blocks_readable(monkeypatch):
+    """Bumping the eb block's version rejects only states that carry one."""
+    plain = _fitted_state(NORMAL)
+    tuned = _fitted_state(EB_NORMAL)
+    monkeypatch.setitem(_GAUSSIAN_VERSIONS, "eb", 2)
+    NormalRegressor(alpha=1.0, beta=1.0).load_state_dict(plain)
+    with pytest.raises(ValueError, match="eb is version 1"):
+        EmpiricalBayesNormalRegressor().load_state_dict(tuned)
+
+
+def test_normal_state_loads_into_eb_normal():
+    """Without an eb block, empirical Bayes starts tuning from the
+    loaded posterior and prior."""
+    X, y = _batch("real", False, seed=0)
+    original = NormalRegressor(alpha=2.0, beta=3.0)
+    original.fit(X, y)
+    restored = EmpiricalBayesNormalRegressor()
+    restored.load_state_dict(original.state_dict())
+    assert (restored.alpha, restored.beta) == (2.0, 3.0)
+    np.testing.assert_array_equal(restored.predict(X), original.predict(X))
+    restored.partial_fit(*_batch("real", False, seed=1))
+    assert np.isfinite(restored.log_evidence_)
+
+
+def test_classes_are_matched_by_label():
+    X, y = _batch("classes", False, seed=0)
+    original = DirichletClassifier({0: 1, 1: 2, 2: 1})
+    original.fit(X, y)
+    restored = DirichletClassifier({2: 1, 1: 2, 0: 1})
+    restored.load_state_dict(original.state_dict())
+    np.testing.assert_array_equal(
+        restored.predict_proba(X)[:, ::-1], original.predict_proba(X)
+    )
 
 
 # ---- agents -----------------------------------------------------------------
@@ -545,10 +744,6 @@ AGENTS = [
 ]
 
 
-def _learner_states(agent) -> dict:
-    return {f"arm {arm.action_token!r}": arm.learner.state_dict() for arm in agent.arms}
-
-
 @pytest.mark.parametrize("make", AGENTS)
 def test_agent_round_trip_continues_the_original(make):
     original = make()
@@ -597,7 +792,7 @@ def test_lipschitz_state_stores_the_shared_learner_once():
     _play(agent, 3, np.random.default_rng(0))
     state = agent.state_dict()
     assert state["arms"] == [0, 1, 2]
-    assert state["learner"].keys() == {"version", "coef_", "cov_inv_", "prior_is_fresh"}
+    assert state["learner"]["family"] == "gaussian"
 
 
 def test_removed_queued_arm_is_not_restored():
@@ -625,11 +820,11 @@ def test_queued_arm_whose_token_is_none():
 
 
 def test_queued_arm_survives_reordered_arms():
-    """A codec may reorder the arms' mapping, as sorted keys would."""
+    """A codec may reorder the arms."""
     agent = _contextual(tokens=("b", "a"))
     agent.select_for_update("b")
     state = agent.state_dict()
-    state["arms"] = dict(sorted(state["arms"].items()))
+    state["arms"] = sorted(state["arms"], key=lambda pair: pair[0])
     restored = _contextual(tokens=("b", "a"))
     restored.load_state_dict(state)
     assert restored.arm_to_update.action_token == "b"
@@ -647,50 +842,36 @@ def test_agent_token_mismatch_raises(make):
 def test_agent_rejects_malformed():
     state = _contextual().state_dict()
     with pytest.raises(ValueError, match="version"):
-        _contextual().load_state_dict({**state, "version": 2})
-    with pytest.raises(TypeError, match="dict of learner states"):
-        _contextual().load_state_dict({**state, "arms": list(state["arms"])})
+        _contextual().load_state_dict({**state, "v": 2})
+    with pytest.raises(TypeError, match=r"list of \[token, state\] pairs"):
+        _contextual().load_state_dict({**state, "arms": dict(state["arms"])})
+    with pytest.raises(ValueError, match="repeat"):
+        _contextual().load_state_dict({**state, "arms": state["arms"] * 2})
+    with pytest.raises(TypeError, match=r"list of \[token, state\] pairs"):
+        _contextual().load_state_dict({**state, "arms": [["a"]]})
     with pytest.raises(TypeError, match=r"must be \[token\] or \[\]"):
         _contextual().load_state_dict({**state, "arm_to_update": "a"})
     with pytest.raises(ValueError, match="queues arm 'z'"):
         _contextual().load_state_dict({**state, "arm_to_update": ["z"]})
 
 
-@pytest.mark.parametrize("make", AGENTS)
-def test_rejected_agent_state_changes_nothing(make):
-    """Every learner and the generator are checked before any is written."""
-    original = make()
+@pytest.mark.parametrize(
+    "make",
+    [_contextual, _lipschitz],
+    ids=["ContextualAgent", "LipschitzContextualAgent"],
+)
+def test_agent_state_survives_json_with_integer_tokens(make):
+    original = make(tokens=(0, 1, 2))
     _play(original, 3, np.random.default_rng(0))
-    state = original.state_dict()
-    if "learner" in state:
-        state["learner"] = {**state["learner"], "version": 2}
-    else:
-        last = list(state["arms"])[-1]
-        state["arms"] = {**state["arms"], last: {**state["arms"][last], "version": 2}}
+    original.pull(X_CTX)
+    encoded = json.dumps(original.state_dict(), default=lambda a: a.tolist())
 
-    target = make(seed=99)
-    _play(target, 2, np.random.default_rng(5))
-    queued = target.arm_to_update
-    before = {"rng": target.rng.bit_generator.state, **_learner_states(target)}
-    with pytest.raises(ValueError, match="version"):
-        target.load_state_dict(state)
-    _assert_same_state(
-        {"rng": target.rng.bit_generator.state, **_learner_states(target)}, before
+    restored = make(tokens=(0, 1, 2), seed=99)
+    restored.load_state_dict(json.loads(encoded))
+    assert restored.arm_to_update.action_token == original.arm_to_update.action_token
+    assert _play(restored, 5, np.random.default_rng(1)) == _play(
+        original, 5, np.random.default_rng(1)
     )
-    assert target.arm_to_update is queued
-
-
-def test_rejected_generator_state_changes_nothing():
-    original = _contextual()
-    _play(original, 3, np.random.default_rng(0))
-    state = original.state_dict()
-    state["rng"] = np.random.Generator(np.random.MT19937(0)).bit_generator.state
-
-    target = _contextual(seed=99)
-    before = _learner_states(target)
-    with pytest.raises(ValueError):
-        target.load_state_dict(state)
-    _assert_same_state(_learner_states(target), before)
 
 
 def test_agent_with_custom_learner_fails_clearly():

@@ -50,37 +50,18 @@ from ._sparse_bayesian_linear_regression import (
     scale_factor,
 )
 from ._state import (
-    ScalarFields,
-    check_together,
-    copy_or_none,
-    field_keys,
-    load_array,
-    load_bool,
-    load_float,
-    load_int,
-    load_optional,
-    set_optional,
-)
-
-#: Set by every tuning step
-_LOG_EVIDENCE: ScalarFields = (("log_evidence_", "log_evidence_", load_float),)
-#: Set by ``fit``
-_FIT_REPORT: ScalarFields = (
-    ("n_eb_iterations_", "n_eb_iterations_", load_int),
-    ("eb_converged_", "eb_converged_", load_bool),
-)
-#: What the linear estimators' online step reads, which a fit starts
-#: together
-_RUNNING: ScalarFields = (
-    ("prior_scalar", "_prior_scalar", load_float),
-    ("effective_n", "_effective_n", load_float),
-    ("eb_updates_rejected_", "eb_updates_rejected_", load_int),
-    *_FIT_REPORT,
+    discard,
+    optional_float,
+    report_state,
+    write_report,
 )
 
 
-def _load_optional_vector(value: Any, n: int, where: str) -> Any:
-    return load_optional(value, lambda v, w: load_array(v, (n,), w), where)
+def _reported(estimator: Any) -> Optional[dict[str, Any]]:
+    """What a conjugate empirical Bayes estimator reports of its last
+    tuning, ``None`` before any."""
+    report = report_state(estimator)
+    return report if any(value is not None for value in report.values()) else None
 
 
 class _StabilizedPriorMixin(_BayesianLinearModel):
@@ -320,34 +301,56 @@ class _StabilizedPriorMixin(_BayesianLinearModel):
 
     # ---- state -----------------------------------------------------------
 
-    _init_attributes = ("_alpha0",)
+    #: The hyperparameters tuning moves, each kept as built in ``_<name>0``
     _tuned: tuple[str, ...] = ("alpha",)
-    _running: ScalarFields = _RUNNING
-    #: Running statistics over the features, as ``(state key, attribute)``
-    _running_arrays: tuple[tuple[str, str], ...] = ()
-    _scalars = _RUNNING + _LOG_EVIDENCE
+    #: The running statistics beyond ``effective_n``, as ``(eb block key,
+    #: attribute)``
+    _statistics: tuple[tuple[str, str], ...] = ()
 
-    def _fitted_state(self) -> dict[str, Any]:
-        state = super()._fitted_state()
-        for key, attribute in self._running_arrays:
-            state[key] = copy_or_none(self.__dict__.get(attribute))
+    def _write_prior(self, tuned: Mapping[str, Optional[float]]) -> None:
+        for name in self._tuned:
+            value = tuned[name]
+            setattr(self, name, getattr(self, f"_{name}0") if value is None else value)
+
+    def _prior_weight(self) -> Optional[float]:
+        return optional_float(self.__dict__.get("_prior_scalar"))
+
+    def _eb_state(self) -> Optional[dict[str, Any]]:
+        if "_effective_n" not in self.__dict__:
+            return None
+        state: dict[str, Any] = {
+            "effective_n": float(self._effective_n),
+            "yty": None,
+            "xty": None,
+            "loglik": None,
+            "updates_rejected": int(self.eb_updates_rejected_),
+            **report_state(self),
+        }
+        for key, attribute in self._statistics:
+            value = self.__dict__[attribute]
+            state[key] = (
+                np.array(value, dtype=np.float64) if np.ndim(value) else float(value)
+            )
         return state
 
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> dict[str, Any]:
-        restored = super()._read_state(state, owner)
-        n = restored["cov_inv_"].shape[0]
-        for key, _ in self._running_arrays:
-            restored[key] = _load_optional_vector(
-                state[key], n, f"{owner} state {key!r}"
-            )
-        arrays = tuple(key for key, _ in self._running_arrays)
-        check_together(state, field_keys(self._running) + arrays, owner)
-        return restored
-
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        super()._write_state(restored)
-        for key, attribute in self._running_arrays:
-            set_optional(self, attribute, restored[key])
+    def _write_eb(
+        self, eb: Optional[Mapping[str, Any]], prior_weight: Optional[float]
+    ) -> None:
+        """Restore the running statistics, or clear them so tuning starts
+        from the loaded posterior, as after ``sample`` initialized the
+        prior; also when they are another model's."""
+        discard(self, ("_prior_scalar", "_effective_n", "eb_updates_rejected_"))
+        discard(self, [attribute for _, attribute in self._statistics])
+        if eb is None or any(eb[key] is None for key, _ in self._statistics):
+            write_report(self, None)
+            return
+        write_report(self, eb)
+        assert prior_weight is not None  # read checks it comes with eb
+        self._prior_scalar = prior_weight
+        self._effective_n = eb["effective_n"]
+        self.eb_updates_rejected_ = eb["updates_rejected"]
+        for key, attribute in self._statistics:
+            self.__dict__[attribute] = eb[key]
 
 
 class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
@@ -538,6 +541,7 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self.eb_tol = eb_tol
         self.trace_method = trace_method
         self._alpha0 = alpha  # EB overwrites alpha; keep the prior
+        self._beta0 = beta  # likewise, for a state that has no beta
 
     @property
     def coef_(self) -> NDArray[np.float64]:
@@ -882,51 +886,15 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
     # ---- state -----------------------------------------------------------
 
     _tuned: tuple[str, ...] = ("alpha", "beta")
-    _running = _RUNNING + (("eff_yTy", "_eff_yTy", load_float),)
-    _running_arrays = (("eff_XTy", "_eff_XTy"),)
-    _scalars = _running + _LOG_EVIDENCE
-    # A MacKay correction can leave the mean unsolved behind its
-    # information vector (see ``coef_``); the state keeps whichever is
-    # held, so a later ``partial_fit`` takes the same path as the
-    # original's.
-    _state_keys = NormalRegressor._state_keys + ("eff_XTy", "pending_eta")
+    _statistics = (("yty", "_eff_yTy"), ("xty", "_eff_XTy"))
 
-    def _fitted_state(self) -> dict[str, Any]:
-        pending = copy_or_none(self.__dict__.get("_pending_eta"))
-        return {**super()._fitted_state(), "pending_eta": pending}
-
-    def _coef_state(self) -> Optional[NDArray[np.float64]]:
-        # Read past the property, which would solve a pending mean
-        if "_pending_eta" in self.__dict__:
-            return None
-        return np.array(self.__dict__["_coef"], dtype=np.float64)
-
-    def _read_coef(self, value: Any, n: int, owner: str) -> Any:
-        return _load_optional_vector(value, n, f"{owner} state 'coef_'")
-
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> dict[str, Any]:
-        restored = super()._read_state(state, owner)
-        restored["pending_eta"] = _load_optional_vector(
-            state["pending_eta"],
-            restored["cov_inv_"].shape[0],
-            f"{owner} state 'pending_eta'",
-        )
-        if (restored["coef_"] is None) == (restored["pending_eta"] is None):
-            raise ValueError(
-                f"{owner} state must set exactly one of 'coef_' and 'pending_eta'."
-            )
-        return restored
-
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        pending = restored["pending_eta"]
-        if pending is not None:
-            # As in the original, the held mean stands in until coef_ is
-            # read, which solves the pending vector; it must exist for the
-            # fitted check partial_fit makes before it takes that vector.
-            restored = {**restored, "coef_": self.__dict__["_coef"]}
-        super()._write_state(restored)
-        if pending is not None:
-            self.__dict__["_pending_eta"] = pending
+    def _solved_mean(self) -> NDArray[np.float64]:
+        # A pending mean is solved without being kept, so the model's next
+        # update takes the same path whether or not it was saved
+        pending = self.__dict__.get("_pending_eta")
+        if pending is None:
+            return np.array(self.__dict__["_coef"], dtype=np.float64)
+        return np.array(self._precision_factor.solve(pending), dtype=np.float64)
 
 
 class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
@@ -1228,8 +1196,7 @@ class EmpiricalBayesGLM(_StabilizedPriorMixin, BayesianGLM):
         self._eb_mackay_step()
         self._correct_precision(old[0])
 
-    _running = _RUNNING + (("eff_loglik", "_eff_loglik", load_float),)
-    _scalars = _running + _LOG_EVIDENCE
+    _statistics = (("loglik", "_eff_loglik"),)
 
 
 class EmpiricalBayesDirichletClassifier(DirichletClassifier):
@@ -1495,29 +1462,14 @@ class EmpiricalBayesDirichletClassifier(DirichletClassifier):
     # effective counts (known_alphas - prior) stay right after a tick.
     _default_tick_rule: type = StabilizedForgetting
 
-    # Tuning rewrites alphas, so they are state: values in class order,
-    # beside the classes. prior_ follows from them on load, as after a
-    # tuning step.
-    _tuned: tuple[str, ...] = ("classes_", "alphas")
-    _scalars = _LOG_EVIDENCE + _FIT_REPORT
+    def _write_prior(self, alphas: dict[Any, float]) -> None:
+        self.alphas = alphas
 
-    def _tuned_state(self) -> dict[str, Any]:
-        return {
-            "classes_": np.array(list(self.alphas)).tolist(),
-            "alphas": np.array(list(self.alphas.values()), dtype=np.float64),
-        }
+    def _report_state(self) -> Optional[dict[str, Any]]:
+        return _reported(self)
 
-    def _read_tuned(self, state: Mapping[str, Any], owner: str) -> dict[str, Any]:
-        self._check_classes(state, owner)
-        return {
-            "alphas": load_array(
-                state["alphas"], (len(self.alphas),), f"{owner} state 'alphas'"
-            )
-        }
-
-    def _write_tuned(self, tuned: Mapping[str, Any]) -> None:
-        for key, value in zip(list(self.alphas), tuned["alphas"]):
-            self.alphas[key] = float(value)
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        write_report(self, report)
 
 
 class EmpiricalBayesGammaRegressor(GammaRegressor):
@@ -1761,7 +1713,11 @@ class EmpiricalBayesGammaRegressor(GammaRegressor):
     # decay() defaults to stabilized forgetting toward the tuned prior_.
     _default_tick_rule: type = StabilizedForgetting
 
-    # Tuning rewrites alpha and beta, so they are state; prior_ follows
-    # from them on load, as after a tuning step.
-    _tuned: tuple[str, ...] = ("alpha", "beta")
-    _scalars = _LOG_EVIDENCE + _FIT_REPORT
+    def _write_prior(self, alpha: float, beta: float) -> None:
+        self.alpha, self.beta = alpha, beta
+
+    def _report_state(self) -> Optional[dict[str, Any]]:
+        return _reported(self)
+
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        write_report(self, report)

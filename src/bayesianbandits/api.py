@@ -59,11 +59,11 @@ from typing import (
     Dict,
     Generic,
     List,
-    Mapping,
     Optional,
     Protocol,
     Sequence,
     Sized,
+    Tuple,
     Union,
     cast,
     overload,
@@ -93,11 +93,10 @@ from ._blas_helpers import draw_contiguous
 from ._draw_kind import DrawKind
 from ._memory import MemoryUsageMixin
 from ._state import (
-    STATE_VERSION,
-    check_state,
+    check_block,
     check_tokens,
-    stage_generator,
-    stage_load,
+    load_keys,
+    versioned,
 )
 from .policies import (  # noqa: F401
     EpsilonGreedy,
@@ -190,6 +189,10 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
     ]: ...
 
 
+#: The version of an agent's state, the only one it reads
+_AGENT_VERSION = 1
+
+
 def _queued_state(queued: Arm[Any, Any], arms: Sequence[Arm[Any, Any]]) -> List[Any]:
     """The arm queued for update as ``[token]``, or ``[]`` if
     ``remove_arm`` took it out. A list tells an arm whose token is
@@ -210,6 +213,20 @@ def _queued_token(value: Any, tokens: Sequence[Any], owner: str) -> List[Any]:
             "one of its arms."
         )
     return list(value)
+
+
+def _arm_states(value: Any, owner: str) -> List[Tuple[Any, Any]]:
+    """The ``[token, state]`` pairs of an agent state."""
+    message = f"{owner} state 'arms' must be a list of [token, state] pairs."
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(message)
+    pairs = []
+    for pair in value:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise TypeError(message)
+        pairs.append((pair[0], pair[1]))
+    load_keys([token for token, _ in pairs], f"{owner} state arm tokens")
+    return pairs
 
 
 def _reject_shared_learner(
@@ -586,10 +603,12 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
     def state_dict(self) -> Dict[str, Any]:
         """Return the agent's learned state as plain data.
 
-        ``"arms"`` maps each arm's action token to its learner's
-        ``state_dict()``. The state also holds ``arm_to_update`` as
-        ``[token]`` (``[]`` if that arm was removed), the state of the
-        generator the policy and learners share, and a ``version``.
+        The state is ``{"v": 1, "arms": [[token, state], ...],
+        "arm_to_update": [token], "rng": ...}``: each arm's action token
+        with its learner's ``state_dict()``, the arm queued for update
+        (``[]`` if it was removed), and the state of the generator the
+        policy and learners share. Pairs rather than a mapping keep
+        tokens that are not strings through codecs such as JSON.
         Policies, reward functions and the learners' constructor
         arguments stay in code: build the agent the same way and call
         :meth:`load_state_dict`.
@@ -604,27 +623,24 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         AttributeError
             If an arm's learner has no ``state_dict``.
         """
-        return {
-            "version": STATE_VERSION,
-            "arms": {
-                arm.action_token: cast(Any, arm.learner).state_dict()
+        return versioned(
+            _AGENT_VERSION,
+            arms=[
+                [arm.action_token, cast(Any, arm.learner).state_dict()]
                 for arm in self.arms
-            },
-            "arm_to_update": _queued_state(self.arm_to_update, self.arms),
-            "rng": self.rng.bit_generator.state,
-        }
+            ],
+            arm_to_update=_queued_state(self.arm_to_update, self.arms),
+            rng=self.rng.bit_generator.state,
+        )
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
         """Restore a state from :meth:`state_dict`.
 
-        Each learner loads the state saved under its arm's token, and the
+        Each learner loads the state saved with its arm's token, and the
         shared generator continues the saved stream, so the agent pulls
         and updates as the original would. The arms must carry the same
-        tokens, in any order. Every state is checked before any is
-        written, so a rejected state leaves the agent as it was; a custom
-        learner with only ``load_state_dict`` is checked as it loads.
-        Reseed with ``agent.rng = None`` for copies that should explore
-        differently.
+        tokens, in any order. Reseed with ``agent.rng = None`` for copies
+        that should explore differently.
 
         Parameters
         ----------
@@ -639,17 +655,17 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
             generator, or a learner rejects its state.
         """
         owner = type(self).__name__
-        check_state(state, ("arms", "arm_to_update", "rng"), owner)
-        arms = state["arms"]
-        if not isinstance(arms, Mapping):
-            raise TypeError(f"{owner} state 'arms' must be a dict of learner states.")
-        check_tokens(list(arms), [arm.action_token for arm in self.arms], owner)
-        queued = _queued_token(state["arm_to_update"], list(arms), owner)
-        writes = [stage_generator(self.rng, state["rng"])] + [
-            stage_load(arm.learner, arms[arm.action_token]) for arm in self.arms
-        ]
-        for write in writes:
-            write()
+        check_block(
+            state, _AGENT_VERSION, ("arms", "arm_to_update", "rng"), f"{owner} state"
+        )
+        pairs = _arm_states(state["arms"], owner)
+        tokens = [token for token, _ in pairs]
+        check_tokens(tokens, [arm.action_token for arm in self.arms], owner)
+        queued = _queued_token(state["arm_to_update"], tokens, owner)
+        self.rng.bit_generator.state = state["rng"]
+        learner_states = dict(pairs)
+        for arm in self.arms:
+            cast(Any, arm.learner).load_state_dict(learner_states[arm.action_token])
         for token in queued:
             self.select_for_update(token)
 
@@ -1604,7 +1620,7 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         once under ``"learner"``, beside the arms' action tokens under
         ``"arms"``. The state also holds ``arm_to_update`` as ``[token]``
         (``[]`` if that arm was removed), the state of the generator the
-        policy and learner share, and a ``version``. The policy,
+        policy and learner share, and a version ``v``. The policy,
         featurizer, reward functions and the learner's constructor
         arguments stay in code: build the agent the same way and call
         :meth:`load_state_dict`.
@@ -1619,13 +1635,13 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         AttributeError
             If the learner has no ``state_dict``.
         """
-        return {
-            "version": STATE_VERSION,
-            "arms": [arm.action_token for arm in self.arms],
-            "learner": cast(Any, self.learner).state_dict(),
-            "arm_to_update": _queued_state(self.arm_to_update, self.arms),
-            "rng": self.rng.bit_generator.state,
-        }
+        return versioned(
+            _AGENT_VERSION,
+            arms=[arm.action_token for arm in self.arms],
+            learner=cast(Any, self.learner).state_dict(),
+            arm_to_update=_queued_state(self.arm_to_update, self.arms),
+            rng=self.rng.bit_generator.state,
+        )
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
         """Restore a state from :meth:`state_dict`.
@@ -1633,10 +1649,8 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         The shared learner loads the saved learner state, and the
         generator continues the saved stream, so the agent pulls and
         updates as the original would. The arms must carry the same
-        tokens, in any order. Both states are checked before either is
-        written, so a rejected state leaves the agent as it was. Reseed
-        with ``agent.rng = None`` for copies that should explore
-        differently.
+        tokens, in any order. Reseed with ``agent.rng = None`` for copies
+        that should explore differently.
 
         Parameters
         ----------
@@ -1651,15 +1665,16 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             generator, or the learner rejects its state.
         """
         owner = type(self).__name__
-        check_state(state, ("arms", "learner", "arm_to_update", "rng"), owner)
-        tokens = list(state["arms"])
+        check_block(
+            state,
+            _AGENT_VERSION,
+            ("arms", "learner", "arm_to_update", "rng"),
+            f"{owner} state",
+        )
+        tokens = load_keys(state["arms"], f"{owner} state arms")
         check_tokens(tokens, [arm.action_token for arm in self.arms], owner)
         queued = _queued_token(state["arm_to_update"], tokens, owner)
-        writes = [
-            stage_generator(self.rng, state["rng"]),
-            stage_load(self.learner, state["learner"]),
-        ]
-        for write in writes:
-            write()
+        self.rng.bit_generator.state = state["rng"]
+        cast(Any, self.learner).load_state_dict(state["learner"])
         for token in queued:
             self.select_for_update(token)

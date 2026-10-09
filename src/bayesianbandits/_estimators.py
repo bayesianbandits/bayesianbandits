@@ -78,18 +78,28 @@ from ._sparse_bayesian_linear_regression import (
     scale_factor,
 )
 from ._state import (
-    LearnerStateMixin,
+    REPORT_KEYS,
+    check_block,
+    check_state,
+    discard,
     load_array,
     load_bool,
-    load_float,
+    load_finite,
     load_int,
+    load_keys,
     load_optional,
+    load_positive,
     load_precision,
-    load_table,
+    load_report,
     precision_state,
-    set_optional,
-    table_state,
+    versioned,
 )
+
+#: The version of each block a family writes, and the only one it reads;
+#: a format change bumps its own block
+_GAUSSIAN_VERSIONS = {"prior": 1, "posterior": 1, "forgetting": 1, "noise": 1, "eb": 1}
+_DIRICHLET_VERSIONS = {"prior": 1, "posterior": 1, "eb": 1}
+_GAMMA_VERSIONS = {"prior": 1, "posterior": 1, "eb": 1}
 
 Params = ParamSpec("Params")
 ReturnType = TypeVar("ReturnType")
@@ -124,7 +134,7 @@ class _LiveRngMixin:
 
 
 class DirichletClassifier(
-    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator, ClassifierMixin
+    _LiveRngMixin, MemoryUsageMixin, BaseEstimator, ClassifierMixin
 ):
     """
     Intercept-only Dirichlet-Multinomial classifier.
@@ -514,45 +524,132 @@ class DirichletClassifier(
         )
         tick_groups(self.known_alphas_, rule, steps=steps, prior=self.prior_)
 
-    _initialized_by = "known_alphas_"
-    _state_keys: tuple[str, ...] = ("classes_", "n_features_", "known_alphas_")
+    def state_dict(self) -> Dict[str, Any]:
+        """
+        Return the learned state as plain data.
 
-    def _fitted_state(self) -> Dict[str, Any]:
-        return {
-            "classes_": self.classes_.tolist(),
-            "n_features_": self.__dict__.get("n_features_"),
-            "known_alphas_": table_state(self.known_alphas_, self.n_classes_),
+        The state is ``{"family": "dirichlet", "prior": ..., "posterior":
+        ...}``. The prior holds the ``classes`` and their concentration
+        ``alpha``; the posterior holds the ``groups`` seen, with one row
+        of ``alpha`` per group in the prior's class order. Empirical Bayes
+        adds an ``eb`` block. Each block carries a version ``v``, and
+        there is no posterior before the first fit. Any Dirichlet
+        classifier loads the state: build it in code and call
+        :meth:`load_state_dict`.
+
+        Returns
+        -------
+        state : dict
+            Dicts, lists, numpy arrays and Python scalars only. Arrays
+            are copies.
+        """
+        versions = _DIRICHLET_VERSIONS
+        state: Dict[str, Any] = {
+            "family": "dirichlet",
+            "prior": versioned(
+                versions["prior"],
+                classes=np.array(list(self.alphas)).tolist(),
+                alpha=np.array(list(self.alphas.values()), dtype=np.float64),
+            ),
         }
-
-    def _check_classes(self, state: Mapping[str, Any], owner: str) -> None:
-        classes = np.array(list(self.alphas)).tolist()
-        if list(state["classes_"]) != classes:
-            raise ValueError(
-                f"{owner} state has classes {list(state['classes_'])!r}, but "
-                f"alphas has {classes!r}."
+        if "n_features_" in self.__dict__:
+            groups = list(self.known_alphas_)
+            alpha = np.empty((len(groups), len(self.alphas)), dtype=np.float64)
+            for row, group in enumerate(groups):
+                alpha[row] = self.known_alphas_[group]
+            state["posterior"] = versioned(
+                versions["posterior"], groups=groups, alpha=alpha
             )
+        report = self._report_state()
+        if report is not None:
+            state["eb"] = versioned(versions["eb"], **report)
+        return state
 
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
-        self._check_classes(state, owner)
-        return {
-            "n_features_": load_optional(
-                state["n_features_"], load_int, f"{owner} state 'n_features_'"
-            ),
-            "known_alphas_": load_table(
-                state["known_alphas_"],
-                len(self.alphas),
-                f"{owner} state 'known_alphas_'",
-            ),
-        }
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """
+        Restore a state from :meth:`state_dict`, replacing any fit.
 
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        self.known_alphas_.update(restored["known_alphas_"])
-        set_optional(self, "n_features_", restored["n_features_"])
+        Classes are matched by label, in any order. The prior's
+        concentration replaces ``alphas`` where empirical Bayes tunes it;
+        otherwise ``alphas`` stays as built. Loaded into the kind of
+        estimator that wrote it, built the same way, the state then
+        predicts, samples from the same generator and updates as the
+        original does. The generator is not state: ``random_state_`` is
+        seeded from ``random_state`` as ``fit`` seeds it.
+
+        Parameters
+        ----------
+        state : dict
+            A state from :meth:`state_dict` of any Dirichlet classifier.
+
+        Raises
+        ------
+        ValueError
+            If the state is of another family or block version, its keys,
+            shapes or values do not match, or its classes differ from
+            those of ``alphas``.
+        TypeError
+            If a value has the wrong type.
+        """
+        owner = type(self).__name__
+        versions = _DIRICHLET_VERSIONS
+        blocks = check_state(
+            state, "dirichlet", owner, required=("prior",), optional=("posterior", "eb")
+        )
+        where = f"{owner} prior"
+        prior = check_block(
+            blocks["prior"], versions["prior"], ("classes", "alpha"), where
+        )
+        labels = load_keys(prior["classes"], f"{where} classes")
+        ours = cast(List[Any], np.array(list(self.alphas)).tolist())
+        if len(labels) != len(ours) or any(label not in labels for label in ours):
+            raise ValueError(
+                f"{owner} state has classes {labels!r}, but alphas has {ours!r}."
+            )
+        order = [labels.index(label) for label in ours]
+        alpha = load_array(
+            prior["alpha"], (len(labels),), f"{where} alpha", positive=True
+        )
+        groups = None
+        if blocks["posterior"] is not None:
+            where = f"{owner} posterior"
+            posterior = check_block(
+                blocks["posterior"], versions["posterior"], ("groups", "alpha"), where
+            )
+            keys = load_keys(posterior["groups"], f"{where} groups")
+            values = load_array(
+                posterior["alpha"],
+                (len(keys), len(labels)),
+                f"{where} alpha",
+                positive=True,
+            )[:, order]
+            groups = [(key, row.copy()) for key, row in zip(keys, values)]
+        report = None
+        if blocks["eb"] is not None:
+            eb = check_block(blocks["eb"], versions["eb"], REPORT_KEYS, f"{owner} eb")
+            report = load_report(eb, f"{owner} eb")
+
+        self._write_prior({key: float(a) for key, a in zip(self.alphas, alpha[order])})
+        discard(self, ("known_alphas_", "n_features_"))
+        self._write_report(report)
+        if groups is not None:
+            self._initialize_prior()
+            self.known_alphas_.update(groups)
+            self.n_features_ = 1
+
+    def _write_prior(self, alphas: Dict[Any, float]) -> None:
+        """Hyperparameters are configuration, kept as built; empirical
+        Bayes tunes them and takes them from the state."""
+
+    def _report_state(self) -> Optional[Dict[str, Any]]:
+        """What empirical Bayes reports of its tuning; nothing here."""
+        return None
+
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        pass
 
 
-class GammaRegressor(
-    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin
-):
+class GammaRegressor(_LiveRngMixin, MemoryUsageMixin, BaseEstimator, RegressorMixin):
     """
     Intercept-only Gamma-Poisson conjugate regression model.
 
@@ -915,26 +1012,122 @@ class GammaRegressor(
         )
         tick_groups(self.coef_, rule, steps=steps, prior=self.prior_)
 
-    _initialized_by = "coef_"
-    _state_keys: tuple[str, ...] = ("n_features_", "coef_")
+    def state_dict(self) -> Dict[str, Any]:
+        """
+        Return the learned state as plain data.
 
-    def _fitted_state(self) -> Dict[str, Any]:
-        return {
-            "n_features_": self.__dict__.get("n_features_"),
-            "coef_": table_state(self.coef_, 2),
-        }
+        The state is ``{"family": "gamma", "prior": ..., "posterior":
+        ...}``. The prior holds the shape ``alpha`` and rate ``beta``; the
+        posterior holds the ``groups`` seen, with each group's ``alpha``
+        and ``beta``. Empirical Bayes adds an ``eb`` block. Each block
+        carries a version ``v``, and there is no posterior before the
+        prior is initialized. Any Gamma regressor loads the state: build
+        it in code and call :meth:`load_state_dict`.
 
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
-        return {
-            "n_features_": load_optional(
-                state["n_features_"], load_int, f"{owner} state 'n_features_'"
+        Returns
+        -------
+        state : dict
+            Dicts, lists, numpy arrays and Python scalars only. Arrays
+            are copies.
+        """
+        versions = _GAMMA_VERSIONS
+        state: Dict[str, Any] = {
+            "family": "gamma",
+            "prior": versioned(
+                versions["prior"], alpha=float(self.alpha), beta=float(self.beta)
             ),
-            "coef_": load_table(state["coef_"], 2, f"{owner} state 'coef_'"),
         }
+        if "coef_" in self.__dict__:
+            groups = list(self.coef_)
+            params = np.empty((len(groups), 2), dtype=np.float64)
+            for row, group in enumerate(groups):
+                params[row] = self.coef_[group]
+            state["posterior"] = versioned(
+                versions["posterior"],
+                groups=groups,
+                alpha=params[:, 0].copy(),
+                beta=params[:, 1].copy(),
+            )
+        report = self._report_state()
+        if report is not None:
+            state["eb"] = versioned(versions["eb"], **report)
+        return state
 
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        self.coef_.update(restored["coef_"])
-        set_optional(self, "n_features_", restored["n_features_"])
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """
+        Restore a state from :meth:`state_dict`, replacing any fit.
+
+        The prior's ``alpha`` and ``beta`` replace the estimator's where
+        empirical Bayes tunes them; otherwise they stay as built. Loaded
+        into the kind of estimator that wrote it, built the same way, the
+        state then predicts, samples from the same generator and updates
+        as the original does. The generator is not state:
+        ``random_state_`` is seeded from ``random_state`` as ``fit``
+        seeds it.
+
+        Parameters
+        ----------
+        state : dict
+            A state from :meth:`state_dict` of any Gamma regressor.
+
+        Raises
+        ------
+        ValueError
+            If the state is of another family or block version, or its
+            keys, shapes or values do not match.
+        TypeError
+            If a value has the wrong type.
+        """
+        owner = type(self).__name__
+        versions = _GAMMA_VERSIONS
+        blocks = check_state(
+            state, "gamma", owner, required=("prior",), optional=("posterior", "eb")
+        )
+        where = f"{owner} prior"
+        prior = check_block(
+            blocks["prior"], versions["prior"], ("alpha", "beta"), where
+        )
+        alpha = load_positive(prior["alpha"], f"{where} alpha")
+        beta = load_positive(prior["beta"], f"{where} beta")
+        groups = None
+        if blocks["posterior"] is not None:
+            where = f"{owner} posterior"
+            posterior = check_block(
+                blocks["posterior"],
+                versions["posterior"],
+                ("groups", "alpha", "beta"),
+                where,
+            )
+            keys = load_keys(posterior["groups"], f"{where} groups")
+            n = len(keys)
+            shapes = load_array(
+                posterior["alpha"], (n,), f"{where} alpha", positive=True
+            )
+            rates = load_array(posterior["beta"], (n,), f"{where} beta", positive=True)
+            groups = [(key, np.array([a, b])) for key, a, b in zip(keys, shapes, rates)]
+        report = None
+        if blocks["eb"] is not None:
+            eb = check_block(blocks["eb"], versions["eb"], REPORT_KEYS, f"{owner} eb")
+            report = load_report(eb, f"{owner} eb")
+
+        self._write_prior(alpha, beta)
+        discard(self, ("coef_", "n_features_"))
+        self._write_report(report)
+        if groups is not None:
+            self._initialize_prior()
+            self.coef_.update(groups)
+            self.n_features_ = 1
+
+    def _write_prior(self, alpha: float, beta: float) -> None:
+        """Hyperparameters are configuration, kept as built; empirical
+        Bayes tunes them and takes them from the state."""
+
+    def _report_state(self) -> Optional[Dict[str, Any]]:
+        """What empirical Bayes reports of its tuning; nothing here."""
+        return None
+
+    def _write_report(self, report: Optional[Mapping[str, Any]]) -> None:
+        pass
 
 
 def _scaled_identity_f(n: int, scale: float) -> NDArray[np.float64]:
@@ -1347,9 +1540,94 @@ def _blocked_colorize(
     return out.reshape(n_blocks * k, size).T
 
 
-class _BayesianLinearModel(
-    _LiveRngMixin, LearnerStateMixin, MemoryUsageMixin, BaseEstimator
-):
+#: Caches and in-flight values a load discards: rebuilt or reset on use
+_DERIVED = (
+    "_precision_factor",
+    "_factor_hint",
+    "cov_",
+    "shape_",
+    "_diag_pos",
+    "_pending_eta",
+    "_pending_prior_eta",
+    "_laplace_converged",
+)
+#: The empirical Bayes statistics of the Normal model and of the GLM
+_EB_STATISTICS = ({"yty", "xty"}, {"loglik"})
+
+
+def _read_gaussian_posterior(
+    blocks: Mapping[str, Any], sparse: bool, owner: str
+) -> Dict[str, Any]:
+    """Check and convert the blocks that come with a Gaussian posterior,
+    writing nothing."""
+    versions = _GAUSSIAN_VERSIONS
+    where = f"{owner} posterior"
+    posterior = check_block(
+        blocks["posterior"], versions["posterior"], ("mean", "precision"), where
+    )
+    if blocks["forgetting"] is None:
+        raise ValueError(f"{owner} state has a posterior but no forgetting block.")
+    forgetting = check_block(
+        blocks["forgetting"],
+        versions["forgetting"],
+        ("prior_weight", "fresh"),
+        f"{owner} forgetting",
+    )
+    precision = load_precision(posterior["precision"], sparse, f"{where} precision")
+    n = precision.shape[0]
+    restored: Dict[str, Any] = {
+        "mean": load_array(posterior["mean"], (n,), f"{where} mean"),
+        "precision": precision,
+        "fresh": load_bool(forgetting["fresh"], f"{owner} forgetting fresh"),
+        "prior_weight": load_optional(
+            forgetting["prior_weight"],
+            partial(load_finite, nonnegative=True),
+            f"{owner} forgetting prior_weight",
+        ),
+        "noise": None,
+        "eb": None,
+    }
+    if blocks["noise"] is not None:
+        noise = check_block(
+            blocks["noise"], versions["noise"], ("a", "b"), f"{owner} noise"
+        )
+        restored["noise"] = {
+            key: load_positive(noise[key], f"{owner} noise {key}") for key in ("a", "b")
+        }
+    if blocks["eb"] is not None:
+        where = f"{owner} eb"
+        keys = ("effective_n", "updates_rejected", "yty", "xty", "loglik", *REPORT_KEYS)
+        eb = check_block(blocks["eb"], versions["eb"], keys, where)
+        if restored["prior_weight"] is None:
+            raise ValueError(
+                f"{owner} state has an eb block but no forgetting prior_weight."
+            )
+        statistics = {key for key in ("yty", "xty", "loglik") if eb[key] is not None}
+        if statistics not in _EB_STATISTICS:
+            raise ValueError(
+                f"{where} must hold the Normal model's yty and xty or the GLM's "
+                f"loglik, not {sorted(statistics)}."
+            )
+        restored["eb"] = {
+            "effective_n": load_finite(
+                eb["effective_n"], f"{where} effective_n", nonnegative=True
+            ),
+            "updates_rejected": load_int(
+                eb["updates_rejected"], f"{where} updates_rejected"
+            ),
+            "yty": load_optional(
+                eb["yty"], partial(load_finite, nonnegative=True), f"{where} yty"
+            ),
+            "loglik": load_optional(eb["loglik"], load_finite, f"{where} loglik"),
+            "xty": load_optional(
+                eb["xty"], lambda v, w: load_array(v, (n,), w), f"{where} xty"
+            ),
+            **load_report(eb, where),
+        }
+    return restored
+
+
+class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
     """A Gaussian posterior over weights, its cached precision factor, and
     the prediction and sampling routes built on them.
 
@@ -1910,41 +2188,167 @@ class _BayesianLinearModel(
 
     # ---- state -----------------------------------------------------------
 
-    _initialized_by = "n_features_"
-    _state_keys: tuple[str, ...] = ("coef_", "cov_inv_", "prior_is_fresh")
+    def state_dict(self) -> Dict[str, Any]:
+        """
+        Return the learned state as plain data.
 
-    def _restore_prior(self, restored: Mapping[str, Any]) -> None:
-        self._initialize_prior(np.empty((0, restored["cov_inv_"].shape[0])))
+        The state is ``{"family": "gaussian", ...}`` with these blocks:
 
-    def _fitted_state(self) -> Dict[str, Any]:
-        return {
-            "coef_": self._coef_state(),
-            "cov_inv_": precision_state(self.cov_inv_),
-            "prior_is_fresh": bool(self.__dict__.get("_prior_is_fresh", False)),
-        }
+        - ``prior``: the prior precision ``alpha`` and noise precision
+          ``beta``, ``None`` where the estimator has neither;
+        - ``posterior``: the ``mean`` and ``precision`` of the weights;
+          a dense precision is a symmetric array, a sparse one its CSC
+          ``data``, ``indices``, ``indptr`` and ``shape``;
+        - ``forgetting``: the prior's remaining weight on the precision
+          diagonal (``prior_weight``, tracked by empirical Bayes) and
+          whether the posterior is still the untouched prior (``fresh``);
+        - ``noise``, for unknown noise variance: the posterior ``a`` and
+          ``b``;
+        - ``eb``, for empirical Bayes: its running statistics and tuning
+          report.
 
-    def _coef_state(self) -> Optional[NDArray[np.float64]]:
-        return np.array(self.coef_, dtype=np.float64)
+        Each block carries a version ``v``. Before the prior is
+        initialized only the prior is present. Any estimator of the
+        family loads the state, dense or sparse: build it in code and
+        call :meth:`load_state_dict`.
 
-    def _read_coef(self, value: Any, n: int, owner: str) -> Any:
-        return load_array(value, (n,), f"{owner} state 'coef_'")
-
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
-        cov_inv = load_precision(
-            state["cov_inv_"], self.sparse, f"{owner} state 'cov_inv_'"
-        )
-        return {
-            "coef_": self._read_coef(state["coef_"], cov_inv.shape[0], owner),
-            "cov_inv_": cov_inv,
-            "prior_is_fresh": load_bool(
-                state["prior_is_fresh"], f"{owner} state 'prior_is_fresh'"
+        Returns
+        -------
+        state : dict
+            Dicts, lists, numpy arrays and Python scalars only. Arrays
+            are copies.
+        """
+        versions = _GAUSSIAN_VERSIONS
+        params = self.get_params(deep=False)
+        state: Dict[str, Any] = {
+            "family": "gaussian",
+            "prior": versioned(
+                versions["prior"],
+                **{
+                    name: float(params[name]) if name in params else None
+                    for name in ("alpha", "beta")
+                },
             ),
         }
+        if "n_features_" not in self.__dict__:
+            return state
+        state["posterior"] = versioned(
+            versions["posterior"],
+            mean=self._solved_mean(),
+            precision=precision_state(self.cov_inv_),
+        )
+        state["forgetting"] = versioned(
+            versions["forgetting"],
+            prior_weight=self._prior_weight(),
+            fresh=bool(self.__dict__.get("_prior_is_fresh", False)),
+        )
+        noise = self._noise_state()
+        if noise is not None:
+            state["noise"] = versioned(versions["noise"], **noise)
+        eb = self._eb_state()
+        if eb is not None:
+            state["eb"] = versioned(versions["eb"], **eb)
+        return state
 
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        self.coef_ = restored["coef_"]
-        self.cov_inv_ = restored["cov_inv_"]
-        self._prior_is_fresh = restored["prior_is_fresh"]
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """
+        Restore a state from :meth:`state_dict`, replacing any fit.
+
+        A precision is converted to the estimator's dense or sparse form,
+        and blocks it has no use for are checked and set aside. The
+        prior's ``alpha`` and ``beta`` replace the estimator's where
+        empirical Bayes tunes them, and a state without them restores the
+        ones it was built with; other estimators keep theirs as built.
+        Without the ``eb`` block of its own model, empirical Bayes starts
+        tuning from the loaded posterior.
+
+        Loaded into the kind of estimator that wrote it, built the same
+        way, the state then predicts, samples from the same generator and
+        updates as the original does. Factorizations are rebuilt on first
+        use, so where the original had carried one over -- after
+        ``decay``, or a sparse update under SuperLU -- draws can differ in
+        the last bit, as after unpickling. The generator is not state:
+        ``random_state_`` is seeded from ``random_state`` as ``fit``
+        seeds it.
+
+        Parameters
+        ----------
+        state : dict
+            A state from :meth:`state_dict` of any Gaussian estimator.
+
+        Raises
+        ------
+        ValueError
+            If the state is of another family or block version, or its
+            keys, shapes, sparse structure or values do not match.
+        TypeError
+            If a value has the wrong type.
+        """
+        owner = type(self).__name__
+        blocks = check_state(
+            state,
+            "gaussian",
+            owner,
+            required=("prior",),
+            optional=("posterior", "forgetting", "noise", "eb"),
+        )
+        prior = check_block(
+            blocks["prior"],
+            _GAUSSIAN_VERSIONS["prior"],
+            ("alpha", "beta"),
+            f"{owner} prior",
+        )
+        tuned = {
+            name: load_optional(prior[name], load_positive, f"{owner} prior {name}")
+            for name in ("alpha", "beta")
+        }
+        restored = None
+        if blocks["posterior"] is not None:
+            restored = _read_gaussian_posterior(blocks, self.sparse, owner)
+        elif any(blocks[name] is not None for name in ("forgetting", "noise", "eb")):
+            raise ValueError(
+                f"{owner} state has no posterior, so it has no forgetting, noise "
+                "or eb block either."
+            )
+
+        self._write_prior(tuned)
+        discard(self, _DERIVED)
+        if restored is None:
+            discard(self, ("coef_", "_coef", "n_features_"))
+            self._write_eb(None, None)
+            return
+        self._initialize_prior(np.empty((0, restored["mean"].shape[0])))
+        self.coef_ = restored["mean"]
+        self.cov_inv_ = restored["precision"]
+        self._prior_is_fresh = restored["fresh"]
+        self._write_noise(restored["noise"])
+        self._write_eb(restored["eb"], restored["prior_weight"])
+
+    def _write_prior(self, tuned: Mapping[str, Optional[float]]) -> None:
+        """Hyperparameters are configuration, kept as built; empirical
+        Bayes tunes them and takes them from the state."""
+
+    def _solved_mean(self) -> NDArray[np.float64]:
+        return np.array(self.coef_, dtype=np.float64)
+
+    def _prior_weight(self) -> Optional[float]:
+        """The prior's remaining weight on the precision diagonal, where
+        the estimator tracks it."""
+        return None
+
+    def _noise_state(self) -> Optional[Dict[str, Any]]:
+        return None
+
+    def _write_noise(self, noise: Optional[Mapping[str, Any]]) -> None:
+        pass
+
+    def _eb_state(self) -> Optional[Dict[str, Any]]:
+        return None
+
+    def _write_eb(
+        self, eb: Optional[Mapping[str, Any]], prior_weight: Optional[float]
+    ) -> None:
+        pass
 
     # ---- sampling mechanics ----------------------------------------------
 
@@ -2720,22 +3124,14 @@ scipy.sparse.csc_array
         self.a_ = gamma * self.a_
         self.b_ = gamma * self.b_
 
-    _state_keys = NormalRegressor._state_keys + ("a_", "b_")
+    def _noise_state(self) -> Optional[Dict[str, Any]]:
+        return {"a": float(self.a_), "b": float(self.b_)}
 
-    def _fitted_state(self) -> Dict[str, Any]:
-        return {**super()._fitted_state(), "a_": float(self.a_), "b_": float(self.b_)}
-
-    def _read_state(self, state: Mapping[str, Any], owner: str) -> Dict[str, Any]:
-        return {
-            **super()._read_state(state, owner),
-            "a_": load_float(state["a_"], f"{owner} state 'a_'"),
-            "b_": load_float(state["b_"], f"{owner} state 'b_'"),
-        }
-
-    def _write_state(self, restored: Mapping[str, Any]) -> None:
-        super()._write_state(restored)
-        self.a_ = restored["a_"]
-        self.b_ = restored["b_"]
+    def _write_noise(self, noise: Optional[Mapping[str, Any]]) -> None:
+        # Without a noise posterior in the state, a_ and b_ stay at the
+        # prior _initialize_prior set
+        if noise is not None:
+            self.a_, self.b_ = noise["a"], noise["b"]
 
 
 class BayesianGLM(_BayesianLinearModel, RegressorMixin):
