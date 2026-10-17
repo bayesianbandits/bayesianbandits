@@ -589,25 +589,66 @@ def test_rejected_state_leaves_the_estimator_alone():
 
 GAUSSIAN = [
     pytest.param(lambda: NormalRegressor(alpha=1.0, beta=2.0), id="Normal"),
-    pytest.param(NormalInverseGammaRegressor, id="NIG"),
+    # a > 1 gives the prior noise a finite mean, so a state without a
+    # noise posterior can load
+    pytest.param(lambda: NormalInverseGammaRegressor(a=2.0, b=3.0), id="NIG"),
     pytest.param(BayesianGLM, id="GLM"),
     pytest.param(EmpiricalBayesNormalRegressor, id="EBNormal"),
     pytest.param(EmpiricalBayesGLM, id="EBGLM"),
 ]
 
 
+def _weights_covariance(est) -> np.ndarray:
+    """The covariance of the posterior over the weights. With unknown
+    noise variance that posterior is a multivariate t, whose covariance
+    is ``b / (a - 1)`` times the one conditional on the noise."""
+    cov = est.cov_.covariance
+    if isinstance(est, NormalInverseGammaRegressor):
+        return cov * (est.b_ / (est.a_ - 1))
+    return cov
+
+
 @pytest.mark.parametrize("target", GAUSSIAN)
 @pytest.mark.parametrize("source", GAUSSIAN)
 def test_any_gaussian_state_loads_into_any_gaussian_estimator(source, target):
-    """The posterior carries over; what the target has no use for is set
-    aside, and what it lacks starts from its own prior."""
+    """The posterior over the weights carries over in mean and covariance;
+    what the target has no use for is set aside, and what it lacks starts
+    from its own prior."""
     original = source()
     original.partial_fit(*_batch("binary", False, seed=0))
     state = original.state_dict()
     restored = target()
     restored.load_state_dict(state)
-    np.testing.assert_array_equal(restored.coef_, state["posterior"]["mean"])
+    np.testing.assert_array_equal(restored.coef_, original.coef_)
+    np.testing.assert_allclose(
+        _weights_covariance(restored), _weights_covariance(original), rtol=1e-12
+    )
     restored.partial_fit(*_batch("binary", False, seed=1))
+
+
+@pytest.mark.parametrize(
+    "source, target",
+    [
+        pytest.param(
+            lambda: NormalInverseGammaRegressor(a=0.1),
+            lambda: NormalRegressor(alpha=1.0, beta=1.0),
+            id="noise-posterior",
+        ),
+        pytest.param(
+            lambda: NormalRegressor(alpha=1.0, beta=1.0),
+            lambda: NormalInverseGammaRegressor(a=1.0),
+            id="noise-prior",
+        ),
+    ],
+)
+def test_covariance_must_be_finite_to_carry_over(source, target):
+    """Moving between known and unknown noise needs the expected noise
+    variance, which a <= 1 leaves infinite."""
+    X, y = _batch("real", False, seed=0)
+    original = source()
+    original.fit(X[:1], y[:1])  # NIG: a = 0.1 + 1/2
+    with pytest.raises(ValueError, match="a > 1"):
+        target().load_state_dict(original.state_dict())
 
 
 @pytest.mark.parametrize(

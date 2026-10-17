@@ -95,7 +95,10 @@ A learner's state describes its posterior, not the class: a ``family``
 and ``posterior``, each with its own version, which loading checks. So
 any estimator of a family loads it -- a dense model's state into a
 sparse one, or a ``NormalRegressor``'s into an
-``EmpiricalBayesNormalRegressor``, which tunes on from there. An agent
+``EmpiricalBayesNormalRegressor``, which tunes on from there. Between
+a ``NormalInverseGammaRegressor`` and an estimator with known noise, the
+precision is scaled by the expected noise variance so the weights keep
+their covariance; this needs ``a > 1``. An agent
 stores ``[token, state]`` pairs, so tokens that are not strings survive
 JSON, and loading raises if the tokens differ from its arms. A
 ``LipschitzContextualAgent`` stores its shared learner once.

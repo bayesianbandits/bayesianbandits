@@ -2203,7 +2203,8 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
           diagonal (``prior_weight``, tracked by empirical Bayes) and
           whether the posterior is still the untouched prior (``fresh``);
         - ``noise``, for unknown noise variance: the posterior ``a`` and
-          ``b``;
+          ``b``, with the weights' precision then conditional on the noise
+          variance;
         - ``eb``, for empirical Bayes: its running statistics and tuning
           report.
 
@@ -2260,7 +2261,11 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
         empirical Bayes tunes them, and a state without them restores the
         ones it was built with; other estimators keep theirs as built.
         Without the ``eb`` block of its own model, empirical Bayes starts
-        tuning from the loaded posterior.
+        tuning from the loaded posterior. Between an estimator with a
+        noise posterior and one without, the precision is scaled by the
+        expected noise variance ``b / (a - 1)``, of the state's noise
+        posterior or of the prior the noise then starts from, so the
+        weights' mean and covariance carry over.
 
         Loaded into the kind of estimator that wrote it, built the same
         way, the state then predicts, samples from the same generator and
@@ -2280,7 +2285,8 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
         ------
         ValueError
             If the state is of another family or block version, or its
-            keys, shapes, sparse structure or values do not match.
+            keys, shapes, sparse structure or values do not match, or if
+            the precision must be scaled and that ``a`` is at most 1.
         TypeError
             If a value has the wrong type.
         """
@@ -2305,6 +2311,9 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
         restored = None
         if blocks["posterior"] is not None:
             restored = _read_gaussian_posterior(blocks, self.sparse, owner)
+            restored["precision"] = self._precision_from(
+                restored["precision"], restored["noise"], owner
+            )
         elif any(blocks[name] is not None for name in ("forgetting", "noise", "eb")):
             raise ValueError(
                 f"{owner} state has no posterior, so it has no forgetting, noise "
@@ -2341,6 +2350,22 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
 
     def _write_noise(self, noise: Optional[Mapping[str, Any]]) -> None:
         pass
+
+    def _precision_from(
+        self, precision: Any, noise: Optional[Mapping[str, float]], owner: str
+    ) -> Any:
+        """The weights' precision, which keeps their covariance. With a
+        noise posterior the state's precision is conditional on the noise
+        variance, and the weights' covariance is ``b / (a - 1)`` times its
+        inverse."""
+        if noise is None:
+            return precision
+        if noise["a"] <= 1:
+            raise ValueError(
+                f"{owner} loads a noise posterior only with a > 1, where the "
+                f"weights' covariance is finite, not a = {noise['a']}."
+            )
+        return precision * ((noise["a"] - 1) / noise["b"])
 
     def _eb_state(self) -> Optional[Dict[str, Any]]:
         return None
@@ -3132,6 +3157,22 @@ scipy.sparse.csc_array
         # prior _initialize_prior set
         if noise is not None:
             self.a_, self.b_ = noise["a"], noise["b"]
+
+    def _precision_from(
+        self, precision: Any, noise: Optional[Mapping[str, float]], owner: str
+    ) -> Any:
+        """Without a noise posterior the state's precision is the weights'
+        own. The noise then starts from the prior, so scaling by the
+        prior's expected noise variance ``b / (a - 1)`` keeps the
+        weights' covariance."""
+        if noise is not None:
+            return precision
+        if self.a <= 1:
+            raise ValueError(
+                f"{owner} loads a state without a noise posterior only with "
+                f"a > 1, where the weights' covariance is finite, not a = {self.a}."
+            )
+        return precision * (self.b / (self.a - 1))
 
 
 class BayesianGLM(_BayesianLinearModel, RegressorMixin):
