@@ -193,6 +193,18 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
         """
         self._agent.decay(forgetting, decay_rate=decay_rate, steps=steps)
 
+    def state_dict(self) -> Dict[str, Any]:
+        """Return the wrapped agent's state as plain data.
+
+        The steps are fitted or stateless before the pipeline is built,
+        and stay in code, so the state is the agent's alone.
+        """
+        return self._agent.state_dict()
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore a state from :meth:`state_dict` into the wrapped agent."""
+        self._agent.load_state_dict(state)
+
     # Delegation methods
     def add_arm(self, arm: Arm[Any, TokenType]) -> None:
         """Add an arm to the wrapped agent."""
