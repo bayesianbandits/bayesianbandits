@@ -1,8 +1,8 @@
 Changelog
 =========
 
-1.5.0rc2 (2026-10-14)
----------------------
+Unreleased
+----------
 
 **New features**
 
@@ -12,6 +12,9 @@ Changelog
   the posterior by family in versioned blocks, so any estimator of the
   family loads it. Build the agent in code and load the state into it.
   See :doc:`/howto/production` (#309)
+
+1.5.0rc2 (2026-10-14)
+---------------------
 
 **Bug fixes**
 
