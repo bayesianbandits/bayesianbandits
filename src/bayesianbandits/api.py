@@ -1409,45 +1409,13 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    @overload
-    def pull(self, X: Sized) -> List[TokenType]: ...
+    def _sample_rewards(self, X: Sized, size: int) -> NDArray[np.float64]:
+        """Draw ``size`` reward samples per arm and context.
 
-    @overload
-    def pull(self, X: Sized, *, top_k: int) -> List[List[TokenType]]: ...
-
-    def pull(
-        self, X: Sized, *, top_k: int | None = None
-    ) -> List[TokenType] | List[List[TokenType]]:
-        """
-        Choose arm(s) and pull based on the context(s).
-
-        Parameters
-        ----------
-        X : Sized
-            Context matrix to use for choosing arms.
-        top_k : int, optional
-            Number of arms to select per context. If None (default),
-            selects single best arm per context. If specified, selects
-            top k arms per context.
-
-        Returns
-        -------
-        List[TokenType] or List[List[TokenType]]
-            If top_k is None: List of action tokens (one per context)
-            If top_k is int: List of lists of action tokens
-
-        Notes
-        -----
-        When top_k is None, arm_to_update is set to the last selected arm.
-        When top_k is specified, arm_to_update is NOT updated - you must
-        explicitly call select_for_update() before update() to specify
-        which arm's feedback you're providing.
-
-        The method performs vectorized operations:
-        1. Single featurizer call for all arms (major efficiency gain)
-        2. Single learner sample call for all arm-context pairs
-        3. Efficient reshape and reward function application
-        4. Policy selection using standard interface
+        Featurizes once for all arms, samples the shared learner by the
+        cheapest method at least as strong as the policy's ``consumes``,
+        and applies the reward functions. Returns the
+        ``(n_arms, n_contexts, size)`` tensor handed to the policy.
         """
         # 1. Get action tokens
         action_tokens = [arm.action_token for arm in self.arms]
@@ -1472,12 +1440,12 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
 
         if required == DrawKind.MARGINAL_ONLY:
             sampler = resolve_marginal_sampler(self.learner)
-            samples = sampler(X_enriched, size=self.policy.samples_needed)
+            samples = sampler(X_enriched, size=size)
         elif required == DrawKind.CONTEXT_JOINT:
             joint_sampler = resolve_reward_space_sampler(
                 self.learner,
                 n_rows=n_arms * n_contexts,
-                size=self.policy.samples_needed,
+                size=size,
                 block_size=n_arms,
             )
             if joint_sampler is not None:
@@ -1488,15 +1456,13 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
                     X_enriched,
                     n_arms,
                     n_contexts,
-                    self.policy.samples_needed,
+                    size,
                 )
 
         # 4. Unified reshape
         if reshaped is None:
             if samples is None:
-                samples = self.learner.sample(
-                    X_enriched, size=self.policy.samples_needed
-                )
+                samples = self.learner.sample(X_enriched, size=size)
             # Shape: (size, n_contexts * n_arms) or
             # (size, n_contexts * n_arms, n_classes)
             reshaped = self._reshape_samples(samples, n_arms, n_contexts)
@@ -1538,6 +1504,49 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
                 processed_samples.append(arm_samples)
             samples = np.array(processed_samples)
         # Final shape: (n_arms, n_contexts, size)
+        return samples
+
+    @overload
+    def pull(self, X: Sized) -> List[TokenType]: ...
+
+    @overload
+    def pull(self, X: Sized, *, top_k: int) -> List[List[TokenType]]: ...
+
+    def pull(
+        self, X: Sized, *, top_k: int | None = None
+    ) -> List[TokenType] | List[List[TokenType]]:
+        """
+        Choose arm(s) and pull based on the context(s).
+
+        Parameters
+        ----------
+        X : Sized
+            Context matrix to use for choosing arms.
+        top_k : int, optional
+            Number of arms to select per context. If None (default),
+            selects single best arm per context. If specified, selects
+            top k arms per context.
+
+        Returns
+        -------
+        List[TokenType] or List[List[TokenType]]
+            If top_k is None: List of action tokens (one per context)
+            If top_k is int: List of lists of action tokens
+
+        Notes
+        -----
+        When top_k is None, arm_to_update is set to the last selected arm.
+        When top_k is specified, arm_to_update is NOT updated - you must
+        explicitly call select_for_update() before update() to specify
+        which arm's feedback you're providing.
+
+        The method performs vectorized operations:
+        1. Single featurizer call for all arms (major efficiency gain)
+        2. Single learner sample call for all arm-context pairs
+        3. Efficient reshape and reward function application
+        4. Policy selection using standard interface
+        """
+        samples = self._sample_rewards(X, self.policy.samples_needed)
 
         # 6. Let policy select arms
         selected_arms = self.policy.select(samples, self.arms, self.rng, top_k)
