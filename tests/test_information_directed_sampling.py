@@ -136,7 +136,7 @@ class TestPairOptimizer:
         n_trials = 4_000
         picks = np.concatenate(
             [
-                _sample_information_ratio_minimizer(delta, v, alive, rng)
+                _sample_information_ratio_minimizer(delta, v, alive, rng)[0]
                 for _ in range(n_trials)
             ]
         )
@@ -156,7 +156,7 @@ class TestPairOptimizer:
         assert not np.isfinite(ratio).any()
 
         rng = np.random.default_rng(0)
-        picks = _sample_information_ratio_minimizer(delta, v, alive, rng)
+        picks = _sample_information_ratio_minimizer(delta, v, alive, rng)[0]
         assert picks.tolist() == [1, 2]  # argmin delta per context
 
     def test_resolved_greedy_respects_dead_arms(self):
@@ -167,7 +167,7 @@ class TestPairOptimizer:
         alive = np.array([[True], [False], [True]])  # best arm is dead
         picks = _sample_information_ratio_minimizer(
             delta, v, alive, np.random.default_rng(0)
-        )
+        )[0]
         assert picks.tolist() == [0]
 
     def test_ragged_frontiers_are_solved_per_context(self):
