@@ -5,6 +5,7 @@ Epsilon-greedy policy for Bayesian bandits.
 from typing import (
     List,
     Optional,
+    Tuple,
     Union,
     overload,
 )
@@ -147,6 +148,9 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms based on pre-generated samples using epsilon-greedy."""
+        if top_k is None:
+            return self.select_with_probabilities(samples, arms, rng)[0]
+
         # Compute means across samples dimension
         means = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
 
@@ -154,31 +158,43 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         # Decide which contexts explore
         choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon  # type: ignore[misc]
 
-        # How many arms to mark as infinite
-        k = 1 if top_k is None else top_k
-
         # For each exploring context, set k random arms to np.inf
         values = means.copy()
         for idx, explore in enumerate(choice_idx_to_explore):  # type: ignore[misc]
             if explore:
                 random_arms = rng.choice(
                     means.shape[0],
-                    size=min(k, means.shape[0]),
+                    size=min(top_k, means.shape[0]),
                     replace=False,
                 )
                 values[random_arms, idx] = np.inf
 
-        if top_k is None:
-            best_indices = values.argmax(axis=0)
-            return [arms[idx] for idx in best_indices]
-        else:
-            # Use argpartition for efficiency, but handle case where top_k >= n_arms
-            return [
-                [
-                    arms[idx]
-                    for idx in np.argpartition(
-                        -values[:, i], min(top_k, len(arms) - 1)
-                    )[:top_k]
+        # Use argpartition for efficiency, but handle case where top_k >= n_arms
+        return [
+            [
+                arms[idx]
+                for idx in np.argpartition(-values[:, i], min(top_k, len(arms) - 1))[
+                    :top_k
                 ]
-                for i in range(values.shape[1])
             ]
+            for i in range(values.shape[1])
+        ]
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Select one arm per context and return the ``(n_contexts, n_arms)``
+        distribution it was drawn from, :math:`(1 - \\varepsilon)
+        \\mathbb{1}[a = \\text{greedy}] + \\varepsilon / K`."""
+        n_arms, n_contexts, n_draws = samples.shape
+        # Mean over draws as a matvec: BLAS beats numpy's short-axis reduction
+        choices = (samples @ np.full(n_draws, 1.0 / n_draws)).argmax(axis=0)
+        probs = np.full((n_contexts, n_arms), self.epsilon / n_arms)
+        probs[np.arange(n_contexts), choices] += 1 - self.epsilon
+        # Same draws as the top_k path, so seeded output is unchanged
+        for ctx in np.flatnonzero(rng.random(n_contexts) < self.epsilon):
+            choices[ctx] = rng.choice(n_arms, size=1, replace=False)[0]
+        return list(map(arms.__getitem__, choices.tolist())), probs

@@ -6,9 +6,12 @@ from typing import Any, List
 import numpy as np
 import pytest
 
-from bayesianbandits import EXP3A, Arm
+from bayesianbandits import EXP3A, Arm, EpsilonGreedy
 
-POLICIES: List[Any] = [EXP3A(eta=1.0, gamma=0.1, samples=8)]
+POLICIES: List[Any] = [
+    EXP3A(eta=1.0, gamma=0.1, samples=8),
+    EpsilonGreedy(epsilon=0.3, samples=8),
+]
 
 
 def _arms(n_arms: int) -> List[Arm[Any, int]]:
