@@ -307,16 +307,14 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
-        """Select one arm per context and return the distribution it was drawn from.
-
-        Returns the selected arms and ``probs`` of shape
-        ``(n_contexts, n_arms)``: :math:`P_t(a)` for every arm, conditional
-        on ``samples``. These are the propensities for inverse propensity
-        scoring and doubly-robust estimators.
-        """
+        """Select one arm per context and return the ``(n_contexts, n_arms)``
+        distribution it was drawn from: the propensities for IPS and
+        doubly-robust offline evaluation."""
         probs = self._probabilities(samples, len(arms))
-        choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])]
-        return [arms[i] for i in choices], np.ascontiguousarray(probs.T)
+        # Inverse-CDF draw, the same stream as rng.choice(p=...) per context
+        cdf = np.cumsum(probs, axis=0)
+        choices = (cdf <= rng.random(probs.shape[1]) * cdf[-1]).sum(axis=0)
+        return [arms[i] for i in choices], probs.T
 
     def _probabilities(
         self,
@@ -325,7 +323,6 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
     ) -> NDArray[np.float64]:
         """Exponential-weights selection distribution, ``(n_arms, n_contexts)``."""
         rewards = samples.mean(axis=-1)
-        # Subtracting the max keeps the exponentials finite
         weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
         return (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / n_arms
 
