@@ -13,21 +13,8 @@ Unreleased
   family loads it. Build the agent in code and load the state into it.
   See :doc:`/howto/production` (#309)
 
-1.5.0rc2 (2026-10-14)
----------------------
-
-**Bug fixes**
-
-- Assigning ``agent.rng`` now reseeds every arm learner whose prior is
-  already initialized, including one wrapped in a ``LearnerPipeline``, one
-  passed to ``add_arm``, and the shared learner of
-  ``LipschitzContextualAgent``. A ``Generator`` passed as an estimator's
-  ``random_state`` is the generator it samples from; ``random_state_`` now
-  only holds one derived from an ``int`` or ``None`` seed. Copies of a
-  pickled agent reseeded differently replayed identical draws (#308)
-
-1.5.0rc1 (2026-09-18)
----------------------
+1.5.0 (2026-10-21)
+------------------
 
 **Breaking changes**
 
@@ -97,6 +84,13 @@ Unreleased
   instead of returning the prior as a fitted posterior (#293)
 - A ``partial_fit`` that raises mid-update no longer leaves the posterior
   half-advanced (#278, #281)
+- Assigning ``agent.rng`` now reseeds every arm learner whose prior is
+  already initialized, including one wrapped in a ``LearnerPipeline``, one
+  passed to ``add_arm``, and the shared learner of
+  ``LipschitzContextualAgent``. A ``Generator`` passed as an estimator's
+  ``random_state`` is the generator it samples from; ``random_state_`` now
+  only holds one derived from an ``int`` or ``None`` seed. Copies of a
+  pickled agent reseeded differently replayed identical draws (#308, #311)
 
 **Performance**
 
