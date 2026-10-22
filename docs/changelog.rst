@@ -14,6 +14,9 @@ Unreleased
 
 **Performance**
 
+- ``UpperConfidenceBound`` computes its quantile with one partition
+  instead of ``np.quantile``, 3x faster at the default 1000 draws and
+  bit-identical (#310)
 - ``EpsilonGreedy`` draws its exploration arms in one vectorized call
   instead of one ``rng.choice`` per exploring context. Seeded
   single-arm selections differ from 1.5.0rc2; the greedy arm, the
