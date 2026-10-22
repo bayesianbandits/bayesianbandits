@@ -260,31 +260,37 @@ def _optimal_two_point(
     return a_idx, b_idx, q_best, np.where(take_pair, p_ratio, s_ratio)
 
 
+def _information_ratio_minimizer(
+    delta: NDArray[np.float64],
+    v: NDArray[np.float64],
+    alive: NDArray[np.bool_],
+) -> Tuple[NDArray[np.intp], NDArray[np.intp], NDArray[np.float64]]:
+    """Per context, the distribution IDS plays: ``a_idx`` with probability
+    ``q``, else ``b_idx``, each ``(n_contexts,)``.
+
+    Contexts where every pair's ratio is infinite have resolved, there is
+    no information left to buy, and collapse onto the greedy arm
+    (``argmin delta`` among alive arms) with ``q = 1``.
+    """
+    a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
+    resolved = ~np.isfinite(ratio)
+    if np.any(resolved):
+        greedy = np.where(alive, delta, np.inf).argmin(axis=0)
+        a_idx = np.where(resolved, greedy, a_idx)
+        b_idx = np.where(resolved, greedy, b_idx)
+        q = np.where(resolved, 1.0, q)
+    return a_idx, b_idx, q
+
+
 def _sample_information_ratio_minimizer(
     delta: NDArray[np.float64],
     v: NDArray[np.float64],
     alive: NDArray[np.bool_],
     rng: np.random.Generator,
 ) -> NDArray[np.intp]:
-    """Per context, sample an arm from the information-ratio-minimizing distribution.
-
-    Falls back to the greedy arm (``argmin delta`` among alive arms) in
-    contexts where every pair's ratio is infinite: the posterior has
-    resolved and there is no information left to buy.
-
-    Returns
-    -------
-    NDArray[np.intp]
-        Shape ``(n_contexts,)``, the sampled arm index per context.
-    """
-    a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
-    picks = np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
-
-    resolved = ~np.isfinite(ratio)
-    if np.any(resolved):
-        greedy = np.where(alive, delta, np.inf).argmin(axis=0)
-        picks = np.where(resolved, greedy, picks)
-    return picks
+    """Per context, sample an arm from the information-ratio-minimizing distribution."""
+    a_idx, b_idx, q = _information_ratio_minimizer(delta, v, alive)
+    return np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
 
 
 class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -444,14 +450,17 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms by minimizing the information ratio over pre-generated samples."""
+        if top_k is None:
+            return self.select_with_probabilities(samples, arms, rng)[0]
+
         samples = _finite_draws(draw_contiguous(samples), rng)
         n_arms, n_contexts, _ = samples.shape
-        n_slots = 1 if top_k is None else min(top_k, n_arms)
+        n_slots = min(top_k, n_arms)
 
         alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
         # masked (dead arms at -inf) and the boolean scratch are
         # maintained across slots instead of re-materialized per slot
-        masked = samples if n_slots == 1 else samples.copy()
+        masked = samples.copy()
         indicator = np.empty_like(samples, dtype=np.bool_)
         ctx_idx = np.arange(n_contexts)
         choices = np.empty((n_slots, n_contexts), dtype=np.intp)
@@ -465,9 +474,30 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             if slot + 1 < n_slots:
                 masked[picks, ctx_idx, :] = -np.inf
 
-        if top_k is None:
-            return [arms[idx] for idx in choices[0]]
         return [
             [arms[choices[slot, ctx]] for slot in range(n_slots)]
             for ctx in range(n_contexts)
         ]
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Select one arm per context and return the ``(n_contexts, n_arms)``
+        distribution it was drawn from: the ratio-minimizing two-point
+        mixture, or one-hot on the greedy arm once the posterior has
+        resolved."""
+        samples = _finite_draws(draw_contiguous(samples), rng)
+        n_arms, n_contexts, _ = samples.shape
+        alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
+        delta, v = _vids_statistics(samples, alive, masked=samples)
+        a_idx, b_idx, q = _information_ratio_minimizer(delta, v, alive)
+
+        ctx_idx = np.arange(n_contexts)
+        probs = np.zeros((n_contexts, n_arms))
+        probs[ctx_idx, a_idx] += q
+        probs[ctx_idx, b_idx] += 1 - q
+        picks = np.where(rng.random(n_contexts) < q, a_idx, b_idx)
+        return [arms[idx] for idx in picks], probs
