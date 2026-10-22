@@ -194,7 +194,6 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         choices = (samples @ np.full(n_draws, 1.0 / n_draws)).argmax(axis=0)
         probs = np.full((n_contexts, n_arms), self.epsilon / n_arms)
         probs[np.arange(n_contexts), choices] += 1 - self.epsilon
-        # Same draws as the top_k path, so seeded output is unchanged
-        for ctx in np.flatnonzero(rng.random(n_contexts) < self.epsilon):
-            choices[ctx] = rng.choice(n_arms, size=1, replace=False)[0]
+        explore = np.flatnonzero(rng.random(n_contexts) < self.epsilon)
+        choices[explore] = rng.integers(n_arms, size=explore.size)
         return list(map(arms.__getitem__, choices.tolist())), probs

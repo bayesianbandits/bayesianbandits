@@ -10,6 +10,13 @@ Unreleased
   returns, alongside the selected arms, the ``(n_contexts, n_arms)``
   distribution each was drawn from: the propensities for inverse
   propensity scoring and doubly-robust offline evaluation (#310)
+
+**Performance**
+
+- ``EpsilonGreedy`` draws its exploration arms in one vectorized call
+  instead of one ``rng.choice`` per exploring context. Seeded
+  single-arm selections differ from 1.5.0rc2; the greedy arm, the
+  exploration rate and the selection probabilities are unchanged (#310)
 - ``state_dict`` and ``load_state_dict`` on every agent, estimator and
   pipeline save and restore the learned state without pickle, as plain
   data: dicts, lists, numpy arrays and Python scalars. A state describes
