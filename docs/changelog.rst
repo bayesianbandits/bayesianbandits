@@ -6,10 +6,11 @@ Unreleased
 
 **New features**
 
-- ``select_with_probabilities`` on ``EXP3A`` and ``EpsilonGreedy``
-  returns, alongside the selected arms, the ``(n_contexts, n_arms)``
-  distribution each was drawn from: the propensities for inverse
-  propensity scoring and doubly-robust offline evaluation (#310)
+- ``select_with_probabilities`` on ``EXP3A``, ``EpsilonGreedy`` and
+  ``UpperConfidenceBound`` returns, alongside the selected arms, the
+  ``(n_contexts, n_arms)`` distribution each was drawn from: the
+  propensities for inverse propensity scoring and doubly-robust offline
+  evaluation. UCB's is one-hot (#310)
 
 **Performance**
 
