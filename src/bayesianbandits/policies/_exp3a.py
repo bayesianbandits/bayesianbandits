@@ -314,7 +314,7 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         # Inverse-CDF draw, the same stream as rng.choice(p=...) per context
         cdf = np.cumsum(probs, axis=0)
         choices = (cdf <= rng.random(probs.shape[1]) * cdf[-1]).sum(axis=0)
-        return [arms[i] for i in choices], probs.T
+        return list(map(arms.__getitem__, choices.tolist())), probs.T
 
     def _probabilities(
         self,
@@ -322,9 +322,16 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         n_arms: int,
     ) -> NDArray[np.float64]:
         """Exponential-weights selection distribution, ``(n_arms, n_contexts)``."""
-        rewards = samples.mean(axis=-1)
-        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-        return (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / n_arms
+        # Mean over draws as a matvec: BLAS beats numpy's short-axis reduction.
+        # Everything after runs in place on that one (n_arms, n_contexts) buffer.
+        n_draws = samples.shape[-1]
+        probs = samples @ np.full(n_draws, 1.0 / n_draws)
+        probs -= probs.max(axis=0)
+        probs *= self.eta
+        np.exp(probs, out=probs)
+        probs *= (1 - self.gamma) / probs.sum(axis=0)
+        probs += self.gamma / n_arms
+        return probs
 
     def update(
         self,
