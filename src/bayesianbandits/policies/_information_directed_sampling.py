@@ -260,17 +260,23 @@ def _optimal_two_point(
     return a_idx, b_idx, q_best, np.where(take_pair, p_ratio, s_ratio)
 
 
-def _information_ratio_minimizer(
+def _sample_information_ratio_minimizer(
     delta: NDArray[np.float64],
     v: NDArray[np.float64],
     alive: NDArray[np.bool_],
-) -> Tuple[NDArray[np.intp], NDArray[np.intp], NDArray[np.float64]]:
-    """Per context, the distribution IDS plays: ``a_idx`` with probability
-    ``q``, else ``b_idx``, each ``(n_contexts,)``.
+    rng: np.random.Generator,
+) -> Tuple[NDArray[np.intp], NDArray[np.intp], NDArray[np.intp], NDArray[np.float64]]:
+    """Per context, sample an arm from the information-ratio-minimizing distribution.
 
-    Contexts where every pair's ratio is infinite have resolved, there is
-    no information left to buy, and collapse onto the greedy arm
-    (``argmin delta`` among alive arms) with ``q = 1``.
+    Falls back to the greedy arm (``argmin delta`` among alive arms) in
+    contexts where every pair's ratio is infinite: the posterior has
+    resolved and there is no information left to buy.
+
+    Returns
+    -------
+    picks, a_idx, b_idx, q : NDArray
+        Each ``(n_contexts,)``: the sampled arm, drawn as ``a_idx`` with
+        probability ``q`` and ``b_idx`` otherwise.
     """
     a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
     resolved = ~np.isfinite(ratio)
@@ -279,18 +285,8 @@ def _information_ratio_minimizer(
         a_idx = np.where(resolved, greedy, a_idx)
         b_idx = np.where(resolved, greedy, b_idx)
         q = np.where(resolved, 1.0, q)
-    return a_idx, b_idx, q
-
-
-def _sample_information_ratio_minimizer(
-    delta: NDArray[np.float64],
-    v: NDArray[np.float64],
-    alive: NDArray[np.bool_],
-    rng: np.random.Generator,
-) -> NDArray[np.intp]:
-    """Per context, sample an arm from the information-ratio-minimizing distribution."""
-    a_idx, b_idx, q = _information_ratio_minimizer(delta, v, alive)
-    return np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
+    picks = np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
+    return picks, a_idx, b_idx, q
 
 
 class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -468,7 +464,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             delta, v = _vids_statistics(
                 samples, alive, masked=masked, indicator=indicator
             )
-            picks = _sample_information_ratio_minimizer(delta, v, alive, rng)
+            picks = _sample_information_ratio_minimizer(delta, v, alive, rng)[0]
             choices[slot] = picks
             alive[picks, ctx_idx] = False
             if slot + 1 < n_slots:
@@ -493,11 +489,12 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         n_arms, n_contexts, _ = samples.shape
         alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
         delta, v = _vids_statistics(samples, alive, masked=samples)
-        a_idx, b_idx, q = _information_ratio_minimizer(delta, v, alive)
+        picks, a_idx, b_idx, q = _sample_information_ratio_minimizer(
+            delta, v, alive, rng
+        )
 
         ctx_idx = np.arange(n_contexts)
         probs = np.zeros((n_contexts, n_arms))
         probs[ctx_idx, a_idx] += q
         probs[ctx_idx, b_idx] += 1 - q
-        picks = np.where(rng.random(n_contexts) < q, a_idx, b_idx)
         return [arms[idx] for idx in picks], probs
