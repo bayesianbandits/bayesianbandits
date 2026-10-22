@@ -6,13 +6,17 @@ Unreleased
 
 **New features**
 
-- ``select_with_probabilities`` on ``EXP3A`` and ``EpsilonGreedy``
-  returns, alongside the selected arms, the ``(n_contexts, n_arms)``
-  distribution each was drawn from: the propensities for inverse
-  propensity scoring and doubly-robust offline evaluation (#310)
+- ``select_with_probabilities`` on ``EXP3A``, ``EpsilonGreedy`` and
+  ``UpperConfidenceBound`` returns, alongside the selected arms, the
+  ``(n_contexts, n_arms)`` distribution each was drawn from: the
+  propensities for inverse propensity scoring and doubly-robust offline
+  evaluation. UCB's is one-hot (#310)
 
 **Performance**
 
+- ``UpperConfidenceBound`` computes its quantile with one partition
+  instead of ``np.quantile``, 3x faster at the default 1000 draws and
+  bit-identical (#310)
 - ``EpsilonGreedy`` draws its exploration arms in one vectorized call
   instead of one ``rng.choice`` per exploring context. Seeded
   single-arm selections differ from 1.5.0rc2; the greedy arm, the
