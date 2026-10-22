@@ -6,7 +6,7 @@ while using average rewards instead of cumulative sums, enabling better adaptivi
 and numerical stability.
 """
 
-from typing import List, Optional, Union, overload
+from typing import List, Optional, Tuple, Union, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -268,25 +268,10 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]:
         """Select arms based on pre-generated samples using EXP3A."""
-        # samples shape: (n_arms, n_contexts, samples_needed)
-        # Take mean over samples axis - exactly what __call__ does
-        rewards = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
-
-        # Exponential weights with numerical stability
-        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-
-        # Compute probabilities
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
-            arms
-        )
-
-        # Selection logic from current __call__
         if top_k is None:
-            choices = [
-                rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])
-            ]
-            return [arms[i] for i in choices]
+            return self.select_with_probabilities(samples, arms, rng)[0]
         else:
+            probs = self._probabilities(samples, len(arms))
             # Sample k arms without replacement according to probabilities
             results: List[List[Arm[ContextType, TokenType]]] = []
             for i in range(probs.shape[1]):
@@ -315,6 +300,34 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
 
                 results.append([arms[idx] for idx in indices])
             return results
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Select one arm per context and return the distribution it was drawn from.
+
+        Returns the selected arms and ``probs`` of shape
+        ``(n_contexts, n_arms)``: :math:`P_t(a)` for every arm, conditional
+        on ``samples``. These are the propensities for inverse propensity
+        scoring and doubly-robust estimators.
+        """
+        probs = self._probabilities(samples, len(arms))
+        choices = [rng.choice(len(arms), p=probs[:, i]) for i in range(probs.shape[1])]
+        return [arms[i] for i in choices], np.ascontiguousarray(probs.T)
+
+    def _probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        n_arms: int,
+    ) -> NDArray[np.float64]:
+        """Exponential-weights selection distribution, ``(n_arms, n_contexts)``."""
+        rewards = samples.mean(axis=-1)
+        # Subtracting the max keeps the exponentials finite
+        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
+        return (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / n_arms
 
     def update(
         self,
@@ -349,16 +362,13 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         """
         # Recompute probabilities (stateless design); only per-arm means
         # are read, which is why this policy consumes MARGINAL_ONLY
-        rewards = self._draw_samples(all_arms, X, self.samples).mean(axis=-1)
-        weights = np.exp(self.eta * (rewards - rewards.max(axis=0)))
-
         # TODO: This is not actually correct if top_k is used, but top_k is currently
         # stateless, so we have no idea what it was at the time of selection.
         # However, ix_gamma regularization bounds the error: even if the true selection
         # probability is much higher than the marginal probability (e.g., when k is large),
         # the importance weight is capped at 1/ix_gamma, preventing catastrophic updates.
-        probs = (1 - self.gamma) * weights / weights.sum(axis=0) + self.gamma / len(
-            all_arms
+        probs = self._probabilities(
+            self._draw_samples(all_arms, X, self.samples), len(all_arms)
         )
 
         # Importance weighting: the key to adversarial robustness
