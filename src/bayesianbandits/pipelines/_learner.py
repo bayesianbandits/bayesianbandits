@@ -16,6 +16,7 @@ from .._arm import (
     Learner,
     _defines_before_sample,
     resolve_marginal_sampler,
+    resolve_predictive_moments,
     resolve_reward_space_sampler,
 )
 from .._memory import MemoryUsageMixin
@@ -291,6 +292,18 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
         """
         X_transformed = self._apply_transformers(X)
         return resolve_marginal_sampler(self._learner)(X_transformed, size)
+
+    def predictive_moments(self, X: X_contra, block_size: int = 1) -> Any:
+        """Forward to the learner's ``predictive_moments`` when it describes
+        the learner's draws (see
+        :func:`bayesianbandits._arm.resolve_predictive_moments`); there
+        is no fallback."""
+        moments = resolve_predictive_moments(self._learner)
+        if moments is None:
+            raise NotImplementedError(
+                f"{type(self._learner).__name__} has no predictive moments"
+            )
+        return moments(self._apply_transformers(X), block_size=block_size)
 
     def _use_reward_space(
         self, n: int, size: int, block_size: Optional[int] = None
