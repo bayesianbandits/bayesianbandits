@@ -1680,21 +1680,20 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
     def _predictive_moments(
         self, X: Sized
     ) -> Tuple[NDArray[np.float64], NDArray[np.float64], Optional[NDArray[np.float64]]]:
-        """The shared learner's posterior over the arm scores, per context:
+        """The shared learner's posterior over the arm scores per context:
         ``(n_contexts, n_arms)`` means, ``(n_contexts, n_arms, n_arms)``
-        covariances, and ``(n_contexts,)`` degrees of freedom or None."""
+        covariances and ``(n_contexts,)`` degrees of freedom or None."""
         if self.batch_reward_function not in (None, batch_identity) or not all(
             is_identity_function(arm.reward_function) for arm in self.arms
         ):
             raise NotImplementedError(
-                "selection probabilities integrated from the posterior need "
-                "identity reward functions and no batch reward function"
+                "selection probabilities from the posterior need identity "
+                "reward functions and no batch reward function"
             )
         moments = resolve_predictive_moments(self.learner)
         if moments is None:
             raise NotImplementedError(
-                f"{type(self.learner).__name__} has no predictive moments to "
-                "integrate selection probabilities from"
+                f"{type(self.learner).__name__} has no predictive moments"
             )
         n_arms, n_contexts = len(self.arms), len(X)
         X_enriched = self.arm_featurizer.transform(

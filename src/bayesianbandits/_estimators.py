@@ -2411,10 +2411,9 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
     def predictive_moments(
         self, X: Union[NDArray[Any], csc_array], block_size: int = 1
     ) -> PredictiveMoments:
-        """Posterior mean and covariance of the linear predictor ``X w``,
-        jointly within consecutive blocks of ``block_size`` rows; the
-        prior predictive when unfitted. Gaussian here; the NIG subclass
-        scales it and reports its degrees of freedom."""
+        """Posterior mean and covariance of the linear predictor, jointly
+        within consecutive blocks of ``block_size`` rows; the prior
+        predictive when unfitted."""
         if block_size == 1:
             # per-row variances, vectorized like sample_marginal
             mean, sd = _validated_marginal_mean_sd(self, X)
@@ -3167,11 +3166,10 @@ scipy.sparse.csc_array
         self, X: Union[NDArray[Any], csc_array], block_size: int = 1
     ) -> PredictiveMoments:
         """The multivariate t's location, shape ``(b/a) X Λ⁻¹ Xᵀ`` and
-        ``2a`` degrees of freedom, blocked as in the superclass."""
+        ``2a`` degrees of freedom."""
         mean, cov, _ = super().predictive_moments(X, block_size)
-        return PredictiveMoments(
-            mean, np.asarray(cov * (self.b_ / self.a_), dtype=np.float64), 2.0 * self.a_
-        )
+        cov *= self.b_ / self.a_
+        return PredictiveMoments(mean, cov, 2.0 * self.a_)
 
     def _prior_floor(self) -> Optional[float]:
         return float(cast(Any, self.lam)) if np.isscalar(self.lam) else None
