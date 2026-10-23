@@ -296,8 +296,8 @@ class LearnerPipeline(MemoryUsageMixin, Generic[X_contra]):
     def predictive_moments(self, X: X_contra, block_size: int = 1) -> Any:
         """Forward to the learner's ``predictive_moments`` when it describes
         the learner's draws (see
-        :func:`bayesianbandits._arm.resolve_predictive_moments`); raises
-        ``NotImplementedError`` otherwise, since no fallback exists."""
+        :func:`bayesianbandits._arm.resolve_predictive_moments`); there
+        is no fallback."""
         moments = resolve_predictive_moments(self._learner)
         if moments is None:
             raise NotImplementedError(
