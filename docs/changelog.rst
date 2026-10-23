@@ -6,12 +6,16 @@ Unreleased
 
 **New features**
 
-- ``select_with_probabilities`` on ``EXP3A``, ``EpsilonGreedy``,
-  ``UpperConfidenceBound`` and ``InformationDirectedSampling`` returns,
-  alongside the selected arms, the ``(n_contexts, n_arms)`` distribution
-  each was drawn from: the propensities for inverse propensity scoring
-  and doubly-robust offline evaluation. UCB's is one-hot; IDS's is its
-  two-point mixture (#310)
+- ``pull_with_probabilities`` on every agent and ``AgentPipeline``, and
+  ``select_with_probabilities`` on every policy, return alongside the
+  selected arms the ``(n_contexts, n_arms)`` distribution each was drawn
+  from: the propensities for inverse propensity scoring and doubly-robust
+  offline evaluation. ``EXP3A`` and ``EpsilonGreedy`` report their mixing
+  distributions, ``UpperConfidenceBound`` one-hot and
+  ``InformationDirectedSampling`` its two-point mixture.
+  ``ThompsonSampling`` raises, since its propensity is the posterior
+  probability that an arm's draw is the largest and not a function of the
+  draw it selects from (#310)
 
 **Performance**
 

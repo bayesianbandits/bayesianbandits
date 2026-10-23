@@ -188,6 +188,20 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         List[Arm[ContextType, TokenType]], List[List[Arm[ContextType, TokenType]]]
     ]: ...
 
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
 
 #: The version of an agent's state, the only one it reads
 _AGENT_VERSION = 1
@@ -552,6 +566,38 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
             # Don't update arm_to_update - ambiguous which to choose
             return [[arm.pull() for arm in arms_list] for arms_list in arms_lists]
 
+    def pull_with_probabilities(
+        self, X: ContextType
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
+        """Choose one arm per context and return the distribution it was
+        drawn from alongside the token.
+
+        Parameters
+        ----------
+        X : ContextType
+            Context matrix to use for choosing arms.
+
+        Returns
+        -------
+        tokens : List[TokenType]
+            One action token per context, as ``pull`` returns.
+        probabilities : NDArray[np.float64]
+            ``(n_contexts, n_arms)``, columns in the order of ``arms``: the
+            probability the policy gave each arm given its posterior draws,
+            the propensities for inverse propensity scoring and
+            doubly-robust offline evaluation. Each row sums to one.
+
+        Notes
+        -----
+        Sets ``arm_to_update`` to the last selected arm, like ``pull``.
+        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
+        propensity is the posterior probability that an arm's draw is the
+        largest, not a function of the single draw it selects from.
+        """
+        arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
+        self.arm_to_update = arms[-1]
+        return [arm.pull() for arm in arms], probs
+
     def update(
         self,
         X: ContextType,
@@ -906,6 +952,29 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         if top_k is None:
             return self._inner.pull(X_dummy)
         return self._inner.pull(X_dummy, top_k=top_k)
+
+    def pull_with_probabilities(self) -> Tuple[List[TokenType], NDArray[np.float64]]:
+        """Choose an arm and return the distribution it was drawn from
+        alongside the token.
+
+        Returns
+        -------
+        tokens : List[TokenType]
+            ``[token]``, as ``pull`` returns.
+        probabilities : NDArray[np.float64]
+            ``(1, n_arms)``, columns in the order of ``arms``: the
+            probability the policy gave each arm given its posterior draws,
+            the propensities for inverse propensity scoring and
+            doubly-robust offline evaluation. The row sums to one.
+
+        Notes
+        -----
+        Sets ``arm_to_update`` to the selected arm, like ``pull``.
+        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
+        propensity is the posterior probability that an arm's draw is the
+        largest, not a function of the single draw it selects from.
+        """
+        return self._inner.pull_with_probabilities(np.array([[1]], dtype=np.float64))
 
     def update(
         self,
@@ -1563,6 +1632,41 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             return [
                 [arm.pull() for arm in arms_list] for arms_list in selected_arms_nested
             ]
+
+    def pull_with_probabilities(
+        self, X: Sized
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
+        """Choose one arm per context and return the distribution it was
+        drawn from alongside the token.
+
+        Parameters
+        ----------
+        X : Sized
+            Context matrix to use for choosing arms.
+
+        Returns
+        -------
+        tokens : List[TokenType]
+            One action token per context, as ``pull`` returns.
+        probabilities : NDArray[np.float64]
+            ``(n_contexts, n_arms)``, columns in the order of ``arms``: the
+            probability the policy gave each arm given its posterior draws,
+            the propensities for inverse propensity scoring and
+            doubly-robust offline evaluation. Each row sums to one.
+
+        Notes
+        -----
+        Sets ``arm_to_update`` to the last selected arm, like ``pull``.
+        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
+        propensity is the posterior probability that an arm's draw is the
+        largest, not a function of the single draw it selects from.
+        """
+        samples = self._sample_rewards(X, self.policy.samples_needed)
+        arms, probs = self.policy.select_with_probabilities(
+            samples, self.arms, self.rng
+        )
+        self.arm_to_update = arms[-1]
+        return [arm.pull() for arm in arms], probs
 
     def update(
         self,

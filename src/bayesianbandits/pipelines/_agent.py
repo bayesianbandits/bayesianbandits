@@ -152,6 +152,27 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
         else:
             return self._agent.pull(X_transformed, top_k=top_k)
 
+    def pull_with_probabilities(
+        self, X: Any
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
+        """Choose one arm per context and return the distribution it was
+        drawn from alongside the token.
+
+        Parameters
+        ----------
+        X : Any
+            Input data to transform and use for choosing arms.
+
+        Returns
+        -------
+        tokens : List[TokenType]
+            One action token per context, as ``pull`` returns.
+        probabilities : NDArray[np.float64]
+            ``(n_contexts, n_arms)`` in the order of the wrapped agent's
+            arms; see :meth:`ContextualAgent.pull_with_probabilities`.
+        """
+        return self._agent.pull_with_probabilities(self.transform(X))
+
     def update(
         self,
         X: Any,

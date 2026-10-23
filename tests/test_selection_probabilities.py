@@ -1,18 +1,28 @@
 """Tests for ``select_with_probabilities``: the distribution a policy drew
 its decision from, conditional on the samples it was handed."""
 
-from typing import Any, List
+from typing import Any, Callable, Dict, List, Sequence, Sized
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
+from sklearn.preprocessing import FunctionTransformer
 
 from bayesianbandits import (
     EXP3A,
+    Agent,
+    AgentPipeline,
     Arm,
+    ContextualAgent,
     EpsilonGreedy,
     InformationDirectedSampling,
+    LipschitzContextualAgent,
+    NormalRegressor,
+    ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits.featurizers import FunctionArmFeaturizer
+from bayesianbandits.policies._base import PolicyDefaultUpdate
 
 # Policies putting mass on every arm, which IPS of a fixed target needs
 FULL_SUPPORT: List[Any] = [
@@ -91,3 +101,61 @@ def test_ips_is_unbiased(policy: Any) -> None:
     stderr = terms.std(ddof=1) / np.sqrt(n_rounds)
 
     assert abs(estimate - means[target]) < 4 * stderr
+
+
+def _learned_arms() -> List[Arm[Any, int]]:
+    return [Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0)) for i in range(3)]
+
+
+def _one_hot(X: Sized, action_tokens: Sequence[int]) -> NDArray[np.float64]:
+    out = np.zeros((len(X), len(action_tokens), len(action_tokens)))
+    out[:, np.arange(len(action_tokens)), np.arange(len(action_tokens))] = 1.0
+    return out
+
+
+AGENTS: Dict[str, Callable[[Any, int], Any]] = {
+    "Agent": lambda policy, seed: Agent(_learned_arms(), policy, random_seed=seed),
+    "ContextualAgent": lambda policy, seed: ContextualAgent(
+        _learned_arms(), policy, random_seed=seed
+    ),
+    "AgentPipeline": lambda policy, seed: AgentPipeline(
+        [("double", FunctionTransformer(lambda x: 2 * x))],
+        ContextualAgent(_learned_arms(), policy, random_seed=seed),
+    ),
+    "LipschitzContextualAgent": lambda policy, seed: LipschitzContextualAgent(
+        _arms(3),
+        policy,
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        random_seed=seed,
+    ),
+}
+
+
+@pytest.mark.parametrize("build", AGENTS.values(), ids=AGENTS.keys())
+def test_agents_agree_with_pull(build: Callable[[Any, int], Any]) -> None:
+    policy = EpsilonGreedy(epsilon=0.3, samples=8)
+    X = () if build is AGENTS["Agent"] else (np.ones((5, 2)),)
+
+    plain = build(policy, 1).pull(*X)
+    agent = build(policy, 1)
+    tokens, probs = agent.pull_with_probabilities(*X)
+
+    assert tokens == plain
+    assert probs.shape == (len(tokens), 3)
+    assert np.allclose(probs.sum(axis=1), 1.0)
+    assert (probs[np.arange(len(tokens)), tokens] > 0).all()
+    assert agent.arm_to_update.action_token == tokens[-1]
+
+
+def test_thompson_sampling_raises() -> None:
+    agent = Agent(_learned_arms(), ThompsonSampling(), random_seed=0)
+    with pytest.raises(NotImplementedError, match="largest"):
+        agent.pull_with_probabilities()
+
+
+def test_default_raises() -> None:
+    with pytest.raises(NotImplementedError, match="PolicyDefaultUpdate does not"):
+        PolicyDefaultUpdate[Any, int]().select_with_probabilities(
+            np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0)
+        )

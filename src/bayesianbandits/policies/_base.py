@@ -6,6 +6,7 @@ from typing import (
     Generic,
     List,
     Optional,
+    Tuple,
     Union,
     overload,
 )
@@ -95,6 +96,29 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
     ]:
         """Select arms based on pre-generated samples."""
         raise NotImplementedError
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Select one arm per context and return the ``(n_contexts, n_arms)``
+        distribution it was drawn from, given the samples."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not report selection probabilities"
+        )
+
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Draw the samples the policy asked for, then
+        ``select_with_probabilities``."""
+        samples = self._draw_samples(arms, X, self.samples_needed)
+        return self.select_with_probabilities(samples, arms, rng)
 
     @overload
     def __call__(
