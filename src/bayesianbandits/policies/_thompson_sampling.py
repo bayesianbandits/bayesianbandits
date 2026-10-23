@@ -3,6 +3,7 @@ Thompson sampling policy for Bayesian bandits.
 """
 
 from typing import (
+    Any,
     List,
     Optional,
     Tuple,
@@ -13,9 +14,42 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType
+from .._argmax_probability import (
+    argmax_probabilities,
+    independent_argmax_probabilities,
+)
+from .._arm import (
+    Arm,
+    ContextType,
+    TokenType,
+    is_identity_function,
+    resolve_predictive_moments,
+)
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
+
+
+def _arm_moments(arm: Arm[ContextType, TokenType], X: ContextType) -> Any:
+    """The arm's predictive moments, when they describe what ``select``
+    compares: the learner's linear predictor under the identity reward."""
+    if not is_identity_function(arm.reward_function):
+        raise NotImplementedError(
+            "ThompsonSampling's selection probabilities need the identity "
+            "reward function: they are integrated from the posterior, which "
+            "a reward function would have to be inverted through"
+        )
+    if type(arm).sample is not Arm.sample:
+        raise NotImplementedError(
+            f"{type(arm).__name__} overrides sample, so the learner's "
+            "posterior does not describe its draws"
+        )
+    moments = resolve_predictive_moments(arm.learner)
+    if moments is None:
+        raise NotImplementedError(
+            f"{type(arm.learner).__name__} has no predictive moments to "
+            "integrate ThompsonSampling's selection probabilities from"
+        )
+    return moments(X)
 
 
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -166,3 +200,45 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             "probabilities that each arm's draw is the largest, which the "
             "single draw it selects from does not determine"
         )
+
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Draw and select as ``__call__`` does, and return the posterior
+        probability that each arm's draw is the largest: with one learner
+        per arm the scores are independent, so it is a one-dimensional
+        integral over each arm's predictive mean and variance."""
+        moments = [_arm_moments(arm, X) for arm in arms]
+        chosen = self.select(self._draw_samples(arms, X, 1), arms, rng)
+        mean = np.stack([m.mean for m in moments], axis=1)
+        var = np.stack([m.cov[:, 0, 0] for m in moments], axis=1)
+        df = None
+        if any(m.df is not None for m in moments):
+            df = np.broadcast_to(
+                [np.inf if m.df is None else m.df for m in moments], mean.shape
+            )
+        return chosen, independent_argmax_probabilities(mean, var, df)
+
+    def probabilities_from_moments(
+        self,
+        mean: NDArray[np.float64],
+        cov: NDArray[np.float64],
+        df: Optional[NDArray[np.float64]],
+    ) -> NDArray[np.float64]:
+        """The posterior probability that each arm's draw is the largest
+        for jointly distributed scores, ``mean`` ``(n, K)``, ``cov``
+        ``(n, K, K)`` and ``df`` ``(n,)`` or None: an agent with a shared
+        learner calls this in place of ``select_with_probabilities``.
+        Independent scores take the exact one-dimensional integral."""
+        off_diagonal = cov * (1.0 - np.eye(cov.shape[-1]))
+        if not off_diagonal.any():
+            var = np.diagonal(cov, axis1=1, axis2=2)
+            return independent_argmax_probabilities(
+                mean,
+                var,
+                None if df is None else np.broadcast_to(df[:, None], mean.shape),
+            )
+        return argmax_probabilities(mean, cov, df)

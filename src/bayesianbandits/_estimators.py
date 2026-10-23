@@ -38,6 +38,7 @@ from sklearn.utils.validation import (
 from typing_extensions import Concatenate, ParamSpec, Self
 
 from . import _support_covariance
+from ._argmax_probability import PredictiveMoments
 from ._blas_helpers import (
     affine_lower_factor,
     cho_factor_f,
@@ -2407,6 +2408,31 @@ class _BayesianLinearModel(_LiveRngMixin, MemoryUsageMixin, BaseEstimator):
             self._precision_factor, X, block_size
         )
 
+    def predictive_moments(
+        self, X: Union[NDArray[Any], csc_array], block_size: int = 1
+    ) -> PredictiveMoments:
+        """Posterior mean and covariance of the linear predictor ``X w``,
+        jointly within consecutive blocks of ``block_size`` rows; the
+        prior predictive when unfitted. Gaussian here; the NIG subclass
+        scales it and reports its degrees of freedom."""
+        if block_size == 1:
+            # per-row variances, vectorized like sample_marginal
+            mean, sd = _validated_marginal_mean_sd(self, X)
+            var = np.asarray(sd**2, dtype=np.float64)
+            return PredictiveMoments(mean, var[:, None, None], None)
+        X_pred = self._validated_for_sampling(X)
+        mean, draw = self._predictive_cholesky(X_pred, block_size)
+        cov = np.asarray(draw.L @ draw.L.transpose(0, 2, 1), dtype=np.float64)
+        if cast("tuple[int, int]", draw.M.shape)[1]:
+            # never-observed features: a diagonal covariance read through X
+            mm = (draw.M @ draw.M.T).tocoo()
+            same = mm.row // block_size == mm.col // block_size
+            r, c = mm.row[same], mm.col[same]
+            np.add.at(
+                cov, (r // block_size, r % block_size, c % block_size), mm.data[same]
+            )
+        return PredictiveMoments(mean, cov, None)
+
     def _use_reward_space(
         self, n: int, size: int, block_size: Optional[int] = None
     ) -> bool:
@@ -3136,6 +3162,16 @@ scipy.sparse.csc_array
         )
         scale = np.sqrt((self.b_ / self.a_) * df / g)
         return draw.joint(size, self._rng, mean, scale)
+
+    def predictive_moments(
+        self, X: Union[NDArray[Any], csc_array], block_size: int = 1
+    ) -> PredictiveMoments:
+        """The multivariate t's location, shape ``(b/a) X Λ⁻¹ Xᵀ`` and
+        ``2a`` degrees of freedom, blocked as in the superclass."""
+        mean, cov, _ = super().predictive_moments(X, block_size)
+        return PredictiveMoments(
+            mean, np.asarray(cov * (self.b_ / self.a_), dtype=np.float64), 2.0 * self.a_
+        )
 
     def _prior_floor(self) -> Optional[float]:
         return float(cast(Any, self.lam)) if np.isscalar(self.lam) else None
