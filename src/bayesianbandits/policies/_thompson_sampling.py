@@ -5,6 +5,7 @@ Thompson sampling policy for Bayesian bandits.
 from typing import (
     List,
     Optional,
+    Tuple,
     Union,
     overload,
 )
@@ -150,3 +151,18 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
                 ]
                 for i in range(values.shape[1])
             ]
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """Not implemented: Thompson sampling's selection probability is the
+        posterior probability that an arm's draw is the largest, which the
+        single draw ``select`` consumes does not determine."""
+        raise NotImplementedError(
+            "ThompsonSampling's selection probabilities are the posterior "
+            "probabilities that each arm's draw is the largest, which the "
+            "single draw it selects from does not determine"
+        )
