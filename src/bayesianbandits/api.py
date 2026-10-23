@@ -81,11 +81,14 @@ from ._arm import (
     Learner,
     TokenType,
     _accepts_context_batch,
+    _context_major_permutation,
     _sample_context_major_blocks,
+    _take_rows,
     batch_identity,
     is_identity_function,
     posterior_identity,
     resolve_marginal_sampler,
+    resolve_predictive_moments,
     resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
@@ -1668,11 +1671,52 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         largest, not a function of the single draw it selects from.
         """
         samples = self._sample_rewards(X, self.policy.samples_needed)
-        arms, probs = self.policy.select_with_probabilities(
-            samples, self.arms, self.rng
-        )
+        from_moments = getattr(self.policy, "probabilities_from_moments", None)
+        if from_moments is None:
+            arms, probs = self.policy.select_with_probabilities(
+                samples, self.arms, self.rng
+            )
+        else:
+            # a propensity integrated from the posterior, not read off the draw
+            arms = self.policy.select(samples, self.arms, self.rng)
+            probs = from_moments(*self._predictive_moments(X))
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms], probs
+
+    def _predictive_moments(
+        self, X: Sized
+    ) -> Tuple[NDArray[np.float64], NDArray[np.float64], Optional[NDArray[np.float64]]]:
+        """The shared learner's posterior over the arm scores, per context:
+        ``(n_contexts, n_arms)`` means, ``(n_contexts, n_arms, n_arms)``
+        covariances, and ``(n_contexts,)`` degrees of freedom or None."""
+        if self.batch_reward_function not in (None, batch_identity) or not all(
+            is_identity_function(arm.reward_function) for arm in self.arms
+        ):
+            raise NotImplementedError(
+                "selection probabilities integrated from the posterior need "
+                "identity reward functions and no batch reward function"
+            )
+        moments = resolve_predictive_moments(self.learner)
+        if moments is None:
+            raise NotImplementedError(
+                f"{type(self.learner).__name__} has no predictive moments to "
+                "integrate selection probabilities from"
+            )
+        n_arms, n_contexts = len(self.arms), len(X)
+        X_enriched = self.arm_featurizer.transform(
+            X, action_tokens=[arm.action_token for arm in self.arms]
+        )
+        if n_arms > 1 and n_contexts > 1:
+            # one block of arm rows per context
+            X_enriched = _take_rows(
+                X_enriched, _context_major_permutation(n_arms, n_contexts)
+            )
+        mean, cov, df = moments(X_enriched, block_size=n_arms)
+        return (
+            mean.reshape(n_contexts, n_arms),
+            cov,
+            None if df is None else np.full(n_contexts, df),
+        )
 
     def update(
         self,

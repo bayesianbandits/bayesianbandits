@@ -13,9 +13,16 @@ Unreleased
   offline evaluation. ``EXP3A`` and ``EpsilonGreedy`` report their mixing
   distributions, ``UpperConfidenceBound`` one-hot and
   ``InformationDirectedSampling`` its two-point mixture.
-  ``ThompsonSampling`` raises, since its propensity is the posterior
-  probability that an arm's draw is the largest and not a function of the
-  draw it selects from (#310)
+  ``ThompsonSampling``'s is the posterior probability that each arm's
+  draw is the largest, integrated from the learners' predictive moments
+  rather than read off the draw: an exact one-dimensional integral with
+  one learner per arm, Genz's sequential conditioning with a shared
+  learner, both in log space so the tail probabilities IPS divides by
+  keep their relative precision. It needs ``NormalRegressor``,
+  ``NormalInverseGammaRegressor`` or ``BayesianGLM`` under the identity
+  reward function and raises ``NotImplementedError`` otherwise, as does
+  ``ThompsonSampling.select_with_probabilities`` itself, since the
+  samples alone do not determine it (#310)
 
 **Performance**
 
