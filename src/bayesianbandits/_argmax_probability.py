@@ -97,7 +97,9 @@ def argmax_probabilities(
     if n_arms == 1:
         return np.ones((n, 1))
     n_dims = max(n_arms - 2 + (df is not None), 1)
-    w = qmc.Sobol(n_dims, scramble=True, rng=0).random(n_points).T
+    # seed=, not rng=: the project floor is scipy 1.14
+    sobol = qmc.Sobol(n_dims, scramble=True, seed=0)  # pyright: ignore[reportCallIssue]
+    w = sobol.random(n_points).T
     w = np.clip(w, 1e-300, 1.0 - 1e-16)
     s = np.ones((n, 1))  # scale of the zero-mean part, per point under t
     if df is not None:
