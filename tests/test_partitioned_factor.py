@@ -9,6 +9,7 @@ dense linear algebra on the full matrix, so the partition has to be
 invisible to every caller of the factor protocol.
 """
 
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -173,17 +174,8 @@ def test_sparse_rhs_columns_off_the_block_skip_the_block_solve(m):
 
     if hasattr(factor, "_block_solve"):
         factor._block_solve = spy(factor._block_solve)
-    else:
-
-        class Spy:
-            def __init__(self, inner):
-                self.inner = inner
-                self.solve = spy(inner.solve)
-
-            def __getattr__(self, name):
-                return getattr(self.inner, name)
-
-        factor._factor = Spy(factor._factor)
+    else:  # the sparse solve reads only CHOLMOD's ``solve``
+        factor._factor = SimpleNamespace(solve=spy(factor._factor.solve))
     inv = dense_inverse(precision)
 
     cases = [(np.concatenate([observed[:2], unobserved[:3]]), 2), (unobserved[:3], 0)]
