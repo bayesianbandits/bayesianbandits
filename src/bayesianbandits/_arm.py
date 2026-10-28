@@ -18,6 +18,7 @@ from typing import (
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.sparse import issparse
 from typing_extensions import Concatenate, ParamSpec, Self, TypeGuard
 
 from ._blas_helpers import draw_contiguous
@@ -646,6 +647,13 @@ def _context_major_permutation(n_arms: int, n_contexts: int) -> NDArray[np.intp]
     block is jointly drawn per context.
     """
     return np.arange(n_arms * n_contexts).reshape(n_arms, n_contexts).T.ravel()
+
+
+def _row_sliceable(X: Any) -> Any:
+    """``X`` in a form :func:`_take_rows` slices in time proportional to
+    the rows taken: CSR for any sparse matrix (CSC slices rows in
+    ``O(nnz)``, COO not at all), ``X`` itself otherwise."""
+    return cast(Any, X).tocsr() if issparse(X) else X
 
 
 def _take_rows(X: Any, indices: Union[NDArray[np.intp], slice]) -> Any:

@@ -1,10 +1,12 @@
 """Tests for ``select_with_probabilities``: the distribution a policy drew
 its decision from, conditional on the samples it was handed."""
 
-from typing import Any, Callable, Dict, List, Sequence, Sized
+import pickle
+from typing import Any, Callable, Dict, List, Sequence, Sized, cast
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from numpy.typing import NDArray
 from sklearn.preprocessing import FunctionTransformer
 
@@ -23,6 +25,7 @@ from bayesianbandits import (
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits._draw_kind import DrawKind
 from bayesianbandits.featurizers import FunctionArmFeaturizer
 from bayesianbandits.pipelines import LearnerPipeline
 from bayesianbandits.policies._base import PolicyDefaultUpdate
@@ -285,7 +288,7 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
         (False, [(0, 1)] * 5),
     ],
 )
-def test_probabilities_from_draws_counts_in_chunks(
+def test_drawn_probabilities_count_in_chunks(
     monkeypatch: pytest.MonkeyPatch, split: bool, calls: List[Any]
 ) -> None:
     """Every draw counts once, the decision's included, whether contexts
@@ -303,12 +306,85 @@ def test_probabilities_from_draws_counts_in_chunks(
         return out[:, contexts]
 
     decision = np.array([[[1.0], [0.0]], [[0.0], [1.0]]])  # arm 0, then arm 1
-    probs = ThompsonSampling(propensity_samples=5).probabilities_from_draws(
-        decision, draw, split_contexts=split
+    arms = _arms(2)
+    chosen, probs = ThompsonSampling(
+        propensity_samples=5
+    ).select_with_drawn_probabilities(
+        decision, arms, np.random.default_rng(0), draw, split_contexts=split
     )
 
+    assert chosen == [arms[0], arms[1]]
     assert seen == calls
     assert np.allclose(probs, [[1 / 6, 5 / 6], [5 / 6, 1 / 6]])
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_drawn_probabilities_of_no_contexts(split: bool) -> None:
+    draw: Any = lambda contexts, size: pytest.fail("nothing to draw")  # noqa: E731
+    chosen, probs = ThompsonSampling().select_with_drawn_probabilities(
+        np.zeros((3, 0, 1)), _arms(3), np.random.default_rng(0), draw, split
+    )
+    assert chosen == [] and probs.shape == (0, 3)
+
+
+def test_policy_pickled_before_propensity_samples_loads() -> None:
+    """The class default stands in for the attribute an old pickle lacks."""
+    old = ThompsonSampling[Any, int].__new__(ThompsonSampling)
+    loaded = pickle.loads(pickle.dumps(old))
+    assert "propensity_samples" not in vars(loaded)
+
+    agent = ContextualAgent(_learned_arms(), loaded, random_seed=0)
+    assert "propensity_samples=10000" in repr(agent)
+    _, probs = agent.pull_with_probabilities(np.ones((1, 2)))
+    assert np.allclose(probs.sum(axis=1), 1.0)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, 1e4, True, "10"])
+def test_propensity_samples_must_be_a_positive_integer(bad: Any) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        ThompsonSampling(propensity_samples=bad)
+    assert (
+        ThompsonSampling(propensity_samples=cast(Any, np.int64(5))).propensity_samples
+        == 5
+    )
+
+
+def test_sample_rewards_honours_an_explicit_marginal_request() -> None:
+    """``MARGINAL_ONLY`` is 0, falsy; it must still override the policy."""
+    agent = LipschitzContextualAgent(
+        _arms(3),
+        ThompsonSampling(),
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        random_seed=0,
+    )
+    learner: Any = agent.learner
+    calls: List[int] = []
+    marginal = learner.sample_marginal
+    learner.sample_marginal = lambda X, size=1: calls.append(size) or marginal(X, size)
+
+    agent._sample_rewards(np.ones((2, 2)), 4, DrawKind.MARGINAL_ONLY)
+    assert calls == [4]
+
+
+@pytest.mark.parametrize("fmt", ["coo", "csc"])
+def test_thompson_sampling_probabilities_with_sparse_contexts(fmt: str) -> None:
+    """Contexts are sliced through CSR, which COO cannot do itself."""
+    arms = [
+        Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0, sparse=True))
+        for i in range(3)
+    ]
+    agent = ContextualAgent(
+        arms, ThompsonSampling(propensity_samples=500), random_seed=0
+    )
+    rng = np.random.default_rng(0)
+    X = sp.csc_array(rng.normal(size=(6, 4)) * (rng.random((6, 4)) < 0.5))
+    for arm in agent.arms:
+        agent.select_for_update(arm.action_token).update(X, rng.normal(size=6))
+
+    tokens, probs = agent.pull_with_probabilities(X.asformat(fmt))
+    assert len(tokens) == 6 and probs.shape == (6, 3)
+    assert np.allclose(probs.sum(axis=1), 1.0)
 
 
 def test_default_raises() -> None:

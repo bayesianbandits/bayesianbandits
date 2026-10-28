@@ -315,7 +315,14 @@ class _SparseRhs:
     scipy does in ``O(n)`` per call however few entries there are.
     """
 
-    __slots__ = ("block", "trivial_rank", "trivial_col", "trivial_val", "shape")
+    __slots__ = (
+        "block",
+        "live",
+        "trivial_rank",
+        "trivial_col",
+        "trivial_val",
+        "shape",
+    )
 
     def __init__(
         self,
@@ -334,6 +341,8 @@ class _SparseRhs:
         block = np.zeros((m, k), dtype=np.float64, order="F")
         block[block_pos, col[~is_trivial]] = val[~is_trivial]
         self.block = block
+        # the columns with a block entry; the rest solve to zero there
+        self.live = np.unique(col[~is_trivial])
         self.trivial_rank = rank
         self.trivial_col = col[is_trivial]
         self.trivial_val = val[is_trivial]
@@ -344,7 +353,7 @@ class _SparseRhs:
     ) -> NDArray[np.float64]:
         """``solver`` over the block columns that have an entry; a column
         touching only trivial features solves to exactly zero there."""
-        live = np.flatnonzero(self.block.any(axis=0))
+        live = self.live
         if live.size == self.block.shape[1]:
             return np.asarray(solver(self.block), dtype=np.float64)
         out = np.zeros_like(self.block)
@@ -373,15 +382,20 @@ class _SparseRhs:
         rows = (
             np.arange(n, dtype=idx_dtype) if isinstance(observed, slice) else observed
         )
-        # columns without block entries solved to zero there; store none
-        live = np.flatnonzero(self.block.any(axis=0))
-        counts = np.zeros(k, dtype=idx_dtype)
-        counts[live] = m
+        live = self.live
+        if live.size == k:
+            indptr = np.arange(0, m * k + 1, m, dtype=idx_dtype)
+        else:
+            # columns without block entries solved to zero there; store none
+            block = block[:, live]
+            counts = np.zeros(k, dtype=idx_dtype)
+            counts[live] = m
+            indptr = np.concatenate([[0], np.cumsum(counts)]).astype(idx_dtype)
         out = csc_array(
             (
-                np.asfortranarray(block[:, live]).ravel(order="F"),
+                np.asfortranarray(block).ravel(order="F"),
                 np.tile(np.asarray(rows, dtype=idx_dtype), live.size),
-                np.concatenate([[0], np.cumsum(counts)]).astype(idx_dtype),
+                indptr,
             ),
             shape=self.shape,
         )
@@ -618,7 +632,9 @@ class CholmodSparseFactor(MemoryUsageMixin):
         root = np.sqrt(self._scale)
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = self._factor.solve(rhs.block[self._factor.perm], system="L")
+            block = rhs.solve_block(
+                lambda B: self._factor.solve(B[self._factor.perm], system="L")
+            )
             return SparseHalfSolve(
                 _unscale(block, root),
                 rhs.compact_trivial(self._trivial_diag, self._scale),
@@ -842,15 +858,18 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         L_unit, invdiag = self._half_solve_factor
         root = np.sqrt(self._scale)
         rhs = _SparseRhs(b, self._observed, self._trivial) if issparse(b) else None
-        operand = b[self._observed] if rhs is None else rhs.block
-        y = spsolve_triangular(
-            L_unit,
-            operand[self._perm],
-            lower=True,
-            unit_diagonal=True,
-            overwrite_A=True,
-            overwrite_b=True,
-        )
+
+        def sweep(operand: NDArray[np.floating[Any]]) -> Any:
+            return spsolve_triangular(
+                L_unit,
+                operand[self._perm],
+                lower=True,
+                unit_diagonal=True,
+                overwrite_A=True,
+                overwrite_b=True,
+            )
+
+        y = sweep(b[self._observed]) if rhs is None else rhs.solve_block(sweep)
         y *= _column_scale(invdiag / root, y.ndim)
         if rhs is not None:
             return SparseHalfSolve(

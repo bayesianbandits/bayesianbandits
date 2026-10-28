@@ -4,6 +4,7 @@ Base classes for Bayesian bandit policies.
 
 from typing import (
     Any,
+    Callable,
     Generic,
     List,
     Optional,
@@ -15,7 +16,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType
+from .._arm import Arm, ContextType, TokenType, _row_sliceable, _take_rows
 from .._draw_kind import DrawKind
 
 # Arms up to which one stable sort beats partitioning: 1.7x at 10 arms by
@@ -46,6 +47,12 @@ def _top_k_indices(values: NDArray[np.floating[Any]], top_k: int) -> NDArray[np.
     idx = np.argsort(~chosen, axis=0, kind="stable")[:top_k]
     order = np.argsort(-np.take_along_axis(values, idx, axis=0), axis=0, kind="stable")
     return np.take_along_axis(idx, order, axis=0).T
+
+
+#: ``draw(contexts, size)``: ``size`` fresh posterior draws for a slice of
+#: contexts, ``(n_arms, n_contexts_in_slice, size)``, joint within each
+#: context and independent across them
+ContextDraws = Callable[[slice, int], NDArray[np.float64]]
 
 
 class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
@@ -139,6 +146,21 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
             f"{type(self).__name__} does not report selection probabilities"
         )
 
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        """``select_with_probabilities`` for a policy whose probabilities
+        need fresh draws of the posterior, which ``draw`` makes; with
+        ``split_contexts`` false the draws must take every context at once
+        (a batch reward function may combine them). This default reads
+        the probabilities off ``samples`` and ignores ``draw``."""
+        return self.select_with_probabilities(samples, arms, rng)
+
     def call_with_probabilities(
         self,
         arms: List[Arm[ContextType, TokenType]],
@@ -146,9 +168,19 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         rng: np.random.Generator,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
         """Draw the samples the policy asked for, then
-        ``select_with_probabilities``."""
+        ``select_with_drawn_probabilities``."""
         samples = self._draw_samples(arms, X, self.samples_needed)
-        return self.select_with_probabilities(samples, arms, rng)
+        X_rows: Any = None
+
+        def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+            # one learner per arm: per-context marginals are the joint law
+            nonlocal X_rows
+            if X_rows is None:
+                X_rows = _row_sliceable(X)
+            X_c = _take_rows(X_rows, contexts)
+            return np.array([arm.sample_marginal(X_c, size).T for arm in arms])
+
+        return self.select_with_drawn_probabilities(samples, arms, rng, draw)
 
     @overload
     def __call__(

@@ -81,6 +81,7 @@ from ._arm import (
     Learner,
     TokenType,
     _accepts_context_batch,
+    _row_sliceable,
     _sample_context_major_blocks,
     _take_rows,
     batch_identity,
@@ -105,6 +106,7 @@ from .policies import (  # noqa: F401
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from .policies._base import ContextDraws
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
@@ -194,6 +196,15 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
 
     def call_with_probabilities(
@@ -595,7 +606,7 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         Sets ``arm_to_update`` to the last selected arm, like ``pull``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
-        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
         arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
@@ -978,7 +989,7 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         Sets ``arm_to_update`` to the selected arm, like ``pull``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
-        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
         return self._inner.pull_with_probabilities(np.array([[1]], dtype=np.float64))
@@ -1485,6 +1496,13 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
+    @property
+    def _couples_contexts(self) -> bool:
+        """Whether the batch reward function may combine contexts within a
+        draw (``batch_identity`` combines nothing), so draws must be joint
+        across every context."""
+        return self.batch_reward_function not in (None, batch_identity)
+
     def _sample_rewards(
         self, X: Sized, size: int, consumes: Optional[DrawKind] = None
     ) -> NDArray[np.float64]:
@@ -1512,9 +1530,9 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         # may combine anything within a draw, so widen all the way;
         # ``batch_identity`` combines nothing. Structurally typed
         # policies that predate ``consumes`` get the safe default.
-        required = consumes or getattr(self.policy, "consumes", DrawKind.JOINT)
-        if self.batch_reward_function not in (None, batch_identity):
-            required = DrawKind.JOINT
+        if consumes is None:  # MARGINAL_ONLY is 0, so not ``or``
+            consumes = getattr(self.policy, "consumes", DrawKind.JOINT)
+        required = DrawKind.JOINT if self._couples_contexts else consumes
 
         if required == DrawKind.MARGINAL_ONLY:
             sampler = resolve_marginal_sampler(self.learner)
@@ -1670,26 +1688,20 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         Sets ``arm_to_update`` to the last selected arm, like ``pull``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
-        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
         samples = self._sample_rewards(X, self.policy.samples_needed)
-        from_draws = getattr(self.policy, "probabilities_from_draws", None)
-        if from_draws is None:
-            arms, probs = self.policy.select_with_probabilities(
-                samples, self.arms, self.rng
-            )
-        else:
-            # a posterior probability, counted over fresh draws
-            arms = self.policy.select(samples, self.arms, self.rng)
-            probs = from_draws(
-                samples,
-                lambda contexts, size: self._sample_rewards(
-                    _take_rows(X, contexts), size, DrawKind.CONTEXT_JOINT
-                ),
-                # a batch reward function may combine contexts within a draw
-                split_contexts=self.batch_reward_function in (None, batch_identity),
-            )
+        X_rows = _row_sliceable(X)
+        arms, probs = self.policy.select_with_drawn_probabilities(
+            samples,
+            self.arms,
+            self.rng,
+            lambda contexts, size: self._sample_rewards(
+                _take_rows(X_rows, contexts), size, DrawKind.CONTEXT_JOINT
+            ),
+            split_contexts=not self._couples_contexts,
+        )
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms], probs
 
