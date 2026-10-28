@@ -6,7 +6,6 @@ from typing import Any, Callable, Dict, List, Sequence, Sized
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
 from sklearn.preprocessing import FunctionTransformer
 
 from bayesianbandits import (
@@ -172,36 +171,71 @@ def _continuous(X: Sized, action_tokens: Sequence[int]) -> NDArray[np.float64]:
     return out
 
 
+def _ts() -> ThompsonSampling[Any, int]:
+    return ThompsonSampling(propensity_samples=100_000)
+
+
 THOMPSON_AGENTS: Dict[str, Callable[[], Any]] = {
-    "ContextualAgent": lambda: ContextualAgent(
-        _learned_arms(), ThompsonSampling(), random_seed=5
-    ),
+    "ContextualAgent": lambda: ContextualAgent(_learned_arms(), _ts(), random_seed=5),
     "ContextualAgent-NIG": lambda: ContextualAgent(
         [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(3)],
-        ThompsonSampling(),
+        _ts(),
+        random_seed=5,
+    ),
+    "ContextualAgent-exp-reward": lambda: ContextualAgent(
+        [
+            Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0), reward_function=np.exp)
+            for i in range(3)
+        ],
+        _ts(),
+        random_seed=5,
+    ),
+    "ContextualAgent-Gamma": lambda: ContextualAgent(
+        [
+            # one group: GammaRegressor keys its posterior on a single column
+            Arm(
+                i,
+                learner=LearnerPipeline(
+                    steps=[
+                        ("one", FunctionTransformer(lambda x: np.ones((len(x), 1))))
+                    ],
+                    learner=GammaRegressor(alpha=1.0, beta=1.0),
+                ),
+            )
+            for i in range(3)
+        ],
+        _ts(),
         random_seed=5,
     ),
     "Lipschitz-one-hot": lambda: LipschitzContextualAgent(
         _arms(3),
-        ThompsonSampling(),
+        _ts(),
         arm_featurizer=FunctionArmFeaturizer(_one_hot),
         learner=NormalRegressor(alpha=1.0, beta=1.0),
         random_seed=5,
     ),
     "Lipschitz-continuous": lambda: LipschitzContextualAgent(
         _arms(4),
-        ThompsonSampling(),
+        _ts(),
         arm_featurizer=FunctionArmFeaturizer(_continuous),
         learner=NormalInverseGammaRegressor(),
+        random_seed=5,
+    ),
+    "Lipschitz-batch-reward": lambda: LipschitzContextualAgent(
+        _arms(3),
+        _ts(),
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        batch_reward_function=lambda samples, tokens: samples,
         random_seed=5,
     ),
 }
 
 
 def _fit(agent: Any, X: NDArray[np.float64], rng: np.random.Generator) -> None:
-    """A few rewards per arm, so the posteriors differ and overlap."""
+    """A few positive rewards per arm, so the posteriors differ and overlap."""
     for arm in agent.arms:
-        y = rng.normal(loc=arm.action_token / 4, size=len(X))
+        y = np.abs(rng.normal(loc=1 + arm.action_token / 4, size=len(X)))
         agent.select_for_update(arm.action_token).update(X, y)
 
 
@@ -223,7 +257,7 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     """The reported probabilities are the frequencies with which the
     agent's draws pick each arm, and the decision agrees with ``pull``."""
     rng = np.random.default_rng(0)
-    X_fit = rng.normal(size=(6, 2))
+    X_fit = np.abs(rng.normal(size=(6, 2)))
     agent = build()
     _fit(agent, X_fit, rng)
     X = X_fit[:2]
@@ -232,9 +266,10 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     frequencies = _argmax_frequencies(agent, X, 200_000)
 
     assert probs.shape == (2, len(agent.arms))
-    assert np.allclose(probs.sum(axis=1), 1.0, atol=1e-3)
-    assert (probs > 0).all()
-    assert np.abs(probs - frequencies).max() < 5e-3
+    assert np.allclose(probs.sum(axis=1), 1.0)
+    played = [_tokens(agent.arms).index(t) for t in tokens]
+    assert (probs[[0, 1], played] >= 1 / 100_001).all()
+    assert np.abs(probs - frequencies).max() < 6e-3
     assert agent.arm_to_update.action_token == tokens[-1]
 
     plain, with_probs = build(), build()
@@ -243,36 +278,29 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     assert plain.pull(X) == with_probs.pull_with_probabilities(X)[0]
 
 
-def test_thompson_sampling_needs_moments() -> None:
-    scaled = ContextualAgent(
-        [
-            Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0), reward_function=np.exp)
-            for i in range(3)
-        ],
-        ThompsonSampling(),
-        random_seed=0,
-    )
-    with pytest.raises(NotImplementedError, match="identity reward"):
-        scaled.pull_with_probabilities(np.ones((1, 2)))
+def test_probabilities_from_draws_counts_in_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every draw counts once, the decision's included, whatever the chunk."""
+    from bayesianbandits.policies import _thompson_sampling
 
-    gamma = ContextualAgent(
-        [Arm(i, learner=GammaRegressor(alpha=1.0, beta=1.0)) for i in range(3)],
-        ThompsonSampling(),
-        random_seed=0,
-    )
-    with pytest.raises(NotImplementedError, match="predictive moments"):
-        gamma.pull_with_probabilities(np.ones((1, 1)))
+    monkeypatch.setattr(_thompson_sampling, "_PROPENSITY_CHUNK_ELEMS", 4)
+    sizes: List[int] = []
 
-    batched = LipschitzContextualAgent(
-        _arms(3),
-        ThompsonSampling(),
-        arm_featurizer=FunctionArmFeaturizer(_one_hot),
-        learner=NormalRegressor(alpha=1.0, beta=1.0),
-        batch_reward_function=lambda samples, tokens: samples,
-        random_seed=0,
+    def draw(size: int) -> NDArray[np.float64]:
+        # two arms, two contexts: arm 1 wins context 0, arm 0 context 1
+        sizes.append(size)
+        out = np.zeros((2, 2, size))
+        out[1, 0] = out[0, 1] = 1.0
+        return out
+
+    decision = np.array([[[1.0], [0.0]], [[0.0], [1.0]]])  # arm 0, then arm 1
+    probs = ThompsonSampling(propensity_samples=5).probabilities_from_draws(
+        decision, draw
     )
-    with pytest.raises(NotImplementedError, match="batch reward"):
-        batched.pull_with_probabilities(np.ones((1, 2)))
+
+    assert sizes == [1, 1, 1, 1, 1]
+    assert np.allclose(probs, [[1 / 6, 5 / 6], [5 / 6, 1 / 6]])
 
 
 def test_default_raises() -> None:
@@ -280,40 +308,3 @@ def test_default_raises() -> None:
         PolicyDefaultUpdate[Any, int]().select_with_probabilities(
             np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0)
         )
-
-
-def test_predictive_moments_cover_never_observed_features() -> None:
-    """A sparse model carries the prior variance of features its fit never
-    touched through the sparse map, matching the dense model exactly."""
-    rng = np.random.default_rng(0)
-    X = np.zeros((10, 4))
-    X[:, :2] = rng.normal(size=(10, 2))
-    y = rng.normal(size=10)
-    dense = NormalRegressor(alpha=1.0, beta=1.0).fit(X, y)
-    sparse = NormalRegressor(alpha=1.0, beta=1.0, sparse=True).fit(csc_array(X), y)
-    X_new = rng.normal(size=(6, 4))
-
-    for block_size in (1, 3):
-        expected = dense.predictive_moments(X_new, block_size=block_size)
-        got = sparse.predictive_moments(csc_array(X_new), block_size=block_size)
-        assert np.allclose(got.mean, expected.mean)
-        assert np.allclose(got.cov, expected.cov)
-        assert got.df is None
-
-
-def test_learner_pipeline_forwards_predictive_moments() -> None:
-    learner = NormalRegressor(alpha=1.0, beta=1.0)
-    pipeline = LearnerPipeline(
-        steps=[("double", FunctionTransformer(lambda x: 2 * x))], learner=learner
-    )
-    X = np.random.default_rng(0).normal(size=(4, 2))
-
-    got = pipeline.predictive_moments(X, block_size=2)
-    expected = learner.predictive_moments(2 * X, block_size=2)
-
-    assert np.allclose(got.mean, expected.mean)
-    assert np.allclose(got.cov, expected.cov)
-
-    gamma = LearnerPipeline(steps=[], learner=GammaRegressor(alpha=1.0, beta=1.0))
-    with pytest.raises(NotImplementedError, match="predictive moments"):
-        gamma.predictive_moments(np.ones((2, 1)))

@@ -3,51 +3,25 @@ Thompson sampling policy for Bayesian bandits.
 """
 
 from typing import (
-    Any,
+    Callable,
     List,
     Optional,
     Tuple,
     Union,
+    cast,
     overload,
 )
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .._argmax_probability import (
-    argmax_probabilities,
-    independent_argmax_probabilities,
-)
-from .._arm import (
-    Arm,
-    ContextType,
-    TokenType,
-    is_identity_function,
-    resolve_predictive_moments,
-)
+from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate, _top_k_indices
 
-
-def _arm_moments(arm: Arm[ContextType, TokenType], X: ContextType) -> Any:
-    """The arm's predictive moments, when they describe what ``select``
-    compares: the learner's linear predictor under the identity reward."""
-    if not is_identity_function(arm.reward_function):
-        raise NotImplementedError(
-            "ThompsonSampling's selection probabilities need the identity "
-            "reward function"
-        )
-    if type(arm).sample is not Arm.sample:
-        raise NotImplementedError(
-            f"{type(arm).__name__} overrides sample, so the learner's "
-            "posterior does not describe its draws"
-        )
-    moments = resolve_predictive_moments(arm.learner)
-    if moments is None:
-        raise NotImplementedError(
-            f"{type(arm.learner).__name__} has no predictive moments"
-        )
-    return moments(X)
+# Cap on one chunk of propensity draws, (n_arms, n_contexts, chunk), in
+# float64 elements: ~32 MB
+_PROPENSITY_CHUNK_ELEMS = 2**22
 
 
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -67,6 +41,13 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
 
     where :math:`g_a` is the reward function (possibly context-dependent) and
     :math:`\\mathcal{D}_a` is the data observed for arm :math:`a`.
+
+    Parameters
+    ----------
+    propensity_samples : int, default=10_000
+        Extra posterior draws ``pull_with_probabilities`` counts argmaxes
+        over to estimate the selection probabilities. Selection itself
+        always uses one draw.
 
     Examples
     --------
@@ -125,7 +106,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     """
 
     def __repr__(self) -> str:
-        return "ThompsonSampling()"
+        return f"ThompsonSampling(propensity_samples={self.propensity_samples})"
+
+    def __init__(self, propensity_samples: int = 10_000):
+        self.propensity_samples = propensity_samples
 
     #: Requires joint draws (arms compared within a shared posterior
     #: draw), so marginal sampling must not be used. Draws one sample
@@ -195,36 +179,43 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         X: ContextType,
         rng: np.random.Generator,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
-        """Draw and select as ``__call__`` does, with the posterior
-        probability that each arm's draw is the largest: one learner per
-        arm makes the scores independent, a one-dimensional integral."""
-        moments = [_arm_moments(arm, X) for arm in arms]
-        chosen = self.select(self._draw_samples(arms, X, 1), arms, rng)
-        mean = np.stack([m.mean for m in moments], axis=1)
-        var = np.stack([m.cov[:, 0, 0] for m in moments], axis=1)
-        df = None
-        if any(m.df is not None for m in moments):
-            df = np.broadcast_to(
-                [np.inf if m.df is None else m.df for m in moments], mean.shape
-            )
-        return chosen, independent_argmax_probabilities(mean, var, df)
+        """Draw and select as ``__call__`` does, then estimate the
+        probability that each arm's draw is the largest by counting
+        (see :meth:`probabilities_from_draws`)."""
+        samples = self._draw_samples(arms, X, 1)
 
-    def probabilities_from_moments(
+        def draw(size: int) -> NDArray[np.float64]:
+            # one learner per arm: per-context marginals are the joint law
+            return np.array([arm.sample_marginal(X, size).T for arm in arms])
+
+        return self.select(samples, arms, rng), self.probabilities_from_draws(
+            samples, draw
+        )
+
+    def probabilities_from_draws(
         self,
-        mean: NDArray[np.float64],
-        cov: NDArray[np.float64],
-        df: Optional[NDArray[np.float64]],
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, 1)
+        draw: Callable[[int], NDArray[np.float64]],
     ) -> NDArray[np.float64]:
-        """The posterior probability that each arm's draw is the largest
-        for jointly distributed scores, ``mean`` ``(n, K)``, ``cov``
-        ``(n, K, K)`` and ``df`` ``(n,)`` or None; what a shared-learner
+        """``(n_contexts, n_arms)`` fraction of draws each arm's is the
+        largest in: the decision's own ``samples`` plus
+        ``propensity_samples`` more from ``draw(size)``, taken in chunks.
+
+        Counting the decision's draw keeps the chosen arm's probability at
+        least ``1 / (propensity_samples + 1)``, the resolution, so an IPS
+        weight is at most ``propensity_samples + 1``. What a shared-learner
         agent calls in place of ``select_with_probabilities``."""
-        off_diagonal = cov * (1.0 - np.eye(cov.shape[-1]))
-        if not off_diagonal.any():
-            var = np.diagonal(cov, axis1=1, axis2=2)
-            return independent_argmax_probabilities(
-                mean,
-                var,
-                None if df is None else np.broadcast_to(df[:, None], mean.shape),
+        n_arms, n_contexts = samples.shape[:2]
+        offsets = np.arange(n_contexts)[:, None] * n_arms
+        wins = np.bincount(
+            (samples[..., 0].argmax(axis=0) + offsets[:, 0]),
+            minlength=n_contexts * n_arms,
+        ).astype(np.float64)
+        chunk = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * n_contexts))
+        for start in range(0, self.propensity_samples, chunk):
+            picks = draw(min(chunk, self.propensity_samples - start)).argmax(axis=0)
+            wins += np.bincount(
+                (picks + offsets).ravel(), minlength=n_contexts * n_arms
             )
-        return argmax_probabilities(mean, cov, df)
+        probs = wins.reshape(n_contexts, n_arms) / (self.propensity_samples + 1)
+        return cast(NDArray[np.float64], probs)

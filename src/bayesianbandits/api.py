@@ -81,14 +81,11 @@ from ._arm import (
     Learner,
     TokenType,
     _accepts_context_batch,
-    _context_major_permutation,
     _sample_context_major_blocks,
-    _take_rows,
     batch_identity,
     is_identity_function,
     posterior_identity,
     resolve_marginal_sampler,
-    resolve_predictive_moments,
     resolve_reward_space_sampler,
 )
 from ._arm_featurizer import ArmFeaturizer
@@ -595,9 +592,10 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         Notes
         -----
         Sets ``arm_to_update`` to the last selected arm, like ``pull``.
-        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
-        propensity is the posterior probability that an arm's draw is the
-        largest, not a function of the single draw it selects from.
+        Under ``ThompsonSampling`` the probabilities are counted over
+        ``propensity_samples`` extra posterior draws (see
+        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        the learners' generators past where ``pull`` leaves them.
         """
         arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
         self.arm_to_update = arms[-1]
@@ -977,9 +975,10 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         Notes
         -----
         Sets ``arm_to_update`` to the selected arm, like ``pull``.
-        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
-        propensity is the posterior probability that an arm's draw is the
-        largest, not a function of the single draw it selects from.
+        Under ``ThompsonSampling`` the probabilities are counted over
+        ``propensity_samples`` extra posterior draws (see
+        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        the learners' generators past where ``pull`` leaves them.
         """
         return self._inner.pull_with_probabilities(np.array([[1]], dtype=np.float64))
 
@@ -1485,12 +1484,14 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             raise KeyError(f"Arm with token {token} not found.")
         return self
 
-    def _sample_rewards(self, X: Sized, size: int) -> NDArray[np.float64]:
+    def _sample_rewards(
+        self, X: Sized, size: int, consumes: Optional[DrawKind] = None
+    ) -> NDArray[np.float64]:
         """Draw ``size`` reward samples per arm and context.
 
         Featurizes once for all arms, samples the shared learner by the
-        cheapest method at least as strong as the policy's ``consumes``,
-        and applies the reward functions. Returns the
+        cheapest method at least as strong as ``consumes`` (the policy's
+        by default), and applies the reward functions. Returns the
         ``(n_arms, n_contexts, size)`` tensor handed to the policy.
         """
         # 1. Get action tokens
@@ -1510,7 +1511,7 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         # may combine anything within a draw, so widen all the way;
         # ``batch_identity`` combines nothing. Structurally typed
         # policies that predate ``consumes`` get the safe default.
-        required = getattr(self.policy, "consumes", DrawKind.JOINT)
+        required = consumes or getattr(self.policy, "consumes", DrawKind.JOINT)
         if self.batch_reward_function not in (None, batch_identity):
             required = DrawKind.JOINT
 
@@ -1666,56 +1667,26 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         Notes
         -----
         Sets ``arm_to_update`` to the last selected arm, like ``pull``.
-        Raises ``NotImplementedError`` under ``ThompsonSampling``, whose
-        propensity is the posterior probability that an arm's draw is the
-        largest, not a function of the single draw it selects from.
+        Under ``ThompsonSampling`` the probabilities are counted over
+        ``propensity_samples`` extra posterior draws (see
+        :meth:`ThompsonSampling.probabilities_from_draws`), which advance
+        the learners' generators past where ``pull`` leaves them.
         """
         samples = self._sample_rewards(X, self.policy.samples_needed)
-        from_moments = getattr(self.policy, "probabilities_from_moments", None)
-        if from_moments is None:
+        from_draws = getattr(self.policy, "probabilities_from_draws", None)
+        if from_draws is None:
             arms, probs = self.policy.select_with_probabilities(
                 samples, self.arms, self.rng
             )
         else:
-            # a propensity integrated from the posterior, not read off the draw
+            # a posterior probability, counted over fresh draws
             arms = self.policy.select(samples, self.arms, self.rng)
-            probs = from_moments(*self._predictive_moments(X))
+            probs = from_draws(
+                samples,
+                lambda size: self._sample_rewards(X, size, DrawKind.CONTEXT_JOINT),
+            )
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms], probs
-
-    def _predictive_moments(
-        self, X: Sized
-    ) -> Tuple[NDArray[np.float64], NDArray[np.float64], Optional[NDArray[np.float64]]]:
-        """The shared learner's posterior over the arm scores per context:
-        ``(n_contexts, n_arms)`` means, ``(n_contexts, n_arms, n_arms)``
-        covariances and ``(n_contexts,)`` degrees of freedom or None."""
-        if self.batch_reward_function not in (None, batch_identity) or not all(
-            is_identity_function(arm.reward_function) for arm in self.arms
-        ):
-            raise NotImplementedError(
-                "selection probabilities from the posterior need identity "
-                "reward functions and no batch reward function"
-            )
-        moments = resolve_predictive_moments(self.learner)
-        if moments is None:
-            raise NotImplementedError(
-                f"{type(self.learner).__name__} has no predictive moments"
-            )
-        n_arms, n_contexts = len(self.arms), len(X)
-        X_enriched = self.arm_featurizer.transform(
-            X, action_tokens=[arm.action_token for arm in self.arms]
-        )
-        if n_arms > 1 and n_contexts > 1:
-            # one block of arm rows per context
-            X_enriched = _take_rows(
-                X_enriched, _context_major_permutation(n_arms, n_contexts)
-            )
-        mean, cov, df = moments(X_enriched, block_size=n_arms)
-        return (
-            mean.reshape(n_contexts, n_arms),
-            cov,
-            None if df is None else np.full(n_contexts, df),
-        )
 
     def update(
         self,

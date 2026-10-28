@@ -14,15 +14,13 @@ Unreleased
   distributions, ``UpperConfidenceBound`` one-hot and
   ``InformationDirectedSampling`` its two-point mixture.
   ``ThompsonSampling``'s is the posterior probability that each arm's
-  draw is the largest, integrated from the learners' predictive moments
-  rather than read off the draw: an exact one-dimensional integral with
-  one learner per arm, Genz's sequential conditioning with a shared
-  learner, both in log space so the tail probabilities IPS divides by
-  keep their relative precision. It needs ``NormalRegressor``,
-  ``NormalInverseGammaRegressor`` or ``BayesianGLM`` under the identity
-  reward function and raises ``NotImplementedError`` otherwise, as does
-  ``ThompsonSampling.select_with_probabilities`` itself, since the
-  samples alone do not determine it (#310)
+  draw is the largest, estimated by counting argmaxes over
+  ``propensity_samples`` (default 10,000) extra draws of the same
+  posterior, the decision's own draw included, so the chosen arm's is at
+  least ``1 / (propensity_samples + 1)``. It works with any learner,
+  reward function and batch reward function;
+  ``ThompsonSampling.select_with_probabilities`` itself still raises,
+  since the single draw it selects from does not determine it (#310)
 
 **Performance**
 

@@ -609,14 +609,6 @@ def resolve_marginal_sampler(learner: Any) -> Callable[..., NDArray[np.float64]]
     return cast(Callable[..., NDArray[np.float64]], learner.sample)
 
 
-def resolve_predictive_moments(learner: Any) -> Optional[Callable[..., Any]]:
-    """The learner's ``predictive_moments`` when it describes the draws
-    ``sample`` makes (see :func:`_defines_before_sample`), else None."""
-    if _defines_before_sample(learner, "predictive_moments"):
-        return cast(Callable[..., Any], learner.predictive_moments)
-    return None
-
-
 def resolve_reward_space_sampler(
     learner: Any, n_rows: int, size: int, block_size: Optional[int] = None
 ) -> Optional[Callable[..., NDArray[np.float64]]]:
