@@ -15,7 +15,7 @@ from typing import (
 import numpy as np
 from numpy.typing import NDArray
 
-from .._arm import Arm, ContextType, TokenType
+from .._arm import Arm, ContextType, TokenType, _take_rows
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate, _top_k_indices
 
@@ -184,9 +184,10 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         (see :meth:`probabilities_from_draws`)."""
         samples = self._draw_samples(arms, X, 1)
 
-        def draw(size: int) -> NDArray[np.float64]:
+        def draw(contexts: slice, size: int) -> NDArray[np.float64]:
             # one learner per arm: per-context marginals are the joint law
-            return np.array([arm.sample_marginal(X, size).T for arm in arms])
+            X_rows = _take_rows(X, contexts)
+            return np.array([arm.sample_marginal(X_rows, size).T for arm in arms])
 
         return self.select(samples, arms, rng), self.probabilities_from_draws(
             samples, draw
@@ -195,27 +196,37 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     def probabilities_from_draws(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, 1)
-        draw: Callable[[int], NDArray[np.float64]],
+        draw: Callable[[slice, int], NDArray[np.float64]],
+        split_contexts: bool = True,
     ) -> NDArray[np.float64]:
         """``(n_contexts, n_arms)`` fraction of draws each arm's is the
         largest in: the decision's own ``samples`` plus
-        ``propensity_samples`` more from ``draw(size)``, taken in chunks.
+        ``propensity_samples`` more from ``draw(contexts, size)``, the
+        ``(n_arms, len(contexts), size)`` draws for a slice of contexts.
 
-        Counting the decision's draw keeps the chosen arm's probability at
-        least ``1 / (propensity_samples + 1)``, the resolution, so an IPS
-        weight is at most ``propensity_samples + 1``. What a shared-learner
-        agent calls in place of ``select_with_probabilities``."""
+        With ``split_contexts`` (contexts drawn independently) a few
+        contexts take all their draws at a time, so a learner pays each
+        context's setup once; otherwise every context is drawn together,
+        in chunks of draws. Counting the decision's draw keeps the chosen
+        arm's probability at least ``1 / (propensity_samples + 1)``, the
+        resolution, so an IPS weight is at most ``propensity_samples + 1``.
+        What a shared-learner agent calls in place of
+        ``select_with_probabilities``."""
         n_arms, n_contexts = samples.shape[:2]
-        offsets = np.arange(n_contexts)[:, None] * n_arms
-        wins = np.bincount(
-            (samples[..., 0].argmax(axis=0) + offsets[:, 0]),
-            minlength=n_contexts * n_arms,
-        ).astype(np.float64)
-        chunk = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * n_contexts))
-        for start in range(0, self.propensity_samples, chunk):
-            picks = draw(min(chunk, self.propensity_samples - start)).argmax(axis=0)
-            wins += np.bincount(
-                (picks + offsets).ravel(), minlength=n_contexts * n_arms
-            )
-        probs = wins.reshape(n_contexts, n_arms) / (self.propensity_samples + 1)
-        return cast(NDArray[np.float64], probs)
+        n_draws = self.propensity_samples
+        wins = np.zeros((n_contexts, n_arms))
+        wins[np.arange(n_contexts), samples[..., 0].argmax(axis=0)] = 1.0
+        step = n_contexts
+        if split_contexts:
+            step = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * n_draws))
+        for first in range(0, n_contexts, step):
+            contexts = slice(first, min(first + step, n_contexts))
+            width = contexts.stop - first
+            offsets = np.arange(width)[:, None] * n_arms
+            chunk = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * width))
+            for start in range(0, n_draws, chunk):
+                picks = draw(contexts, min(chunk, n_draws - start)).argmax(axis=0)
+                wins[contexts] += np.bincount(
+                    (picks + offsets).ravel(), minlength=width * n_arms
+                ).reshape(width, n_arms)
+        return cast(NDArray[np.float64], wins / (n_draws + 1))

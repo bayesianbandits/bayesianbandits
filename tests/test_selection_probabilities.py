@@ -278,28 +278,36 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     assert plain.pull(X) == with_probs.pull_with_probabilities(X)[0]
 
 
+@pytest.mark.parametrize(
+    "split, calls",
+    [
+        (True, [(0, 2), (0, 2), (0, 1), (1, 2), (1, 2), (1, 1)]),
+        (False, [(0, 1)] * 5),
+    ],
+)
 def test_probabilities_from_draws_counts_in_chunks(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, split: bool, calls: List[Any]
 ) -> None:
-    """Every draw counts once, the decision's included, whatever the chunk."""
+    """Every draw counts once, the decision's included, whether contexts
+    take their draws one at a time or all together in chunks."""
     from bayesianbandits.policies import _thompson_sampling
 
     monkeypatch.setattr(_thompson_sampling, "_PROPENSITY_CHUNK_ELEMS", 4)
-    sizes: List[int] = []
+    seen: List[Any] = []
 
-    def draw(size: int) -> NDArray[np.float64]:
+    def draw(contexts: slice, size: int) -> NDArray[np.float64]:
         # two arms, two contexts: arm 1 wins context 0, arm 0 context 1
-        sizes.append(size)
+        seen.append((contexts.start, size))
         out = np.zeros((2, 2, size))
         out[1, 0] = out[0, 1] = 1.0
-        return out
+        return out[:, contexts]
 
     decision = np.array([[[1.0], [0.0]], [[0.0], [1.0]]])  # arm 0, then arm 1
     probs = ThompsonSampling(propensity_samples=5).probabilities_from_draws(
-        decision, draw
+        decision, draw, split_contexts=split
     )
 
-    assert sizes == [1, 1, 1, 1, 1]
+    assert seen == calls
     assert np.allclose(probs, [[1 / 6, 5 / 6], [5 / 6, 1 / 6]])
 
 

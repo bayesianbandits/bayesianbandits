@@ -82,6 +82,7 @@ from ._arm import (
     TokenType,
     _accepts_context_batch,
     _sample_context_major_blocks,
+    _take_rows,
     batch_identity,
     is_identity_function,
     posterior_identity,
@@ -1683,7 +1684,11 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
             arms = self.policy.select(samples, self.arms, self.rng)
             probs = from_draws(
                 samples,
-                lambda size: self._sample_rewards(X, size, DrawKind.CONTEXT_JOINT),
+                lambda contexts, size: self._sample_rewards(
+                    _take_rows(X, contexts), size, DrawKind.CONTEXT_JOINT
+                ),
+                # a batch reward function may combine contexts within a draw
+                split_contexts=self.batch_reward_function in (None, batch_identity),
             )
         self.arm_to_update = arms[-1]
         return [arm.pull() for arm in arms], probs

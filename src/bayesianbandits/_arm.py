@@ -648,8 +648,9 @@ def _context_major_permutation(n_arms: int, n_contexts: int) -> NDArray[np.intp]
     return np.arange(n_arms * n_contexts).reshape(n_arms, n_contexts).T.ravel()
 
 
-def _take_rows(X: Any, indices: NDArray[np.intp]) -> Any:
-    """Positionally select rows from an array, sparse matrix, or DataFrame.
+def _take_rows(X: Any, indices: Union[NDArray[np.intp], slice]) -> Any:
+    """Positionally select rows from an array, sparse matrix, or DataFrame
+    (or a list, by slice).
 
     Plain ``X[indices]`` selects *columns by label* on a DataFrame, so
     DataFrames must go through ``iloc``.
