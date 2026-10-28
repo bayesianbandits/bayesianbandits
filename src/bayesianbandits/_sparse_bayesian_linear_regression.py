@@ -6,6 +6,7 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Literal,
     NamedTuple,
     Optional,
@@ -338,6 +339,19 @@ class _SparseRhs:
         self.trivial_val = val[is_trivial]
         self.shape = (n, k)
 
+    def solve_block(
+        self, solver: Callable[[NDArray[np.float64]], Any]
+    ) -> NDArray[np.float64]:
+        """``solver`` over the block columns that have an entry; a column
+        touching only trivial features solves to exactly zero there."""
+        live = np.flatnonzero(self.block.any(axis=0))
+        if live.size == self.block.shape[1]:
+            return np.asarray(solver(self.block), dtype=np.float64)
+        out = np.zeros_like(self.block)
+        if live.size:
+            out[:, live] = np.asarray(solver(self.block[:, live]), dtype=np.float64)
+        return out
+
     def solution(
         self,
         observed: Union[NDArray[np.intp], slice],
@@ -359,11 +373,15 @@ class _SparseRhs:
         rows = (
             np.arange(n, dtype=idx_dtype) if isinstance(observed, slice) else observed
         )
+        # columns without block entries solved to zero there; store none
+        live = np.flatnonzero(self.block.any(axis=0))
+        counts = np.zeros(k, dtype=idx_dtype)
+        counts[live] = m
         out = csc_array(
             (
-                np.asfortranarray(block).ravel(order="F"),
-                np.tile(np.asarray(rows, dtype=idx_dtype), k),
-                np.arange(0, m * k + 1, m, dtype=idx_dtype),
+                np.asfortranarray(block[:, live]).ravel(order="F"),
+                np.tile(np.asarray(rows, dtype=idx_dtype), live.size),
+                np.concatenate([[0], np.cumsum(counts)]).astype(idx_dtype),
             ),
             shape=self.shape,
         )
@@ -536,7 +554,7 @@ class CholmodSparseFactor(MemoryUsageMixin):
         rows are densified first."""
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = np.asarray(self._factor.solve(rhs.block), dtype=np.float64)
+            block = rhs.solve_block(self._factor.solve)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
             return cast(NDArray[np.float64], _unscale(out, self._scale))
         block = np.asarray(self._factor.solve(b[self._observed]), dtype=np.float64)
@@ -738,7 +756,7 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         """
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = self._block_solve(rhs.block)
+            block = rhs.solve_block(self._block_solve)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
             return cast(NDArray[np.float64], _unscale(out, self._scale))
         b = np.asarray(b, dtype=np.float64)

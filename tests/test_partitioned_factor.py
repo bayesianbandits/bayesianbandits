@@ -9,6 +9,8 @@ dense linear algebra on the full matrix, so the partition has to be
 invisible to every caller of the factor protocol.
 """
 
+from typing import Any
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -148,6 +150,53 @@ def test_solve_with_a_sparse_rhs_matches_dense(m, fmt, index_dtype):
     out = factor.solve(B)
     assert sp.issparse(out)
     assert_allclose(out.toarray(), dense_inverse(precision) @ B.toarray(), rtol=1e-10)
+
+
+@pytest.mark.parametrize("m", [24, 60])
+def test_sparse_rhs_columns_off_the_block_skip_the_block_solve(m):
+    """A right-hand-side column touching only never-observed features
+    solves to its diagonal alone: the backend sees only the columns that
+    touch the block, and none at all when no column does."""
+    rng = np.random.default_rng(22)
+    p = 60
+    precision, observed = make_precision(p, m, rng)
+    factor: Any = create_sparse_factor(precision)
+    unobserved = np.setdiff1d(np.arange(p), observed)
+    seen = []
+
+    def spy(solve):
+        def wrapped(block):
+            seen.append(block.shape[1])
+            return solve(block)
+
+        return wrapped
+
+    if hasattr(factor, "_block_solve"):
+        factor._block_solve = spy(factor._block_solve)
+    else:
+
+        class Spy:
+            def __init__(self, inner):
+                self.inner = inner
+                self.solve = spy(inner.solve)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        factor._factor = Spy(factor._factor)
+    inv = dense_inverse(precision)
+
+    cases = [(np.concatenate([observed[:2], unobserved[:3]]), 2), (unobserved[:3], 0)]
+    if m == p:  # nothing trivial: every column touches the block
+        cases = [(observed[:5], 5)]
+    for rows, live in cases:
+        B = sp.csc_array(
+            (np.ones(rows.size), (rows, np.arange(rows.size))), shape=(p, rows.size)
+        )
+        seen.clear()
+        out = factor.solve(B)
+        assert seen == ([live] if live else [])
+        assert_allclose(out.toarray(), inv @ B.toarray(), rtol=1e-10)
 
 
 def test_half_solve_dense_rhs_gram_is_the_predictive_covariance():
