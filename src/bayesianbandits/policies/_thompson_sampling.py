@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
-from ._base import PolicyDefaultUpdate
+from ._base import PolicyDefaultUpdate, _top_k_indices
 
 
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -140,17 +140,7 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         if top_k is None:
             best_indices = values.argmax(axis=0)
             return [arms[idx] for idx in best_indices]
-        else:
-            # Use argpartition for efficiency, but handle case where top_k >= n_arms
-            return [
-                [
-                    arms[idx]
-                    for idx in np.argpartition(
-                        -values[:, i], min(top_k, len(arms) - 1)
-                    )[:top_k]
-                ]
-                for i in range(values.shape[1])
-            ]
+        return [[arms[i] for i in row] for row in _top_k_indices(values, top_k)]
 
     def select_with_probabilities(
         self,

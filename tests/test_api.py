@@ -358,6 +358,75 @@ class TestTopK:
         assert len(selected_arms) == 3  # 3 contexts
         assert all(len(context_arms) == 2 for context_arms in selected_arms)
 
+    @pytest.mark.parametrize(
+        "policy",
+        [ThompsonSampling(), UpperConfidenceBound(), EpsilonGreedy(epsilon=0.0)],
+        ids=repr,
+    )
+    @pytest.mark.parametrize("top_k", [3, 5, 8])
+    def test_top_k_slates_are_best_first(self, policy: Any, top_k: int) -> None:
+        """Slots run best score first, ties to the lower arm index as
+        ``argmax`` breaks them, so slot 0 is the ``top_k=None`` pick; past
+        the arm count the slate is every arm in that order."""
+        scores = np.array(
+            [
+                [1.0, 5.0, 0.0],
+                [3.0, 4.0, 0.0],
+                [3.0, 3.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ]
+        )
+        # constant draws: the mean, quantile and draw all equal the score
+        samples = np.repeat(scores[:, :, None], 4, axis=2)
+        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(5)]
+        rng = np.random.default_rng(0)
+
+        slates = policy.select(samples, arms, rng, top_k=top_k)
+        best = policy.select(samples, arms, rng)
+
+        order = [[1, 2, 4, 0, 3], [0, 1, 2, 3, 4], [0, 1, 2, 3, 4]]
+        assert [[a.action_token for a in s] for s in slates] == [
+            o[:top_k] for o in order
+        ]
+        assert [s[0] for s in slates] == best
+
+    @pytest.mark.parametrize(
+        "policy",
+        [ThompsonSampling(), UpperConfidenceBound(), EpsilonGreedy(epsilon=0.0)],
+        ids=repr,
+    )
+    @pytest.mark.parametrize("n_arms", [40, 300])  # one sort; partition first
+    def test_top_k_ties_follow_arm_index(self, policy: Any, n_arms: int) -> None:
+        """On many tied scores (where ``argpartition`` left ties in any
+        order) slots stay best first with ties by arm index."""
+        scores = np.round(np.random.default_rng(3).normal(size=(n_arms, 6)), 1)
+        samples = np.repeat(scores[:, :, None], 4, axis=2)
+        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(n_arms)]
+
+        slates = policy.select(samples, arms, np.random.default_rng(0), top_k=10)
+
+        for c, slate in enumerate(slates):
+            idx = np.array([a.action_token for a in slate])
+            v = scores[idx, c]
+            assert (v[:-1] >= v[1:]).all()
+            assert ((v[:-1] > v[1:]) | (idx[:-1] < idx[1:])).all()
+            assert idx[0] == scores[:, c].argmax()
+
+    def test_epsilon_greedy_explores_in_the_order_drawn(self) -> None:
+        """An exploring context's slate is its random arms in draw order, so
+        every slot is uniform; the generator is consumed as before."""
+        samples = np.arange(18, dtype=np.float64).reshape(6, 3, 1)
+        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(6)]
+        policy: Any = EpsilonGreedy(epsilon=1.0)
+
+        slates = policy.select(samples, arms, np.random.default_rng(7), top_k=4)
+
+        twin = np.random.default_rng(7)
+        twin.random(size=3)
+        drawn = [list(twin.choice(6, size=4, replace=False)) for _ in range(3)]
+        assert [[a.action_token for a in s] for s in slates] == drawn
+
     def test_agent_top_k(self) -> None:
         """Test top_k functionality for non-contextual Agent."""
         arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]

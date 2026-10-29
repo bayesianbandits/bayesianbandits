@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
-from ._base import PolicyDefaultUpdate
+from ._base import PolicyDefaultUpdate, _top_k_indices
 
 
 class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -158,27 +158,17 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         # Decide which contexts explore
         choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon  # type: ignore[misc]
 
-        # For each exploring context, set k random arms to np.inf
-        values = means.copy()
+        # Exploring contexts take k random arms in the order drawn, so each
+        # slot is uniform; the rest take the greedy slate, best first
+        slates = _top_k_indices(means, top_k)
         for idx, explore in enumerate(choice_idx_to_explore):  # type: ignore[misc]
             if explore:
-                random_arms = rng.choice(
+                slates[idx] = rng.choice(
                     means.shape[0],
                     size=min(top_k, means.shape[0]),
                     replace=False,
                 )
-                values[random_arms, idx] = np.inf
-
-        # Use argpartition for efficiency, but handle case where top_k >= n_arms
-        return [
-            [
-                arms[idx]
-                for idx in np.argpartition(-values[:, i], min(top_k, len(arms) - 1))[
-                    :top_k
-                ]
-            ]
-            for i in range(values.shape[1])
-        ]
+        return [[arms[i] for i in row] for row in slates]
 
     def select_with_probabilities(
         self,

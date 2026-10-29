@@ -138,7 +138,8 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
             Will be transformed through the pipeline steps to ContextType.
         top_k : int, optional
             Number of arms to select per context. If None (default),
-            selects single best arm per context.
+            selects single best arm per context. If specified, in slot
+            order: best first for the score-ranking policies.
 
         Returns
         -------

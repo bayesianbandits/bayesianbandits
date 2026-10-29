@@ -33,6 +33,17 @@ Unreleased
   family loads it. Build the agent in code and load the state into it.
   See :doc:`/howto/production` (#309)
 
+**Bug fixes**
+
+- ``top_k`` slates from ``ThompsonSampling``, ``UpperConfidenceBound``
+  and ``EpsilonGreedy`` come best first with ties to the lower arm index,
+  as ``argmax`` breaks them, so a greedy slate's first slot is the
+  ``top_k=None`` pick. ``argpartition`` left the order unspecified and
+  broke ties arbitrarily, so an arm tied at the k-th place could make or
+  miss the cut either way. Exploring ``EpsilonGreedy`` slates keep the
+  order their random arms were drawn in, so every slot is uniform, and
+  draw the same arms as before
+
 1.5.0 (2026-10-21)
 ------------------
 

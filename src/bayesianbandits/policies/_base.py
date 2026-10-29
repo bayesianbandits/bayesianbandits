@@ -3,6 +3,7 @@ Base classes for Bayesian bandit policies.
 """
 
 from typing import (
+    Any,
     Generic,
     List,
     Optional,
@@ -16,6 +17,32 @@ from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
+
+# Arms up to which one stable sort beats partitioning: 1.7x at 10 arms by
+# 10k contexts, while past ~128 the sort's log factor loses (2.5x at 512
+# arms by 64 contexts)
+_SORT_ARMS = 128
+
+
+def _top_k_indices(values: NDArray[np.floating[Any]], top_k: int) -> NDArray[np.intp]:
+    """``(n_contexts, min(top_k, n_arms))`` arm indices per context, best
+    ``values`` first, ties to the lower index as ``argmax`` breaks them, so
+    slot 0 is the ``top_k=None`` pick. ``values`` is ``(n_arms, n_contexts)``.
+
+    Past ``_SORT_ARMS`` arms, linear in them instead of a full sort:
+    partition to each context's k-th best value, keep everything above it
+    plus the lowest-indexed arms tied at it, and sort only those k."""
+    n_arms = values.shape[0]
+    if top_k >= n_arms or n_arms <= _SORT_ARMS:
+        return np.argsort(-values, axis=0, kind="stable")[:top_k].T
+    kth = -np.partition(-values, top_k - 1, axis=0)[top_k - 1]
+    above = values > kth
+    tied = values == kth
+    chosen = above | (tied & (np.cumsum(tied, axis=0) <= top_k - above.sum(axis=0)))
+    # exactly top_k per context, ascending index (a stable sort of a bool)
+    idx = np.argsort(~chosen, axis=0, kind="stable")[:top_k]
+    order = np.argsort(-np.take_along_axis(values, idx, axis=0), axis=0, kind="stable")
+    return np.take_along_axis(idx, order, axis=0).T
 
 
 class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
