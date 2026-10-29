@@ -209,6 +209,12 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         decision's draw keeps the chosen arm's probability at least
         ``1 / (propensity_samples + 1)``, the resolution, so an IPS weight
         is at most ``propensity_samples + 1``."""
+        if type(self).select is not ThompsonSampling.select:
+            # the counts are the plain argmax, not what the override picks
+            raise NotImplementedError(
+                f"{type(self).__name__} overrides select, so counting argmaxes "
+                "would not give the probabilities of its choices"
+            )
         n_arms, n_contexts = samples.shape[:2]
         n_draws = self.propensity_samples
         wins = np.zeros((n_contexts, n_arms))

@@ -327,6 +327,19 @@ def test_drawn_probabilities_of_no_contexts(split: bool) -> None:
     assert chosen == [] and probs.shape == (0, 3)
 
 
+def test_thompson_sampling_subclass_overriding_select_raises() -> None:
+    """A masking subclass picks differently from the argmax the counts use."""
+
+    lowest_arm: Any = type(
+        "LowestArm",
+        (ThompsonSampling,),
+        {"select": lambda self, samples, arms, rng, top_k=None: [arms[0]]},
+    )
+    agent = ContextualAgent(_learned_arms(), lowest_arm(), random_seed=0)
+    with pytest.raises(NotImplementedError, match="overrides select"):
+        agent.pull_with_probabilities(np.ones((1, 2)))
+
+
 def test_policy_pickled_before_propensity_samples_loads() -> None:
     """The class default stands in for the attribute an old pickle lacks."""
     old = ThompsonSampling[Any, int].__new__(ThompsonSampling)
