@@ -46,7 +46,9 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     propensity_samples : int, default=10_000
         Extra posterior draws ``pull_with_probabilities`` counts argmaxes
         over to estimate the selection probabilities, a positive integer.
-        Selection itself always uses one draw. The draws come a few
+        Selection itself always uses one draw. More draws shrink both the
+        error and the IPS bias on arms below ``1 / propensity_samples``
+        (see ``select_with_drawn_probabilities``). The draws come a few
         contexts at a time, except under a ``LipschitzContextualAgent``
         batch reward function, which may combine contexts within a draw:
         there every context is drawn together in chunks of at most
@@ -208,7 +210,11 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         context is drawn together, in chunks of draws. Counting the
         decision's draw keeps the chosen arm's probability at least
         ``1 / (propensity_samples + 1)``, the resolution, so an IPS weight
-        is at most ``propensity_samples + 1``."""
+        is at most ``propensity_samples + 1``. That cap biases IPS low: an
+        arm with true probability ``p`` has expected weighted indicator
+        ``1 - (1 - p)**(propensity_samples + 1)`` rather than 1, so check
+        overlap for targets that favor arms near
+        ``1 / propensity_samples``."""
         if type(self).select is not ThompsonSampling.select:
             # the counts are the plain argmax, not what the override picks
             raise NotImplementedError(
