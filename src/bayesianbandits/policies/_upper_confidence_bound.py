@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
-from ._base import PolicyDefaultUpdate
+from ._base import PolicyDefaultUpdate, _top_k_indices
 
 
 def _quantile(samples: NDArray[np.float64], q: float) -> NDArray[np.float64]:
@@ -177,16 +177,7 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         # samples shape: (n_arms, n_contexts, samples_needed)
         ucb_values = _quantile(samples, self.alpha)
 
-        # Use argpartition for efficiency, but handle case where top_k >= n_arms
-        return [
-            [
-                arms[idx]
-                for idx in np.argpartition(
-                    -ucb_values[:, i], min(top_k, len(arms) - 1)
-                )[:top_k]
-            ]
-            for i in range(ucb_values.shape[1])
-        ]
+        return [[arms[i] for i in row] for row in _top_k_indices(ucb_values, top_k)]
 
     def select_with_probabilities(
         self,

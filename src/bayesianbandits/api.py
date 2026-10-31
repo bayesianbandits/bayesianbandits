@@ -539,7 +539,9 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         top_k : int, optional
             Number of arms to select per context. If None (default),
             selects single best arm per context. If specified, selects
-            top k arms per context.
+            top k arms per context, in slot order: best first for the
+            score-ranking policies, ties to the earlier arm (an exploring
+            ``EpsilonGreedy`` context keeps its random draw order).
 
         Returns
         -------
@@ -933,7 +935,9 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         ----------
         top_k : int, optional
             Number of arms to select. If None (default), selects single
-            best arm. If specified, selects top k arms.
+            best arm. If specified, selects top k arms, in slot order: best
+            first for the score-ranking policies, ties to the earlier arm (an
+            exploring ``EpsilonGreedy`` pull keeps its random draw order).
 
         Returns
         -------
@@ -1594,7 +1598,9 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         top_k : int, optional
             Number of arms to select per context. If None (default),
             selects single best arm per context. If specified, selects
-            top k arms per context.
+            top k arms per context, in slot order: best first for the
+            score-ranking policies, ties to the earlier arm (an exploring
+            ``EpsilonGreedy`` context keeps its random draw order).
 
         Returns
         -------
