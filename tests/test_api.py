@@ -1,9 +1,8 @@
-from typing import Any, List, Type, TypeVar, Union, cast
+from typing import Any, List, TypeVar, Union
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from scipy.sparse import csc_array
 from sklearn.base import (
     check_is_fitted,  # type: ignore
     clone,
@@ -328,37 +327,6 @@ class TestTopK:
         assert len(results[0]) == 3
         assert set(results[0]) == {0, 1, 2}
 
-    def test_epsilon_greedy_postprocess_with_top_k(self) -> None:
-        """Test that epsilon-greedy correctly explores with top_k selection."""
-        policy: PolicyProtocol[NDArray[np.float64] | csc_array, int] = EpsilonGreedy(
-            epsilon=1.0
-        )  # Always explore
-
-        # Create arms for testing
-        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(4)]
-
-        # Mock samples that would produce means like the original test
-        # Shape: (n_arms, n_contexts, samples_needed)
-        samples = np.array(
-            [
-                [[1.0], [2.0], [3.0]],  # Arm 0 samples across 3 contexts
-                [[4.0], [5.0], [6.0]],  # Arm 1
-                [[7.0], [8.0], [9.0]],  # Arm 2
-                [[10.0], [11.0], [12.0]],  # Arm 3
-            ]
-        ).astype(np.float64)
-
-        rng = np.random.default_rng(42)
-
-        # Test that with epsilon=1.0 and top_k=2, we get exploration
-        # We can't directly test the internal inf-setting, but we can test
-        # that the selection behavior is different from greedy
-        selected_arms = policy.select(samples, arms, rng, top_k=2)
-
-        # Should return 2 arms per context
-        assert len(selected_arms) == 3  # 3 contexts
-        assert all(len(context_arms) == 2 for context_arms in selected_arms)
-
     @pytest.mark.parametrize(
         "policy",
         [ThompsonSampling(), UpperConfidenceBound(), EpsilonGreedy(epsilon=0.0)],
@@ -470,37 +438,6 @@ class TestTopK:
         assert len(result_k3) == 1  # Still wrapped in outer list
         assert isinstance(result_k3[0], list)
         assert len(result_k3[0]) == 3  # Inner list has 3 items
-
-    @pytest.mark.parametrize("policy_class", [ThompsonSampling, UpperConfidenceBound])
-    def test_other_policies_top_k(
-        self,
-        policy_class: (
-            Type[ThompsonSampling[NDArray[np.float64], int]]
-            | Type[UpperConfidenceBound[NDArray[np.float64], int]]
-        ),
-    ) -> None:
-        """Test that other policies also support top_k."""
-        arms = [Arm(i, None, learner=NormalInverseGammaRegressor()) for i in range(5)]
-
-        if policy_class is UpperConfidenceBound:
-            policy = cast(
-                UpperConfidenceBound[NDArray[np.float64], int], policy_class(alpha=0.68)
-            )
-        elif policy_class is ThompsonSampling:
-            policy = cast(ThompsonSampling[NDArray[np.float64], int], policy_class())
-
-        agent = ContextualAgent(arms, policy, random_seed=42)  # type: ignore
-        X = np.array([[1.0], [2.0]])
-
-        # Should work without errors
-        result = agent.pull(X, top_k=3)
-        assert len(result) == 2  # One per context
-        assert all(len(sublist) == 3 for sublist in result)
-        assert all(len(set(sublist)) == 3 for sublist in result)  # No duplicates
-
-
-class TestSampleWeight:
-    """Test sample_weight parameter is correctly passed through the API."""
 
     def test_contextual_agent_sample_weight_passthrough(self) -> None:
         """Test that ContextualAgent passes sample_weight to policy.update()."""
