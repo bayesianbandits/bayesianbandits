@@ -31,7 +31,10 @@ def _top_k_indices(values: NDArray[np.floating[Any]], top_k: int) -> NDArray[np.
 
     Past ``_SORT_ARMS`` arms, linear in them instead of a full sort:
     partition to each context's k-th best value, keep everything above it
-    plus the lowest-indexed arms tied at it, and sort only those k."""
+    plus the lowest-indexed arms tied at it, and sort only those k. NaN
+    ranks last on both routes."""
+    # np.partition would make NaN the k-th value, which nothing ties
+    values = np.where(np.isnan(values), -np.inf, values)
     n_arms = values.shape[0]
     if top_k >= n_arms or n_arms <= _SORT_ARMS:
         return np.argsort(-values, axis=0, kind="stable")[:top_k].T

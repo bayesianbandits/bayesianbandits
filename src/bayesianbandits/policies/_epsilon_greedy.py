@@ -3,6 +3,7 @@ Epsilon-greedy policy for Bayesian bandits.
 """
 
 from typing import (
+    Any,
     List,
     Optional,
     Tuple,
@@ -16,6 +17,13 @@ from numpy.typing import NDArray
 from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate, _top_k_indices
+
+
+def _means(samples: NDArray[np.float64]) -> NDArray[np.floating[Any]]:
+    """``(n_arms, n_contexts)`` means over draws, shared by every path so
+    their rounding, and so their argmax on near-ties, agree."""
+    # a matvec: BLAS beats numpy's short-axis reduction
+    return samples @ np.full(samples.shape[-1], 1.0 / samples.shape[-1])
 
 
 class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -151,8 +159,7 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
 
-        # Compute means across samples dimension
-        means = samples.mean(axis=-1)  # Shape: (n_arms, n_contexts)
+        means = _means(samples)
 
         # Apply epsilon-greedy exploration per context
         # Decide which contexts explore
@@ -179,9 +186,8 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select one arm per context and return the ``(n_contexts, n_arms)``
         distribution it was drawn from, :math:`(1 - \\varepsilon)
         \\mathbb{1}[a = \\text{greedy}] + \\varepsilon / K`."""
-        n_arms, n_contexts, n_draws = samples.shape
-        # Mean over draws as a matvec: BLAS beats numpy's short-axis reduction
-        choices = (samples @ np.full(n_draws, 1.0 / n_draws)).argmax(axis=0)
+        n_arms, n_contexts, _ = samples.shape
+        choices = _means(samples).argmax(axis=0)
         probs = np.full((n_contexts, n_arms), self.epsilon / n_arms)
         probs[np.arange(n_contexts), choices] += 1 - self.epsilon
         explore = np.flatnonzero(rng.random(n_contexts) < self.epsilon)

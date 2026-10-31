@@ -23,6 +23,7 @@ from bayesianbandits import (
 )
 from bayesianbandits._arm import Learner
 from bayesianbandits.api import PolicyProtocol
+from bayesianbandits.policies._base import _top_k_indices
 
 
 @pytest.fixture(
@@ -412,6 +413,32 @@ class TestTopK:
             assert (v[:-1] >= v[1:]).all()
             assert ((v[:-1] > v[1:]) | (idx[:-1] < idx[1:])).all()
             assert idx[0] == scores[:, c].argmax()
+
+    def test_epsilon_greedy_slot_0_is_the_greedy_pick_on_near_ties(self) -> None:
+        """Arms whose draws are permutations of each other have equal means
+        up to rounding; both paths round the same way, so slot 0 agrees."""
+        rng = np.random.default_rng(1)
+        draws = rng.normal(size=(200, 7))
+        perm = rng.permuted(draws, axis=1)
+        samples = np.stack([draws, perm, draws - 1.0])
+        arms = [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(3)]
+        policy: Any = EpsilonGreedy(epsilon=0.0, samples=7)
+
+        slates = policy.select(samples, arms, np.random.default_rng(0), top_k=2)
+        best = policy.select(samples, arms, np.random.default_rng(0))
+
+        assert [s[0] for s in slates] == best
+
+    @pytest.mark.parametrize("n_arms", [100, 200])  # one sort; partition first
+    def test_top_k_ranks_nan_last(self, n_arms: int) -> None:
+        """With fewer finite scores than ``top_k``, both routes put the finite
+        arms first, then the NaN arms by index."""
+        scores = np.full((n_arms, 1), np.nan)
+        scores[50:55, 0] = [1.0, 2.0, 3.0, 4.0, 5.0]
+
+        slate = _top_k_indices(scores, 10)
+
+        assert slate.tolist() == [[54, 53, 52, 51, 50, 0, 1, 2, 3, 4]]
 
     def test_epsilon_greedy_explores_in_the_order_drawn(self) -> None:
         """An exploring context's slate is its random arms in draw order, so
