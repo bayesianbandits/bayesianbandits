@@ -172,23 +172,52 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select arms based on pre-generated samples using upper confidence bounds."""
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
+        return self.select_with_probabilities(samples, arms, rng, top_k)[0]
 
-        # Compute upper confidence bounds using quantiles
-        # samples shape: (n_arms, n_contexts, samples_needed)
-        ucb_values = _quantile(samples, self.alpha)
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
 
-        return [[arms[i] for i in row] for row in _top_k_indices(ucb_values, top_k)]
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
 
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select one arm per context and return the ``(n_contexts, n_arms)``
         distribution it was drawn from: one-hot, since UCB is deterministic
-        given the samples."""
-        choices = _quantile(samples, self.alpha).argmax(axis=0)
-        probs = np.zeros((samples.shape[1], len(arms)))
-        probs[np.arange(samples.shape[1]), choices] = 1.0
-        return list(map(arms.__getitem__, choices.tolist())), probs
+        given the samples.
+
+        With ``top_k``, select a slate per context, best first, and return
+        the ``(n_contexts, min(top_k, n_arms), n_arms)`` probability of
+        each arm in each slot, also one-hot."""
+        ucb_values = _quantile(samples, self.alpha)
+        n_contexts = samples.shape[1]
+        if top_k is None:
+            choices = ucb_values.argmax(axis=0)
+            probs = np.zeros((n_contexts, len(arms)))
+            probs[np.arange(n_contexts), choices] = 1.0
+            return list(map(arms.__getitem__, choices.tolist())), probs
+
+        slates = _top_k_indices(ucb_values, top_k)
+        probs = np.zeros((n_contexts, slates.shape[1], len(arms)))
+        probs[np.arange(n_contexts)[:, None], np.arange(slates.shape[1]), slates] = 1.0
+        return [[arms[i] for i in row] for row in slates], probs

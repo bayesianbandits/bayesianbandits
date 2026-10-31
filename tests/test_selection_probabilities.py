@@ -109,6 +109,67 @@ def test_ips_is_unbiased(policy: Any) -> None:
     assert abs(estimate - means[target]) < 4 * stderr
 
 
+# Policies reporting per-slot probabilities for ``top_k``
+SLATE_POLICIES: List[Any] = [
+    UpperConfidenceBound(alpha=0.68, samples=8),
+]
+
+
+@pytest.mark.parametrize("top_k", [1, 2, 4, 6])
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_agrees_with_select(policy: Any, top_k: int) -> None:
+    samples = np.random.default_rng(0).normal(size=(4, 5, policy.samples_needed))
+    arms = _arms(4)
+
+    plain = policy.select(samples, arms, np.random.default_rng(1), top_k=top_k)
+    chosen, probs = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1), top_k=top_k
+    )
+
+    assert [_tokens(slate) for slate in chosen] == [_tokens(s) for s in plain]
+    k = min(top_k, 4)
+    assert probs.shape == (5, k, 4)
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    assert (probs.sum(axis=1) <= 1.0 + 1e-12).all()
+    slots = np.array([_tokens(slate) for slate in chosen])
+    assert (probs[np.arange(5)[:, None], np.arange(k), slots] > 0).all()
+
+
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_first_slot_is_the_single_pick(policy: Any) -> None:
+    samples = np.random.default_rng(0).normal(size=(4, 5, policy.samples_needed))
+    arms = _arms(4)
+
+    _, single = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1)
+    )
+    _, slate = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1), top_k=3
+    )
+
+    assert np.allclose(slate[:, 0], single)
+
+
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_calibrated(policy: Any) -> None:
+    """Each (slot, arm) play count matches the sum of its probabilities."""
+    rng = np.random.default_rng(3)
+    n_rounds = 20_000
+    means = np.array([1.0, 0.5, 0.0, -1.0])
+    samples = means[:, None, None] + rng.normal(
+        size=(4, n_rounds, policy.samples_needed)
+    )
+
+    chosen, probs = policy.select_with_probabilities(samples, _arms(4), rng, top_k=2)
+    played = np.array([_tokens(slate) for slate in chosen])
+
+    for slot in range(2):
+        for arm in range(4):
+            p = probs[:, slot, arm]
+            residual = np.sum(played[:, slot] == arm) - p.sum()
+            assert abs(residual) <= 4 * np.sqrt(np.sum(p * (1 - p)))
+
+
 def _learned_arms() -> List[Arm[Any, int]]:
     return [Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0)) for i in range(3)]
 

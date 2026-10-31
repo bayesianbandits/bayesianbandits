@@ -23,6 +23,10 @@ Unreleased
   since the single draw it selects from does not determine it; the agents
   reach it through ``select_with_drawn_probabilities``, the protocol hook
   for a policy whose probabilities need fresh posterior draws (#310)
+- ``UpperConfidenceBound.select_with_probabilities(..., top_k=k)``
+  returns each context's slate and the ``(n_contexts, k, n_arms)``
+  probability of each arm in each slot, the per-slot propensities for
+  slate offline evaluation (#310)
 
 **Performance**
 
