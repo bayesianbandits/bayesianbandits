@@ -13,12 +13,24 @@ Unreleased
   offline evaluation. ``EXP3A`` and ``EpsilonGreedy`` report their mixing
   distributions, ``UpperConfidenceBound`` one-hot and
   ``InformationDirectedSampling`` its two-point mixture.
-  ``ThompsonSampling`` raises, since its propensity is the posterior
-  probability that an arm's draw is the largest and not a function of the
-  draw it selects from (#310)
+  ``ThompsonSampling``'s is the posterior probability that each arm's
+  draw is the largest, estimated by counting argmaxes over
+  ``propensity_samples`` (default 10,000) extra draws of the same
+  posterior, the decision's own draw included, so the chosen arm's is at
+  least ``1 / (propensity_samples + 1)``. It works with any learner,
+  reward function and batch reward function;
+  ``ThompsonSampling.select_with_probabilities`` itself still raises,
+  since the single draw it selects from does not determine it; the agents
+  reach it through ``select_with_drawn_probabilities``, the protocol hook
+  for a policy whose probabilities need fresh posterior draws (#310)
 
 **Performance**
 
+- Sparse-model solves and half-solves skip right-hand-side columns that
+  touch only never-observed features, which solve to their diagonal, and
+  the support covariance batches its solves by the observed block rather
+  than every feature: 250 -> 68 ms over a 183-feature support on a
+  2^20-feature production model (#310)
 - ``UpperConfidenceBound`` computes its quantile with one partition
   instead of ``np.quantile``, 3x faster at the default 1000 draws and
   bit-identical (#310)

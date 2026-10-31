@@ -61,12 +61,13 @@ def support_covariance(
     factor densifies only its block rows, ``O(m k)`` for ``m`` observed
     features, where a dense ``(n_features, k)`` right-hand side would
     cost ``O(n_features k)`` to build, scatter and read back for the
-    ``|U|`` rows wanted. The block bound is still stated in
-    ``n_features``: it caps the result's footprint when nothing is
-    trivial, and is merely conservative when the block is small.
+    ``|U|`` rows wanted. The solution stores the block rows only for
+    columns that touch the block, so the scratch, and the bound on it,
+    is in ``factor.n_factored``.
     """
     n_u = support.size
-    block = int(np.clip(_SCRATCH_ELEMS // max(1, n_features), 1, n_u))
+    # a quarter: the solve path holds a few block-sized copies at once
+    block = int(np.clip(_SCRATCH_ELEMS // 4 // max(1, factor.n_factored), 1, n_u))
     S = np.zeros((n_u, n_u), dtype=np.float64)
     # One O(n_features) table for the whole call; reading the ``U`` rows
     # of each result through it is then O(nnz), where row-indexing the

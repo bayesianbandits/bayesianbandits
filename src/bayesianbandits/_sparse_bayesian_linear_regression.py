@@ -6,6 +6,7 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Literal,
     NamedTuple,
     Optional,
@@ -314,7 +315,14 @@ class _SparseRhs:
     scipy does in ``O(n)`` per call however few entries there are.
     """
 
-    __slots__ = ("block", "trivial_rank", "trivial_col", "trivial_val", "shape")
+    __slots__ = (
+        "block",
+        "live",
+        "trivial_rank",
+        "trivial_col",
+        "trivial_val",
+        "shape",
+    )
 
     def __init__(
         self,
@@ -330,13 +338,38 @@ class _SparseRhs:
         val = np.asarray(c.data, dtype=np.float64)
         is_trivial, block_pos, rank = _locate(observed, trivial, row)
         m = n - trivial.size
-        block = np.zeros((m, k), dtype=np.float64, order="F")
-        block[block_pos, col[~is_trivial]] = val[~is_trivial]
+        # the columns with a block entry; the rest solve to zero there, so
+        # the block holds only these, (m, live.size)
+        self.live = np.unique(col[~is_trivial])
+        block = np.zeros((m, self.live.size), dtype=np.float64, order="F")
+        block[block_pos, np.searchsorted(self.live, col[~is_trivial])] = val[
+            ~is_trivial
+        ]
         self.block = block
         self.trivial_rank = rank
         self.trivial_col = col[is_trivial]
         self.trivial_val = val[is_trivial]
         self.shape = (n, k)
+
+    def solve_block(
+        self, solver: Callable[[NDArray[np.float64]], Any]
+    ) -> NDArray[np.float64]:
+        """``solver`` over the block columns that have an entry, ``(m,
+        live.size)``; a column touching only trivial features solves to
+        exactly zero there, so it is not solved or stored."""
+        if self.live.size == 0:
+            return self.block
+        return np.asarray(solver(self.block), dtype=np.float64)
+
+    def expand(self, block: NDArray[np.float64]) -> NDArray[np.float64]:
+        """A ``solve_block`` result at full width, ``(m, k)``, zero in the
+        columns without a block entry."""
+        k = self.shape[1]
+        if self.live.size == k:
+            return block
+        out = np.zeros((block.shape[0], k), dtype=np.float64, order="F")
+        out[:, self.live] = block
+        return out
 
     def solution(
         self,
@@ -346,7 +379,8 @@ class _SparseRhs:
         block: NDArray[np.float64],
     ) -> csc_array:
         """The solution as CSC over all features: the dense block solve
-        at the observed rows, plus each trivial entry over its diagonal.
+        (``solve_block``'s, live columns only) at the observed rows, plus
+        each trivial entry over its diagonal.
 
         Assembled straight into CSC -- every column holds the observed
         rows, already sorted, so the block is one column-major ravel
@@ -359,11 +393,19 @@ class _SparseRhs:
         rows = (
             np.arange(n, dtype=idx_dtype) if isinstance(observed, slice) else observed
         )
+        live = self.live
+        if live.size == k:
+            indptr = np.arange(0, m * k + 1, m, dtype=idx_dtype)
+        else:
+            # columns without block entries solved to zero there; store none
+            counts = np.zeros(k, dtype=idx_dtype)
+            counts[live] = m
+            indptr = np.concatenate([[0], np.cumsum(counts)]).astype(idx_dtype)
         out = csc_array(
             (
                 np.asfortranarray(block).ravel(order="F"),
-                np.tile(np.asarray(rows, dtype=idx_dtype), k),
-                np.arange(0, m * k + 1, m, dtype=idx_dtype),
+                np.tile(np.asarray(rows, dtype=idx_dtype), live.size),
+                indptr,
             ),
             shape=self.shape,
         )
@@ -536,7 +578,7 @@ class CholmodSparseFactor(MemoryUsageMixin):
         rows are densified first."""
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = np.asarray(self._factor.solve(rhs.block), dtype=np.float64)
+            block = rhs.solve_block(self._factor.solve)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
             return cast(NDArray[np.float64], _unscale(out, self._scale))
         block = np.asarray(self._factor.solve(b[self._observed]), dtype=np.float64)
@@ -600,9 +642,11 @@ class CholmodSparseFactor(MemoryUsageMixin):
         root = np.sqrt(self._scale)
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = self._factor.solve(rhs.block[self._factor.perm], system="L")
+            block = rhs.solve_block(
+                lambda B: self._factor.solve(B[self._factor.perm], system="L")
+            )
             return SparseHalfSolve(
-                _unscale(block, root),
+                _unscale(rhs.expand(block), root),
                 rhs.compact_trivial(self._trivial_diag, self._scale),
             )
         block = self._factor.solve(b[self._observed][self._factor.perm], system="L")
@@ -738,7 +782,7 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         """
         if issparse(b):
             rhs = _SparseRhs(b, self._observed, self._trivial)
-            block = self._block_solve(rhs.block)
+            block = rhs.solve_block(self._block_solve)
             out = rhs.solution(self._observed, self._trivial, self._trivial_diag, block)
             return cast(NDArray[np.float64], _unscale(out, self._scale))
         b = np.asarray(b, dtype=np.float64)
@@ -824,14 +868,21 @@ class SuperLUSparseFactor(MemoryUsageMixin):
         L_unit, invdiag = self._half_solve_factor
         root = np.sqrt(self._scale)
         rhs = _SparseRhs(b, self._observed, self._trivial) if issparse(b) else None
-        operand = b[self._observed] if rhs is None else rhs.block
-        y = spsolve_triangular(
-            L_unit,
-            operand[self._perm],
-            lower=True,
-            unit_diagonal=True,
-            overwrite_A=True,
-            overwrite_b=True,
+
+        def sweep(operand: NDArray[np.floating[Any]]) -> Any:
+            return spsolve_triangular(
+                L_unit,
+                operand[self._perm],
+                lower=True,
+                unit_diagonal=True,
+                overwrite_A=True,
+                overwrite_b=True,
+            )
+
+        y = (
+            sweep(b[self._observed])
+            if rhs is None
+            else rhs.expand(rhs.solve_block(sweep))
         )
         y *= _column_scale(invdiag / root, y.ndim)
         if rhs is not None:

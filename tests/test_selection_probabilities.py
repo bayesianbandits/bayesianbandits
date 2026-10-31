@@ -1,10 +1,12 @@
 """Tests for ``select_with_probabilities``: the distribution a policy drew
 its decision from, conditional on the samples it was handed."""
 
-from typing import Any, Callable, Dict, List, Sequence, Sized
+import pickle
+from typing import Any, Callable, Dict, List, Sequence, Sized, cast
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from numpy.typing import NDArray
 from sklearn.preprocessing import FunctionTransformer
 
@@ -15,13 +17,17 @@ from bayesianbandits import (
     Arm,
     ContextualAgent,
     EpsilonGreedy,
+    GammaRegressor,
     InformationDirectedSampling,
     LipschitzContextualAgent,
+    NormalInverseGammaRegressor,
     NormalRegressor,
     ThompsonSampling,
     UpperConfidenceBound,
 )
+from bayesianbandits._draw_kind import DrawKind
 from bayesianbandits.featurizers import FunctionArmFeaturizer
+from bayesianbandits.pipelines import LearnerPipeline
 from bayesianbandits.policies._base import PolicyDefaultUpdate
 
 # Policies putting mass on every arm, which IPS of a fixed target needs
@@ -108,8 +114,9 @@ def _learned_arms() -> List[Arm[Any, int]]:
 
 
 def _one_hot(X: Sized, action_tokens: Sequence[int]) -> NDArray[np.float64]:
-    out = np.zeros((len(X), len(action_tokens), len(action_tokens)))
-    out[:, np.arange(len(action_tokens)), np.arange(len(action_tokens))] = 1.0
+    """Three arm indicators and nothing else: independent arm scores."""
+    out = np.zeros((len(X), 3, len(action_tokens)))
+    out[:, list(action_tokens), np.arange(len(action_tokens))] = 1.0
     return out
 
 
@@ -148,10 +155,268 @@ def test_agents_agree_with_pull(build: Callable[[Any, int], Any]) -> None:
     assert agent.arm_to_update.action_token == tokens[-1]
 
 
-def test_thompson_sampling_raises() -> None:
-    agent = Agent(_learned_arms(), ThompsonSampling(), random_seed=0)
+def test_thompson_sampling_select_raises() -> None:
+    """The samples alone do not determine TS's propensity."""
+    samples = np.random.default_rng(0).normal(size=(3, 2, 1))
     with pytest.raises(NotImplementedError, match="largest"):
-        agent.pull_with_probabilities()
+        ThompsonSampling().select_with_probabilities(
+            samples, _arms(3), np.random.default_rng(0)
+        )
+
+
+def _continuous(X: Sized, action_tokens: Sequence[int]) -> NDArray[np.float64]:
+    """Two arm features and no arm-specific coefficients: the scores'
+    covariance has rank two, below the number of arm differences."""
+    out = np.zeros((len(X), 2, len(action_tokens)))
+    for j, token in enumerate(action_tokens):
+        out[:, 0, j] = 1.0 + token
+        out[:, 1, j] = (token - 1.5) ** 2
+    return out
+
+
+def _ts() -> ThompsonSampling[Any, int]:
+    return ThompsonSampling(propensity_samples=100_000)
+
+
+THOMPSON_AGENTS: Dict[str, Callable[[], Any]] = {
+    "ContextualAgent": lambda: ContextualAgent(_learned_arms(), _ts(), random_seed=5),
+    "ContextualAgent-NIG": lambda: ContextualAgent(
+        [Arm(i, learner=NormalInverseGammaRegressor()) for i in range(3)],
+        _ts(),
+        random_seed=5,
+    ),
+    "ContextualAgent-exp-reward": lambda: ContextualAgent(
+        [
+            Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0), reward_function=np.exp)
+            for i in range(3)
+        ],
+        _ts(),
+        random_seed=5,
+    ),
+    "ContextualAgent-Gamma": lambda: ContextualAgent(
+        [
+            # one group: GammaRegressor keys its posterior on a single column
+            Arm(
+                i,
+                learner=LearnerPipeline(
+                    steps=[
+                        ("one", FunctionTransformer(lambda x: np.ones((len(x), 1))))
+                    ],
+                    learner=GammaRegressor(alpha=1.0, beta=1.0),
+                ),
+            )
+            for i in range(3)
+        ],
+        _ts(),
+        random_seed=5,
+    ),
+    "Lipschitz-one-hot": lambda: LipschitzContextualAgent(
+        _arms(3),
+        _ts(),
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        random_seed=5,
+    ),
+    "Lipschitz-continuous": lambda: LipschitzContextualAgent(
+        _arms(4),
+        _ts(),
+        arm_featurizer=FunctionArmFeaturizer(_continuous),
+        learner=NormalInverseGammaRegressor(),
+        random_seed=5,
+    ),
+    "Lipschitz-batch-reward": lambda: LipschitzContextualAgent(
+        _arms(3),
+        _ts(),
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        batch_reward_function=lambda samples, tokens: samples,
+        random_seed=5,
+    ),
+}
+
+
+def _fit(agent: Any, X: NDArray[np.float64], rng: np.random.Generator) -> None:
+    """A few positive rewards per arm, so the posteriors differ and overlap."""
+    for arm in agent.arms:
+        y = np.abs(rng.normal(loc=1 + arm.action_token / 4, size=len(X)))
+        agent.select_for_update(arm.action_token).update(X, y)
+
+
+def _argmax_frequencies(agent: Any, X: NDArray[np.float64], n_draws: int) -> Any:
+    """How often each arm's draw is the largest, from the agent's own
+    sampling path: ``(n_contexts, n_arms)``."""
+    if isinstance(agent, LipschitzContextualAgent):
+        samples = agent._sample_rewards(X, n_draws)
+    else:
+        samples = agent.policy._draw_samples(agent.arms, X, n_draws)
+    picks = samples.argmax(axis=0)  # (n_contexts, n_draws)
+    return np.stack(
+        [np.bincount(row, minlength=len(agent.arms)) / n_draws for row in picks]
+    )
+
+
+@pytest.mark.parametrize("build", THOMPSON_AGENTS.values(), ids=THOMPSON_AGENTS.keys())
+def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
+    """The reported probabilities are the frequencies with which the
+    agent's draws pick each arm, and the decision agrees with ``pull``."""
+    rng = np.random.default_rng(0)
+    X_fit = np.abs(rng.normal(size=(6, 2)))
+    agent = build()
+    _fit(agent, X_fit, rng)
+    X = X_fit[:2]
+
+    tokens, probs = agent.pull_with_probabilities(X)
+    frequencies = _argmax_frequencies(agent, X, 200_000)
+
+    assert probs.shape == (2, len(agent.arms))
+    assert np.allclose(probs.sum(axis=1), 1.0)
+    played = [_tokens(agent.arms).index(t) for t in tokens]
+    assert (probs[[0, 1], played] >= 1 / 100_001).all()
+    assert np.abs(probs - frequencies).max() < 6e-3
+    assert agent.arm_to_update.action_token == tokens[-1]
+
+    plain, with_probs = build(), build()
+    _fit(plain, X_fit, np.random.default_rng(1))
+    _fit(with_probs, X_fit, np.random.default_rng(1))
+    assert plain.pull(X) == with_probs.pull_with_probabilities(X)[0]
+
+
+@pytest.mark.parametrize(
+    "split, calls",
+    [
+        (True, [(0, 2), (0, 2), (0, 1), (1, 2), (1, 2), (1, 1)]),
+        (False, [(0, 1)] * 5),
+    ],
+)
+def test_drawn_probabilities_count_in_chunks(
+    monkeypatch: pytest.MonkeyPatch, split: bool, calls: List[Any]
+) -> None:
+    """Every draw counts once, the decision's included, whether contexts
+    take their draws one at a time or all together in chunks."""
+    from bayesianbandits.policies import _thompson_sampling
+
+    monkeypatch.setattr(_thompson_sampling, "_PROPENSITY_CHUNK_ELEMS", 4)
+    seen: List[Any] = []
+
+    def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+        # two arms, two contexts: arm 1 wins context 0, arm 0 context 1
+        seen.append((contexts.start, size))
+        out = np.zeros((2, 2, size))
+        out[1, 0] = out[0, 1] = 1.0
+        return out[:, contexts]
+
+    decision = np.array([[[1.0], [0.0]], [[0.0], [1.0]]])  # arm 0, then arm 1
+    arms = _arms(2)
+    chosen, probs = ThompsonSampling(
+        propensity_samples=5
+    ).select_with_drawn_probabilities(
+        decision, arms, np.random.default_rng(0), draw, split_contexts=split
+    )
+
+    assert chosen == [arms[0], arms[1]]
+    assert seen == calls
+    assert np.allclose(probs, [[1 / 6, 5 / 6], [5 / 6, 1 / 6]])
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_drawn_probabilities_of_no_contexts(split: bool) -> None:
+    draw: Any = lambda contexts, size: pytest.fail("nothing to draw")  # noqa: E731
+    chosen, probs = ThompsonSampling().select_with_drawn_probabilities(
+        np.zeros((3, 0, 1)), _arms(3), np.random.default_rng(0), draw, split
+    )
+    assert chosen == [] and probs.shape == (0, 3)
+
+
+def test_thompson_sampling_subclass_overriding_select_raises() -> None:
+    """A masking subclass picks differently from the argmax the counts use."""
+
+    lowest_arm: Any = type(
+        "LowestArm",
+        (ThompsonSampling,),
+        {"select": lambda self, samples, arms, rng, top_k=None: [arms[0]]},
+    )
+    agent = ContextualAgent(_learned_arms(), lowest_arm(), random_seed=0)
+    with pytest.raises(NotImplementedError, match="overrides select"):
+        agent.pull_with_probabilities(np.ones((1, 2)))
+
+
+def test_thompson_sampling_counts_a_subclass_s_own_draws() -> None:
+    """A subclass that reshapes its draws in ``_draw_samples`` gets
+    probabilities counted over those draws, not the learners' plain ones."""
+
+    def favour_last(self: Any, arms: Any, X: Any, size: int, consumes: Any = None):
+        draws = ThompsonSampling._draw_samples(self, arms, X, size, consumes)
+        draws[-1] += 1e6
+        return draws
+
+    biased: Any = type("Biased", (ThompsonSampling,), {"_draw_samples": favour_last})
+    agent = ContextualAgent(
+        _learned_arms(), biased(propensity_samples=50), random_seed=0
+    )
+
+    _, probs = agent.pull_with_probabilities(np.ones((2, 2)))
+
+    assert (probs[:, -1] == 1.0).all()
+
+
+def test_policy_pickled_before_propensity_samples_loads() -> None:
+    """The class default stands in for the attribute an old pickle lacks."""
+    old = ThompsonSampling[Any, int].__new__(ThompsonSampling)
+    loaded = pickle.loads(pickle.dumps(old))
+    assert "propensity_samples" not in vars(loaded)
+
+    agent = ContextualAgent(_learned_arms(), loaded, random_seed=0)
+    assert "propensity_samples=10000" in repr(agent)
+    _, probs = agent.pull_with_probabilities(np.ones((1, 2)))
+    assert np.allclose(probs.sum(axis=1), 1.0)
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, 1e4, True, "10"])
+def test_propensity_samples_must_be_a_positive_integer(bad: Any) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        ThompsonSampling(propensity_samples=bad)
+    assert (
+        ThompsonSampling(propensity_samples=cast(Any, np.int64(5))).propensity_samples
+        == 5
+    )
+
+
+def test_sample_rewards_honours_an_explicit_marginal_request() -> None:
+    """``MARGINAL_ONLY`` is 0, falsy; it must still override the policy."""
+    agent = LipschitzContextualAgent(
+        _arms(3),
+        ThompsonSampling(),
+        arm_featurizer=FunctionArmFeaturizer(_one_hot),
+        learner=NormalRegressor(alpha=1.0, beta=1.0),
+        random_seed=0,
+    )
+    learner: Any = agent.learner
+    calls: List[int] = []
+    marginal = learner.sample_marginal
+    learner.sample_marginal = lambda X, size=1: calls.append(size) or marginal(X, size)
+
+    agent._sample_rewards(np.ones((2, 2)), 4, DrawKind.MARGINAL_ONLY)
+    assert calls == [4]
+
+
+@pytest.mark.parametrize("fmt", ["coo", "csc"])
+def test_thompson_sampling_probabilities_with_sparse_contexts(fmt: str) -> None:
+    """Contexts are sliced through CSR, which COO cannot do itself."""
+    arms = [
+        Arm(i, learner=NormalRegressor(alpha=1.0, beta=1.0, sparse=True))
+        for i in range(3)
+    ]
+    agent = ContextualAgent(
+        arms, ThompsonSampling(propensity_samples=500), random_seed=0
+    )
+    rng = np.random.default_rng(0)
+    X = sp.csc_array(rng.normal(size=(6, 4)) * (rng.random((6, 4)) < 0.5))
+    for arm in agent.arms:
+        agent.select_for_update(arm.action_token).update(X, rng.normal(size=6))
+
+    tokens, probs = agent.pull_with_probabilities(X.asformat(fmt))
+    assert len(tokens) == 6 and probs.shape == (6, 3)
+    assert np.allclose(probs.sum(axis=1), 1.0)
 
 
 def test_default_raises() -> None:

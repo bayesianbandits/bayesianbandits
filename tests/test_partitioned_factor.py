@@ -9,6 +9,9 @@ dense linear algebra on the full matrix, so the partition has to be
 invisible to every caller of the factor protocol.
 """
 
+from types import SimpleNamespace
+from typing import Any
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
@@ -148,6 +151,56 @@ def test_solve_with_a_sparse_rhs_matches_dense(m, fmt, index_dtype):
     out = factor.solve(B)
     assert sp.issparse(out)
     assert_allclose(out.toarray(), dense_inverse(precision) @ B.toarray(), rtol=1e-10)
+
+
+@pytest.mark.parametrize("method", ["solve", "half_solve"])
+@pytest.mark.parametrize("m", [24, 60])
+def test_sparse_rhs_columns_off_the_block_skip_the_block_solve(m, method, monkeypatch):
+    """A right-hand-side column touching only never-observed features
+    solves to its diagonal alone: the backend sees only the columns that
+    touch the block, and none at all when no column does."""
+    from bayesianbandits import _sparse_bayesian_linear_regression as module
+
+    rng = np.random.default_rng(22)
+    p = 60
+    precision, observed = make_precision(p, m, rng)
+    factor: Any = create_sparse_factor(precision)
+    unobserved = np.setdiff1d(np.arange(p), observed)
+    seen = []
+
+    def spy(solve, at=0):
+        def wrapped(*args, **kwargs):
+            seen.append(args[at].shape[1])
+            return solve(*args, **kwargs)
+
+        return wrapped
+
+    if hasattr(factor, "_block_solve"):  # SuperLU
+        factor._block_solve = spy(factor._block_solve)
+        monkeypatch.setattr(
+            module, "spsolve_triangular", spy(module.spsolve_triangular, at=1)
+        )
+    else:  # the sparse paths read only CHOLMOD's ``solve`` and ``perm``
+        inner = factor._factor
+        factor._factor = SimpleNamespace(solve=spy(inner.solve), perm=inner.perm)
+    inv = dense_inverse(precision)
+
+    cases = [(np.concatenate([observed[:2], unobserved[:3]]), 2), (unobserved[:3], 0)]
+    if m == p:  # nothing trivial: every column touches the block
+        cases = [(observed[:5], 5)]
+    for rows, live in cases:
+        B = sp.csc_array(
+            (np.ones(rows.size), (rows, np.arange(rows.size))), shape=(p, rows.size)
+        )
+        seen.clear()
+        out = getattr(factor, method)(B)
+        assert seen == ([live] if live else [])
+        expected = inv @ B.toarray()
+        if method == "solve":
+            assert_allclose(out.toarray(), expected, rtol=1e-10)
+        else:  # the two parts' Grams add up to the predictive covariance
+            gram = out.block.T @ out.block + (out.trivial.T @ out.trivial).toarray()
+            assert_allclose(gram, B.T.toarray() @ expected, rtol=1e-10, atol=1e-14)
 
 
 def test_half_solve_dense_rhs_gram_is_the_predictive_covariance():
