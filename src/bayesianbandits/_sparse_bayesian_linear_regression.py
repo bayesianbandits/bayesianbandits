@@ -338,11 +338,14 @@ class _SparseRhs:
         val = np.asarray(c.data, dtype=np.float64)
         is_trivial, block_pos, rank = _locate(observed, trivial, row)
         m = n - trivial.size
-        block = np.zeros((m, k), dtype=np.float64, order="F")
-        block[block_pos, col[~is_trivial]] = val[~is_trivial]
-        self.block = block
-        # the columns with a block entry; the rest solve to zero there
+        # the columns with a block entry; the rest solve to zero there, so
+        # the block holds only these, (m, live.size)
         self.live = np.unique(col[~is_trivial])
+        block = np.zeros((m, self.live.size), dtype=np.float64, order="F")
+        block[block_pos, np.searchsorted(self.live, col[~is_trivial])] = val[
+            ~is_trivial
+        ]
+        self.block = block
         self.trivial_rank = rank
         self.trivial_col = col[is_trivial]
         self.trivial_val = val[is_trivial]
@@ -351,14 +354,21 @@ class _SparseRhs:
     def solve_block(
         self, solver: Callable[[NDArray[np.float64]], Any]
     ) -> NDArray[np.float64]:
-        """``solver`` over the block columns that have an entry; a column
-        touching only trivial features solves to exactly zero there."""
-        live = self.live
-        if live.size == self.block.shape[1]:
-            return np.asarray(solver(self.block), dtype=np.float64)
-        out = np.zeros_like(self.block)
-        if live.size:
-            out[:, live] = np.asarray(solver(self.block[:, live]), dtype=np.float64)
+        """``solver`` over the block columns that have an entry, ``(m,
+        live.size)``; a column touching only trivial features solves to
+        exactly zero there, so it is not solved or stored."""
+        if self.live.size == 0:
+            return self.block
+        return np.asarray(solver(self.block), dtype=np.float64)
+
+    def expand(self, block: NDArray[np.float64]) -> NDArray[np.float64]:
+        """A ``solve_block`` result at full width, ``(m, k)``, zero in the
+        columns without a block entry."""
+        k = self.shape[1]
+        if self.live.size == k:
+            return block
+        out = np.zeros((block.shape[0], k), dtype=np.float64, order="F")
+        out[:, self.live] = block
         return out
 
     def solution(
@@ -369,7 +379,8 @@ class _SparseRhs:
         block: NDArray[np.float64],
     ) -> csc_array:
         """The solution as CSC over all features: the dense block solve
-        at the observed rows, plus each trivial entry over its diagonal.
+        (``solve_block``'s, live columns only) at the observed rows, plus
+        each trivial entry over its diagonal.
 
         Assembled straight into CSC -- every column holds the observed
         rows, already sorted, so the block is one column-major ravel
@@ -387,7 +398,6 @@ class _SparseRhs:
             indptr = np.arange(0, m * k + 1, m, dtype=idx_dtype)
         else:
             # columns without block entries solved to zero there; store none
-            block = block[:, live]
             counts = np.zeros(k, dtype=idx_dtype)
             counts[live] = m
             indptr = np.concatenate([[0], np.cumsum(counts)]).astype(idx_dtype)
@@ -636,7 +646,7 @@ class CholmodSparseFactor(MemoryUsageMixin):
                 lambda B: self._factor.solve(B[self._factor.perm], system="L")
             )
             return SparseHalfSolve(
-                _unscale(block, root),
+                _unscale(rhs.expand(block), root),
                 rhs.compact_trivial(self._trivial_diag, self._scale),
             )
         block = self._factor.solve(b[self._observed][self._factor.perm], system="L")
@@ -869,7 +879,11 @@ class SuperLUSparseFactor(MemoryUsageMixin):
                 overwrite_b=True,
             )
 
-        y = sweep(b[self._observed]) if rhs is None else rhs.solve_block(sweep)
+        y = (
+            sweep(b[self._observed])
+            if rhs is None
+            else rhs.expand(rhs.solve_block(sweep))
+        )
         y *= _column_scale(invdiag / root, y.ndim)
         if rhs is not None:
             return SparseHalfSolve(

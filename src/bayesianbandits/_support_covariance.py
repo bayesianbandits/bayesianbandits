@@ -66,7 +66,8 @@ def support_covariance(
     is in ``factor.n_factored``.
     """
     n_u = support.size
-    block = int(np.clip(_SCRATCH_ELEMS // max(1, factor.n_factored), 1, n_u))
+    # a quarter: the solve path holds a few block-sized copies at once
+    block = int(np.clip(_SCRATCH_ELEMS // 4 // max(1, factor.n_factored), 1, n_u))
     S = np.zeros((n_u, n_u), dtype=np.float64)
     # One O(n_features) table for the whole call; reading the ``U`` rows
     # of each result through it is then O(nnz), where row-indexing the

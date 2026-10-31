@@ -71,11 +71,13 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         size: int,
+        consumes: Optional[DrawKind] = None,
     ) -> NDArray[np.float64]:
         """Draw ``(n_arms, n_contexts, size)`` samples for ``select``.
 
         Samples each arm from its own learner, marginally when the
-        policy consumes ``MARGINAL_ONLY`` (iid per-row draws are exact
+        policy (or ``consumes``, overriding it) consumes ``MARGINAL_ONLY``
+        (iid per-row draws are exact
         for policies reading only per-(arm, context) statistics) and
         jointly otherwise. ``CONTEXT_JOINT`` and ``JOINT`` coincide
         here: every arm has its own learner, so there is no cross-arm
@@ -91,15 +93,12 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         samples that learner once for all arms rather than coming
         through here.
         """
+        marginal = (consumes or self.consumes) == DrawKind.MARGINAL_ONLY
         # Stacking transposed builds (n_arms, n_contexts, size) in one
         # copy with the draw axis contiguous (the layout contract).
         return np.array(
             [
-                (
-                    arm.sample_marginal
-                    if self.consumes == DrawKind.MARGINAL_ONLY
-                    else arm.sample
-                )(X, size).T
+                (arm.sample_marginal if marginal else arm.sample)(X, size).T
                 for arm in arms
             ]
         )
@@ -178,7 +177,7 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
             if X_rows is None:
                 X_rows = _row_sliceable(X)
             X_c = _take_rows(X_rows, contexts)
-            return np.array([arm.sample_marginal(X_c, size).T for arm in arms])
+            return self._draw_samples(arms, X_c, size, DrawKind.MARGINAL_ONLY)
 
         return self.select_with_drawn_probabilities(samples, arms, rng, draw)
 

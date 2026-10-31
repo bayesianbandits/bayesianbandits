@@ -340,6 +340,25 @@ def test_thompson_sampling_subclass_overriding_select_raises() -> None:
         agent.pull_with_probabilities(np.ones((1, 2)))
 
 
+def test_thompson_sampling_counts_a_subclass_s_own_draws() -> None:
+    """A subclass that reshapes its draws in ``_draw_samples`` gets
+    probabilities counted over those draws, not the learners' plain ones."""
+
+    def favour_last(self: Any, arms: Any, X: Any, size: int, consumes: Any = None):
+        draws = ThompsonSampling._draw_samples(self, arms, X, size, consumes)
+        draws[-1] += 1e6
+        return draws
+
+    biased: Any = type("Biased", (ThompsonSampling,), {"_draw_samples": favour_last})
+    agent = ContextualAgent(
+        _learned_arms(), biased(propensity_samples=50), random_seed=0
+    )
+
+    _, probs = agent.pull_with_probabilities(np.ones((2, 2)))
+
+    assert (probs[:, -1] == 1.0).all()
+
+
 def test_policy_pickled_before_propensity_samples_loads() -> None:
     """The class default stands in for the attribute an old pickle lacks."""
     old = ThompsonSampling[Any, int].__new__(ThompsonSampling)
