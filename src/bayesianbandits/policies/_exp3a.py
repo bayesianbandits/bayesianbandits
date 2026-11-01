@@ -15,6 +15,99 @@ from .._arm import Arm, ContextType, TokenType
 from .._draw_kind import DrawKind
 from ._base import PolicyDefaultUpdate
 
+#: Log-time trapezoid step for the slot integrals: 1e-10 relative error
+#: at 0.25, 1e-5 at 0.5
+_SLOT_STEP = 0.25
+#: Polynomial-table cells per chunk of contexts, ``(n_arms, k, n, points)``
+_SLOT_CELLS = 2**22
+
+
+def _draw_slates(
+    probs: NDArray[np.float64], top_k: int, rng: np.random.Generator
+) -> List[NDArray[np.intp]]:
+    """Per context, ``min(top_k, n_arms)`` arms drawn without replacement
+    from ``probs[:, c]``; ``probs`` is ``(n_arms, n_contexts)``."""
+    n_arms = probs.shape[0]
+    k = min(top_k, n_arms)
+    slates: List[NDArray[np.intp]] = []
+    for context_probs in probs.T:
+        if np.count_nonzero(context_probs) >= k:
+            slates.append(rng.choice(n_arms, size=k, replace=False, p=context_probs))
+            continue
+        # every positive arm, padded with uniform zero-probability arms and
+        # shuffled, so each slot is uniform over the slate
+        non_zero = np.flatnonzero(context_probs > 0)
+        zero = np.flatnonzero(context_probs == 0)
+        indices = np.concatenate(
+            [non_zero, rng.choice(zero, size=k - non_zero.size, replace=False)]
+        )
+        rng.shuffle(indices)
+        slates.append(indices)
+    return slates
+
+
+def _slot_probabilities(probs: NDArray[np.float64], k: int) -> NDArray[np.float64]:
+    """``(n_contexts, k, n_arms)`` probability that ``_draw_slates`` puts
+    each arm in each slot, ``k <= n_arms``.
+
+    Drawing without replacement in proportion to ``p`` is an exponential
+    race, each arm arriving at rate ``p_a``, so arm ``a`` fills slot ``j``
+    with probability ``int p_a exp(-p_a t) P(N_a(t) = j) dt``, ``N_a(t)``
+    the other arms arrived by ``t``. That count is Poisson-binomial, taken
+    from prefix and suffix products of the arrival polynomials truncated
+    at degree ``k - 1``, and the integral is a trapezoid in ``log t``."""
+    n_arms, n_contexts = probs.shape
+    out = np.empty((n_contexts, k, n_arms))
+    out[:, 0] = probs.T
+    if k == 1:
+        return out
+    short = np.count_nonzero(probs, axis=0) < k
+    if short.any():
+        # _draw_slates' padded branch: positive arms always in the slate
+        nnz = np.count_nonzero(probs[:, short], axis=0)
+        inclusion = np.where(probs[:, short] > 0, 1.0, (k - nnz) / (n_arms - nnz))
+        out[short] = (inclusion / k).T[:, None, :]
+    race = np.flatnonzero(~short)
+    if race.size == 0:
+        return out
+
+    rates = -np.sort(-probs[:, race], axis=0)
+    t_lo = 1e-12 / rates[0]
+    span = np.log(40.0 / rates[k - 1] / t_lo)
+    n_points = int(np.ceil(span.max() / _SLOT_STEP)) + 1
+    weights = np.full(n_points, 1.0)
+    weights[[0, -1]] = 0.5
+    chunk = max(1, _SLOT_CELLS // (n_arms * k * n_points))
+    for start in range(0, race.size, chunk):
+        ctx = race[start : start + chunk]
+        sub = slice(start, start + chunk)
+        log_t = (
+            np.log(t_lo[sub])[:, None]
+            + np.linspace(0.0, 1.0, n_points) * span[sub, None]
+        )
+        rate_t = probs[:, ctx, None] * np.exp(log_t)  # (n_arms, n, points)
+        waiting = np.exp(-rate_t)
+        arrived = -np.expm1(-rate_t)
+
+        prefix = np.zeros((n_arms, k) + rate_t.shape[1:])
+        prefix[0, 0] = 1.0
+        for a in range(1, n_arms):
+            prefix[a] = prefix[a - 1] * waiting[a - 1]
+            prefix[a, 1:] += prefix[a - 1, :-1] * arrived[a - 1]
+        suffix = np.zeros_like(prefix)
+        suffix[-1, 0] = 1.0
+        for a in range(n_arms - 2, -1, -1):
+            suffix[a] = suffix[a + 1] * waiting[a + 1]
+            suffix[a, 1:] += suffix[a + 1, :-1] * arrived[a + 1]
+
+        # t p_a exp(-p_a t): the density in log t
+        density = rate_t * waiting * weights
+        for j in range(1, k):
+            others = sum(prefix[:, i] * suffix[:, j - i] for i in range(j + 1))
+            out[ctx, j] = np.einsum("anq,anq->na", density, others)
+        out[ctx, 1:] *= (span[sub] / (n_points - 1))[:, None, None]
+    return out
+
 
 class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
     """
@@ -270,47 +363,51 @@ class EXP3A(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select arms based on pre-generated samples using EXP3A."""
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
-        else:
-            probs = self._probabilities(samples, len(arms))
-            # Sample k arms without replacement according to probabilities
-            results: List[List[Arm[ContextType, TokenType]]] = []
-            for i in range(probs.shape[1]):
-                k = min(top_k, len(arms))
-                context_probs = probs[:, i]
+        slates = _draw_slates(self._probabilities(samples, len(arms)), top_k, rng)
+        return [[arms[i] for i in slate] for slate in slates]
 
-                # Check if we have enough non-zero probabilities for sampling without replacement
-                non_zero_count = np.count_nonzero(context_probs)
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
 
-                if non_zero_count >= k:
-                    # Normal case: we can sample k arms according to probabilities
-                    indices = rng.choice(
-                        len(arms), size=k, replace=False, p=context_probs
-                    )
-                else:
-                    # Edge case: not enough non-zero probabilities
-                    # Take all non-zero probability arms, then add random arms to reach k
-                    non_zero_indices = np.where(context_probs > 0)[0]
-                    zero_indices = np.where(context_probs == 0)[0]
-                    remaining_needed = k - len(non_zero_indices)
-                    additional_indices = rng.choice(
-                        zero_indices, size=remaining_needed, replace=False
-                    )
-                    indices = np.concatenate([non_zero_indices, additional_indices])
-                    rng.shuffle(indices)  # Shuffle to avoid bias in ordering
-
-                results.append([arms[idx] for idx in indices])
-            return results
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
 
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select one arm per context and return the ``(n_contexts, n_arms)``
         distribution it was drawn from: the propensities for IPS and
-        doubly-robust offline evaluation."""
+        doubly-robust offline evaluation.
+
+        With ``top_k``, draw a slate per context without replacement in
+        proportion to that distribution, as ``select`` does, and return the
+        ``(n_contexts, min(top_k, n_arms), n_arms)`` probability of each
+        arm in each slot (see :func:`_slot_probabilities`)."""
         probs = self._probabilities(samples, len(arms))
+        if top_k is not None:
+            slates = _draw_slates(probs, top_k, rng)
+            return [[arms[i] for i in slate] for slate in slates], _slot_probabilities(
+                probs, min(top_k, len(arms))
+            )
         # Inverse-CDF draw, the same stream as rng.choice(p=...) per context
         cdf = np.cumsum(probs, axis=0)
         choices = (cdf <= rng.random(probs.shape[1]) * cdf[-1]).sum(axis=0)

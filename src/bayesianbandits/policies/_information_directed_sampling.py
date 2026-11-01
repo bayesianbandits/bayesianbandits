@@ -278,6 +278,18 @@ def _sample_information_ratio_minimizer(
         Each ``(n_contexts,)``: the sampled arm, drawn as ``a_idx`` with
         probability ``q`` and ``b_idx`` otherwise.
     """
+    a_idx, b_idx, q = _information_ratio_mixture(delta, v, alive)
+    picks = np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
+    return picks, a_idx, b_idx, q
+
+
+def _information_ratio_mixture(
+    delta: NDArray[np.float64],
+    v: NDArray[np.float64],
+    alive: NDArray[np.bool_],
+) -> Tuple[NDArray[np.intp], NDArray[np.intp], NDArray[np.float64]]:
+    """The ``(a_idx, b_idx, q)`` mixture
+    :func:`_sample_information_ratio_minimizer` draws from."""
     a_idx, b_idx, q, ratio = _optimal_two_point(delta, v, alive)
     resolved = ~np.isfinite(ratio)
     if np.any(resolved):
@@ -285,8 +297,7 @@ def _sample_information_ratio_minimizer(
         a_idx = np.where(resolved, greedy, a_idx)
         b_idx = np.where(resolved, greedy, b_idx)
         q = np.where(resolved, 1.0, q)
-    picks = np.where(rng.random(delta.shape[1]) < q, a_idx, b_idx)
-    return picks, a_idx, b_idx, q
+    return a_idx, b_idx, q
 
 
 class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
@@ -475,18 +486,50 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             for ctx in range(n_contexts)
         ]
 
+    @overload
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select one arm per context and return the ``(n_contexts, n_arms)``
         distribution it was drawn from: the ratio-minimizing two-point
         mixture, or one-hot on the greedy arm once the posterior has
-        resolved."""
+        resolved.
+
+        With ``top_k``, select a slate per context as ``select`` does and
+        return the ``(n_contexts, min(top_k, n_arms), n_arms)`` probability
+        of each arm in each slot. Each slot's mixture depends on the arms
+        before it, so slot ``j`` solves up to ``2**j`` subgames per
+        context, one per path through the earlier mixtures."""
         samples = _finite_draws(draw_contiguous(samples), rng)
         n_arms, n_contexts, _ = samples.shape
+        if top_k is not None:
+            choices, probs = _slate_probabilities(samples, min(top_k, n_arms), rng)
+            return [[arms[i] for i in row] for row in choices.T], probs
+
         alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
         delta, v = _vids_statistics(samples, alive, masked=samples)
         picks, a_idx, b_idx, q = _sample_information_ratio_minimizer(
@@ -498,3 +541,50 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         probs[ctx_idx, a_idx] += q
         probs[ctx_idx, b_idx] += 1 - q
         return [arms[idx] for idx in picks], probs
+
+
+def _slate_probabilities(
+    samples: NDArray[np.float64], n_slots: int, rng: np.random.Generator
+) -> Tuple[NDArray[np.intp], NDArray[np.float64]]:
+    """``select``'s ``(n_slots, n_contexts)`` slate choices, drawing ``rng``
+    as it does, and the ``(n_contexts, n_slots, n_arms)`` per-slot
+    probabilities, summed over every path of earlier picks with positive
+    probability. Paths are columns: ``path_ctx`` maps each to its context
+    and ``decision`` tracks the path ``select`` takes."""
+    n_arms, n_contexts, _ = samples.shape
+    probs = np.zeros((n_contexts, n_slots, n_arms))
+    choices = np.empty((n_slots, n_contexts), dtype=np.intp)
+    path_ctx = np.arange(n_contexts)
+    alive = np.ones((n_arms, n_contexts), dtype=np.bool_)
+    weight = np.ones(n_contexts)
+    decision = np.arange(n_contexts)
+    for slot in range(n_slots):
+        paths = samples if slot == 0 else samples[:, path_ctx]
+        masked = np.where(alive[:, :, np.newaxis], paths, -np.inf)
+        delta, v = _vids_statistics(paths, alive, masked=masked)
+        a_idx, b_idx, q = _information_ratio_mixture(delta, v, alive)
+        in_slot = probs[:, slot]
+        np.add.at(in_slot, (path_ctx, a_idx), weight * q)
+        np.add.at(in_slot, (path_ctx, b_idx), weight * (1 - q))
+
+        take_a = rng.random(n_contexts) < q[decision]
+        choices[slot] = np.where(take_a, a_idx[decision], b_idx[decision])
+        if slot + 1 == n_slots:
+            break
+
+        # each path branches on its two arms, one child when they coincide
+        same = a_idx == b_idx
+        child_w = np.stack(
+            [np.where(same, weight, weight * q), np.where(same, 0.0, weight * (1 - q))],
+            axis=1,
+        ).ravel()
+        child_arm = np.stack([a_idx, b_idx], axis=1).ravel()
+        keep = np.flatnonzero(child_w > 0)
+        parent = keep // 2
+        renumber = np.cumsum(child_w > 0) - 1
+        decision = renumber[2 * decision + (~take_a & ~same[decision])]
+        path_ctx = path_ctx[parent]
+        alive = alive[:, parent]
+        alive[child_arm[keep], np.arange(keep.size)] = False
+        weight = child_w[keep]
+    return choices, probs

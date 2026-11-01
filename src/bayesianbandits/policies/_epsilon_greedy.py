@@ -158,38 +158,60 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select arms based on pre-generated samples using epsilon-greedy."""
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
+        return self.select_with_probabilities(samples, arms, rng, top_k)[0]
 
-        means = _means(samples)
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
 
-        # Apply epsilon-greedy exploration per context
-        # Decide which contexts explore
-        choice_idx_to_explore = rng.random(size=means.shape[1]) < self.epsilon  # type: ignore[misc]
-
-        # Exploring contexts take k random arms in the order drawn, so each
-        # slot is uniform; the rest take the greedy slate, best first
-        slates = _top_k_indices(means, top_k)
-        for idx, explore in enumerate(choice_idx_to_explore):  # type: ignore[misc]
-            if explore:
-                slates[idx] = rng.choice(
-                    means.shape[0],
-                    size=min(top_k, means.shape[0]),
-                    replace=False,
-                )
-        return [[arms[i] for i in row] for row in slates]
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
 
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select one arm per context and return the ``(n_contexts, n_arms)``
         distribution it was drawn from, :math:`(1 - \\varepsilon)
-        \\mathbb{1}[a = \\text{greedy}] + \\varepsilon / K`."""
+        \\mathbb{1}[a = \\text{greedy}] + \\varepsilon / K`.
+
+        With ``top_k``, select a slate per context and return the
+        ``(n_contexts, min(top_k, n_arms), n_arms)`` probability of each
+        arm in each slot, the same mixture against the greedy slate: an
+        exploring slate is drawn without replacement in random order, so
+        each of its slots is uniform."""
         n_arms, n_contexts, _ = samples.shape
-        choices = _means(samples).argmax(axis=0)
-        probs = np.full((n_contexts, n_arms), self.epsilon / n_arms)
-        probs[np.arange(n_contexts), choices] += 1 - self.epsilon
-        explore = np.flatnonzero(rng.random(n_contexts) < self.epsilon)
-        choices[explore] = rng.integers(n_arms, size=explore.size)
-        return list(map(arms.__getitem__, choices.tolist())), probs
+        means = _means(samples)
+        if top_k is None:
+            choices = means.argmax(axis=0)
+            probs = np.full((n_contexts, n_arms), self.epsilon / n_arms)
+            probs[np.arange(n_contexts), choices] += 1 - self.epsilon
+            explore = np.flatnonzero(rng.random(n_contexts) < self.epsilon)
+            choices[explore] = rng.integers(n_arms, size=explore.size)
+            return list(map(arms.__getitem__, choices.tolist())), probs
+
+        greedy = _top_k_indices(means, top_k)
+        k = greedy.shape[1]
+        probs = np.full((n_contexts, k, n_arms), self.epsilon / n_arms)
+        probs[np.arange(n_contexts)[:, None], np.arange(k), greedy] += 1 - self.epsilon
+        slates = greedy.copy()
+        for idx in np.flatnonzero(rng.random(n_contexts) < self.epsilon):
+            slates[idx] = rng.choice(n_arms, size=k, replace=False)
+        return [[arms[i] for i in row] for row in slates], probs

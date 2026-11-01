@@ -111,7 +111,10 @@ def test_ips_is_unbiased(policy: Any) -> None:
 
 # Policies reporting per-slot probabilities for ``top_k``
 SLATE_POLICIES: List[Any] = [
+    EXP3A(eta=1.0, gamma=0.1, samples=8),
+    EpsilonGreedy(epsilon=0.3, samples=8),
     UpperConfidenceBound(alpha=0.68, samples=8),
+    InformationDirectedSampling(samples=8),
 ]
 
 
@@ -168,6 +171,98 @@ def test_slate_calibrated(policy: Any) -> None:
             p = probs[:, slot, arm]
             residual = np.sum(played[:, slot] == arm) - p.sum()
             assert abs(residual) <= 4 * np.sqrt(np.sum(p * (1 - p)))
+
+
+def test_ids_slate_sums_over_every_path() -> None:
+    """Every slot mixes here, so later slots weigh several subgames;
+    repeating ``select`` with fresh generators must hit their mixture."""
+    policy = InformationDirectedSampling(samples=8)
+    scale = np.array([0.2, 1.0, 2.0, 3.0])[:, None, None]
+    samples = np.random.default_rng(1).normal(scale=scale, size=(4, 1, 8))
+    arms = _arms(4)
+    _, probs = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(0), top_k=3
+    )
+    assert (((probs > 0.05) & (probs < 0.95)).sum(axis=-1) >= 2).all()
+
+    n_rounds = 4_000
+    counts = np.zeros_like(probs[0])
+    for seed in range(n_rounds):
+        slate = policy.select(samples, arms, np.random.default_rng(seed), top_k=3)
+        counts[np.arange(3), _tokens(slate[0])] += 1
+
+    stderr = np.sqrt(probs[0] * (1 - probs[0]) / n_rounds)
+    assert (np.abs(counts / n_rounds - probs[0]) <= 4 * stderr + 1e-12).all()
+
+
+def _exp3a_probs(scale: float, n_arms: int = 12) -> NDArray[np.float64]:
+    """``(n_arms, 3)`` exponential weights, flatter to peakier by context."""
+    logits = np.random.default_rng(0).normal(size=(n_arms, 3)) * [1.0, scale, 3 * scale]
+    probs = np.exp(logits - logits.max(axis=0))
+    return probs / probs.sum(axis=0)
+
+
+def test_exp3a_second_slot_closed_form() -> None:
+    """P(a second) = p_a sum_{b != a} p_b / (1 - p_b)."""
+    from bayesianbandits.policies._exp3a import _slot_probabilities
+
+    p = _exp3a_probs(4.0)
+    slots = _slot_probabilities(p, 4)
+    odds = p / (1 - p)
+    second = p * (odds.sum(axis=0) - odds)
+
+    assert np.allclose(slots[:, 1], second.T, rtol=1e-9, atol=0)
+    assert np.allclose(slots.sum(axis=2), 1.0, atol=1e-9)
+    assert p.min() < 1e-6  # the relative check reaches the tail
+
+
+def test_exp3a_slots_match_the_race() -> None:
+    """Gumbel top-k is the same draw as ``rng.choice(replace=False, p=)``."""
+    from bayesianbandits.policies._exp3a import _slot_probabilities
+
+    p = _exp3a_probs(1.5, n_arms=6)
+    slots = _slot_probabilities(p, 3)
+    n_draws = 200_000
+    keys = np.log(p.T)[:, None, :] + np.random.default_rng(1).gumbel(
+        size=(3, n_draws, 6)
+    )
+    top = np.argsort(-keys, axis=2)[..., :3]
+    for slot in range(3):
+        freq = np.array([np.bincount(row, minlength=6) for row in top[..., slot]])
+        stderr = np.sqrt(slots[:, slot] * (1 - slots[:, slot]) / n_draws)
+        assert (np.abs(freq / n_draws - slots[:, slot]) <= 4 * stderr + 1e-12).all()
+
+
+def test_exp3a_slots_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bayesianbandits.policies import _exp3a
+
+    p = _exp3a_probs(2.0)
+    whole = _exp3a._slot_probabilities(p, 3)
+    monkeypatch.setattr(_exp3a, "_SLOT_CELLS", 1)
+
+    assert np.array_equal(_exp3a._slot_probabilities(p, 3), whole)
+
+
+def test_exp3a_slate_with_fewer_positive_arms_than_slots() -> None:
+    """Weights underflowing to zero pad the slate with uniform arms."""
+    policy = EXP3A(eta=1e4, gamma=0.0, samples=1)
+    samples = np.zeros((5, 20_000, 1))
+    samples[1:4] = -1.0
+    samples[4, 1::2] = -1.0  # half the contexts: one positive arm, else two
+
+    chosen, probs = policy.select_with_probabilities(
+        samples, _arms(5), np.random.default_rng(0), top_k=3
+    )
+    played = np.array([_tokens(slate) for slate in chosen])
+
+    # two positive arms and one of three zeros, then one and two of four
+    assert np.allclose(probs[0], [[1 / 3, 1 / 9, 1 / 9, 1 / 9, 1 / 3]] * 3)
+    assert np.allclose(probs[1], [[1 / 3, 1 / 6, 1 / 6, 1 / 6, 1 / 6]] * 3)
+    for slot in range(3):
+        for arm in range(5):
+            q = probs[:, slot, arm]
+            residual = np.sum(played[:, slot] == arm) - q.sum()
+            assert abs(residual) <= 4 * np.sqrt(np.sum(q * (1 - q))) + 1e-9
 
 
 def _learned_arms() -> List[Arm[Any, int]]:
