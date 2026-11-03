@@ -521,9 +521,7 @@ class InformationDirectedSampling(PolicyDefaultUpdate[ContextType, TokenType]):
 
         With ``top_k``, select a slate per context as ``select`` does and
         return the ``(n_contexts, min(top_k, n_arms), n_arms)`` probability
-        of each arm in each slot. Each slot's mixture depends on the arms
-        before it, so slot ``j`` solves up to ``2**j`` subgames per
-        context, one per path through the earlier mixtures."""
+        of each arm in each slot, summed over the earlier slots' paths."""
         samples = _finite_draws(draw_contiguous(samples), rng)
         n_arms, n_contexts, _ = samples.shape
         if top_k is not None:
@@ -582,9 +580,26 @@ def _slate_probabilities(
         keep = np.flatnonzero(child_w > 0)
         parent = keep // 2
         renumber = np.cumsum(child_w > 0) - 1
-        decision = renumber[2 * decision + (~take_a & ~same[decision])]
-        path_ctx = path_ctx[parent]
-        alive = alive[:, parent]
-        alive[child_arm[keep], np.arange(keep.size)] = False
-        weight = child_w[keep]
+        child = renumber[2 * decision + (~take_a & ~same[decision])]
+        child_ctx = path_ctx[parent]
+        child_alive = alive[:, parent]
+        child_alive[child_arm[keep], np.arange(keep.size)] = False
+
+        # paths reaching the same context and removed set face the same
+        # subgame: merge them and add their weights
+        key = np.concatenate(
+            [
+                child_ctx.astype("<i8").view(np.uint8).reshape(-1, 8),
+                np.packbits(child_alive.T, axis=1),
+            ],
+            axis=1,
+        )
+        _, first, inverse = np.unique(
+            key, axis=0, return_index=True, return_inverse=True
+        )
+        inverse = inverse.reshape(-1)
+        weight = np.bincount(inverse, child_w[keep], first.size)
+        path_ctx = child_ctx[first]
+        alive = child_alive[:, first]
+        decision = inverse[child]
     return choices, probs

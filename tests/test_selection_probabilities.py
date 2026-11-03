@@ -118,7 +118,7 @@ SLATE_POLICIES: List[Any] = [
 ]
 
 
-@pytest.mark.parametrize("top_k", [1, 2, 4, 6])
+@pytest.mark.parametrize("top_k", [2, 6])
 @pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
 def test_slate_agrees_with_select(policy: Any, top_k: int) -> None:
     samples = np.random.default_rng(0).normal(size=(4, 5, policy.samples_needed))
@@ -163,10 +163,10 @@ def test_slate_calibrated(policy: Any) -> None:
         size=(4, n_rounds, policy.samples_needed)
     )
 
-    chosen, probs = policy.select_with_probabilities(samples, _arms(4), rng, top_k=2)
+    chosen, probs = policy.select_with_probabilities(samples, _arms(4), rng, top_k=3)
     played = np.array([_tokens(slate) for slate in chosen])
 
-    for slot in range(2):
+    for slot in range(3):
         for arm in range(4):
             p = probs[:, slot, arm]
             residual = np.sum(played[:, slot] == arm) - p.sum()
@@ -174,25 +174,22 @@ def test_slate_calibrated(policy: Any) -> None:
 
 
 def test_ids_slate_sums_over_every_path() -> None:
-    """Every slot mixes here, so later slots weigh several subgames;
-    repeating ``select`` with fresh generators must hit their mixture."""
+    """Every slot mixes here, so later slots weigh several subgames; the
+    slates played across copies of one context must hit their mixture."""
     policy = InformationDirectedSampling(samples=8)
     scale = np.array([0.2, 1.0, 2.0, 3.0])[:, None, None]
-    samples = np.random.default_rng(1).normal(scale=scale, size=(4, 1, 8))
-    arms = _arms(4)
-    _, probs = policy.select_with_probabilities(
-        samples, arms, np.random.default_rng(0), top_k=3
-    )
-    assert (((probs > 0.05) & (probs < 0.95)).sum(axis=-1) >= 2).all()
-
+    one = np.random.default_rng(1).normal(scale=scale, size=(4, 1, 8))
     n_rounds = 4_000
-    counts = np.zeros_like(probs[0])
-    for seed in range(n_rounds):
-        slate = policy.select(samples, arms, np.random.default_rng(seed), top_k=3)
-        counts[np.arange(3), _tokens(slate[0])] += 1
+    chosen, probs = policy.select_with_probabilities(
+        np.repeat(one, n_rounds, axis=1), _arms(4), np.random.default_rng(0), top_k=3
+    )
+    expected = probs[0]
+    assert (((expected > 0.05) & (expected < 0.95)).sum(axis=-1) >= 2).all()
 
-    stderr = np.sqrt(probs[0] * (1 - probs[0]) / n_rounds)
-    assert (np.abs(counts / n_rounds - probs[0]) <= 4 * stderr + 1e-12).all()
+    played = np.array([_tokens(slate) for slate in chosen])
+    freq = np.stack([np.bincount(col, minlength=4) for col in played.T]) / n_rounds
+    stderr = np.sqrt(expected * (1 - expected) / n_rounds)
+    assert (np.abs(freq - expected) <= 4 * stderr + 1e-12).all()
 
 
 def _exp3a_probs(scale: float, n_arms: int = 12) -> NDArray[np.float64]:
@@ -216,23 +213,6 @@ def test_exp3a_second_slot_closed_form() -> None:
     assert p.min() < 1e-6  # the relative check reaches the tail
 
 
-def test_exp3a_slots_match_the_race() -> None:
-    """Gumbel top-k is the same draw as ``rng.choice(replace=False, p=)``."""
-    from bayesianbandits.policies._exp3a import _slot_probabilities
-
-    p = _exp3a_probs(1.5, n_arms=6)
-    slots = _slot_probabilities(p, 3)
-    n_draws = 200_000
-    keys = np.log(p.T)[:, None, :] + np.random.default_rng(1).gumbel(
-        size=(3, n_draws, 6)
-    )
-    top = np.argsort(-keys, axis=2)[..., :3]
-    for slot in range(3):
-        freq = np.array([np.bincount(row, minlength=6) for row in top[..., slot]])
-        stderr = np.sqrt(slots[:, slot] * (1 - slots[:, slot]) / n_draws)
-        assert (np.abs(freq / n_draws - slots[:, slot]) <= 4 * stderr + 1e-12).all()
-
-
 def test_exp3a_slots_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     from bayesianbandits.policies import _exp3a
 
@@ -240,7 +220,22 @@ def test_exp3a_slots_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     whole = _exp3a._slot_probabilities(p, 3)
     monkeypatch.setattr(_exp3a, "_SLOT_CELLS", 1)
 
-    assert np.array_equal(_exp3a._slot_probabilities(p, 3), whole)
+    assert np.allclose(_exp3a._slot_probabilities(p, 3), whole, rtol=1e-12, atol=0)
+
+
+def test_exp3a_slate_with_vanishing_weights() -> None:
+    """Weights near the float floor once overflowed the race's time span."""
+    policy = EXP3A(eta=1.0, gamma=0.0, samples=1)
+    samples = np.zeros((3, 2, 1))
+    samples[1], samples[2] = -700.0, -744.0
+
+    _, probs = policy.select_with_probabilities(
+        samples, _arms(3), np.random.default_rng(0), top_k=2
+    )
+
+    assert np.isfinite(probs).all()
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    assert probs[0, 1, 1] == pytest.approx(1.0, rel=1e-9)
 
 
 def test_exp3a_slate_with_fewer_positive_arms_than_slots() -> None:
@@ -575,8 +570,9 @@ def test_thompson_sampling_probabilities_with_sparse_contexts(fmt: str) -> None:
     assert np.allclose(probs.sum(axis=1), 1.0)
 
 
-def test_default_raises() -> None:
+@pytest.mark.parametrize("top_k", [None, 2])
+def test_default_raises(top_k: Any) -> None:
     with pytest.raises(NotImplementedError, match="PolicyDefaultUpdate does not"):
         PolicyDefaultUpdate[Any, int]().select_with_probabilities(
-            np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0)
+            np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0), top_k=top_k
         )

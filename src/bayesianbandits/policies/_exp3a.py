@@ -46,6 +46,10 @@ def _draw_slates(
     return slates
 
 
+def _n_points(span: float) -> int:
+    return int(np.ceil(span / _SLOT_STEP)) + 1
+
+
 def _slot_probabilities(probs: NDArray[np.float64], k: int) -> NDArray[np.float64]:
     """``(n_contexts, k, n_arms)`` probability that ``_draw_slates`` puts
     each arm in each slot, ``k <= n_arms``.
@@ -71,21 +75,23 @@ def _slot_probabilities(probs: NDArray[np.float64], k: int) -> NDArray[np.float6
     if race.size == 0:
         return out
 
-    rates = -np.sort(-probs[:, race], axis=0)
-    t_lo = 1e-12 / rates[0]
-    span = np.log(40.0 / rates[k - 1] / t_lo)
-    n_points = int(np.ceil(span.max() / _SLOT_STEP)) + 1
-    weights = np.full(n_points, 1.0)
-    weights[[0, -1]] = 0.5
-    chunk = max(1, _SLOT_CELLS // (n_arms * k * n_points))
+    # t from 1e-6 (the rates sum to one) to 40 / p_k, in logs so a tiny
+    # p_k cannot overflow; sorted so each chunk sizes its grid to its own
+    with np.errstate(divide="ignore"):
+        log_p = np.log(probs[:, race])
+    span = np.log(40e6) + np.partition(-log_p, k - 1, axis=0)[k - 1]
+    order = np.argsort(span)
+    chunk = max(1, _SLOT_CELLS // (n_arms * k * _n_points(span.max())))
     for start in range(0, race.size, chunk):
-        ctx = race[start : start + chunk]
-        sub = slice(start, start + chunk)
-        log_t = (
-            np.log(t_lo[sub])[:, None]
-            + np.linspace(0.0, 1.0, n_points) * span[sub, None]
-        )
-        rate_t = probs[:, ctx, None] * np.exp(log_t)  # (n_arms, n, points)
+        sub = order[start : start + chunk]
+        ctx = race[sub]
+        n_points = _n_points(span[sub].max())
+        weights = np.full(n_points, 1.0)
+        weights[[0, -1]] = 0.5
+        log_t = np.log(1e-6) + np.linspace(0.0, 1.0, n_points) * span[sub, None]
+        # (n_arms, n, points); clipped where the arm has surely arrived
+        log_rate = np.take(log_p, sub, axis=1)[:, :, None] + log_t
+        rate_t = np.exp(np.minimum(log_rate, 690.0))
         waiting = np.exp(-rate_t)
         arrived = -np.expm1(-rate_t)
 

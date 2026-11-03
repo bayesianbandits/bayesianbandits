@@ -178,12 +178,34 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             return [arms[idx] for idx in best_indices]
         return [[arms[i] for i in row] for row in _top_k_indices(values, top_k)]
 
+    @overload
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Not implemented: Thompson sampling's selection probability is the
         posterior probability that an arm's draw is the largest, which the
         single draw ``select`` consumes does not determine."""

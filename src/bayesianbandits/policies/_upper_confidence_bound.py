@@ -172,7 +172,8 @@ class UpperConfidenceBound(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select arms based on pre-generated samples using upper confidence bounds."""
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
-        return self.select_with_probabilities(samples, arms, rng, top_k)[0]
+        slates = _top_k_indices(_quantile(samples, self.alpha), top_k)
+        return [[arms[i] for i in row] for row in slates]
 
     @overload
     def select_with_probabilities(

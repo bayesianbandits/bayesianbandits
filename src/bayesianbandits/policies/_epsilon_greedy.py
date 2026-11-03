@@ -158,7 +158,21 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
         """Select arms based on pre-generated samples using epsilon-greedy."""
         if top_k is None:
             return self.select_with_probabilities(samples, arms, rng)[0]
-        return self.select_with_probabilities(samples, arms, rng, top_k)[0]
+        _, slates = self._slates(_means(samples), top_k, rng)
+        return [[arms[i] for i in row] for row in slates]
+
+    def _slates(
+        self, means: NDArray[np.floating[Any]], top_k: int, rng: np.random.Generator
+    ) -> Tuple[NDArray[np.intp], NDArray[np.intp]]:
+        """The greedy slates and the played ones, exploring contexts' drawn
+        without replacement in random order."""
+        greedy = _top_k_indices(means, top_k)
+        slates = greedy.copy()
+        for idx in np.flatnonzero(rng.random(means.shape[1]) < self.epsilon):
+            slates[idx] = rng.choice(
+                means.shape[0], size=greedy.shape[1], replace=False
+            )
+        return greedy, slates
 
     @overload
     def select_with_probabilities(
@@ -207,11 +221,8 @@ class EpsilonGreedy(PolicyDefaultUpdate[ContextType, TokenType]):
             choices[explore] = rng.integers(n_arms, size=explore.size)
             return list(map(arms.__getitem__, choices.tolist())), probs
 
-        greedy = _top_k_indices(means, top_k)
+        greedy, slates = self._slates(means, top_k, rng)
         k = greedy.shape[1]
         probs = np.full((n_contexts, k, n_arms), self.epsilon / n_arms)
         probs[np.arange(n_contexts)[:, None], np.arange(k), greedy] += 1 - self.epsilon
-        slates = greedy.copy()
-        for idx in np.flatnonzero(rng.random(n_contexts) < self.epsilon):
-            slates[idx] = rng.choice(n_arms, size=k, replace=False)
         return [[arms[i] for i in row] for row in slates], probs

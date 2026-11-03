@@ -25,13 +25,8 @@ Unreleased
   for a policy whose probabilities need fresh posterior draws (#310)
 - ``select_with_probabilities(..., top_k=k)`` on ``EXP3A``,
   ``EpsilonGreedy``, ``UpperConfidenceBound`` and
-  ``InformationDirectedSampling`` returns each context's slate and the
-  ``(n_contexts, k, n_arms)`` probability of each arm in each slot, the
-  per-slot propensities for slate offline evaluation. ``UpperConfidenceBound``
-  is one-hot and ``EpsilonGreedy`` mixes its greedy slate with uniform
-  slots; ``InformationDirectedSampling`` sums every path through its
-  earlier slots' mixtures, and ``EXP3A``'s draw without replacement is
-  integrated as an exponential race to about 1e-10 relative error (#310)
+  ``InformationDirectedSampling`` returns each slate with the probability
+  of each arm in each slot, for slate offline evaluation (#310)
 
 **Performance**
 
