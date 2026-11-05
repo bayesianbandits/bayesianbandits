@@ -18,8 +18,8 @@ from ._base import PolicyDefaultUpdate
 #: Log-time trapezoid step for the slot integrals: 1e-10 relative error
 #: at 0.25, 1e-5 at 0.5
 _SLOT_STEP = 0.25
-#: Polynomial-table cells per chunk of contexts, ``(n_arms, k, n, points)``
-_SLOT_CELLS = 2**22
+#: Polynomial-table cells per chunk of contexts, ``(n_arms, n, k, points)``
+_SLOT_CELLS = 2**20
 
 
 def _draw_slates(
@@ -82,6 +82,10 @@ def _slot_probabilities(probs: NDArray[np.float64], k: int) -> NDArray[np.float6
     span = np.log(40e6) + np.partition(-log_p, k - 1, axis=0)[k - 1]
     order = np.argsort(span)
     chunk = max(1, _SLOT_CELLS // (n_arms * k * _n_points(span.max())))
+    # (i, j - i) for j = 1..k-1: the anti-diagonals of the (k, k) products
+    diag_m, diag_i = np.tril_indices(k)
+    diag_m -= diag_i
+    diag_starts = np.cumsum(np.arange(k))
     for start in range(0, race.size, chunk):
         sub = order[start : start + chunk]
         ctx = race[sub]
@@ -95,23 +99,27 @@ def _slot_probabilities(probs: NDArray[np.float64], k: int) -> NDArray[np.float6
         waiting = np.exp(-rate_t)
         arrived = -np.expm1(-rate_t)
 
-        prefix = np.zeros((n_arms, k) + rate_t.shape[1:])
-        prefix[0, 0] = 1.0
+        # (n_arms, n, k, points), so the slot sums are one batched matmul
+        w = waiting[:, :, None, :]
+        r = arrived[:, :, None, :]
+        prefix = np.zeros((n_arms, sub.size, k, n_points))
+        prefix[0, :, 0] = 1.0
         for a in range(1, n_arms):
-            prefix[a] = prefix[a - 1] * waiting[a - 1]
-            prefix[a, 1:] += prefix[a - 1, :-1] * arrived[a - 1]
+            np.multiply(prefix[a - 1], w[a - 1], out=prefix[a])
+            prefix[a, :, 1:] += prefix[a - 1, :, :-1] * r[a - 1]
         suffix = np.zeros_like(prefix)
-        suffix[-1, 0] = 1.0
+        suffix[-1, :, 0] = 1.0
         for a in range(n_arms - 2, -1, -1):
-            suffix[a] = suffix[a + 1] * waiting[a + 1]
-            suffix[a, 1:] += suffix[a + 1, :-1] * arrived[a + 1]
+            np.multiply(suffix[a + 1], w[a + 1], out=suffix[a])
+            suffix[a, :, 1:] += suffix[a + 1, :, :-1] * r[a + 1]
 
         # t p_a exp(-p_a t): the density in log t
-        density = rate_t * waiting * weights
-        for j in range(1, k):
-            others = sum(prefix[:, i] * suffix[:, j - i] for i in range(j + 1))
-            out[ctx, j] = np.einsum("anq,anq->na", density, others)
-        out[ctx, 1:] *= (span[sub] / (n_points - 1))[:, None, None]
+        prefix *= (rate_t * waiting * weights)[:, :, None, :]
+        pairs = (prefix @ suffix.swapaxes(-1, -2))[:, :, diag_i, diag_m]
+        slots = np.add.reduceat(pairs, diag_starts, axis=-1)[:, :, 1:]
+        out[ctx, 1:] = (
+            slots.transpose(1, 2, 0) * (span[sub] / (n_points - 1))[:, None, None]
+        )
     return out
 
 
