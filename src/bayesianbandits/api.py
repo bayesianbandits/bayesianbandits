@@ -220,6 +220,7 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
     ]: ...
 
+    @overload
     def select_with_drawn_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
@@ -227,7 +228,35 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         rng: np.random.Generator,
         draw: ContextDraws,
         split_contexts: bool = True,
+        *,
+        top_k: None = None,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]: ...
 
     def call_with_probabilities(
         self,

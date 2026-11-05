@@ -25,8 +25,10 @@ Unreleased
   for a policy whose probabilities need fresh posterior draws (#310)
 - ``select_with_probabilities(..., top_k=k)`` on ``EXP3A``,
   ``EpsilonGreedy``, ``UpperConfidenceBound`` and
-  ``InformationDirectedSampling`` returns each slate with the probability
-  of each arm in each slot, for slate offline evaluation (#310)
+  ``InformationDirectedSampling``, and
+  ``select_with_drawn_probabilities(..., top_k=k)`` on
+  ``ThompsonSampling``, return each slate with the probability of each
+  arm in each slot, for slate offline evaluation (#310)
 
 **Performance**
 

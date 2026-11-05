@@ -23,6 +23,24 @@ from ._base import ContextDraws, PolicyDefaultUpdate, _top_k_indices
 _PROPENSITY_CHUNK_ELEMS = 2**22
 
 
+def _top_k_by_argmax(values: NDArray[np.float64], top_k: int) -> NDArray[np.intp]:
+    """``_top_k_indices`` by ``top_k`` argmax passes, each masking its
+    pick; ~2x faster than sorting for ``top_k`` below ``log2(n_arms) - 1``."""
+    masked = values.copy()
+    columns = np.arange(values.shape[1])
+    out = np.empty((values.shape[1], top_k), dtype=np.intp)
+    for slot in range(top_k):
+        out[:, slot] = picks = masked.argmax(axis=0)
+        best = masked[picks, columns]
+        # argmax picks NaN first, and a column out of finite arms would
+        # pick a masked one again: both are the sort's to rank
+        if np.isnan(best).any() or (slot and np.isneginf(best).any()):
+            return _top_k_indices(values, top_k)
+        if slot + 1 < top_k:
+            masked[picks, columns] = -np.inf
+    return out
+
+
 class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
     """
     Policy object for Thompson sampling.
@@ -215,6 +233,7 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
             "single draw it selects from does not determine"
         )
 
+    @overload
     def select_with_drawn_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, 1)
@@ -222,10 +241,40 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
         rng: np.random.Generator,
         draw: ContextDraws,
         split_contexts: bool = True,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        *,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, 1)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, 1)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select as ``select`` does, with the ``(n_contexts, n_arms)``
         fraction of draws each arm's is the largest in: the decision's own
-        ``samples`` plus ``propensity_samples`` more from ``draw``.
+        ``samples`` plus ``propensity_samples`` more from ``draw``. With
+        ``top_k``, the ``(n_contexts, min(top_k, n_arms), n_arms)``
+        fraction of draws whose sorted top-k puts each arm in each slot.
 
         With ``split_contexts`` a few contexts take all their draws at a
         time, so a learner pays each context's setup once; otherwise every
@@ -244,21 +293,40 @@ class ThompsonSampling(PolicyDefaultUpdate[ContextType, TokenType]):
                 "would not give the probabilities of its choices"
             )
         n_arms, n_contexts = samples.shape[:2]
+        n_slots = 1 if top_k is None else min(top_k, n_arms)
+
+        def ranked(values: NDArray[np.float64]) -> NDArray[np.intp]:
+            """``(columns, n_slots)`` arms per column, as ``select`` ranks."""
+            if top_k is None:
+                return values.argmax(axis=0)[:, None]
+            if n_slots < np.log2(n_arms) - 1:
+                return _top_k_by_argmax(values, n_slots)
+            return _top_k_indices(values, n_slots)
+
         n_draws = self.propensity_samples
-        wins = np.zeros((n_contexts, n_arms))
-        wins[np.arange(n_contexts), samples[..., 0].argmax(axis=0)] = 1.0
+        wins = np.zeros((n_contexts, n_slots, n_arms))
+        wins[
+            np.arange(n_contexts)[:, None], np.arange(n_slots), ranked(samples[..., 0])
+        ] = 1.0
         step = max(1, n_contexts)
         if split_contexts:
             step = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * n_draws))
         for first in range(0, n_contexts, step):
             contexts = slice(first, min(first + step, n_contexts))
             width = contexts.stop - first
-            offsets = np.arange(width)[:, None] * n_arms
+            # flat (context, slot, arm) cell of each pick
+            offsets = (
+                np.arange(width)[:, None, None] * n_slots + np.arange(n_slots)
+            ) * n_arms
             chunk = max(1, _PROPENSITY_CHUNK_ELEMS // (n_arms * width))
             for start in range(0, n_draws, chunk):
-                picks = draw(contexts, min(chunk, n_draws - start)).argmax(axis=0)
+                size = min(chunk, n_draws - start)
+                picks = ranked(draw(contexts, size).reshape(n_arms, -1))
                 wins[contexts] += np.bincount(
-                    (picks + offsets).ravel(), minlength=width * n_arms
-                ).reshape(width, n_arms)
+                    (picks.reshape(width, size, n_slots) + offsets).ravel(),
+                    minlength=width * n_slots * n_arms,
+                ).reshape(width, n_slots, n_arms)
         probs = cast(NDArray[np.float64], wins / (n_draws + 1))
-        return self.select(samples, arms, rng), probs
+        if top_k is None:
+            return self.select(samples, arms, rng), probs[:, 0]
+        return self.select(samples, arms, rng, top_k=top_k), probs
