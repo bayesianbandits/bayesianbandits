@@ -133,17 +133,65 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         """Select arms based on pre-generated samples."""
         raise NotImplementedError
 
+    @overload
     def select_with_probabilities(
         self,
         samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
         arms: List[Arm[ContextType, TokenType]],
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def select_with_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Select one arm per context and return the ``(n_contexts, n_arms)``
-        distribution it was drawn from, given the samples."""
+        distribution it was drawn from, given the samples; with ``top_k``,
+        a slate per context and the ``(n_contexts, min(top_k, n_arms),
+        n_arms)`` probability of each arm in each slot."""
         raise NotImplementedError(
             f"{type(self).__name__} does not report selection probabilities"
         )
+
+    @overload
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def select_with_drawn_probabilities(
+        self,
+        samples: NDArray[np.float64],  # Shape: (n_arms, n_contexts, samples_needed)
+        arms: List[Arm[ContextType, TokenType]],
+        rng: np.random.Generator,
+        draw: ContextDraws,
+        split_contexts: bool = True,
+        *,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
 
     def select_with_drawn_probabilities(
         self,
@@ -152,13 +200,18 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         rng: np.random.Generator,
         draw: ContextDraws,
         split_contexts: bool = True,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        *,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """``select_with_probabilities`` for a policy whose probabilities
         need fresh draws of the posterior, which ``draw`` makes; with
         ``split_contexts`` false the draws must take every context at once
         (a batch reward function may combine them). This default reads
         the probabilities off ``samples`` and ignores ``draw``."""
-        return self.select_with_probabilities(samples, arms, rng)
+        return self.select_with_probabilities(samples, arms, rng, top_k)
 
     def call_with_probabilities(
         self,

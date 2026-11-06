@@ -23,6 +23,12 @@ Unreleased
   since the single draw it selects from does not determine it; the agents
   reach it through ``select_with_drawn_probabilities``, the protocol hook
   for a policy whose probabilities need fresh posterior draws (#310)
+- ``select_with_probabilities(..., top_k=k)`` on ``EXP3A``,
+  ``EpsilonGreedy``, ``UpperConfidenceBound`` and
+  ``InformationDirectedSampling``, and
+  ``select_with_drawn_probabilities(..., top_k=k)`` on
+  ``ThompsonSampling``, return each slate with the probability of each
+  arm in each slot, for slate offline evaluation (#310)
 
 **Performance**
 

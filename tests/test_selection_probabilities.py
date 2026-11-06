@@ -3,6 +3,7 @@ its decision from, conditional on the samples it was handed."""
 
 import pickle
 from typing import Any, Callable, Dict, List, Sequence, Sized, cast
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -107,6 +108,157 @@ def test_ips_is_unbiased(policy: Any) -> None:
     stderr = terms.std(ddof=1) / np.sqrt(n_rounds)
 
     assert abs(estimate - means[target]) < 4 * stderr
+
+
+# Policies reporting per-slot probabilities for ``top_k``
+SLATE_POLICIES: List[Any] = [
+    EXP3A(eta=1.0, gamma=0.1, samples=8),
+    EpsilonGreedy(epsilon=0.3, samples=8),
+    UpperConfidenceBound(alpha=0.68, samples=8),
+    InformationDirectedSampling(samples=8),
+]
+
+
+@pytest.mark.parametrize("top_k", [2, 6])
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_agrees_with_select(policy: Any, top_k: int) -> None:
+    samples = np.random.default_rng(0).normal(size=(4, 5, policy.samples_needed))
+    arms = _arms(4)
+
+    plain = policy.select(samples, arms, np.random.default_rng(1), top_k=top_k)
+    chosen, probs = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1), top_k=top_k
+    )
+
+    assert [_tokens(slate) for slate in chosen] == [_tokens(s) for s in plain]
+    k = min(top_k, 4)
+    assert probs.shape == (5, k, 4)
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    assert (probs.sum(axis=1) <= 1.0 + 1e-12).all()
+    slots = np.array([_tokens(slate) for slate in chosen])
+    assert (probs[np.arange(5)[:, None], np.arange(k), slots] > 0).all()
+
+
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_first_slot_is_the_single_pick(policy: Any) -> None:
+    samples = np.random.default_rng(0).normal(size=(4, 5, policy.samples_needed))
+    arms = _arms(4)
+
+    _, single = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1)
+    )
+    _, slate = policy.select_with_probabilities(
+        samples, arms, np.random.default_rng(1), top_k=3
+    )
+
+    assert np.allclose(slate[:, 0], single)
+
+
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+def test_slate_calibrated(policy: Any) -> None:
+    """Each (slot, arm) play count matches the sum of its probabilities."""
+    rng = np.random.default_rng(3)
+    n_rounds = 20_000
+    means = np.array([1.0, 0.5, 0.0, -1.0])
+    samples = means[:, None, None] + rng.normal(
+        size=(4, n_rounds, policy.samples_needed)
+    )
+
+    chosen, probs = policy.select_with_probabilities(samples, _arms(4), rng, top_k=3)
+    played = np.array([_tokens(slate) for slate in chosen])
+
+    for slot in range(3):
+        for arm in range(4):
+            p = probs[:, slot, arm]
+            residual = np.sum(played[:, slot] == arm) - p.sum()
+            assert abs(residual) <= 4 * np.sqrt(np.sum(p * (1 - p)))
+
+
+def test_ids_slate_sums_over_every_path() -> None:
+    """Every slot mixes here, so later slots weigh several subgames; the
+    slates played across copies of one context must hit their mixture."""
+    policy = InformationDirectedSampling(samples=8)
+    scale = np.array([0.2, 1.0, 2.0, 3.0])[:, None, None]
+    one = np.random.default_rng(1).normal(scale=scale, size=(4, 1, 8))
+    n_rounds = 4_000
+    chosen, probs = policy.select_with_probabilities(
+        np.repeat(one, n_rounds, axis=1), _arms(4), np.random.default_rng(0), top_k=3
+    )
+    expected = probs[0]
+    assert (((expected > 0.05) & (expected < 0.95)).sum(axis=-1) >= 2).all()
+
+    played = np.array([_tokens(slate) for slate in chosen])
+    freq = np.stack([np.bincount(col, minlength=4) for col in played.T]) / n_rounds
+    stderr = np.sqrt(expected * (1 - expected) / n_rounds)
+    assert (np.abs(freq - expected) <= 4 * stderr + 1e-12).all()
+
+
+def _exp3a_probs(scale: float, n_arms: int = 12) -> NDArray[np.float64]:
+    """``(n_arms, 3)`` exponential weights, flatter to peakier by context."""
+    logits = np.random.default_rng(0).normal(size=(n_arms, 3)) * [1.0, scale, 3 * scale]
+    probs = np.exp(logits - logits.max(axis=0))
+    return probs / probs.sum(axis=0)
+
+
+def test_exp3a_second_slot_closed_form() -> None:
+    """P(a second) = p_a sum_{b != a} p_b / (1 - p_b)."""
+    from bayesianbandits.policies._exp3a import _slot_probabilities
+
+    p = _exp3a_probs(4.0)
+    slots = _slot_probabilities(p, 4)
+    odds = p / (1 - p)
+    second = p * (odds.sum(axis=0) - odds)
+
+    assert np.allclose(slots[:, 1], second.T, rtol=1e-9, atol=0)
+    assert np.allclose(slots.sum(axis=2), 1.0, atol=1e-9)
+    assert p.min() < 1e-6  # the relative check reaches the tail
+
+
+def test_exp3a_slots_in_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bayesianbandits.policies import _exp3a
+
+    p = _exp3a_probs(2.0)
+    whole = _exp3a._slot_probabilities(p, 3)
+    monkeypatch.setattr(_exp3a, "_SLOT_CELLS", 1)
+
+    assert np.allclose(_exp3a._slot_probabilities(p, 3), whole, rtol=1e-12, atol=0)
+
+
+def test_exp3a_slate_with_vanishing_weights() -> None:
+    """Weights near the float floor once overflowed the race's time span."""
+    policy = EXP3A(eta=1.0, gamma=0.0, samples=1)
+    samples = np.zeros((3, 2, 1))
+    samples[1], samples[2] = -700.0, -744.0
+
+    _, probs = policy.select_with_probabilities(
+        samples, _arms(3), np.random.default_rng(0), top_k=2
+    )
+
+    assert np.isfinite(probs).all()
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    assert probs[0, 1, 1] == pytest.approx(1.0, rel=1e-9)
+
+
+def test_exp3a_slate_with_fewer_positive_arms_than_slots() -> None:
+    """Weights underflowing to zero pad the slate with uniform arms."""
+    policy = EXP3A(eta=1e4, gamma=0.0, samples=1)
+    samples = np.zeros((5, 20_000, 1))
+    samples[1:4] = -1.0
+    samples[4, 1::2] = -1.0  # half the contexts: one positive arm, else two
+
+    chosen, probs = policy.select_with_probabilities(
+        samples, _arms(5), np.random.default_rng(0), top_k=3
+    )
+    played = np.array([_tokens(slate) for slate in chosen])
+
+    # two positive arms and one of three zeros, then one and two of four
+    assert np.allclose(probs[0], [[1 / 3, 1 / 9, 1 / 9, 1 / 9, 1 / 3]] * 3)
+    assert np.allclose(probs[1], [[1 / 3, 1 / 6, 1 / 6, 1 / 6, 1 / 6]] * 3)
+    for slot in range(3):
+        for arm in range(5):
+            q = probs[:, slot, arm]
+            residual = np.sum(played[:, slot] == arm) - q.sum()
+            assert abs(residual) <= 4 * np.sqrt(np.sum(q * (1 - q))) + 1e-9
 
 
 def _learned_arms() -> List[Arm[Any, int]]:
@@ -327,6 +479,108 @@ def test_drawn_probabilities_of_no_contexts(split: bool) -> None:
     assert chosen == [] and probs.shape == (0, 3)
 
 
+@pytest.mark.parametrize("split", [True, False])
+def test_drawn_slate_probabilities_count_in_chunks(
+    monkeypatch: pytest.MonkeyPatch, split: bool
+) -> None:
+    """Each draw's sorted top-k counts once per slot, the decision's
+    included, however the draws are chunked."""
+    from bayesianbandits.policies import _thompson_sampling
+
+    monkeypatch.setattr(_thompson_sampling, "_PROPENSITY_CHUNK_ELEMS", 6)
+
+    def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+        # context 0 ranks arms 2, 0, 1; context 1 ranks 1, 2, 0
+        out = np.empty((3, 2, size))
+        out[:, 0] = np.array([1.0, 0.0, 2.0])[:, None]
+        out[:, 1] = np.array([0.0, 2.0, 1.0])[:, None]
+        return out[:, contexts]
+
+    decision = np.array([[[0.0], [2.0]], [[1.0], [1.0]], [[2.0], [0.0]]])
+    arms = _arms(3)
+    chosen, probs = ThompsonSampling(
+        propensity_samples=5
+    ).select_with_drawn_probabilities(
+        decision, arms, np.random.default_rng(0), draw, split, top_k=2
+    )
+
+    assert [_tokens(slate) for slate in chosen] == [[2, 1], [0, 1]]
+    expected = np.zeros((2, 2, 3))
+    expected[0, 0, 2] = expected[0, 1, 0] = 5 / 6  # the draws
+    expected[1, 0, 1] = expected[1, 1, 2] = 5 / 6
+    expected[0, 0, 2] += 1 / 6  # the decision
+    expected[0, 1, 1] += 1 / 6
+    expected[1, 0, 0] += 1 / 6
+    expected[1, 1, 1] += 1 / 6
+    assert np.allclose(probs, expected)
+
+
+def test_drawn_slate_probabilities_match_the_posterior() -> None:
+    """Per-slot counts converge to the top-k frequencies of independent
+    draws, slot 0 to the single-arm probabilities."""
+    means = np.array([0.6, 0.3, 0.0, -0.4])[:, None, None]
+    noise = np.random.default_rng(0)
+
+    def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+        width = len(range(*contexts.indices(2)))
+        return cast(
+            NDArray[np.float64], means + noise.standard_normal((4, width, size))
+        )
+
+    policy = ThompsonSampling(propensity_samples=40_000)
+    decision = draw(slice(0, 2), 1)
+    rng = np.random.default_rng(1)
+    _, slate = policy.select_with_drawn_probabilities(
+        decision, _arms(4), rng, draw, top_k=3
+    )
+    _, single = policy.select_with_drawn_probabilities(decision, _arms(4), rng, draw)
+
+    reference = np.argsort(-draw(slice(0, 1), 200_000)[:, 0], axis=0)[:3]
+    frequencies = np.stack([np.bincount(row, minlength=4) for row in reference])
+    assert slate.shape == (2, 3, 4)
+    assert np.allclose(slate, frequencies / 200_000, atol=0.012)
+    assert np.allclose(slate[:, 0], single, atol=0.012)
+
+
+@pytest.mark.parametrize("non_finite", [False, True])
+@pytest.mark.parametrize("n_arms, top_k", [(16, 2), (66, 4), (200, 3)])
+def test_top_k_by_argmax_ranks_as_select(
+    monkeypatch: pytest.MonkeyPatch, n_arms: int, top_k: int, non_finite: bool
+) -> None:
+    """Ties to the lower index; NaN last and never an arm twice, which
+    columns short of finite arms leave to the sort."""
+    from bayesianbandits.policies import _thompson_sampling
+    from bayesianbandits.policies._base import _top_k_indices
+
+    values = np.round(np.random.default_rng(0).normal(size=(n_arms, 500)), 1)
+    if non_finite:
+        values[:, :5] = np.nan
+        values[: n_arms - 1, 5:10] = -np.inf
+        values[:2, 10] = np.inf
+    sorted_ = Mock(wraps=_top_k_indices)
+    monkeypatch.setattr(_thompson_sampling, "_top_k_indices", sorted_)
+
+    ranked = _thompson_sampling._top_k_by_argmax(values, top_k)
+
+    assert np.array_equal(ranked, _top_k_indices(values, top_k))
+    assert sorted_.called == non_finite
+
+
+def test_default_drawn_probabilities_pass_top_k() -> None:
+    samples = np.random.default_rng(0).normal(size=(4, 5, 8))
+    policy = UpperConfidenceBound(alpha=0.68, samples=8)
+    draw: Any = lambda contexts, size: pytest.fail("no draws")  # noqa: E731
+
+    chosen, probs = policy.select_with_drawn_probabilities(
+        samples, _arms(4), np.random.default_rng(0), draw, top_k=2
+    )
+    expected, slate = policy.select_with_probabilities(
+        samples, _arms(4), np.random.default_rng(0), top_k=2
+    )
+    assert [_tokens(s) for s in chosen] == [_tokens(s) for s in expected]
+    assert np.array_equal(probs, slate)
+
+
 def test_thompson_sampling_subclass_overriding_select_raises() -> None:
     """A masking subclass picks differently from the argmax the counts use."""
 
@@ -419,8 +673,9 @@ def test_thompson_sampling_probabilities_with_sparse_contexts(fmt: str) -> None:
     assert np.allclose(probs.sum(axis=1), 1.0)
 
 
-def test_default_raises() -> None:
+@pytest.mark.parametrize("top_k", [None, 2])
+def test_default_raises(top_k: Any) -> None:
     with pytest.raises(NotImplementedError, match="PolicyDefaultUpdate does not"):
         PolicyDefaultUpdate[Any, int]().select_with_probabilities(
-            np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0)
+            np.zeros((2, 1, 1)), _arms(2), np.random.default_rng(0), top_k=top_k
         )
