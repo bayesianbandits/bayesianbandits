@@ -707,14 +707,13 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         the learners' generators past where ``pull`` leaves them.
         """
         _validate_top_k(top_k)
-        chosen, probs = self.policy.call_with_probabilities(
-            self.arms, X, self.rng, top_k=top_k
-        )
         if top_k is None:
-            arms = cast(List[Arm[ContextType, TokenType]], chosen)
+            arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
             self.arm_to_update = arms[-1]
             return [arm.pull() for arm in arms], probs
-        slates = cast(List[List[Arm[ContextType, TokenType]]], chosen)
+        slates, probs = self.policy.call_with_probabilities(
+            self.arms, X, self.rng, top_k=top_k
+        )
         return [[arm.pull() for arm in slate] for slate in slates], probs
 
     def update(
