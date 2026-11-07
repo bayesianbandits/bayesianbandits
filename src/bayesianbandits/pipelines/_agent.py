@@ -155,26 +155,43 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
         else:
             return self._agent.pull(X_transformed, top_k=top_k)
 
+    @overload
     def pull_with_probabilities(
-        self, X: Any
-    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
-        """Choose one arm per context and return the distribution it was
-        drawn from alongside the token.
+        self, X: Any, *, top_k: None = None
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
+
+    @overload
+    def pull_with_probabilities(
+        self, X: Any, *, top_k: int
+    ) -> Tuple[List[List[TokenType]], NDArray[np.float64]]: ...
+
+    def pull_with_probabilities(
+        self, X: Any, *, top_k: Optional[int] = None
+    ) -> Union[
+        Tuple[List[TokenType], NDArray[np.float64]],
+        Tuple[List[List[TokenType]], NDArray[np.float64]],
+    ]:
+        """Choose arm(s) per context and return the distribution they were
+        drawn from alongside the tokens.
 
         Parameters
         ----------
         X : Any
             Input data to transform and use for choosing arms.
+        top_k : int, optional
+            Number of arms to select per context, as in ``pull``.
 
         Returns
         -------
-        tokens : List[TokenType]
-            One action token per context, as ``pull`` returns.
+        tokens : List[TokenType] or List[List[TokenType]]
+            One action token or, with ``top_k``, one slate per context, as
+            ``pull`` returns.
         probabilities : NDArray[np.float64]
-            ``(n_contexts, n_arms)`` in the order of the wrapped agent's
+            ``(n_contexts, n_arms)``, or ``(n_contexts, min(top_k, n_arms),
+            n_arms)`` with ``top_k``, in the order of the wrapped agent's
             arms; see :meth:`ContextualAgent.pull_with_probabilities`.
         """
-        return self._agent.pull_with_probabilities(self.transform(X))
+        return self._agent.pull_with_probabilities(self.transform(X), top_k=top_k)
 
     def update(
         self,

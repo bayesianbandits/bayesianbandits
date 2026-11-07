@@ -291,20 +291,40 @@ AGENTS: Dict[str, Callable[[Any, int], Any]] = {
 }
 
 
+@pytest.mark.parametrize("top_k", [None, 2])
 @pytest.mark.parametrize("build", AGENTS.values(), ids=AGENTS.keys())
-def test_agents_agree_with_pull(build: Callable[[Any, int], Any]) -> None:
+def test_agents_agree_with_pull(build: Callable[[Any, int], Any], top_k: Any) -> None:
     policy = EpsilonGreedy(epsilon=0.3, samples=8)
     X = () if build is AGENTS["Agent"] else (np.ones((5, 2)),)
 
-    plain = build(policy, 1).pull(*X)
+    plain = build(policy, 1).pull(*X, top_k=top_k)
     agent = build(policy, 1)
-    tokens, probs = agent.pull_with_probabilities(*X)
+    queued = agent.arm_to_update
+    tokens, probs = agent.pull_with_probabilities(*X, top_k=top_k)
 
     assert tokens == plain
-    assert probs.shape == (len(tokens), 3)
-    assert np.allclose(probs.sum(axis=1), 1.0)
-    assert (probs[np.arange(len(tokens)), tokens] > 0).all()
-    assert agent.arm_to_update.action_token == tokens[-1]
+    rows = np.arange(len(tokens))
+    if top_k is None:
+        assert probs.shape == (len(tokens), 3)
+        picked = probs[rows, [_tokens(agent.arms).index(t) for t in tokens]]
+        assert agent.arm_to_update.action_token == tokens[-1]
+    else:
+        assert probs.shape == (len(tokens), 2, 3)
+        positions = [[_tokens(agent.arms).index(t) for t in s] for s in tokens]
+        picked = probs[rows[:, None], [0, 1], positions]
+        assert agent.arm_to_update is queued
+    assert (picked > 0).all()
+    assert np.allclose(probs.sum(axis=-1), 1.0)
+
+
+@pytest.mark.parametrize("top_k", [0, -1, 1.5, True])
+@pytest.mark.parametrize("name", ["ContextualAgent", "LipschitzContextualAgent"])
+def test_agents_reject_bad_top_k(name: str, top_k: Any) -> None:
+    agent = AGENTS[name](EpsilonGreedy(epsilon=0.3, samples=8), 1)
+    with pytest.raises(ValueError, match="top_k"):
+        agent.pull(np.ones((2, 2)), top_k=top_k)
+    with pytest.raises(ValueError, match="top_k"):
+        agent.pull_with_probabilities(np.ones((2, 2)), top_k=top_k)
 
 
 def test_thompson_sampling_select_raises() -> None:
@@ -394,16 +414,22 @@ def _fit(agent: Any, X: NDArray[np.float64], rng: np.random.Generator) -> None:
         agent.select_for_update(arm.action_token).update(X, y)
 
 
-def _argmax_frequencies(agent: Any, X: NDArray[np.float64], n_draws: int) -> Any:
-    """How often each arm's draw is the largest, from the agent's own
-    sampling path: ``(n_contexts, n_arms)``."""
+def _argmax_frequencies(
+    agent: Any, X: NDArray[np.float64], n_draws: int, n_slots: int = 1
+) -> Any:
+    """How often each arm's draw ranks in each of the first ``n_slots``,
+    from the agent's own sampling path: ``(n_contexts, n_slots, n_arms)``."""
     if isinstance(agent, LipschitzContextualAgent):
         samples = agent._sample_rewards(X, n_draws)
     else:
         samples = agent.policy._draw_samples(agent.arms, X, n_draws)
-    picks = samples.argmax(axis=0)  # (n_contexts, n_draws)
+    ranked = np.argsort(-samples, axis=0, kind="stable")[:n_slots]
+    n_arms = len(agent.arms)
     return np.stack(
-        [np.bincount(row, minlength=len(agent.arms)) / n_draws for row in picks]
+        [
+            [np.bincount(row, minlength=n_arms) / n_draws for row in ranked[:, c]]
+            for c in range(samples.shape[1])
+        ]
     )
 
 
@@ -418,7 +444,7 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     X = X_fit[:2]
 
     tokens, probs = agent.pull_with_probabilities(X)
-    frequencies = _argmax_frequencies(agent, X, 200_000)
+    frequencies = _argmax_frequencies(agent, X, 200_000)[:, 0]
 
     assert probs.shape == (2, len(agent.arms))
     assert np.allclose(probs.sum(axis=1), 1.0)
@@ -431,6 +457,34 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     _fit(plain, X_fit, np.random.default_rng(1))
     _fit(with_probs, X_fit, np.random.default_rng(1))
     assert plain.pull(X) == with_probs.pull_with_probabilities(X)[0]
+
+
+@pytest.mark.parametrize("name", ["ContextualAgent", "Lipschitz-continuous"])
+def test_thompson_sampling_slate_probabilities(name: str) -> None:
+    """Each slot's probabilities are the frequencies with which the agent's
+    draws put each arm there, and the slates agree with ``pull``."""
+    build = THOMPSON_AGENTS[name]
+    rng = np.random.default_rng(0)
+    X_fit = np.abs(rng.normal(size=(6, 2)))
+    agent = build()
+    _fit(agent, X_fit, rng)
+    X = X_fit[:2]
+    queued = agent.arm_to_update
+
+    slates, probs = agent.pull_with_probabilities(X, top_k=2)
+    frequencies = _argmax_frequencies(agent, X, 200_000, n_slots=2)
+
+    assert probs.shape == (2, 2, len(agent.arms))
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    positions = np.array([[_tokens(agent.arms).index(t) for t in s] for s in slates])
+    assert (probs[[[0], [1]], [0, 1], positions] >= 1 / 100_001).all()
+    assert np.abs(probs - frequencies).max() < 6e-3
+    assert agent.arm_to_update is queued
+
+    plain, with_probs = build(), build()
+    _fit(plain, X_fit, np.random.default_rng(1))
+    _fit(with_probs, X_fit, np.random.default_rng(1))
+    assert plain.pull(X, top_k=2) == with_probs.pull_with_probabilities(X, top_k=2)[0]
 
 
 @pytest.mark.parametrize(

@@ -106,7 +106,7 @@ from .policies import (  # noqa: F401
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from .policies._base import ContextDraws
+from .policies._base import ContextDraws, _validate_top_k
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
@@ -258,12 +258,37 @@ class PolicyProtocol(Protocol[ContextType, TokenType]):
         Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
     ]: ...
 
+    @overload
     def call_with_probabilities(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
+        *,
+        top_k: None = None,
     ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        *,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        *,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]: ...
 
 
 #: The version of an agent's state, the only one it reads
@@ -620,6 +645,7 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         which arm's feedback you're providing.
         """
 
+        _validate_top_k(top_k)
         if top_k is None:
             arms = self.policy(self.arms, X, self.rng)
 
@@ -631,38 +657,64 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
             # Don't update arm_to_update - ambiguous which to choose
             return [[arm.pull() for arm in arms_list] for arms_list in arms_lists]
 
+    @overload
     def pull_with_probabilities(
-        self, X: ContextType
-    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
-        """Choose one arm per context and return the distribution it was
-        drawn from alongside the token.
+        self, X: ContextType, *, top_k: None = None
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
+
+    @overload
+    def pull_with_probabilities(
+        self, X: ContextType, *, top_k: int
+    ) -> Tuple[List[List[TokenType]], NDArray[np.float64]]: ...
+
+    def pull_with_probabilities(
+        self, X: ContextType, *, top_k: int | None = None
+    ) -> Union[
+        Tuple[List[TokenType], NDArray[np.float64]],
+        Tuple[List[List[TokenType]], NDArray[np.float64]],
+    ]:
+        """Choose arm(s) per context and return the distribution they were
+        drawn from alongside the tokens.
 
         Parameters
         ----------
         X : ContextType
             Context matrix to use for choosing arms.
+        top_k : int, optional
+            Number of arms to select per context, as in ``pull``.
 
         Returns
         -------
-        tokens : List[TokenType]
-            One action token per context, as ``pull`` returns.
+        tokens : List[TokenType] or List[List[TokenType]]
+            One action token per context, or with ``top_k`` one slate per
+            context, as ``pull`` returns.
         probabilities : NDArray[np.float64]
             ``(n_contexts, n_arms)``, columns in the order of ``arms``: the
             probability the policy gave each arm given its posterior draws,
             the propensities for inverse propensity scoring and
-            doubly-robust offline evaluation. Each row sums to one.
+            doubly-robust offline evaluation. Each row sums to one. With
+            ``top_k``, ``(n_contexts, min(top_k, n_arms), n_arms)``: the
+            probability each arm filled each slot, each slot summing to
+            one, an arm's sum over slots its inclusion probability.
 
         Notes
         -----
-        Sets ``arm_to_update`` to the last selected arm, like ``pull``.
+        Sets ``arm_to_update`` to the last selected arm, like ``pull``, and
+        leaves it alone with ``top_k``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
         :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
-        arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
-        self.arm_to_update = arms[-1]
-        return [arm.pull() for arm in arms], probs
+        _validate_top_k(top_k)
+        if top_k is None:
+            arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
+            self.arm_to_update = arms[-1]
+            return [arm.pull() for arm in arms], probs
+        slates, probs = self.policy.call_with_probabilities(
+            self.arms, X, self.rng, top_k=top_k
+        )
+        return [[arm.pull() for arm in slate] for slate in slates], probs
 
     def update(
         self,
@@ -1021,29 +1073,54 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
             return self._inner.pull(X_dummy)
         return self._inner.pull(X_dummy, top_k=top_k)
 
-    def pull_with_probabilities(self) -> Tuple[List[TokenType], NDArray[np.float64]]:
-        """Choose an arm and return the distribution it was drawn from
-        alongside the token.
+    @overload
+    def pull_with_probabilities(
+        self, *, top_k: None = None
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
+
+    @overload
+    def pull_with_probabilities(
+        self, *, top_k: int
+    ) -> Tuple[List[List[TokenType]], NDArray[np.float64]]: ...
+
+    def pull_with_probabilities(
+        self, *, top_k: int | None = None
+    ) -> Union[
+        Tuple[List[TokenType], NDArray[np.float64]],
+        Tuple[List[List[TokenType]], NDArray[np.float64]],
+    ]:
+        """Choose arm(s) and return the distribution they were drawn from
+        alongside the tokens.
+
+        Parameters
+        ----------
+        top_k : int, optional
+            Number of arms to select, as in ``pull``.
 
         Returns
         -------
-        tokens : List[TokenType]
-            ``[token]``, as ``pull`` returns.
+        tokens : List[TokenType] or List[List[TokenType]]
+            ``[token]``, or with ``top_k`` ``[[token1, token2, ...]]``, as
+            ``pull`` returns.
         probabilities : NDArray[np.float64]
             ``(1, n_arms)``, columns in the order of ``arms``: the
             probability the policy gave each arm given its posterior draws,
             the propensities for inverse propensity scoring and
-            doubly-robust offline evaluation. The row sums to one.
+            doubly-robust offline evaluation. The row sums to one. With
+            ``top_k``, ``(1, min(top_k, n_arms), n_arms)``: the probability
+            each arm filled each slot.
 
         Notes
         -----
-        Sets ``arm_to_update`` to the selected arm, like ``pull``.
+        Sets ``arm_to_update`` to the selected arm, like ``pull``, and
+        leaves it alone with ``top_k``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
         :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
-        return self._inner.pull_with_probabilities(np.array([[1]], dtype=np.float64))
+        X_dummy = np.array([[1]], dtype=np.float64)
+        return self._inner.pull_with_probabilities(X_dummy, top_k=top_k)
 
     def update(
         self,
@@ -1695,6 +1772,7 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         3. Efficient reshape and reward function application
         4. Policy selection using standard interface
         """
+        _validate_top_k(top_k)
         samples = self._sample_rewards(X, self.policy.samples_needed)
 
         # 6. Let policy select arms
@@ -1713,48 +1791,81 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
                 [arm.pull() for arm in arms_list] for arms_list in selected_arms_nested
             ]
 
+    @overload
     def pull_with_probabilities(
-        self, X: Sized
-    ) -> Tuple[List[TokenType], NDArray[np.float64]]:
-        """Choose one arm per context and return the distribution it was
-        drawn from alongside the token.
+        self, X: Sized, *, top_k: None = None
+    ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
+
+    @overload
+    def pull_with_probabilities(
+        self, X: Sized, *, top_k: int
+    ) -> Tuple[List[List[TokenType]], NDArray[np.float64]]: ...
+
+    def pull_with_probabilities(
+        self, X: Sized, *, top_k: int | None = None
+    ) -> Union[
+        Tuple[List[TokenType], NDArray[np.float64]],
+        Tuple[List[List[TokenType]], NDArray[np.float64]],
+    ]:
+        """Choose arm(s) per context and return the distribution they were
+        drawn from alongside the tokens.
 
         Parameters
         ----------
         X : Sized
             Context matrix to use for choosing arms.
+        top_k : int, optional
+            Number of arms to select per context, as in ``pull``.
 
         Returns
         -------
-        tokens : List[TokenType]
-            One action token per context, as ``pull`` returns.
+        tokens : List[TokenType] or List[List[TokenType]]
+            One action token per context, or with ``top_k`` one slate per
+            context, as ``pull`` returns.
         probabilities : NDArray[np.float64]
             ``(n_contexts, n_arms)``, columns in the order of ``arms``: the
             probability the policy gave each arm given its posterior draws,
             the propensities for inverse propensity scoring and
-            doubly-robust offline evaluation. Each row sums to one.
+            doubly-robust offline evaluation. Each row sums to one. With
+            ``top_k``, ``(n_contexts, min(top_k, n_arms), n_arms)``: the
+            probability each arm filled each slot, each slot summing to
+            one, an arm's sum over slots its inclusion probability.
 
         Notes
         -----
-        Sets ``arm_to_update`` to the last selected arm, like ``pull``.
+        Sets ``arm_to_update`` to the last selected arm, like ``pull``, and
+        leaves it alone with ``top_k``.
         Under ``ThompsonSampling`` the probabilities are counted over
         ``propensity_samples`` extra posterior draws (see
         :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
+        _validate_top_k(top_k)
         samples = self._sample_rewards(X, self.policy.samples_needed)
-        X_rows = _row_sliceable(X)
-        arms, probs = self.policy.select_with_drawn_probabilities(
+        X_rows: Any = None
+
+        def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+            # only policies that draw again need the row-sliceable copy
+            nonlocal X_rows
+            if X_rows is None:
+                X_rows = _row_sliceable(X)
+            X_c = _take_rows(X_rows, contexts)
+            return self._sample_rewards(X_c, size, DrawKind.CONTEXT_JOINT)
+
+        chosen, probs = self.policy.select_with_drawn_probabilities(
             samples,
             self.arms,
             self.rng,
-            lambda contexts, size: self._sample_rewards(
-                _take_rows(X_rows, contexts), size, DrawKind.CONTEXT_JOINT
-            ),
+            draw,
             split_contexts=not self._couples_contexts,
+            top_k=top_k,
         )
-        self.arm_to_update = arms[-1]
-        return [arm.pull() for arm in arms], probs
+        if top_k is None:
+            arms = cast(List[Arm[Any, TokenType]], chosen)
+            self.arm_to_update = arms[-1]
+            return [arm.pull() for arm in arms], probs
+        slates = cast(List[List[Arm[Any, TokenType]]], chosen)
+        return [[arm.pull() for arm in slate] for slate in slates], probs
 
     def update(
         self,
