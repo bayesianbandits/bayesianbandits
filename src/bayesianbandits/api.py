@@ -106,7 +106,7 @@ from .policies import (  # noqa: F401
     ThompsonSampling,
     UpperConfidenceBound,
 )
-from .policies._base import ContextDraws
+from .policies._base import ContextDraws, _validate_top_k
 
 
 class PolicyProtocol(Protocol[ContextType, TokenType]):
@@ -645,6 +645,7 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         which arm's feedback you're providing.
         """
 
+        _validate_top_k(top_k)
         if top_k is None:
             arms = self.policy(self.arms, X, self.rng)
 
@@ -658,7 +659,7 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
 
     @overload
     def pull_with_probabilities(
-        self, X: ContextType
+        self, X: ContextType, *, top_k: None = None
     ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
 
     @overload
@@ -705,13 +706,15 @@ class ContextualAgent(MemoryUsageMixin, Generic[ContextType, TokenType]):
         :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
-        if top_k is None:
-            arms, probs = self.policy.call_with_probabilities(self.arms, X, self.rng)
-            self.arm_to_update = arms[-1]
-            return [arm.pull() for arm in arms], probs
-        slates, probs = self.policy.call_with_probabilities(
+        _validate_top_k(top_k)
+        chosen, probs = self.policy.call_with_probabilities(
             self.arms, X, self.rng, top_k=top_k
         )
+        if top_k is None:
+            arms = cast(List[Arm[ContextType, TokenType]], chosen)
+            self.arm_to_update = arms[-1]
+            return [arm.pull() for arm in arms], probs
+        slates = cast(List[List[Arm[ContextType, TokenType]]], chosen)
         return [[arm.pull() for arm in slate] for slate in slates], probs
 
     def update(
@@ -1073,7 +1076,7 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
 
     @overload
     def pull_with_probabilities(
-        self,
+        self, *, top_k: None = None
     ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
 
     @overload
@@ -1118,8 +1121,6 @@ class Agent(MemoryUsageMixin, Generic[TokenType]):
         the learners' generators past where ``pull`` leaves them.
         """
         X_dummy = np.array([[1]], dtype=np.float64)
-        if top_k is None:
-            return self._inner.pull_with_probabilities(X_dummy)
         return self._inner.pull_with_probabilities(X_dummy, top_k=top_k)
 
     def update(
@@ -1772,6 +1773,7 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         3. Efficient reshape and reward function application
         4. Policy selection using standard interface
         """
+        _validate_top_k(top_k)
         samples = self._sample_rewards(X, self.policy.samples_needed)
 
         # 6. Let policy select arms
@@ -1792,7 +1794,7 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
 
     @overload
     def pull_with_probabilities(
-        self, X: Sized
+        self, X: Sized, *, top_k: None = None
     ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
 
     @overload
@@ -1839,23 +1841,31 @@ class LipschitzContextualAgent(MemoryUsageMixin, Generic[TokenType]):
         :meth:`ThompsonSampling.select_with_drawn_probabilities`), which advance
         the learners' generators past where ``pull`` leaves them.
         """
+        _validate_top_k(top_k)
         samples = self._sample_rewards(X, self.policy.samples_needed)
-        X_rows = _row_sliceable(X)
+        X_rows: Any = None
 
         def draw(contexts: slice, size: int) -> NDArray[np.float64]:
+            # only policies that draw again need the row-sliceable copy
+            nonlocal X_rows
+            if X_rows is None:
+                X_rows = _row_sliceable(X)
             X_c = _take_rows(X_rows, contexts)
             return self._sample_rewards(X_c, size, DrawKind.CONTEXT_JOINT)
 
-        split = not self._couples_contexts
+        chosen, probs = self.policy.select_with_drawn_probabilities(
+            samples,
+            self.arms,
+            self.rng,
+            draw,
+            split_contexts=not self._couples_contexts,
+            top_k=top_k,
+        )
         if top_k is None:
-            arms, probs = self.policy.select_with_drawn_probabilities(
-                samples, self.arms, self.rng, draw, split_contexts=split
-            )
+            arms = cast(List[Arm[Any, TokenType]], chosen)
             self.arm_to_update = arms[-1]
             return [arm.pull() for arm in arms], probs
-        slates, probs = self.policy.select_with_drawn_probabilities(
-            samples, self.arms, self.rng, draw, split_contexts=split, top_k=top_k
-        )
+        slates = cast(List[List[Arm[Any, TokenType]]], chosen)
         return [[arm.pull() for arm in slate] for slate in slates], probs
 
     def update(

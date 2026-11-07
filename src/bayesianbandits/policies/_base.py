@@ -2,6 +2,7 @@
 Base classes for Bayesian bandit policies.
 """
 
+from numbers import Integral
 from typing import (
     Any,
     Callable,
@@ -23,6 +24,14 @@ from .._draw_kind import DrawKind
 # 10k contexts, while past ~128 the sort's log factor loses (2.5x at 512
 # arms by 64 contexts)
 _SORT_ARMS = 128
+
+
+def _validate_top_k(top_k: Optional[int]) -> None:
+    """Raise unless ``top_k`` is None or a positive integer."""
+    if top_k is None:
+        return
+    if isinstance(top_k, bool) or not isinstance(top_k, Integral) or top_k < 1:
+        raise ValueError(f"top_k must be None or a positive integer, got {top_k!r}.")
 
 
 def _top_k_indices(values: NDArray[np.floating[Any]], top_k: int) -> NDArray[np.intp]:

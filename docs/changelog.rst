@@ -29,9 +29,13 @@ Unreleased
   ``select_with_drawn_probabilities(..., top_k=k)`` on
   ``ThompsonSampling``, return each slate with the probability of each
   arm in each slot, for slate offline evaluation; every agent and
-  ``AgentPipeline`` reach it through ``pull_with_probabilities(X,
+  ``AgentPipeline`` reach it through ``pull_with_probabilities(...,
   top_k=k)``, which returns the slates and their
   ``(n_contexts, min(k, n_arms), n_arms)`` slot probabilities (#310)
+- ``pull`` and ``pull_with_probabilities`` raise ``ValueError`` for a
+  ``top_k`` that is not a positive integer. ``pull`` used to slice with
+  it, so ``top_k=-1`` gave every arm but the worst and ``top_k=0`` empty
+  slates (#310)
 
 **Performance**
 

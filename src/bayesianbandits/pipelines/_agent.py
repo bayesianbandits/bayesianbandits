@@ -157,7 +157,7 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
 
     @overload
     def pull_with_probabilities(
-        self, X: Any
+        self, X: Any, *, top_k: None = None
     ) -> Tuple[List[TokenType], NDArray[np.float64]]: ...
 
     @overload
@@ -191,10 +191,7 @@ class AgentPipeline(MemoryUsageMixin, Generic[ContextType, TokenType]):
             n_arms)`` with ``top_k``, in the order of the wrapped agent's
             arms; see :meth:`ContextualAgent.pull_with_probabilities`.
         """
-        X_transformed = self.transform(X)
-        if top_k is None:
-            return self._agent.pull_with_probabilities(X_transformed)
-        return self._agent.pull_with_probabilities(X_transformed, top_k=top_k)
+        return self._agent.pull_with_probabilities(self.transform(X), top_k=top_k)
 
     def update(
         self,

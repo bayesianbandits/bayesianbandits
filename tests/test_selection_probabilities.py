@@ -322,9 +322,21 @@ def test_agents_slates_agree_with_pull(
     assert slates == plain
     assert probs.shape == (len(slates), 2, 3)
     assert np.allclose(probs.sum(axis=2), 1.0)
-    picked = probs[np.arange(len(slates))[:, None], [0, 1], np.array(slates)]
+    positions = np.array([[_tokens(agent.arms).index(t) for t in s] for s in slates])
+    picked = probs[np.arange(len(slates))[:, None], [0, 1], positions]
     assert (picked > 0).all()
     assert agent.arm_to_update is queued
+
+
+@pytest.mark.parametrize("top_k", [0, -1, 1.5, True])
+@pytest.mark.parametrize("build", AGENTS.values(), ids=AGENTS.keys())
+def test_agents_reject_bad_top_k(build: Callable[[Any, int], Any], top_k: Any) -> None:
+    agent = build(EpsilonGreedy(epsilon=0.3, samples=8), 1)
+    X = () if build is AGENTS["Agent"] else (np.ones((2, 2)),)
+    with pytest.raises(ValueError, match="top_k"):
+        agent.pull(*X, top_k=top_k)
+    with pytest.raises(ValueError, match="top_k"):
+        agent.pull_with_probabilities(*X, top_k=top_k)
 
 
 def _top_k_frequencies(agent: Any, X: NDArray[np.float64], n_draws: int) -> Any:
