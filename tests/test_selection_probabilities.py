@@ -307,6 +307,46 @@ def test_agents_agree_with_pull(build: Callable[[Any, int], Any]) -> None:
     assert agent.arm_to_update.action_token == tokens[-1]
 
 
+@pytest.mark.parametrize("policy", SLATE_POLICIES, ids=repr)
+@pytest.mark.parametrize("build", AGENTS.values(), ids=AGENTS.keys())
+def test_agents_slates_agree_with_pull(
+    build: Callable[[Any, int], Any], policy: Any
+) -> None:
+    X = () if build is AGENTS["Agent"] else (np.ones((5, 2)),)
+
+    plain = build(policy, 1).pull(*X, top_k=2)
+    agent = build(policy, 1)
+    queued = agent.arm_to_update
+    slates, probs = agent.pull_with_probabilities(*X, top_k=2)
+
+    assert slates == plain
+    assert probs.shape == (len(slates), 2, 3)
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    picked = probs[np.arange(len(slates))[:, None], [0, 1], np.array(slates)]
+    assert (picked > 0).all()
+    assert agent.arm_to_update is queued
+
+
+def _top_k_frequencies(agent: Any, X: NDArray[np.float64], n_draws: int) -> Any:
+    """How often each arm fills each of two slots in the agent's own
+    draws: ``(n_contexts, 2, n_arms)``."""
+    if isinstance(agent, LipschitzContextualAgent):
+        samples = agent._sample_rewards(X, n_draws)
+    else:
+        samples = agent.policy._draw_samples(agent.arms, X, n_draws)
+    ranked = np.argsort(-samples, axis=0, kind="stable")[:2]  # (2, n_ctx, n_draws)
+    n_arms = len(agent.arms)
+    return np.stack(
+        [
+            [
+                np.bincount(ranked[slot, c], minlength=n_arms) / n_draws
+                for slot in (0, 1)
+            ]
+            for c in range(samples.shape[1])
+        ]
+    )
+
+
 def test_thompson_sampling_select_raises() -> None:
     """The samples alone do not determine TS's propensity."""
     samples = np.random.default_rng(0).normal(size=(3, 2, 1))
@@ -431,6 +471,33 @@ def test_thompson_sampling_probabilities(build: Callable[[], Any]) -> None:
     _fit(plain, X_fit, np.random.default_rng(1))
     _fit(with_probs, X_fit, np.random.default_rng(1))
     assert plain.pull(X) == with_probs.pull_with_probabilities(X)[0]
+
+
+@pytest.mark.parametrize("build", THOMPSON_AGENTS.values(), ids=THOMPSON_AGENTS.keys())
+def test_thompson_sampling_slate_probabilities(build: Callable[[], Any]) -> None:
+    """Each slot's probabilities are the frequencies with which the agent's
+    draws put each arm there, and the slates agree with ``pull``."""
+    rng = np.random.default_rng(0)
+    X_fit = np.abs(rng.normal(size=(6, 2)))
+    agent = build()
+    _fit(agent, X_fit, rng)
+    X = X_fit[:2]
+    queued = agent.arm_to_update
+
+    slates, probs = agent.pull_with_probabilities(X, top_k=2)
+    frequencies = _top_k_frequencies(agent, X, 200_000)
+
+    assert probs.shape == (2, 2, len(agent.arms))
+    assert np.allclose(probs.sum(axis=2), 1.0)
+    positions = np.array([[_tokens(agent.arms).index(t) for t in s] for s in slates])
+    assert (probs[[[0], [1]], [0, 1], positions] >= 1 / 100_001).all()
+    assert np.abs(probs - frequencies).max() < 6e-3
+    assert agent.arm_to_update is queued
+
+    plain, with_probs = build(), build()
+    _fit(plain, X_fit, np.random.default_rng(1))
+    _fit(with_probs, X_fit, np.random.default_rng(1))
+    assert plain.pull(X, top_k=2) == with_probs.pull_with_probabilities(X, top_k=2)[0]
 
 
 @pytest.mark.parametrize(

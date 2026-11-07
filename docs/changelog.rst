@@ -28,7 +28,10 @@ Unreleased
   ``InformationDirectedSampling``, and
   ``select_with_drawn_probabilities(..., top_k=k)`` on
   ``ThompsonSampling``, return each slate with the probability of each
-  arm in each slot, for slate offline evaluation (#310)
+  arm in each slot, for slate offline evaluation; every agent and
+  ``AgentPipeline`` reach it through ``pull_with_probabilities(X,
+  top_k=k)``, which returns the slates and their
+  ``(n_contexts, min(k, n_arms), n_arms)`` slot probabilities (#310)
 
 **Performance**
 

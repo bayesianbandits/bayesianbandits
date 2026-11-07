@@ -213,12 +213,37 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
         the probabilities off ``samples`` and ignores ``draw``."""
         return self.select_with_probabilities(samples, arms, rng, top_k)
 
+    @overload
     def call_with_probabilities(
         self,
         arms: List[Arm[ContextType, TokenType]],
         X: ContextType,
         rng: np.random.Generator,
-    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]:
+        *,
+        top_k: None = None,
+    ) -> Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]]: ...
+
+    @overload
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        *,
+        top_k: int,
+    ) -> Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]]: ...
+
+    def call_with_probabilities(
+        self,
+        arms: List[Arm[ContextType, TokenType]],
+        X: ContextType,
+        rng: np.random.Generator,
+        *,
+        top_k: Optional[int] = None,
+    ) -> Union[
+        Tuple[List[Arm[ContextType, TokenType]], NDArray[np.float64]],
+        Tuple[List[List[Arm[ContextType, TokenType]]], NDArray[np.float64]],
+    ]:
         """Draw the samples the policy asked for, then
         ``select_with_drawn_probabilities``."""
         samples = self._draw_samples(arms, X, self.samples_needed)
@@ -232,7 +257,9 @@ class PolicyDefaultUpdate(Generic[ContextType, TokenType]):
             X_c = _take_rows(X_rows, contexts)
             return self._draw_samples(arms, X_c, size, DrawKind.MARGINAL_ONLY)
 
-        return self.select_with_drawn_probabilities(samples, arms, rng, draw)
+        return self.select_with_drawn_probabilities(
+            samples, arms, rng, draw, top_k=top_k
+        )
 
     @overload
     def __call__(
