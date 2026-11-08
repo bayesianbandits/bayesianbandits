@@ -6,68 +6,41 @@ Unreleased
 
 **New features**
 
-- ``pull_with_probabilities`` on every agent and ``AgentPipeline``, and
-  ``select_with_probabilities`` on every policy, return alongside the
-  selected arms the ``(n_contexts, n_arms)`` distribution each was drawn
-  from: the propensities for inverse propensity scoring and doubly-robust
-  offline evaluation. ``EXP3A`` and ``EpsilonGreedy`` report their mixing
-  distributions, ``UpperConfidenceBound`` one-hot and
-  ``InformationDirectedSampling`` its two-point mixture.
-  ``ThompsonSampling``'s is the posterior probability that each arm's
-  draw is the largest, estimated by counting argmaxes over
-  ``propensity_samples`` (default 10,000) extra draws of the same
-  posterior, the decision's own draw included, so the chosen arm's is at
-  least ``1 / (propensity_samples + 1)``. It works with any learner,
-  reward function and batch reward function;
-  ``ThompsonSampling.select_with_probabilities`` itself still raises,
-  since the single draw it selects from does not determine it; the agents
-  reach it through ``select_with_drawn_probabilities``, the protocol hook
-  for a policy whose probabilities need fresh posterior draws (#310)
-- ``select_with_probabilities(..., top_k=k)`` on ``EXP3A``,
-  ``EpsilonGreedy``, ``UpperConfidenceBound`` and
-  ``InformationDirectedSampling``, and
-  ``select_with_drawn_probabilities(..., top_k=k)`` on
-  ``ThompsonSampling``, return each slate with the probability of each
-  arm in each slot, for slate offline evaluation; every agent and
-  ``AgentPipeline`` reach it through ``pull_with_probabilities(...,
-  top_k=k)``, which returns the slates and their
-  ``(n_contexts, min(k, n_arms), n_arms)`` slot probabilities (#310)
-- ``pull`` and ``pull_with_probabilities`` raise ``ValueError`` for a
-  ``top_k`` that is not a positive integer. ``pull`` used to slice with
-  it, so ``top_k=-1`` gave every arm but the worst and ``top_k=0`` empty
-  slates (#310)
-
-**Performance**
-
-- Sparse-model solves and half-solves skip right-hand-side columns that
-  touch only never-observed features, which solve to their diagonal, and
-  the support covariance batches its solves by the observed block rather
-  than every feature: 250 -> 68 ms over a 183-feature support on a
-  2^20-feature production model (#310)
-- ``UpperConfidenceBound`` computes its quantile with one partition
-  instead of ``np.quantile``, 3x faster at the default 1000 draws and
-  bit-identical (#310)
-- ``EpsilonGreedy`` draws its exploration arms in one vectorized call
-  instead of one ``rng.choice`` per exploring context. Seeded
-  single-arm selections differ from 1.5.0rc2; the greedy arm, the
-  exploration rate and the selection probabilities are unchanged (#310)
+- ``pull_with_probabilities`` on every agent and
+  :class:`~bayesianbandits.AgentPipeline`, and ``select_with_probabilities``
+  on every policy, return the selected arms with the
+  ``(n_contexts, n_arms)`` distribution they were drawn from, for inverse
+  propensity scoring and doubly-robust offline evaluation.
+  ``ThompsonSampling`` estimates its probabilities from
+  ``propensity_samples`` (default 10,000) extra posterior draws, through
+  ``select_with_drawn_probabilities`` (#317, #318, #319, #320, #321, #322)
+- ``pull_with_probabilities(..., top_k=k)`` returns each slate with the
+  probability of each arm in each slot, shaped
+  ``(n_contexts, min(k, n_arms), n_arms)``, for slate offline evaluation
+  (#324, #326)
 - ``state_dict`` and ``load_state_dict`` on every agent, estimator and
-  pipeline save and restore the learned state without pickle, as plain
-  data: dicts, lists, numpy arrays and Python scalars. A state describes
-  the posterior by family in versioned blocks, so any estimator of the
-  family loads it. Build the agent in code and load the state into it.
-  See :doc:`/howto/production` (#309)
+  pipeline save and restore the learned state as plain data, without
+  pickle. See :doc:`/howto/production` (#312)
 
 **Bug fixes**
 
-- ``top_k`` slates from ``ThompsonSampling``, ``UpperConfidenceBound``
-  and ``EpsilonGreedy`` come best first with ties to the lower arm index,
-  as ``argmax`` breaks them, so a greedy slate's first slot is the
-  ``top_k=None`` pick. ``argpartition`` left the order unspecified and
-  broke ties arbitrarily, so an arm tied at the k-th place could make or
-  miss the cut either way. Exploring ``EpsilonGreedy`` slates keep the
-  order their random arms were drawn in, so every slot is uniform, and
-  draw the same arms as before
+- ``top_k`` slates from ``ThompsonSampling``, ``UpperConfidenceBound`` and
+  ``EpsilonGreedy`` come best first with ties to the lower arm index, so
+  the first slot is the ``top_k=None`` pick. The order was unspecified and
+  ties at the cut were broken arbitrarily (#323)
+- ``pull`` raises ``ValueError`` for a ``top_k`` that is not a positive
+  integer; ``top_k=-1`` returned every arm but the worst and ``top_k=0``
+  empty slates (#326)
+
+**Performance**
+
+- Sparse-model solves skip right-hand sides that touch only never-observed
+  features: 250 -> 68 ms for a 183-feature support covariance on a
+  2^20-feature model (#322)
+- ``UpperConfidenceBound`` computes its quantile with one partition, 3x
+  faster at the default 1000 draws and bit-identical (#319)
+- ``EpsilonGreedy`` draws its exploration arms in one vectorized call.
+  Seeded selections differ from 1.5.0; the distribution is unchanged (#318)
 
 1.5.0 (2026-10-21)
 ------------------
