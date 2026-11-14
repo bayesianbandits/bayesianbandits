@@ -108,20 +108,30 @@ class TestCFactorizations:
         A = sp.random_array((300, 300), density=0.01, format="csc", rng=rng)
         return sp.csc_array(A + A.T + sp.eye_array(300) * 20)
 
-    def test_cholmod_is_exact_because_its_factor_is_packed_simplicial(
-        self, precision: sp.csc_array
-    ):
-        """The exactness claim rests on scikit-sparse finalizing every
-        factor to packed simplicial form, where ``nzmax == nnz``. If a
-        release stops doing that, ``is_super`` flips here and the report
-        degrades to a labelled lower bound rather than a silent lie."""
-        factor = create_sparse_factor(precision, solver=SparseSolver.CHOLMOD)
+    def test_cholmod_simplicial_factor_is_exact(self):
+        """A packed simplicial factor has ``nzmax == nnz``."""
+        diagonal = sp.csc_array(sp.eye_array(300) * 2.0)
+        factor = create_sparse_factor(diagonal, solver=SparseSolver.CHOLMOD)
         assert isinstance(factor, CholmodSparseFactor)
 
         usage = memory_usage(factor._factor)
 
         assert not factor._factor.is_super
         assert usage.exact
+        assert usage.total > int(factor._factor.nnz) * 8
+
+    def test_cholmod_supernodal_factor_is_labelled_a_lower_bound(
+        self, precision: sp.csc_array
+    ):
+        """Supernodal dense blocks store more than ``nnz``."""
+        factor = create_sparse_factor(precision, solver=SparseSolver.CHOLMOD)
+        assert isinstance(factor, CholmodSparseFactor)
+
+        usage = memory_usage(factor._factor)
+
+        assert factor._factor.is_super
+        assert not usage.exact
+        assert "lower bound" in usage.note
         assert usage.total > int(factor._factor.nnz) * 8
 
     def test_superlu_is_labelled_a_lower_bound(self, precision: sp.csc_array):

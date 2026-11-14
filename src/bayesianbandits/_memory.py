@@ -470,14 +470,12 @@ def _cholmod_usage(factor: Any) -> MemoryUsage:
     it equals the nonzero count -- which ``nnz`` reports, summing
     ``ColCount``.
 
-    That covers every factor scikit-sparse returns.
-    :meth:`CholeskyFactor.factorize` sets ``final_super = False``,
-    ``final_pack = True`` and ``final_monotonic = True`` before handing
-    the factor back, so the result is packed and simplicial whatever
-    ordering or supernodal mode produced it -- ``nzmax == nnz``, and
-    this figure is exact rather than modelled. A factor from somewhere
-    else that is still supernodal stores dense blocks covering more
-    than ``nnz`` entries; that case is detected and reported as a lower
+    That covers the simplicial factors CHOLMOD chooses for very sparse
+    matrices: scikit-sparse sets ``final_pack = True``, so
+    ``nzmax == nnz`` and this figure is exact rather than modelled.
+    Since scikit-sparse 0.5.1 (``final_super = True``) a supernodal
+    factor stays supernodal, and its dense blocks store more than
+    ``nnz`` entries; that case is detected and reported as a lower
     bound.
 
     Excluded: the scratch workspace on the ``cholmod_common`` that

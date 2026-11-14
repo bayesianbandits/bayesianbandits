@@ -123,7 +123,7 @@ requires-dist = [
     { name = "attrs", specifier = ">=21.2.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "scikit-sparse", marker = "extra == 'cholmod'", specifier = ">=0.5.0,<0.6" },
+    { name = "scikit-sparse", marker = "extra == 'cholmod'", specifier = ">=0.5.1,<0.6" },
     { name = "scipy", specifier = ">=1.14.0" },
     { name = "typing-extensions", specifier = ">=4.8.0" },
 ]
@@ -2092,14 +2092,14 @@ wheels = [
 
 [[package]]
 name = "scikit-sparse"
-version = "0.5.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/70/2351a8755de0b3d9821864299d6bba3feafb91e106b9b762a2675910392e/scikit_sparse-0.5.0.tar.gz", hash = "sha256:217579251b1d91dcfeab5a16d6408f462dc353939f9e5dfa65ec0b41f0b603dc", size = 106285, upload-time = "2026-03-03T19:18:41.586Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/d1/8456849062eb0fa5bcede0d3ca867abd03bde960c47563677ebf32b134bd/scikit_sparse-0.5.1.tar.gz", hash = "sha256:4adece3f378ac9185d17ba93482ea19ba87e55b1088d385f0c24bca8984afc08", size = 107443, upload-time = "2026-11-11T22:38:44.411Z" }
 
 [[package]]
 name = "scipy"
