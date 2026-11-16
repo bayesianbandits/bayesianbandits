@@ -543,6 +543,14 @@ class EmpiricalBayesNormalRegressor(_StabilizedPriorMixin, NormalRegressor):
         self._alpha0 = alpha  # EB overwrites alpha; keep the prior
         self._beta0 = beta  # likewise, for a state that has no beta
 
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        if "_alpha0" not in state:  # set by every __init__ since 1.5.0
+            raise ValueError(
+                f"This {type(self).__name__} was pickled by bayesianbandits "
+                "before 1.5.0, which changed its state. Refit it."
+            )
+        super().__setstate__(state)
+
     @property
     def coef_(self) -> NDArray[np.float64]:
         """Posterior mean, written by every fit like the plain attribute
