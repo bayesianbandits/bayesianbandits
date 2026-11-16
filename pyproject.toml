@@ -85,7 +85,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-omit = ["benchmarks/*"]
+omit = ["benchmarks/*", "tests/legacy_pickles/make_*.py"]
 
 [tool.coverage.report]
 exclude_also = [
