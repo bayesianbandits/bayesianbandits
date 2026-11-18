@@ -20,10 +20,15 @@ Unreleased
   (#324, #326)
 - ``state_dict`` and ``load_state_dict`` on every agent, estimator and
   pipeline save and restore the learned state as plain data, without
-  pickle. See :doc:`/howto/production` (#312)
+  pickle. To migrate a pickled model, unpickle it and save its
+  ``state_dict``. See :doc:`/howto/production` (#312)
 
 **Bug fixes**
 
+- Unpickling an ``EmpiricalBayesNormalRegressor`` saved before 1.5.0
+  raises ``ValueError`` asking for a refit. 1.5.0 changed its state, so
+  such a pickle loaded but failed at the first ``update`` or
+  ``state_dict``
 - ``top_k`` slates from ``ThompsonSampling``, ``UpperConfidenceBound`` and
   ``EpsilonGreedy`` come best first with ties to the lower arm index, so
   the first slot is the ``top_k=None`` pick. The order was unspecified and

@@ -172,3 +172,29 @@ def test_state_dict_roundtrip():
 
     # The loaded agent continues the original's random stream
     assert loaded.pull() == agent.pull()
+
+
+def test_migrate_a_pickle_to_state_dict():
+    """Unpickle once, save the state, and load it into an agent built in code."""
+
+    def make_agent():
+        arms = [
+            Arm("ad_a", learner=GammaRegressor(alpha=1, beta=1)),
+            Arm("ad_b", learner=GammaRegressor(alpha=1, beta=1)),
+        ]
+        return Agent(arms, ThompsonSampling())
+
+    pickled = make_agent()
+    pickled.pull()
+    pickled.update(np.array([1.0]))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "agent.pkl"
+        joblib.dump(pickled, path)
+
+        old = joblib.load(path)
+        state = old.state_dict()
+        agent = make_agent()
+        agent.load_state_dict(state)
+
+    assert agent.pull() == old.pull()

@@ -109,6 +109,20 @@ Factorizations are rebuilt rather than stored, so after a ``decay``, or
 a sparse update without ``scikit-sparse``, draws can differ from the
 original's in the last bit, as after unpickling.
 
+To move a pickled agent over, unpickle it once with this release and
+save its state:
+
+.. code-block:: python
+
+   old = joblib.load("agent.pkl")
+   state = old.state_dict()
+   agent = make_agent()
+   agent.load_state_dict(state)
+
+Fitted preprocessing, such as a ``LearnerPipeline``'s steps, is not part
+of the state. Rebuild it identically in code, or keep it pickled,
+because the posterior only lines up with the features it was fit on.
+
 
 Add and remove arms at runtime
 -------------------------------
